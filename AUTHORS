@@ -1,0 +1,35 @@
+# Authors
+
+## Project Creator and Lead Maintainer
+
+**Steve Yegge** <steve.yegge@gmail.com>
+- Original concept and implementation
+- Core architecture and design
+- Multi-turn conversation system
+- Primary maintainer
+
+## Contributors
+
+This project welcomes contributions from the community. Contributors will be listed here as they make their contributions.
+
+### How to be listed
+
+Contributors who make significant contributions to the project will be added to this file. This includes:
+
+- Code contributions (features, bug fixes, improvements)
+- Documentation improvements  
+- Test coverage additions
+- Bug reports with detailed analysis
+- Feature design and architectural input
+
+To be added, simply make a meaningful contribution and it will be recognized in the next release.
+
+## Acknowledgments
+
+- **Anthropic** - For providing the Claude API that powers Efrit's AI capabilities
+- **The Emacs Community** - For building the incredible platform that makes this project possible
+- **Contributors** - Everyone who has helped improve Efrit through code, documentation, testing, and feedback
+
+---
+
+*This file follows the [All Contributors](https://allcontributors.org/) specification for recognizing contributions of all kinds.*

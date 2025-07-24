@@ -1,0 +1,140 @@
+;;; efrit.el --- LLM conversational assistant for Emacs -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025 Steve Yegge
+
+;; Author: Steve Yegge <steve.yegge@gmail.com>
+;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "28.1"))
+;; Keywords: tools, convenience, ai, assistant, claude
+;; URL: https://github.com/steveyegge/efrit
+;; Homepage: https://github.com/steveyegge/efrit
+
+;; This file is not part of GNU Emacs.
+
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;;; Commentary:
+
+;; Efrit is a conversational assistant for Emacs.
+;; It provides a simple interface for talking with Anthropic's Claude,
+;; maintaining conversation state across multiple interactions.
+;;
+;; Key features:
+;; - Multi-turn conversations with Claude
+;; - Simple, clean UI in a dedicated buffer
+;; - Support for API key management through .authinfo
+;; - Interactive command interface for operating on buffers
+;; - Ability to evaluate elisp and execute commands within Emacs
+;; - Direct Elisp evaluation through integrated agent architecture
+;; - Advanced agent loop for complex, multi-step tasks
+;; - Built-in test infrastructure for unit and integration tests
+
+;;; Code:
+
+;; Ensure the efrit directory is in load-path
+(eval-and-compile
+  (let ((efrit-dir (file-name-directory (or load-file-name buffer-file-name default-directory))))
+    (add-to-list 'load-path efrit-dir)
+    (message "Added to load-path: %s" efrit-dir)))
+
+;; Load the core implementation in dependency order
+(condition-case err
+    (progn
+      ;; Load dependencies first
+      (require 'json)
+      (require 'url)
+      (require 'auth-source)
+      
+      ;; Load core modules in dependency order
+      (require 'efrit-tools)
+      (require 'efrit-multi-turn) ; Multi-turn conversation management
+      (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
+      (require 'efrit-command)    ; Depends on efrit-chat
+      (require 'efrit-agent)      ; Depends on efrit-tools
+      (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
+      
+      (message "Efrit modules loaded successfully"))
+  (error 
+   (message "Error loading efrit modules: %s" (error-message-string err))
+   (message "Load-path: %s" load-path)
+   (message "Available features: %s" features)))
+
+;; Tests are not loaded by default, but available when needed
+;; (require 'efrit-tests)
+;; (require 'efrit-use-case-tests)
+;; (require 'efrit-integration-tests)
+
+;; Make external API accessible with clear naming
+(defalias 'efrit-start 'efrit-chat
+  "Start a new Efrit chat session (alias for efrit-chat).")
+
+;; Global keymap for Efrit
+(defvar efrit-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat
+    (define-key map (kbd "e") 'efrit)         ; 'e' for command interface  
+    (define-key map (kbd "a") 'efrit-agent-run)
+    (define-key map (kbd "o") 'efrit-show-output)
+    (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute
+    map)
+  "Keymap for Efrit commands.")
+
+;; Set up the global keybinding
+(global-set-key (kbd "C-c C-e") efrit-keymap)
+
+;; Initialize efrit
+(defun efrit-initialize ()
+  "Initialize Efrit."
+  (interactive)
+  (message "Efrit initialized and ready to use"))
+
+
+
+;; For package system (lazy loading)
+;;;###autoload
+(autoload 'efrit-chat "efrit-chat" "Start a new Efrit chat session" t)
+
+;;;###autoload
+(autoload 'efrit "efrit-command" "Open Efrit command interface" t)
+
+;;;###autoload
+(autoload 'efrit-show-output "efrit-command" "Show Efrit output buffer" t)
+
+;;;###autoload
+(autoload 'efrit-agent-run "efrit-agent" "Run the agent loop with a request" t)
+
+;;;###autoload
+(autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
+
+;; Verify that key functions are available
+(unless (and (fboundp 'efrit-chat) (fboundp 'efrit-do))
+  (message "Warning: Some efrit functions may not be available. Check for errors above."))
+
+;; Explicitly make commands available when loading directly
+(when (and (fboundp 'efrit-do) (not (commandp 'efrit-do)))
+  (put 'efrit-do 'interactive-form '(interactive 
+                                     (list (read-string "Command: " nil 'efrit-do-history)))))
+
+(when (and (fboundp 'efrit-chat) (not (commandp 'efrit-chat)))
+  (put 'efrit-chat 'interactive-form '(interactive)))
+
+(when (and (fboundp 'efrit-do-to-chat) (not (commandp 'efrit-do-to-chat)))
+  (put 'efrit-do-to-chat 'interactive-form '(interactive "P")))
+
+(when (and (fboundp 'efrit-do-show-context) (not (commandp 'efrit-do-show-context)))
+  (put 'efrit-do-show-context 'interactive-form '(interactive)))
+
+;; Initialize on load
+(provide 'efrit)
+;;; efrit.el ends here
