@@ -93,6 +93,33 @@ Efrit is correctly implemented when:
 - **Keep tools atomic** - One simple operation per tool
 - **Test multi-turn scenarios** - Ensure complex requests work end-to-end
 
+## Architectural Evolution: Trimodal Design
+
+The Efrit architecture is evolving to support three complementary interaction modes while maintaining the core "Zero Client-Side Intelligence" principle:
+
+### Modal Architecture
+```
+efrit-chat  → Conversational Q&A (preserved as-is)
+efrit-do    → Enhanced one-off commands with error recovery  
+efrit-agent → Persistent problem-solving until complete
+```
+
+### Shared Infrastructure
+All modes share:
+- Common context gathering (efrit-tools.el)
+- Common tool protocol (eval_sexp, etc.)
+- Common error handling foundations
+- Unified Claude API communication
+
+### Error Recovery Enhancement
+The architecture now supports intelligent error recovery:
+- **Pre-execution validation** - Catch syntax errors before eval
+- **Runtime error capture** - Handle execution failures gracefully  
+- **Claude-guided recovery** - Send errors back for fixes
+- **Iterative problem-solving** - Retry until success or limit reached
+
+This maintains the "pure executor" principle while adding robustness through Claude-driven error recovery.
+
 ---
 
 *This document should be consulted whenever architectural decisions are made. Any deviation from these principles must be explicitly justified and documented.*
