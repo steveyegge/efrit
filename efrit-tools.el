@@ -99,7 +99,7 @@ Return:
     (error "Cannot evaluate empty Lisp expression"))
   
   (let ((result-data nil))
-    (condition-case-unless-debug err
+    (condition-case err
         (let* ((sexp-and-pos (with-temp-buffer
                               (insert sexp-string)
                               (goto-char (point-min))
