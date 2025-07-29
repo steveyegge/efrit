@@ -199,6 +199,20 @@ The RESPONSE-BUFFER is automatically killed after extraction."
     (when (buffer-live-p response-buffer)
       (kill-buffer response-buffer))))
 
+(defun efrit-do--sanitize-elisp-string (str)
+  "Sanitize potentially over-escaped elisp string from JSON.
+This handles cases where JSON escaping has been applied multiple times."
+  (when str
+    ;; Try to detect and fix over-escaped strings
+    (let ((cleaned str))
+      ;; If we see patterns like \\\\b, it's likely over-escaped
+      (when (string-match-p "\\\\\\\\\\\\b\\|\\\\\\\\\\\\(" cleaned)
+        (setq cleaned (replace-regexp-in-string "\\\\\\\\\\\\b" "\\\\b" cleaned))
+        (setq cleaned (replace-regexp-in-string "\\\\\\\\\\\\(" "\\\\(" cleaned))
+        (setq cleaned (replace-regexp-in-string "\\\\\\\\\\\\)" "\\\\)" cleaned))
+        (setq cleaned (replace-regexp-in-string "\\\\\\\\\\\\|" "\\\\|" cleaned)))
+      cleaned)))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
@@ -211,6 +225,10 @@ Returns a formatted string with execution results or empty string on failure."
                       (seq-some (lambda (key) (gethash key tool-input))
                                 '("expr" "expression" "code")))
                      (t (format "%S" tool-input)))))
+    
+    ;; Sanitize potentially over-escaped strings
+    (when input-str
+      (setq input-str (efrit-do--sanitize-elisp-string input-str)))
     
     (when efrit-do-debug
       (message "Tool use: %s with input: %S (extracted: %S)" 
