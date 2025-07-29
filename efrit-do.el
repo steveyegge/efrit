@@ -243,148 +243,6 @@ Returns a formatted string with execution results or empty string on failure."
                    input-str (error-message-string eval-err))))
       "")))
 
-;;; Buffer-focused edit command
-
-(defun efrit-edit--system-prompt ()
-  "Generate system prompt for buffer editing operations."
-  (concat "You are Efrit, an AI assistant focused on editing the current buffer in Emacs.\n\n"
-          
-          "IMPORTANT: You are in BUFFER EDIT MODE. This means:\n"
-          "- Focus ONLY on transforming the current buffer contents\n"
-          "- Generate valid Elisp code that operates on the current buffer\n"
-          "- Use the eval_sexp tool to execute the code immediately\n"
-          "- DO NOT ask for clarification - make reasonable assumptions\n"
-          "- DO NOT explain what you're doing unless there's an error\n"
-          "- ONLY use documented Emacs functions - NEVER invent function names\n"
-          "- Your response should be minimal - the user only wants to see execution results\n"
-          "- Only operate on current paragraph/region if explicitly specified\n"
-          "- Prefer temporary bindings (let) for settings, unless user wants variables changed permanently\n"
-          "- Focus on buffer manipulation functions like fill-region, sort-lines, etc.\n\n"
-
-          "Common buffer operations:\n"
-          "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
-          "- Sorting: (sort-lines nil (point-min) (point-max))\n"
-          "- Case changes: (upcase-region (point-min) (point-max))\n"
-          "- Indentation: (indent-region (point-min) (point-max))\n\n"
-          
-          "Examples:\n\n"
-          
-          "User: wrap the buffer text to 80 columns\n"
-          "Assistant: I'll wrap the text to 80 columns.\n"
-          "Tool call: eval_sexp with expr: \"(let ((fill-column 80)) (fill-region (point-min) (point-max)))\"\n\n"
-          
-          "User: fill the text in buffer to 2500 columns\n"
-          "Assistant: I'll wrap all text to 2500 columns.\n"
-          "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
-          
-          "User: sort all lines\n"
-          "Assistant: I'll sort all lines in the buffer.\n"
-          "Tool call: eval_sexp with expr: \"(sort-lines nil (point-min) (point-max))\"\n\n"
-          
-          "User: make everything uppercase\n"
-          "Assistant: I'll convert all text to uppercase.\n"
-          "Tool call: eval_sexp with expr: \"(upcase-region (point-min) (point-max))\"\n\n"
-          
-          "User: indent the buffer with 4 spaces\n"
-          "Assistant: I'll indent all lines with 4 spaces.\n"
-          "Tool call: eval_sexp with expr: \"(let ((tab-width 4) (indent-tabs-mode nil)) (indent-region (point-min) (point-max)))\"\n\n"
-          
-          "Remember: Focus only on the current buffer and be concise."))
-
-(defun efrit-edit--execute-command (command)
-  "Execute buffer editing COMMAND and return a short summary.
-Uses the same API approach as efrit-do but with buffer-focused prompting."
-  (condition-case api-err
-      (let* ((api-key (efrit--get-api-key))
-             (url-request-method "POST")
-             (url-request-extra-headers
-              `(("x-api-key" . ,api-key)
-                ("anthropic-version" . "2023-06-01")
-                ("content-type" . "application/json")))
-             (system-prompt (efrit-edit--system-prompt))
-             (request-data
-              `(("model" . ,efrit-model)
-                ("max_tokens" . ,efrit-max-tokens)
-                ("temperature" . 0.0)
-                ("messages" . [(("role" . "user")
-                               ("content" . ,command))])
-                ("system" . ,system-prompt)
-                ("tools" . [(("name" . "eval_sexp")
-                            ("description" . "Evaluate a Lisp expression and return the result. Focus on buffer editing operations.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("expr" . (("type" . "string")
-                                                                          ("description" . "The Elisp expression to evaluate on the current buffer")))))
-                                              ("required" . ["expr"]))))])))
-             (url-request-data
-              (encode-coding-string (json-encode request-data) 'utf-8)))
-        
-        (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
-                  (response-text (efrit-do--extract-response-text response-buffer)))
-            (efrit-edit--process-api-response response-text command)
-          (error "Failed to get response from API")))
-    (error
-     (format "API error: %s" (error-message-string api-err)))))
-
-(defun efrit-edit--process-api-response (response-text command)
-  "Process API RESPONSE-TEXT for buffer editing and return a short summary."
-  (condition-case json-err
-      (let* ((json-object-type 'hash-table)
-             (json-array-type 'vector)
-             (json-key-type 'string)
-             (response (json-read-from-string response-text))
-             (execution-occurred nil))
-        
-        ;; Check for API errors first
-        (if-let* ((error-obj (gethash "error" response)))
-            (let ((error-type (gethash "type" error-obj))
-                  (error-message (gethash "message" error-obj)))
-              (format "API Error (%s): %s" error-type error-message))
-          
-          ;; Process successful response
-          (let ((content (gethash "content" response)))
-            (when content
-              (dotimes (i (length content))
-                (let* ((item (aref content i))
-                       (type (gethash "type" item)))
-                  (when (string= type "tool_use")
-                    (let* ((tool-name (gethash "name" item))
-                           (tool-input (gethash "input" item))
-                           (input-str (cond
-                                       ((stringp tool-input) tool-input)
-                                       ((hash-table-p tool-input) 
-                                        (seq-some (lambda (key) (gethash key tool-input))
-                                                  '("expr" "expression" "code")))
-                                       (t (format "%S" tool-input)))))
-                      
-                      (when (and (string= tool-name "eval_sexp") input-str)
-                        (condition-case eval-err
-                            (progn
-                              (efrit-tools-eval-sexp input-str)
-                              (setq execution-occurred t))
-                          (error
-                           (error "Error executing %s: %s" 
-                                  input-str (error-message-string eval-err))))))))))
-            
-            (if execution-occurred
-                (format "Done: %s" command)
-              "No operation performed"))))
-    (error
-     (format "JSON parsing error: %s" (error-message-string json-err)))))
-
-;;;###autoload
-(defun efrit-edit (command)
-  "Execute natural language buffer editing COMMAND in Emacs.
-This is a focused version of efrit-do that operates only on the current buffer.
-The result is displayed only in *Messages* unless there's an error."
-  (interactive
-   (list (read-string "Edit command: ")))
-  
-  (condition-case err
-      (let ((result (efrit-edit--execute-command command)))
-        (message "%s" result))
-    (error
-     (message "Error: %s" (error-message-string err)))))
-
 ;;; Command execution
 
 (defun efrit-do--command-system-prompt ()
@@ -410,10 +268,19 @@ Uses previous command context if available."
           "- Be concise in responses\n"
           "- If user says 'that didn't work' or similar, examine the previous command/result to debug\n\n"
           
+          "BUFFER OPERATIONS GUIDANCE:\n"
+          "- When user says 'the text' or 'the buffer', operate on entire buffer (point-min) to (point-max)\n"
+          "- Use temporary bindings (let) for settings when possible - preserve user's original settings\n"
+          "- Only operate on current paragraph/region if explicitly specified\n"
+          "- For buffer-wide operations, prefer whole-buffer functions\n\n"
+          
           "Common tasks:\n"
           "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
           "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
-          "- Window operations: (split-window-horizontally), (other-window 1)\n\n"
+          "- Window operations: (split-window-horizontally), (other-window 1)\n"
+          "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
+          "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
+          "- Case changes: (upcase-region (point-min) (point-max))\n\n"
           
           "Examples:\n\n"
           
@@ -428,6 +295,10 @@ Uses previous command context if available."
           "User: save all buffers\n"
           "Assistant: I'll save all modified buffers.\n"
           "Tool call: eval_sexp with expr: \"(save-some-buffers t)\"\n\n"
+          
+          "User: wrap the text to 2500 columns\n"
+          "Assistant: I'll wrap the text to 2500 columns.\n"
+          "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info ""))))
