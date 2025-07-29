@@ -186,6 +186,19 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 
 ;;; Helper functions for improved error handling
 
+(defun efrit-do--validate-elisp (code-string)
+  "Check if CODE-STRING is valid elisp syntax.
+Returns (valid-p . error-msg) where valid-p is t/nil and error-msg 
+describes the syntax error if validation fails."
+  (when (and code-string (stringp code-string))
+    (condition-case err
+        (progn 
+          ;; Try to read the string as elisp - this catches syntax errors
+          (read-from-string code-string)
+          (cons t nil))
+      (error 
+       (cons nil (error-message-string err))))))
+
 (defun efrit-do--extract-response-text (response-buffer)
   "Extract response text from RESPONSE-BUFFER with proper cleanup.
 Returns the response body as a string, or nil if extraction fails.
@@ -235,12 +248,19 @@ Returns a formatted string with execution results or empty string on failure."
                tool-name tool-input input-str))
     
     (if (and (string= tool-name "eval_sexp") input-str)
-        (condition-case eval-err
-            (let ((eval-result (efrit-tools-eval-sexp input-str)))
-              (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
-          (error
-           (format "\n[Error executing %s: %s]" 
-                   input-str (error-message-string eval-err))))
+        ;; Validate elisp syntax before execution
+        (let ((validation (efrit-do--validate-elisp input-str)))
+          (if (car validation)
+              ;; Valid elisp - proceed with execution
+              (condition-case eval-err
+                  (let ((eval-result (efrit-tools-eval-sexp input-str)))
+                    (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
+                (error
+                 (format "\n[Error executing %s: %s]" 
+                         input-str (error-message-string eval-err))))
+            ;; Invalid elisp - report syntax error
+            (format "\n[Syntax Error in %s: %s]" 
+                    input-str (cdr validation))))
       "")))
 
 ;;; Command execution
