@@ -2,7 +2,13 @@
 
 ## Session Tracking & Progress
 
-### Current Session: Session 2 - Retry Logic Implementation
+### Current Session: Session 3 - Error Context Enhancement
+**Date**: 2025-07-30  
+**Status**: ✅ **COMPLETE**  
+**Objective**: Enhance retry logic with rich contextual information for Claude  
+**File**: `efrit-do.el`
+
+### Previous Session: Session 2 - Retry Logic Implementation
 **Date**: 2025-07-30  
 **Status**: ✅ **COMPLETE**  
 **Objective**: Implement intelligent retry logic for efrit-do with error feedback to Claude  
@@ -13,6 +19,16 @@
 **Status**: ✅ **COMPLETE**  
 **Objective**: Implement elisp syntax validation for efrit-do  
 **File**: `efrit-do.el`  
+
+#### Session 3 TODO List
+- [x] **Analyze context needs** - Identify what information would help Claude provide better fixes
+- [x] **Design context builder** - Create `efrit-do--build-error-context` function
+- [x] **Include buffer state** - Current buffer name, mode, point position, content around point
+- [x] **Include Emacs state** - Window layout, visible buffers, current directory
+- [x] **Include command history** - Recent efrit-do commands and results for context
+- [x] **Integrate with retries** - Enhance retry system prompts with rich context
+- [x] **Add comprehensive tests** - Test context generation and integration scenarios
+- [x] **Create integration tests** - Verify end-to-end context enhancement functionality
 
 #### Session 2 TODO List
 - [x] **Design error extraction** - Create `efrit-do--extract-error-info` and `efrit-do--extract-executed-code`
@@ -30,6 +46,38 @@
 - [x] **Write tests** - Test syntax validation with known bad elisp
 - [x] **Test original bug** - Verify "wyvern buffer" command is caught
 - [x] **Document changes** - Update function documentation
+
+#### Session 3 Technical Plan
+
+**Problem**: Retry attempts only include basic error information, lacking context about current Emacs state.
+
+**Solution**: Rich contextual information for Claude to make better fixes.
+
+**Implementation**:
+
+1. **Context Builder Function**:
+```elisp
+(defun efrit-do--build-error-context ()
+  "Build rich contextual information for Claude when fixing errors.
+Returns a string with current Emacs state, buffer info, and recent history."
+  ;; Collects: buffer info, content around point, window layout, 
+  ;; visible buffers, current directory, recent command history
+  )
+```
+
+2. **Enhanced Retry Prompts**:
+```elisp
+(let ((rich-context (efrit-do--build-error-context)))
+  (format "RETRY ATTEMPT %d/%d:\n...CURRENT EMACS STATE:\n%s\n..."
+          retry-count efrit-do-max-retries rich-context))
+```
+
+3. **Context Information Collected**:
+- **Buffer State**: Name, major mode, point position, content snippet
+- **Window Layout**: Number of windows, visible buffers  
+- **Environment**: Current directory, buffer list
+- **History**: Recent efrit-do commands and their results
+- **Error Handling**: Graceful fallback if context collection fails
 
 #### Session 2 Technical Plan
 

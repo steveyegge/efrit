@@ -196,6 +196,65 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 
 ;;; Helper functions for improved error handling
 
+(defun efrit-do--build-error-context ()
+  "Build rich contextual information for Claude when fixing errors.
+Returns a string with current Emacs state, buffer info, and recent history."
+  (let* ((current-buffer-name (buffer-name))
+         (current-mode (symbol-name major-mode))
+         (current-point (point))
+         (buffer-size (buffer-size))
+         (current-dir default-directory)
+         (visible-buffers (mapcar #'buffer-name 
+                                 (mapcar #'window-buffer (window-list))))
+         (recent-context (efrit-do--get-context-items 2))
+         (context-parts '()))
+    
+    ;; Current buffer information
+    (push (format "CURRENT BUFFER: %s (mode: %s, point: %d/%d)" 
+                  current-buffer-name current-mode current-point buffer-size)
+          context-parts)
+    
+    ;; Current directory
+    (push (format "CURRENT DIRECTORY: %s" current-dir) context-parts)
+    
+    ;; Visible buffers
+    (push (format "VISIBLE BUFFERS: %s" 
+                  (string-join visible-buffers ", "))
+          context-parts)
+    
+    ;; Buffer content around point (if buffer has content)
+    (when (> buffer-size 0)
+      (let* ((start-pos (max (point-min) (- current-point 200)))
+             (end-pos (min (point-max) (+ current-point 200)))
+             (content-snippet (buffer-substring-no-properties start-pos end-pos))
+             (lines (split-string content-snippet "\n" t)) ; Remove empty lines
+             (truncated-lines (if (> (length lines) 10)
+                                 (append (seq-take lines 4)
+                                        '("...")
+                                        (nthcdr (- (length lines) 4) lines))
+                               lines)))
+        (push (format "BUFFER CONTENT AROUND POINT:\n%s" 
+                      (string-join truncated-lines "\n"))
+              context-parts)))
+    
+    ;; Recent command history
+    (when recent-context
+      (push "RECENT COMMANDS:" context-parts)
+      (dolist (item recent-context)
+        (push (format "  %s -> %s" 
+                      (efrit-do-context-item-command item)
+                      (truncate-string-to-width 
+                       (or (efrit-do-context-item-result item) "no result") 
+                       60 nil nil t))
+              context-parts)))
+    
+    ;; Window configuration info
+    (push (format "WINDOW LAYOUT: %d windows" (length (window-list)))
+          context-parts)
+    
+    ;; Join all context parts
+    (string-join (reverse context-parts) "\n")))
+
 (defun efrit-do--extract-error-info (result)
   "Extract error information from RESULT string.
 Returns (error-p . error-msg) where error-p is t if errors found."
@@ -328,10 +387,16 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
                                       (efrit-do-context-item-command item)
                                       (efrit-do-context-item-result item)))))))
         (retry-info (when retry-count
-                      (format "\n\nRETRY ATTEMPT %d/%d:\nPrevious code that failed: %s\nError encountered: %s\n\nPlease fix the error and provide corrected code.\n\n"
-                              retry-count efrit-do-max-retries 
-                              (or previous-code "Unknown") 
-                              (or error-msg "Unknown error")))))
+                      (let ((rich-context (condition-case err
+                                              (efrit-do--build-error-context)
+                                            (error 
+                                             (format "Error building context: %s" 
+                                                     (error-message-string err))))))
+                        (format "\n\nRETRY ATTEMPT %d/%d:\nPrevious code that failed: %s\nError encountered: %s\n\nCURRENT EMACS STATE:\n%s\n\nPlease analyze the error and current state to provide a corrected solution.\n\n"
+                                retry-count efrit-do-max-retries 
+                                (or previous-code "Unknown") 
+                                (or error-msg "Unknown error")
+                                rich-context)))))
     (concat "You are Efrit, an AI assistant that executes natural language commands in Emacs.\n\n"
           
           "IMPORTANT: You are in COMMAND MODE. This means:\n"
