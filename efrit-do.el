@@ -65,6 +65,16 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'file
   :group 'efrit-do)
 
+(defcustom efrit-do-max-retries 3
+  "Maximum number of retry attempts when commands fail."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-retry-on-errors t
+  "Whether to automatically retry failed commands by sending errors back to Claude."
+  :type 'boolean
+  :group 'efrit-do)
+
 ;;; Internal variables
 
 (defvar efrit-do-history nil
@@ -186,6 +196,47 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 
 ;;; Helper functions for improved error handling
 
+(defun efrit-do--extract-error-info (result)
+  "Extract error information from RESULT string.
+Returns (error-p . error-msg) where error-p is t if errors found."
+  (when (stringp result)
+    (cond
+     ;; Syntax errors
+     ((string-match "\\[Syntax Error in \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Syntax error in %s: %s" 
+                      (match-string 1 result) 
+                      (match-string 2 result))))
+     ;; Runtime errors
+     ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Runtime error in %s: %s" 
+                      (match-string 1 result) 
+                      (match-string 2 result))))
+     ;; API errors
+     ((string-match "API Error" result)
+      (cons t result))
+     ;; General errors
+     ((string-match "Error:" result)
+      (cons t result))
+     ;; No error detected
+     (t (cons nil nil)))))
+
+(defun efrit-do--extract-executed-code (result)
+  "Extract the executed code from RESULT string.
+Returns the code string that was executed, or nil if not found."
+  (when (stringp result)
+    (cond
+     ;; Extract from syntax error message
+     ((string-match "\\[Syntax Error in \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from runtime error message
+     ((string-match "\\[Error executing \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from successful execution message
+     ((string-match "\\[Executed: \\([^]]+\\)\\]" result)
+      (match-string 1 result))
+     ;; No code found
+     (t nil))))
+
 (defun efrit-do--validate-elisp (code-string)
   "Check if CODE-STRING is valid elisp syntax.
 Returns (valid-p . error-msg) where valid-p is t/nil and error-msg 
@@ -265,16 +316,22 @@ Returns a formatted string with execution results or empty string on failure."
 
 ;;; Command execution
 
-(defun efrit-do--command-system-prompt ()
+(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
   "Generate system prompt for command execution with optional context.
-Uses previous command context if available."
+Uses previous command context if available. If RETRY-COUNT is provided,
+include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
   (let ((context-info (when efrit-do--last-result
                         (let ((recent-items (efrit-do--get-context-items 1)))
                           (when recent-items
                             (let ((item (car recent-items)))
                               (format "\n\nPREVIOUS CONTEXT:\nLast command: %s\nLast result: %s\n\n"
                                       (efrit-do-context-item-command item)
-                                      (efrit-do-context-item-result item))))))))
+                                      (efrit-do-context-item-result item)))))))
+        (retry-info (when retry-count
+                      (format "\n\nRETRY ATTEMPT %d/%d:\nPrevious code that failed: %s\nError encountered: %s\n\nPlease fix the error and provide corrected code.\n\n"
+                              retry-count efrit-do-max-retries 
+                              (or previous-code "Unknown") 
+                              (or error-msg "Unknown error")))))
     (concat "You are Efrit, an AI assistant that executes natural language commands in Emacs.\n\n"
           
           "IMPORTANT: You are in COMMAND MODE. This means:\n"
@@ -321,7 +378,8 @@ Uses previous command context if available."
           "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
           
           "Remember: Generate safe, valid Elisp and execute immediately."
-          (or context-info ""))))
+          (or context-info "")
+          (or retry-info ""))))
 
 (defun efrit-do--format-result (command result)
   "Format COMMAND and RESULT for display."
@@ -349,9 +407,10 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
                           display-buffer-below-selected
                           (window-height . 10)))))))
 
-(defun efrit-do--execute-command (command)
+(defun efrit-do--execute-command (command &optional retry-count error-msg previous-code)
   "Execute natural language COMMAND and return the result.
-Uses improved error handling."
+Uses improved error handling. If RETRY-COUNT is provided, this is a retry 
+attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
       (let* ((api-key (efrit--get-api-key))
              (url-request-method "POST")
@@ -359,7 +418,7 @@ Uses improved error handling."
               `(("x-api-key" . ,api-key)
                 ("anthropic-version" . "2023-06-01")
                 ("content-type" . "application/json")))
-             (system-prompt (efrit-do--command-system-prompt))
+             (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
              (request-data
               `(("model" . ,efrit-model)
                 ("max_tokens" . ,efrit-max-tokens)
@@ -431,32 +490,82 @@ Uses improved error handling."
 (defun efrit-do (command)
   "Execute natural language COMMAND in Emacs.
 The command is sent to Claude, which translates it into Elisp
-and executes it immediately.  Results are displayed in a dedicated
-buffer if `efrit-do-show-results' is non-nil."
+and executes it immediately. Results are displayed in a dedicated
+buffer if `efrit-do-show-results' is non-nil.
+
+If retry is enabled and errors occur, automatically retry by sending 
+error details back to Claude for correction."
   (interactive
    (list (read-string "Command: " nil 'efrit-do-history)))
   
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)
   
-  ;; Execute the command
+  ;; Execute with retry logic
   (message "Executing: %s..." command)
-  (condition-case err
-      (if-let* ((result (efrit-do--execute-command command)))
+  (let ((attempt 0)
+        (max-attempts (if efrit-do-retry-on-errors (1+ efrit-do-max-retries) 1))
+        result error-info last-error last-code final-result)
+    
+    (while (and (< attempt max-attempts) (not final-result))
+      (setq attempt (1+ attempt))
+      
+      (when (> attempt 1)
+        (message "Retry attempt %d/%d..." (1- attempt) efrit-do-max-retries))
+      
+      (condition-case err
           (progn
-            (setq efrit-do--last-result result)
-            (efrit-do--capture-context command result)
-            (efrit-do--display-result command result)
-            (message "Command executed successfully"))
-        (let ((error-msg "No result returned from command execution"))
-          (setq efrit-do--last-result error-msg)
-          (efrit-do--display-result command error-msg t)  ; t = error-p
-          (user-error "%s" error-msg)))
-    (error
-     (let ((error-msg (format "Error: %s" (error-message-string err))))
-       (setq efrit-do--last-result error-msg)
-       (efrit-do--display-result command error-msg t)  ; t = error-p
-       (user-error "%s" error-msg)))))
+            (setq result (if (= attempt 1)
+                            (efrit-do--execute-command command)
+                          (efrit-do--execute-command command attempt last-error last-code)))
+            
+            (if result
+                ;; Check if result contains errors
+                (progn
+                  (setq error-info (efrit-do--extract-error-info result))
+                  (if (and (car error-info) efrit-do-retry-on-errors (< attempt max-attempts))
+                      ;; Error detected and retries available
+                      (progn
+                        (setq last-error (cdr error-info))
+                        (setq last-code (efrit-do--extract-executed-code result))
+                        (when efrit-do-debug
+                          (message "Error detected: %s. Will retry..." last-error)))
+                    ;; Success or no more retries
+                    (setq final-result result)))
+              ;; No result - treat as error
+              (let ((no-result-error "No result returned from command execution"))
+                (if (and efrit-do-retry-on-errors (< attempt max-attempts))
+                    (setq last-error no-result-error)
+                  (setq final-result no-result-error)))))
+        (error
+         ;; Handle API or system errors
+         (let ((error-msg (format "Error: %s" (error-message-string err))))
+           (if (and efrit-do-retry-on-errors (< attempt max-attempts))
+               (setq last-error error-msg)
+             (setq final-result error-msg))))))
+    
+    ;; Process final result
+    (if final-result
+        (let* ((error-info (efrit-do--extract-error-info final-result))
+               (is-error (car error-info)))
+          (setq efrit-do--last-result final-result)
+          (efrit-do--capture-context command final-result)
+          (efrit-do--display-result command final-result is-error)
+          
+          (if is-error
+              (progn
+                (message "Command failed after %d attempt%s" 
+                        attempt (if (> attempt 1) "s" ""))
+                (user-error "%s" (cdr error-info)))
+            (message "Command executed successfully%s" 
+                    (if (> attempt 1) 
+                        (format " (after %d attempts)" attempt) 
+                        ""))))
+      ;; Should never reach here, but handle just in case
+      (let ((fallback-error "Failed to execute command"))
+        (setq efrit-do--last-result fallback-error)
+        (efrit-do--display-result command fallback-error t)
+        (user-error "%s" fallback-error)))))
 
 ;;;###autoload
 (defun efrit-do-repeat ()

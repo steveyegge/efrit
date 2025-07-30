@@ -4,13 +4,14 @@
 
 Transform Efrit from a functional but fragile AI assistant into a robust, CLI-agent-class problem solver while preserving its current strengths.
 
-### Current State (v0.2.0)
+### Current State (v0.2.1)
 - ✅ Working chat interface (`efrit-chat`)  
 - ✅ Working one-off commands (`efrit-do`)
 - ✅ Basic multi-turn conversations
 - ✅ Comprehensive test suite
-- ❌ **PROBLEM**: Fails on invalid elisp and stops
-- ❌ **PROBLEM**: No error recovery or iterative problem-solving
+- ✅ **NEW**: Elisp syntax validation in `efrit-do`
+- ✅ **NEW**: Intelligent retry logic with Claude error feedback
+- ✅ **NEW**: Configurable retry limits and error handling
 
 ### Target State: Three Complementary Modes
 
@@ -52,7 +53,7 @@ Transform Efrit from a functional but fragile AI assistant into a robust, CLI-ag
 ### Phase 1: Foundation (Sessions 1-4)
 **Goal**: Make efrit-do robust and reliable
 
-#### Session 1: Elisp Syntax Validation ⭐ **NEXT**
+#### Session 1: Elisp Syntax Validation ✅ **COMPLETE**
 - **File**: `efrit-do.el`
 - **Function**: `efrit-do--validate-elisp`
 - **Goal**: Detect syntax errors before execution
@@ -60,18 +61,18 @@ Transform Efrit from a functional but fragile AI assistant into a robust, CLI-ag
 - **Lines**: ~20 lines of code
 - **Success**: Invalid elisp detected, not executed
 
-#### Session 2: Basic Retry Logic  
+#### Session 2: Basic Retry Logic ✅ **COMPLETE**  
 - **File**: `efrit-do.el`
-- **Function**: `efrit-do--retry-with-claude`
+- **Functions**: `efrit-do--extract-error-info`, `efrit-do--extract-executed-code`, enhanced `efrit-do`
 - **Goal**: Send errors back to Claude for fixes
-- **Test**: Broken elisp gets fixed and retried once
-- **Lines**: ~40 lines of code
-- **Success**: One retry cycle working
+- **Test**: Broken elisp gets fixed and retried (configurable retry count)
+- **Lines**: ~80 lines of code
+- **Success**: Full retry cycle working with error feedback
 
-#### Session 3: Error Context Enhancement
+#### Session 3: Error Context Enhancement ⭐ **NEXT**
 - **File**: `efrit-do.el` 
 - **Function**: `efrit-do--build-error-context`
-- **Goal**: Rich error information for Claude
+- **Goal**: Rich error information for Claude (buffer context, recent commands, etc.)
 - **Test**: Claude gets full context for better fixes
 - **Lines**: ~30 lines of code
 - **Success**: Better fix quality from Claude

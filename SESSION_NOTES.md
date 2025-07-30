@@ -2,11 +2,26 @@
 
 ## Session Tracking & Progress
 
-### Current Session: Session 1 - Elisp Syntax Validation
+### Current Session: Session 2 - Retry Logic Implementation
+**Date**: 2025-07-30  
+**Status**: ✅ **COMPLETE**  
+**Objective**: Implement intelligent retry logic for efrit-do with error feedback to Claude  
+**File**: `efrit-do.el`
+
+### Previous Session: Session 1 - Elisp Syntax Validation
 **Date**: 2025-01-29  
 **Status**: ✅ **COMPLETE**  
 **Objective**: Implement elisp syntax validation for efrit-do  
 **File**: `efrit-do.el`  
+
+#### Session 2 TODO List
+- [x] **Design error extraction** - Create `efrit-do--extract-error-info` and `efrit-do--extract-executed-code`
+- [x] **Implement retry loop** - Modify `efrit-do` function with configurable retry logic
+- [x] **Add retry configuration** - `efrit-do-max-retries` and `efrit-do-retry-on-errors` customization
+- [x] **Enhance system prompts** - Include error details and previous code in retry prompts
+- [x] **Write comprehensive tests** - Test all retry scenarios and error cases
+- [x] **Integration testing** - Verify compatibility with existing functionality
+- [x] **Document implementation** - Update SESSION_NOTES.md and ROADMAP.md
 
 #### Session 1 TODO List
 - [x] **Design validation function** - Create `efrit-do--validate-elisp`
@@ -15,6 +30,48 @@
 - [x] **Write tests** - Test syntax validation with known bad elisp
 - [x] **Test original bug** - Verify "wyvern buffer" command is caught
 - [x] **Document changes** - Update function documentation
+
+#### Session 2 Technical Plan
+
+**Problem**: Commands that fail due to syntax or runtime errors have no recovery mechanism.
+
+**Solution**: Intelligent retry with error feedback to Claude for correction.
+
+**Implementation**:
+
+1. **Error Detection Functions**:
+```elisp
+(defun efrit-do--extract-error-info (result)
+  "Extract error information from RESULT string.
+Returns (error-p . error-msg) where error-p is t if errors found."
+  ;; Detects syntax errors, runtime errors, API errors
+  )
+
+(defun efrit-do--extract-executed-code (result)
+  "Extract the executed code from RESULT string."
+  ;; Extracts code from error messages and success messages
+  )
+```
+
+2. **Enhanced System Prompts**:
+```elisp
+(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
+  ;; Includes retry-specific instructions with error details
+  )
+```
+
+3. **Retry Loop in `efrit-do`**:
+```elisp
+(let ((attempt 0)
+      (max-attempts (if efrit-do-retry-on-errors (1+ efrit-do-max-retries) 1)))
+  (while (and (< attempt max-attempts) (not final-result))
+    ;; Execute command, check for errors, retry if needed
+    ))
+```
+
+4. **Configuration Variables**:
+- `efrit-do-max-retries` (default: 3)
+- `efrit-do-retry-on-errors` (default: t)
 
 #### Session 1 Technical Plan
 
