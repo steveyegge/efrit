@@ -86,6 +86,20 @@ or 4096 without. This setting uses the higher limit."
   :type 'boolean
   :group 'efrit)
 
+(defcustom efrit-custom-headers nil
+  "Alist of custom headers to add to API requests.
+Each element should be a cons cell of (HEADER-NAME . HEADER-VALUE).
+Example: \='((\"authorization\" . \"Bearer your-token\")
+           (\"custom-header\" . \"custom-value\"))"
+  :type '(alist :key-type string :value-type string)
+  :group 'efrit)
+
+(defcustom efrit-excluded-headers nil
+  "List of default header names to exclude from API requests.
+Example: \='(\"anthropic-version\" \"anthropic-beta\")"
+  :type '(repeat string)
+  :group 'efrit)
+
 ;;; Internal variables
 
 (defvar-local efrit--message-history nil
@@ -224,17 +238,30 @@ or 4096 without. This setting uses the higher limit."
       ;; Ensure buffer is editable
       (setq buffer-read-only nil))))
 
+;;; Header customization
+
+(defun efrit--build-headers (api-key)
+  "Build HTTP headers for API requests, respecting customization options."
+  (let ((default-headers `(("x-api-key" . ,api-key)
+                          ("anthropic-version" . "2023-06-01")
+                          ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
+                          ("content-type" . "application/json"))))
+    ;; Remove excluded headers
+    (when efrit-excluded-headers
+      (setq default-headers
+            (cl-remove-if (lambda (header)
+                           (member (car header) efrit-excluded-headers))
+                         default-headers)))
+    ;; Add custom headers (custom headers override defaults)
+    (append efrit-custom-headers default-headers)))
+
 ;;; API functions
 
 (defun efrit--send-api-request (messages)
   "Send MESSAGES to the Claude API and handle the response."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-            ("content-type" . "application/json")))
+         (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
          (request-data
          `(("model" . ,efrit-model)
