@@ -79,6 +79,7 @@
 (condition-case nil
 (progn
 (require 'efrit-tools)
+(require 'efrit-chat)
 (require 'project nil t))
 (file-missing 
  (message "Note: efrit-tools not found during compilation.
@@ -89,6 +90,7 @@ This is expected if you're byte-compiling standalone files.")))
 (declare-function project-roots "project" (project))
 (declare-function efrit-tools-get-context "efrit-tools" ())
 (declare-function efrit-tools-eval-sexp "efrit-tools" (sexp-string))
+(declare-function efrit--build-headers "efrit-chat" (api-key))
 
 ;;; Customization Options
 
@@ -337,11 +339,7 @@ returns appropriate error messages if the API call fails."
                            (temperature . ,(or temperature 0.0))
                            (messages . ,messages-json)))
            (url-request-method "POST")
-           (url-request-extra-headers
-            `(("x-api-key" . ,api-key)
-              ("anthropic-version" . "2023-06-01")
-              ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-              ("content-type" . "application/json")))
+           (url-request-extra-headers (efrit--build-headers api-key))
            (url-request-data 
             (encode-coding-string (json-encode request-data) 'utf-8)))
       

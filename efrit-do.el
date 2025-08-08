@@ -335,10 +335,7 @@ Uses improved error handling."
   (condition-case api-err
       (let* ((api-key (efrit--get-api-key))
              (url-request-method "POST")
-             (url-request-extra-headers
-              `(("x-api-key" . ,api-key)
-                ("anthropic-version" . "2023-06-01")
-                ("content-type" . "application/json")))
+             (url-request-extra-headers (efrit--build-headers api-key))
              (system-prompt (efrit-do--command-system-prompt))
              (request-data
               `(("model" . ,efrit-model)
