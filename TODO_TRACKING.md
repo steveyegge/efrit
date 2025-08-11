@@ -2,45 +2,21 @@
 
 ## Current Active TODOs
 
-### Session 1: Elisp Syntax Validation (IN PROGRESS)
-**Priority**: HIGH | **Assignee**: Current session | **Due**: This session
+### Session 5: Next Incremental Step (PLANNED)
+**Priority**: HIGH | **Assignee**: Next session | **Due**: Next session
 
-- [ ] **EFRIT-001**: Design `efrit-do--validate-elisp` function
-  - **File**: `efrit-do.el`
-  - **Estimate**: 15 minutes
-  - **Dependencies**: None
-  - **Success**: Function exists and can parse elisp strings
+- [ ] **EFRIT-019**: Choose next development path
+  - **Options**: Shell error detection OR efrit-agent/efrit-chat enhancement
+  - **Goal**: Progress toward full Emacs conversation support
+  - **Success**: Clear direction chosen and first task implemented
 
-- [ ] **EFRIT-002**: Integrate validation with execution flow  
-  - **File**: `efrit-do.el` 
-  - **Function**: `efrit-do--execute-tool`
-  - **Estimate**: 20 minutes
-  - **Dependencies**: EFRIT-001
-  - **Success**: Invalid elisp is caught before eval
+### Session 4: Production Testing & Cleanup (COMPLETE)
+**Priority**: HIGH | **Assignee**: Completed | **Due**: Completed
 
-- [ ] **EFRIT-003**: Add user-friendly error reporting
-  - **File**: `efrit-do.el`
-  - **Estimate**: 10 minutes  
-  - **Dependencies**: EFRIT-002
-  - **Success**: Clear syntax error messages shown
-
-- [ ] **EFRIT-004**: Write validation tests
-  - **File**: `test-execution-scenarios.el` 
-  - **Estimate**: 20 minutes
-  - **Dependencies**: EFRIT-001
-  - **Success**: Test suite covers syntax validation
-
-- [ ] **EFRIT-005**: Test original "wyvern buffer" bug
-  - **File**: Manual testing
-  - **Estimate**: 5 minutes
-  - **Dependencies**: EFRIT-002
-  - **Success**: Original command is caught and handled
-
-- [ ] **EFRIT-006**: Update documentation  
-  - **File**: Function docstrings
-  - **Estimate**: 10 minutes
-  - **Dependencies**: All above
-  - **Success**: New functions documented
+- [x] **EFRIT-017**: Fix API integration test failure
+- [x] **EFRIT-018**: Test retry logic with production API calls  
+- [x] **EFRIT-019**: Comprehensive cleanup and documentation
+- [x] **EFRIT-020**: Discovery of shell error detection gap
 
 ---
 
@@ -68,7 +44,29 @@
 
 ## Completed TODOs
 
-*(None yet - this is the first session)*
+### Session 4: Production Testing & Cleanup ✅ 
+**Date**: 2025-01-11 | **Duration**: ~90 minutes | **Status**: Complete
+- ✅ **EFRIT-017**: Fixed API integration test error handling pattern
+- ✅ **EFRIT-018**: Tested retry logic with live production API calls 
+- ✅ **EFRIT-019**: Comprehensive cleanup and documentation updates
+- ✅ **EFRIT-020**: Discovered shell error detection gap for future enhancement
+
+### Session 3: Error Context Enhancement ✅
+**Date**: 2025-07-30 | **Duration**: ~60 minutes | **Status**: Complete  
+- ✅ All context enhancement TODOs completed per SESSION_NOTES.md
+
+### Session 2: Basic Retry Logic ✅
+**Date**: 2025-07-30 | **Duration**: ~75 minutes | **Status**: Complete
+- ✅ All retry logic TODOs completed per SESSION_NOTES.md
+
+### Session 1: Elisp Syntax Validation ✅
+**Date**: 2025-01-29 | **Duration**: ~60 minutes | **Status**: Complete
+- ✅ **EFRIT-001**: `efrit-do--validate-elisp` function implemented
+- ✅ **EFRIT-002**: Validation integrated with execution flow
+- ✅ **EFRIT-003**: User-friendly error reporting added  
+- ✅ **EFRIT-004**: Validation tests written (4 comprehensive tests)
+- ✅ **EFRIT-005**: Original wyvern buffer bug tested and handled
+- ✅ **EFRIT-006**: Documentation updated
 
 ---
 
