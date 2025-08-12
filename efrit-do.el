@@ -16,11 +16,17 @@
 
 ;;; Code:
 
-(require 'efrit-chat)
+;; Declare external functions from efrit-chat (optional dependency)
+(declare-function efrit--setup-buffer "efrit-chat")
+(declare-function efrit--display-message "efrit-chat")
+(declare-function efrit--insert-prompt "efrit-chat")
+
 (require 'efrit-tools)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
+(require 'url)
+(require 'json)
 
 ;;; Customization
 
@@ -73,6 +79,21 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 (defcustom efrit-do-retry-on-errors t
   "Whether to automatically retry failed commands by sending errors back to Claude."
   :type 'boolean
+  :group 'efrit-do)
+
+(defcustom efrit-model "claude-3-5-sonnet-20241022"
+  "Claude model to use for efrit-do commands."
+  :type 'string
+  :group 'efrit-do)
+
+(defcustom efrit-max-tokens 8192
+  "Maximum number of tokens in the response for efrit-do."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
+  "URL for the Anthropic API endpoint used by efrit-do."
+  :type 'string
   :group 'efrit-do)
 
 ;;; Internal variables
@@ -304,7 +325,7 @@ describes the syntax error if validation fails."
     (condition-case err
         (progn 
           ;; Try to read the string as elisp - this catches syntax errors
-          (read-from-string code-string)
+          (ignore (read-from-string code-string))
           (cons t nil))
       (error 
        (cons nil (error-message-string err))))))

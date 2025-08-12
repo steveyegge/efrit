@@ -73,6 +73,16 @@ or 4096 without. This setting uses the higher limit."
   :type 'boolean
   :group 'efrit)
 
+(defcustom efrit-max-retries 3
+  "Maximum number of retry attempts when tool execution fails in chat mode."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-retry-on-errors t
+  "Whether to automatically retry failed tool executions in chat mode."
+  :type 'boolean
+  :group 'efrit)
+
 ;;; Internal variables
 
 (defvar-local efrit--message-history nil

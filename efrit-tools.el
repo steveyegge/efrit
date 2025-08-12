@@ -43,6 +43,7 @@
 
 (require 'json)
 (require 'cl-lib)
+(require 'auth-source)
 
 ;;; Customization
 
@@ -65,6 +66,18 @@
   "Whether to require confirmation for potentially destructive operations."
   :type 'boolean
   :group 'efrit-tools)
+
+;;; Utility functions
+
+(defun efrit--get-api-key ()
+  "Get the Anthropic API key from .authinfo file."
+  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+                                            :user "personal"
+                                            :require '(:secret))))
+         (secret (plist-get auth-info :secret)))
+    (if (functionp secret)
+        (funcall secret)
+      secret)))
 
 ;;; Core Elisp Evaluation
 
