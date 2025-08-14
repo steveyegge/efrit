@@ -172,34 +172,40 @@
             ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
             ("content-type" . "application/json")))
          (system-prompt (efrit-streamlined--system-prompt))
-         (request-data
-          `(("model" . ,efrit-model)
-            ("max_tokens" . ,efrit-max-tokens)
-            ("temperature" . ,efrit-temperature)
-            ("system" . ,system-prompt)
-            ("messages" . ,(vconcat
-                           (mapcar (lambda (msg)
+         (cleaned-messages (mapcar (lambda (msg)
                                    `(("role" . ,(alist-get 'role msg))
-                                     ("content" . ,(alist-get 'content msg))))
-                                 messages)))
-            ,@(when efrit-enable-tools
-                '(("tools" . [
-                             (("name" . "eval_sexp")
-                              ("description" . "Evaluate Elisp expression")
-                              ("input_schema" . (("type" . "object")
-                                                ("properties" . (("expr" . (("type" . "string")
-                                                                            ("description" . "Elisp expression")))))
-                                                ("required" . ["expr"]))))
-                             (("name" . "get_context")
-                              ("description" . "Get Emacs environment context")
-                              ("input_schema" . (("type" . "object")
-                                                ("properties" . (("request" . (("type" . "string")
-                                                                               ("description" . "Context request")))))
-                                                ("required" . []))))
-                             ])))
-            ))
-         (url-request-data
-          (encode-coding-string (json-encode request-data) 'utf-8)))
+                                   ("content" . ,(substring-no-properties (alist-get 'content msg)))))
+                               messages))
+         (request-data
+         `(("model" . ,efrit-model)
+         ("max_tokens" . ,efrit-max-tokens)
+         ("temperature" . ,efrit-temperature)
+         ("system" . ,system-prompt)
+         ("messages" . ,(vconcat cleaned-messages))
+         ,@(when efrit-enable-tools
+         '(("tools" . [
+         (("name" . "eval_sexp")
+         ("description" . "Evaluate Elisp expression")
+         ("input_schema" . (("type" . "object")
+         ("properties" . (("expr" . (("type" . "string")
+         ("description" . "Elisp expression")))))
+         ("required" . ["expr"]))))
+         (("name" . "get_context")
+         ("description" . "Get Emacs environment context")
+         ("input_schema" . (("type" . "object")
+         ("properties" . (("request" . (("type" . "string")
+         ("description" . "Context request")))))
+         ("required" . []))))
+         ])))
+         ))
+         (json-string (json-encode request-data))
+         ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+         (escaped-json (replace-regexp-in-string 
+                       "[^\x00-\x7F]" 
+                       (lambda (char)
+                         (format "\\u%04X" (string-to-char char)))
+                       json-string))
+         (url-request-data (encode-coding-string escaped-json 'utf-8)))
     
     ;; Log request details to work buffer
     (efrit-streamlined--log-to-work 
@@ -311,16 +317,29 @@
   (let ((result-messages '()))
     (dolist (result tool-results)
       (when result
-        (push `((role . "user") (content . ,result)) result-messages)))
+        ;; Strip all text properties to prevent multibyte HTTP errors
+        (let ((clean-result (if (stringp result)
+                               (substring-no-properties result)
+                             result)))
+          (push `((role . "user") (content . ,clean-result)) result-messages))))
     
     ;; Add assistant's text if any
     (when (and text-content (not (string-empty-p (string-trim text-content))))
-      (push `((role . "assistant") (content . ,text-content)) result-messages))
+      (let ((clean-text (if (stringp text-content)
+                           (substring-no-properties text-content)
+                         text-content)))
+        (push `((role . "assistant") (content . ,clean-text)) result-messages)))
     
     ;; Continue conversation with results
     (when result-messages
       (let ((updated-messages (append efrit-streamlined--current-messages 
                                       (reverse result-messages))))
+        ;; Clean all message content to prevent multibyte HTTP errors
+        (setq updated-messages 
+              (mapcar (lambda (msg)
+                       `((role . ,(alist-get 'role msg))
+                         (content . ,(substring-no-properties (alist-get 'content msg)))))
+                     updated-messages))
         (setq efrit-streamlined--current-messages updated-messages)
         (efrit-streamlined--send-request updated-messages)))))
 
@@ -363,12 +382,15 @@
             (when expr
               (efrit-streamlined--log-to-work (format "Evaluating: %s" expr))
               (condition-case err
-                  (let ((result (eval (read expr))))
-                    (let ((result-str (prin1-to-string result)))
-                      (efrit-streamlined--log-to-work 
-                       (format "Result: %s" result-str))
-                      ;; Add tool result message for Claude
-                      (push (format "Tool result for %s: %s" tool-id result-str) results)))
+              (let ((result (eval (read expr))))
+              (let ((result-str (if (stringp result)
+                                 ;; Strip text properties from strings to avoid multibyte issues
+                                (substring-no-properties result)
+                               (prin1-to-string result))))
+              (efrit-streamlined--log-to-work 
+                        (format "Result: %s" (substring result-str 0 (min 200 (length result-str)))))
+                       ;; Add tool result message for Claude
+                       (push (format "Tool result for %s: %s" tool-id result-str) results)))
                 (error
                  (let ((error-msg (error-message-string err)))
                    (efrit-streamlined--log-to-work 
