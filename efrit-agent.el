@@ -86,7 +86,7 @@ This is expected if you're byte-compiling standalone files.")))
 
 ;; Function declarations to suppress byte-compiler warnings
 (declare-function project-files "project" (project &optional dirs))
-(declare-function project-roots "project" (project))
+(declare-function project-root "project" (project))
 (declare-function efrit-tools-get-context "efrit-tools" ())
 (declare-function efrit-tools-eval-sexp "efrit-tools" (sexp-string))
 
@@ -426,7 +426,7 @@ Returns an alist with project root, type, and additional metadata."
           (when project
             (let* ((root (if (fboundp 'project-root) 
                              (project-root project)
-                           (expand-file-name (car (project-roots project)))))
+                           (expand-file-name (project-root project))))
                    (project-type (when (fboundp 'project-type)
                                    (project-type project)))
                    (vc-backend (when (and (require 'vc nil t) 
@@ -514,7 +514,7 @@ Returns the resolved path or nil if resolution failed."
                (project-root (when project 
                                (if (fboundp 'project-root)
                                    (project-root project)
-                                 (car (project-roots project))))))
+                                 (project-root project)))))
           (when project-root
             (expand-file-name project-relative-path project-root))))
        

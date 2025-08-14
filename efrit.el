@@ -60,6 +60,7 @@
       (require 'efrit-tools)
       (require 'efrit-multi-turn) ; Multi-turn conversation management
       (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
+      (require 'efrit-chat-streamlined) ; New streamlined chat system
       (require 'efrit-command)    ; Depends on efrit-chat
       (require 'efrit-agent)      ; Depends on efrit-tools
       (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
@@ -82,7 +83,8 @@
 ;; Global keymap for Efrit
 (defvar efrit-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat
+    (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
+    (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
     (define-key map (kbd "e") 'efrit)         ; 'e' for command interface  
     (define-key map (kbd "a") 'efrit-agent-run)
     (define-key map (kbd "o") 'efrit-show-output)
@@ -116,6 +118,9 @@
 
 ;;;###autoload
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
+
+;;;###autoload
+(autoload 'efrit-streamlined-send "efrit-chat-streamlined" "Send message via streamlined chat" t)
 
 ;; Verify that key functions are available
 (unless (and (fboundp 'efrit-chat) (fboundp 'efrit-do))

@@ -1,0 +1,56 @@
+# Files to Clean Up
+
+## Obsolete Test Files (Can be removed)
+test-mock-integration.el.backup
+test-mock-integration.el.old
+ode-sonnet-snarky.jpg        # Test artifacts
+ode-sonnet-vim.jpg           # Test artifacts
+
+## Development Test Files (Keep for now, but could archive)
+test-api-integration.el
+test-basic-functionality.el
+test-chat-retry-integration.el
+test-context-enhancement.el
+test-execution-scenarios.el
+test-history-functionality.el
+test-mock-integration.el
+test-remote-execution.el
+test-retry-forced.el
+test-retry-logic.el
+test-streamlined-chat.el
+test-streamlined-mock.el
+test-streamlined-simulation.el
+
+## QA Test Files (Keep - these are comprehensive)
+qa-final-comprehensive-report.el
+qa-final-report.el
+qa-test-edge-cases-deep.el
+qa-test-integration.el
+qa-test-real-integration.el
+qa-test-streamlined.el
+qa-test-stress-adversarial.el
+
+## Shell Scripts (Keep)
+test-context-integration.sh
+test-retry-integration.sh
+run-integration-tests.sh
+efrit-test-simple.sh
+
+## Core Production Files (Keep all)
+efrit.el
+efrit-chat.el
+efrit-chat-streamlined.el
+efrit-tools.el
+efrit-do.el
+efrit-agent.el
+efrit-command.el
+efrit-debug.el
+efrit-do-context.el
+efrit-multi-turn.el
+
+## Documentation (Keep all)
+AGENT.md
+SESSION_NOTES.md
+TODO_TRACKING.md
+STREAMLINED_CHAT_PLAN.md
+etc.
