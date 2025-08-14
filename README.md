@@ -90,6 +90,14 @@ M-x efrit-streamlined-send  ; Streamlined chat mode
 
 **Key Bindings**: `C-c C-e` + `c`/`d`/`s`/`a`/`q`
 
+### Example: Creative Content Generation
+
+Here's efrit creating four different poems about IDEs in separate buffers with a single request:
+
+![Efrit creating four different poems in separate buffers](docs/images/efrit-poems.jpg)
+
+This demonstrates efrit's ability to handle complex, multi-part requests through natural language commands.
+
 ### 🆕 Agent Communication (AI → Efrit)
 
 AI agents write JSON requests to the queue directory:
