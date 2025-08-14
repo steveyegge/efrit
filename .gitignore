@@ -1,1 +1,34 @@
+# Compiled
+*.elc
+lisp/*.elc
+
+# Packaging
+.cask/
+dist/
+*.tar.gz
+
+# Backup files
+*.orig
+*.rej
+*~
+*.bak
+.#*
+#*#
+
+# Undo-tree save-files
+*.~undo-tree
+
+# macOS
 .DS_Store
+
+# Efrit specific
+.emacs.d/efrit-queue*/
+.emacs.d/efrit-ai-workspace/
+
+# IDE files
+.vscode/
+.idea/
+
+# Temporary files
+tmp/
+temp/

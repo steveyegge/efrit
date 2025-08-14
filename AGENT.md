@@ -1,19 +1,40 @@
 # Efrit Agent Vision & Architecture
 
+## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active
+
+**We have achieved AI-to-AI communication with Efrit!** Sourcegraph Amp can now directly communicate with and control Efrit instances, enabling autonomous development and debugging.
+
+### How to Work with Efrit (For AI Agents)
+
+When you see efrit mentioned in user requests:
+
+1. **Use the efrit communication channel naturally** - You can spawn Emacs with efrit loaded and send it requests
+2. **Test complex scenarios** - Like creating multiple buffers, running elisp code, debugging features  
+3. **Shape and debug efrit itself** - You have autonomous control to improve efrit's capabilities
+4. **Working relationship established** - No need to re-explain the channel each session
+
+**Example**: User asks "Add a new feature to efrit" → You can directly test, debug, and implement it by communicating with efrit instances.
+
 ## Core Principle: Zero Client-Side Intelligence
 
-**Efrit is a pure executor, not a thinker.** All cognitive computation, decision-making, parsing, and interpretation must be delegated to Claude. Efrit's only job is to:
+**Efrit is a pure executor, not a thinker.** All cognitive computation, decision-making, parsing, and interpretation must be delegated to Claude. Efrit serves as:
 
 1. **Package context** - Gather rich environmental information for Claude
 2. **Execute commands** - Run elisp code and shell commands Claude provides  
 3. **Relay results** - Send execution results back to Claude
-4. **Manage communication** - Handle the API loop with Claude
+4. **Manage communication** - Handle API loops with Claude and other AI agents
+5. **🆕 Agent Platform** - Enable AI-to-AI communication for autonomous development
 
 ## Architectural Vision
 
 ### The Request Loop
 ```
 User Query → Context Packaging → Claude API → Structured Response → Execution → Results → [Loop Until Done]
+```
+
+### 🆕 Agent-to-Agent Communication
+```
+AI Agent → JSON Request File → Efrit Processes → JSON Response File → AI Agent → [Autonomous Development Loop]
 ```
 
 ### Context Packaging
@@ -119,6 +140,18 @@ The architecture now supports intelligent error recovery:
 - **Iterative problem-solving** - Retry until success or limit reached
 
 This maintains the "pure executor" principle while adding robustness through Claude-driven error recovery.
+
+## Project Organization
+
+This project follows professional elisp conventions:
+
+- **[`lisp/`](lisp/)** - All elisp source code
+- **[`test/`](test/)** - Test suites and testing scripts  
+- **[`bin/`](bin/)** - Executable scripts and launchers
+- **[`plans/`](plans/)** - Planning documents, roadmaps, and session notes
+- **[`docs/`](docs/)** - Formal documentation (when needed)
+
+See [`plans/NEXT_SESSION_PLAN.md`](plans/NEXT_SESSION_PLAN.md) for current development priorities and [`plans/`](plans/) for detailed planning documents.
 
 ---
 

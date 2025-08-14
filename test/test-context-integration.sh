@@ -10,7 +10,7 @@ echo ""
 
 # Test 1: Basic context building function works
 echo "🔧 Testing context building function..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   (unless (fboundp 'efrit-do--build-error-context)
     (error \"efrit-do--build-error-context function not available\"))
@@ -29,7 +29,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 2: Context integration with retry prompts
 echo "🔧 Testing context integration with retry prompts..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Create a test buffer with some content
   (with-current-buffer (get-buffer-create \"*test-context*\")
@@ -54,7 +54,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 3: Context includes visible buffers and window info
 echo "🔧 Testing window and buffer context..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Create multiple buffers and windows
   (let ((buf1 (get-buffer-create \"*context-test-1*\"))
@@ -87,7 +87,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 4: Context with recent command history
 echo "🔧 Testing recent command history in context..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Clear existing context and add test items
   (efrit-do--clear-context)
@@ -105,7 +105,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 5: Error handling in context building
 echo "🔧 Testing error handling in context building..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Test with corrupted or missing context ring
   (let ((efrit-do--context-ring nil)) ; Simulate missing ring
@@ -118,7 +118,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 6: Context in different buffer modes
 echo "🔧 Testing context with different major modes..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Test with emacs-lisp-mode
   (with-current-buffer (get-buffer-create \"*lisp-test*\")

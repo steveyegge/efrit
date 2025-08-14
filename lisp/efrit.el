@@ -26,19 +26,19 @@
 
 ;;; Commentary:
 
-;; Efrit is a conversational assistant for Emacs.
-;; It provides a simple interface for talking with Anthropic's Claude,
-;; maintaining conversation state across multiple interactions.
+;; Efrit is an AI-powered autonomous development platform for Emacs.
+;; It provides both user-friendly interfaces and agent-to-agent communication
+;; channels, enabling AI systems to enhance Efrit's functionality autonomously.
 ;;
 ;; Key features:
-;; - Multi-turn conversations with Claude
-;; - Simple, clean UI in a dedicated buffer
-;; - Support for API key management through .authinfo
-;; - Interactive command interface for operating on buffers
-;; - Ability to evaluate elisp and execute commands within Emacs
+;; - Multi-turn conversations with Claude for users
+;; - File-based remote queue for AI agent communication  
+;; - Natural language command execution (efrit-do)
+;; - Autonomous development capabilities for AI agents
+;; - Self-enhancement: AI agents can modify Efrit's source code
+;; - Support for any AI coding agent (Claude Code, GitHub Copilot, etc.)
 ;; - Direct Elisp evaluation through integrated agent architecture
-;; - Advanced agent loop for complex, multi-step tasks
-;; - Built-in test infrastructure for unit and integration tests
+;; - Zero client-side intelligence: all AI processing in Claude
 
 ;;; Code:
 
@@ -64,6 +64,7 @@
       (require 'efrit-command)    ; Depends on efrit-chat
       (require 'efrit-agent)      ; Depends on efrit-tools
       (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
+      (require 'efrit-remote-queue) ; File-based remote queue system
       
       (message "Efrit modules loaded successfully"))
   (error 
@@ -89,6 +90,8 @@
     (define-key map (kbd "a") 'efrit-agent-run)
     (define-key map (kbd "o") 'efrit-show-output)
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute
+    (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
+    (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
     map)
   "Keymap for Efrit commands.")
 
@@ -121,6 +124,15 @@
 
 ;;;###autoload
 (autoload 'efrit-streamlined-send "efrit-chat-streamlined" "Send message via streamlined chat" t)
+
+;;;###autoload
+(autoload 'efrit-remote-queue-start "efrit-remote-queue" "Start the remote queue system" t)
+
+;;;###autoload
+(autoload 'efrit-remote-queue-stop "efrit-remote-queue" "Stop the remote queue system" t)
+
+;;;###autoload
+(autoload 'efrit-remote-queue-status "efrit-remote-queue" "Show remote queue status" t)
 
 ;; Verify that key functions are available
 (unless (and (fboundp 'efrit-chat) (fboundp 'efrit-do))

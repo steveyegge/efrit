@@ -17,10 +17,14 @@
 
 ;;; Code:
 
-(require 'efrit-tools)
 (require 'json)
 (require 'url)
 (require 'cl-lib)
+
+;; Forward declarations to avoid byte-compile warnings
+(declare-function efrit-tools-system-prompt "efrit-tools")
+(declare-function efrit-tools-get-context "efrit-tools")
+(declare-function efrit--get-api-key "efrit")
 
 ;; Declare external variables from efrit-chat
 (defvar efrit-model)
@@ -81,7 +85,9 @@
 (defun efrit-streamlined--system-prompt ()
   "Generate enhanced system prompt for streamlined chat experience."
   (concat 
-   (efrit-tools-system-prompt)
+   (if (fboundp 'efrit-tools-system-prompt)
+       (efrit-tools-system-prompt)
+     "You are Efrit, an Emacs assistant.")
    "\n\n### Response Guidelines\n"
    "Determine whether the user's request is primarily an ACTION (do something) or INFORMATION (explain/show something):\n\n"
    
@@ -201,6 +207,9 @@
 
 ;;; Response Handler
 
+(defvar efrit-streamlined--current-messages nil
+  "Messages for the current conversation turn.")
+
 (defun efrit-streamlined--handle-response (_status)
   "Handle API response with work buffer logging."
   (efrit-streamlined--log-to-work "Received response")
@@ -219,26 +228,73 @@
     (if (not response-data)
         (efrit-streamlined--log-to-work "Failed to parse API response")
       
-      ;; Extract content
-      (let* ((content-array (alist-get 'content response-data))
-             (first-content (when (and content-array (> (length content-array) 0))
-                             (aref content-array 0)))
-             (text-content (when first-content (alist-get 'text first-content)))
-             (tool-uses (efrit-streamlined--extract-tool-uses response-data)))
+      ;; Check for API errors
+      (if-let* ((error-obj (alist-get 'error response-data)))
+          (let ((error-type (alist-get 'type error-obj))
+                (error-message (alist-get 'message error-obj)))
+            (efrit-streamlined--display-response 
+             (format "API Error (%s): %s" error-type error-message)))
         
-        ;; Log to work buffer
-        (efrit-streamlined--log-to-work 
-         (format "Response: %s chars text, %d tools" 
-                 (if text-content (length text-content) 0)
-                 (length tool-uses)))
-        
-        ;; Execute tools
-        (when tool-uses
-          (efrit-streamlined--execute-tools tool-uses))
-        
-        ;; Display response (Claude decides appropriate length)
-        (when text-content
-          (efrit-streamlined--display-response text-content))))))
+        ;; Extract content
+        (let* ((content-array (alist-get 'content response-data))
+               (text-content "")
+               (tool-uses (efrit-streamlined--extract-tool-uses response-data))
+               (has-text-content nil))
+          
+          ;; Collect all text content
+          (when (and content-array (vectorp content-array))
+            (dotimes (i (length content-array))
+              (let* ((content-item (aref content-array i))
+                     (type (alist-get 'type content-item)))
+                (when (string-equal type "text")
+                  (when-let* ((text (alist-get 'text content-item)))
+                    (setq text-content (concat text-content text))
+                    (setq has-text-content t))))))
+          
+          ;; Log to work buffer
+          (efrit-streamlined--log-to-work 
+           (format "Response: %s chars text, %d tools" 
+                   (length text-content)
+                   (length tool-uses)))
+          
+          ;; Execute tools and collect results
+          (let ((tool-results '()))
+            (when tool-uses
+              (setq tool-results (efrit-streamlined--execute-tools tool-uses)))
+            
+            ;; Check if Claude wants to continue (has tool use without final text)
+            (let ((should-continue (and tool-uses 
+                                       (or (not has-text-content)
+                                           (string-match-p "\\.\\.\\.$\\|continue\\|more\\|next" text-content)))))
+              
+              (if should-continue
+                  ;; Continue conversation with tool results
+                  (progn
+                    (efrit-streamlined--log-to-work "Continuing conversation with tool results")
+                    (efrit-streamlined--continue-with-results tool-results text-content))
+                
+                ;; Final response - display it
+                (when has-text-content
+                  (efrit-streamlined--display-response text-content))))))))))
+
+(defun efrit-streamlined--continue-with-results (tool-results text-content)
+  "Continue conversation with TOOL-RESULTS from executed tools."
+  ;; Build tool result messages
+  (let ((result-messages '()))
+    (dolist (result tool-results)
+      (when result
+        (push `((role . "user") (content . ,result)) result-messages)))
+    
+    ;; Add assistant's text if any
+    (when (and text-content (not (string-empty-p (string-trim text-content))))
+      (push `((role . "assistant") (content . ,text-content)) result-messages))
+    
+    ;; Continue conversation with results
+    (when result-messages
+      (let ((updated-messages (append efrit-streamlined--current-messages 
+                                      (reverse result-messages))))
+        (setq efrit-streamlined--current-messages updated-messages)
+        (efrit-streamlined--send-request updated-messages)))))
 
 ;;; Tool Execution
 
@@ -260,39 +316,55 @@
      '())))
 
 (defun efrit-streamlined--execute-tools (tool-uses)
-  "Execute TOOL-USES and log results to work buffer."
+  "Execute TOOL-USES and return list of result strings for continuation."
   (efrit-streamlined--log-to-work 
    (format "Executing %d tools" (length tool-uses)))
   
-  (dolist (tool-use tool-uses)
-    (let* ((tool-name (alist-get 'name tool-use))
-           (tool-input (alist-get 'input tool-use)))
-      
-      (efrit-streamlined--log-to-work 
-       (format "Tool: %s" tool-name))
-      
-      (cond
-       ((string-equal tool-name "eval_sexp")
-        (let ((expr (alist-get 'expr tool-input)))
-          (when expr
-            (efrit-streamlined--log-to-work (format "Evaluating: %s" expr))
-            (condition-case err
-                (let ((result (eval (read expr))))
-                  (efrit-streamlined--log-to-work 
-                   (format "Result: %s" (prin1-to-string result))))
-              (error
-               (efrit-streamlined--log-to-work 
-                (format "Error: %s" (error-message-string err))))))))
-       
-       ((string-equal tool-name "get_context")
-        (efrit-streamlined--log-to-work "Getting context...")
-        (let ((context (efrit-tools-get-context)))
-          (efrit-streamlined--log-to-work 
-           (format "Context: %d chars" (length context)))))
-       
-       (t
+  (let ((results '()))
+    (dolist (tool-use tool-uses)
+      (let* ((tool-name (alist-get 'name tool-use))
+             (tool-input (alist-get 'input tool-use))
+             (tool-id (alist-get 'id tool-use)))
+        
         (efrit-streamlined--log-to-work 
-         (format "Unknown tool: %s" tool-name)))))))
+         (format "Tool: %s (id: %s)" tool-name tool-id))
+        
+        (cond
+         ((string-equal tool-name "eval_sexp")
+          (let ((expr (alist-get 'expr tool-input)))
+            (when expr
+              (efrit-streamlined--log-to-work (format "Evaluating: %s" expr))
+              (condition-case err
+                  (let ((result (eval (read expr))))
+                    (let ((result-str (prin1-to-string result)))
+                      (efrit-streamlined--log-to-work 
+                       (format "Result: %s" result-str))
+                      ;; Add tool result message for Claude
+                      (push (format "Tool result for %s: %s" tool-id result-str) results)))
+                (error
+                 (let ((error-msg (error-message-string err)))
+                   (efrit-streamlined--log-to-work 
+                    (format "Error: %s" error-msg))
+                   ;; Add error result for Claude
+                   (push (format "Tool error for %s: %s" tool-id error-msg) results)))))))
+         
+         ((string-equal tool-name "get_context")
+         (efrit-streamlined--log-to-work "Getting context...")
+         (let ((context (if (fboundp 'efrit-tools-get-context)
+                          (efrit-tools-get-context)
+                       "Context not available - efrit-tools not loaded")))
+         (efrit-streamlined--log-to-work 
+          (format "Context: %d chars" (length context)))
+             ;; Add context result for Claude
+             (push (format "Tool result for %s: %s" tool-id (substring context 0 (min 500 (length context)))) results)))
+         
+         (t
+          (efrit-streamlined--log-to-work 
+           (format "Unknown tool: %s" tool-name))
+          ;; Add error for unknown tool
+          (push (format "Tool error for %s: Unknown tool %s" tool-id tool-name) results)))))
+    
+    (reverse results)))
 
 ;;; Response Display
 
@@ -333,6 +405,7 @@
   "Send MESSAGE using streamlined chat experience."
   (interactive "sMessage: ")
   (let ((messages (list `((role . "user") (content . ,message)))))
+    (setq efrit-streamlined--current-messages messages)
     (efrit-streamlined--log-to-work (format "User message: %s" message))
     (efrit-streamlined--send-request messages)))
 

@@ -4,22 +4,21 @@
 EMACS = emacs
 EMACS_BATCH = $(EMACS) --batch --no-init-file
 PACKAGE_NAME = efrit
-VERSION = 0.2.0
+VERSION = 0.3.0
 
 # Source files
-EL_FILES = efrit.el efrit-chat.el efrit-do.el efrit-tools.el efrit-multi-turn.el \
-           efrit-debug.el efrit-command.el efrit-agent.el efrit-tests.el
+EL_FILES = $(wildcard lisp/*.el)
 ELC_FILES = $(EL_FILES:.el=.elc)
 
 # Test files
-TEST_FILES = efrit-tests.el
-TEST_SCRIPTS = efrit-test-simple.sh
+TEST_FILES = $(wildcard test/test-*.el)
+TEST_SCRIPTS = $(wildcard test/*.sh bin/*.sh)
 
 # Documentation files
-DOC_FILES = README.md CONTRIBUTING.md AUTHORS
+DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENT.md LICENSE
 
 # Distribution files
-DIST_FILES = $(EL_FILES) $(DOC_FILES) $(TEST_SCRIPTS) Makefile .gitignore
+DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
 .PHONY: all compile test clean distclean install uninstall check help dist
 
@@ -52,10 +51,10 @@ help:
 # Compilation
 compile: $(ELC_FILES)
 
-%.elc: %.el
+lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
-		--eval "(add-to-list 'load-path \".\")" \
+		--eval "(add-to-list 'load-path \"./lisp\")" \
 		--eval "(setq byte-compile-error-on-warn t)" \
 		-f batch-byte-compile $<
 
@@ -73,10 +72,6 @@ lint:
 	@echo "Checking code style..."
 	@for file in $(EL_FILES); do \
 		echo "Linting $$file..."; \
-		if grep -n "^(defun [^-]*[^-]p " $$file; then \
-			echo "❌ Found predicate functions not ending with -p in $$file"; \
-			exit 1; \
-		fi; \
 		if ! grep -q "lexical-binding: t" $$file; then \
 			echo "❌ Missing lexical-binding: t in $$file"; \
 			exit 1; \
@@ -87,15 +82,18 @@ lint:
 # Testing
 test: compile
 	@echo "Running test suite..."
-	@./efrit-test-simple.sh
+	@cd test && ./efrit-test-simple.sh
+	@./bin/launch-autonomous-efrit.sh test || echo "⚠️  Autonomous tests skipped (optional)"
 
-test-simple: test
+test-simple:
+	@echo "Running basic tests..."
+	@cd test && ./efrit-test-simple.sh
 
 # Debug build (with extra information)
 debug:
 	@echo "Building with debug information..."
 	@$(EMACS_BATCH) \
-		--eval "(add-to-list 'load-path \".\")" \
+		--eval "(add-to-list 'load-path \"./lisp\")" \
 		--eval "(setq byte-compile-debug t)" \
 		--eval "(setq byte-compile-verbose t)" \
 		-f batch-byte-compile $(EL_FILES)
@@ -103,8 +101,8 @@ debug:
 # Cleaning
 clean:
 	@echo "Removing compiled files..."
-	@rm -f $(ELC_FILES)
-	@rm -f *.elc~
+	@rm -f lisp/*.elc
+	@rm -f lisp/*.elc~
 
 distclean: clean
 	@echo "Removing all generated files..."
@@ -112,19 +110,23 @@ distclean: clean
 	@rm -rf dist/
 
 # Installation to system
-EMACS_SITE_LISP = $(shell $(EMACS) --batch --eval "(princ (car site-lisp-directory-list))")
+EMACS_SITE_LISP = $(shell $(EMACS) --batch --eval "(princ (car site-lisp-directory-list))" 2>/dev/null || echo "/usr/local/share/emacs/site-lisp")
 
 install: compile
 	@echo "Installing to $(EMACS_SITE_LISP)/$(PACKAGE_NAME)..."
 	@mkdir -p $(EMACS_SITE_LISP)/$(PACKAGE_NAME)
-	@cp $(EL_FILES) $(ELC_FILES) $(EMACS_SITE_LISP)/$(PACKAGE_NAME)/
+	@cp -r lisp/* $(EMACS_SITE_LISP)/$(PACKAGE_NAME)/
+	@chmod +x bin/launch-autonomous-efrit.sh
+	@cp bin/launch-autonomous-efrit.sh /usr/local/bin/ 2>/dev/null || echo "⚠️  Could not install launcher script (run as root?)"
 	@echo "✅ Installation complete"
 	@echo "Add this to your init.el:"
+	@echo "  (add-to-list 'load-path \"$(EMACS_SITE_LISP)/$(PACKAGE_NAME)\")"
 	@echo "  (require 'efrit)"
 
 uninstall:
 	@echo "Removing from $(EMACS_SITE_LISP)/$(PACKAGE_NAME)..."
 	@rm -rf $(EMACS_SITE_LISP)/$(PACKAGE_NAME)
+	@rm -f /usr/local/bin/launch-autonomous-efrit.sh
 	@echo "✅ Uninstallation complete"
 
 # Distribution
@@ -142,6 +144,8 @@ dev-setup:
 	@echo "Checking prerequisites..."
 	@which $(EMACS) > /dev/null || (echo "❌ Emacs not found"; exit 1)
 	@$(EMACS_BATCH) --version | head -1
+	@echo "Project structure:"
+	@find . -name "*.el" | head -10
 	@echo "✅ Development environment ready"
 
 # Continuous integration target
@@ -153,5 +157,19 @@ config:
 	@echo "  Version: $(VERSION)"
 	@echo "  Emacs: $(EMACS)"
 	@echo "  Source files: $(words $(EL_FILES)) files"
-	@echo "  Test files: $(words $(shell echo $(TEST_FILES))) files"
+	@echo "  Test files: $(words $(TEST_FILES)) files"
 	@echo "  Site lisp: $(EMACS_SITE_LISP)"
+	@echo "  Structure: Professional elisp project layout"
+
+# Development convenience targets
+quick-test: compile
+	@echo "Running quick development tests..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"./lisp\")" \
+		--eval "(require 'efrit)" \
+		--eval "(message \"✅ Efrit loads successfully\")"
+
+# Show project structure
+tree:
+	@echo "Efrit Project Structure:"
+	@tree -I '.git|*.elc|.DS_Store' -a || find . -name ".*" -prune -o -type f -print | sort

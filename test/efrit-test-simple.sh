@@ -19,7 +19,7 @@ echo "📁 Test directory: $SCRIPT_DIR"
 
 # Run syntax validation
 echo "🔍 Checking efrit-chat.el syntax..."
-if emacs --batch --eval "(check-parens)" efrit-chat.el 2>/dev/null; then
+if emacs --batch --eval "(check-parens)" ../lisp/efrit-chat.el 2>/dev/null; then
     echo "✅ Syntax check passed"
 else
     echo "❌ Syntax check failed"
@@ -28,7 +28,7 @@ fi
 
 # Run byte-compilation test (check for syntax errors)
 echo "🔨 Testing byte-compilation (syntax validation)..."
-COMPILE_OUTPUT=$(emacs --batch --eval "(progn (add-to-list 'load-path \".\") (byte-compile-file \"efrit-chat.el\"))" 2>&1)
+COMPILE_OUTPUT=$(emacs --batch --eval "(progn (add-to-list 'load-path \"../lisp\") (byte-compile-file \"../lisp/efrit-chat.el\"))" 2>&1)
 if echo "$COMPILE_OUTPUT" | grep -q "wrote.*efrit-chat.elc"; then
     echo "✅ Byte-compilation passed completely"
 elif echo "$COMPILE_OUTPUT" | grep -q "Cannot open load file.*efrit-tools"; then
@@ -65,7 +65,7 @@ echo ""
 
 # Check if efrit-chat can be loaded
 echo "🔧 Testing efrit-chat loading..."
-if emacs --batch --eval "(progn (add-to-list 'load-path \".\") (condition-case err (progn (require 'json) (load \"efrit-chat.el\" t) (message \"SUCCESS: efrit-chat loaded\")) (error (message \"ERROR: %s\" (error-message-string err)))))" 2>&1 | grep -q "SUCCESS"; then
+if emacs --batch --eval "(progn (add-to-list 'load-path \"../lisp\") (condition-case err (progn (require 'json) (load \"../lisp/efrit-chat.el\" t) (message \"SUCCESS: efrit-chat loaded\")) (error (message \"ERROR: %s\" (error-message-string err)))))" 2>&1 | grep -q "SUCCESS"; then
     echo "✅ efrit-chat loads successfully"
 else
     echo "⚠️  efrit-chat loading has dependency issues (expected in isolated testing)"

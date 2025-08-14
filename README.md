@@ -1,23 +1,42 @@
-# Efrit - AI-Powered Emacs Coding Assistant
+# Efrit - AI-Powered Autonomous Emacs Assistant
 
-*A sophisticated AI coding agent that leverages Emacs' native programmability through direct Elisp evaluation.*
+*A sophisticated AI coding agent that enables autonomous development through direct Elisp evaluation and agent-to-agent communication.*
+
+## 🚀 What's New: Agent-to-Agent Architecture
+
+**Efrit is evolving into a platform for autonomous AI development**:
+
+- **🤖 Agent Communication Channel**: File-based queue system enables any AI coding agent (Claude Code, GitHub Copilot, Sourcegraph Amp, etc.) to interact directly with Efrit
+- **🔧 Self-Enhancing Capabilities**: AI agents can debug, test, and enhance Efrit's own functionality autonomously  
+- **⚡ Autonomous Development Mode**: Spawn independent Emacs instances for hours-long AI development sessions
+- **💬 Multi-Modal Interface**: Chat, command, and agent modes for different interaction styles
+
+*This positions Efrit as both a powerful user assistant AND a platform for AI-driven development.*
+
+---
 
 ## Overview
 
-Efrit is a conversational AI assistant that integrates seamlessly with Emacs, providing multiple interfaces for different types of tasks:
+Efrit provides multiple interfaces for AI-powered Emacs development:
 
-- **efrit-chat** - Multi-turn conversational interface for complex discussions and code development
-- **efrit-do** - Natural language command execution for quick tasks  
-- **efrit** - Command interface for structured interactions
-- **efrit-agent-run** - Advanced agent loop for multi-step automation
+- **efrit-chat** - Multi-turn conversational interface for complex discussions  
+- **efrit-do** - Natural language command execution for quick tasks
+- **efrit-remote-queue** - 🆕 File-based channel for AI agent communication
+- **efrit-agent-run** - Advanced autonomous agent loop
 
 ## Key Features
 
-- **Direct Elisp Evaluation**: Leverages Emacs' native programmability without complex abstractions
-- **Multi-turn Conversations**: Maintains context across multiple exchanges with configurable turn limits
-- **Tool Integration**: Can execute Emacs functions, manipulate buffers, and interact with the environment
-- **Safety-First Design**: Confirmation systems and comprehensive error handling
-- **Dark Theme Friendly**: Adaptive colors that work with any Emacs theme
+### Core Capabilities
+- **Direct Elisp Evaluation**: Full access to Emacs' native programmability
+- **Multi-turn Conversations**: Maintains context across exchanges
+- **Tool Integration**: Manipulate buffers, execute functions, interact with environment
+- **Safety-First Design**: Comprehensive error handling and confirmation systems
+
+### 🆕 Agent-to-Agent Features
+- **Remote Queue System**: AI agents communicate via JSON file exchange
+- **Autonomous Operation**: AI can spawn and control its own Emacs instances  
+- **Self-Enhancement**: Agents can modify and improve Efrit's source code
+- **Multi-Agent Support**: Designed for any AI coding agent, not just one client
 
 ## Installation
 
@@ -48,188 +67,129 @@ Efrit is a conversational AI assistant that integrates seamlessly with Emacs, pr
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
-### Alternative Installation Methods
+### 🆕 Enable Agent Communication
 
-**Emergency Emacs Setup** (for quick testing):
-```bash
-emacs -q -l /path/to/efrit/efrit.el
-```
+Start the remote queue to allow AI agents to interact with Efrit:
 
-**Using straight.el**:
 ```elisp
-(straight-use-package
- '(efrit :type git :host github :repo "steveyegge/efrit"))
-(require 'efrit)
+;; In Emacs
+(efrit-remote-queue-start)  ; or C-c C-e q
 ```
+
+This creates `~/.emacs.d/efrit-queue/` for AI agent communication.
 
 ## Usage
 
-### Available Commands
+### Interactive Usage (Human → Efrit)
 
-- **`M-x efrit-chat`** - Multi-turn conversational interface  
-- **`M-x efrit-do`** - Natural language command execution
-- **`M-x efrit`** - Command interface
-- **`M-x efrit-agent-run`** - Advanced agent loop
+```elisp
+M-x efrit-chat          ; Conversational interface
+M-x efrit-do           ; Natural language commands  
+M-x efrit-streamlined-send  ; Streamlined chat mode
+```
 
-### Key Bindings
+**Key Bindings**: `C-c C-e` + `c`/`d`/`s`/`a`/`q`
 
-- `C-c C-e e` - efrit-chat
-- `C-c C-e d` - efrit-do  
-- `C-c C-e c` - efrit command interface
-- `C-c C-e a` - efrit-agent-run
+### 🆕 Agent Communication (AI → Efrit)
+
+AI agents write JSON requests to the queue directory:
+
+```json
+{
+  "id": "req_001",
+  "type": "eval", 
+  "content": "(+ 40 2)"
+}
+```
+
+Efrit processes and responds with JSON results:
+
+```json
+{
+  "id": "req_001",
+  "status": "success",
+  "result": "42"
+}
+```
+
+See [`QUEUE_USAGE_EXAMPLE.md`](QUEUE_USAGE_EXAMPLE.md) for detailed integration examples.
 
 ### Examples
 
-#### Visual Demonstrations
-
-**Multi-Buffer Creation with efrit-do**
-
-Starting with a simple request:
+**Human Interaction**:
 ```
 M-x efrit-do
 > write an ode in one buffer, and a sonnet in another, both about Vim
 ```
 
-![Initial ode and sonnet about Vim](ode-sonnet-vim.jpg)
-
-**Conversational Context - Making Modifications**
-
-efrit-do maintains context, so you can refine previous work:
-```
-M-x efrit-do  
-> Can you make them more snarky?
-```
-
-![Snarky versions of the ode and sonnet](ode-sonnet-snarky.jpg)
-
-This demonstrates efrit-do's key feature: **conversational continuity**. It remembers what it just created and can modify, improve, or completely rewrite previous work based on your feedback.
-
-#### More Usage Examples
-
-**Conversational Development**:
-```
-M-x efrit-chat
-> Can you help me write a function to count lines in the current buffer?
-> Now modify it to exclude empty lines and comments
-```
-
-**Quick Commands**:
-```
-M-x efrit-do
-> open the scratch buffer and insert "hello world"
-> find all TODO comments in the current project
-```
-
-**Multi-step Tasks**:
-```
-M-x efrit-chat
-> Create a haiku in one buffer and a limerick in another buffer
-```
-
-## Configuration
-
-### Basic Configuration
-
-```elisp
-;; Model and token settings
-(setq efrit-model "claude-3-5-sonnet-20241022")
-(setq efrit-max-tokens 8192)
-
-;; Multi-turn conversation settings
-(setq efrit-multi-turn-enabled t)
-(setq efrit-multi-turn-simple-max-turns 3)
-
-;; efrit-do buffer behavior
-(setq efrit-do-show-errors-only t)  ; Only show buffer on errors
-
-;; Debug settings (optional)
-(setq efrit-debug-enabled nil)
-```
-
-### Advanced Configuration
-
-```elisp
-;; Timeouts and API settings
-(setq efrit-multi-turn-timeout 300)
-(setq efrit-api-timeout 30)
-
-;; Custom key bindings
-(global-set-key (kbd "C-c a") 'efrit-chat)
-(global-set-key (kbd "C-c d") 'efrit-do)
+**AI Agent Interaction**:
+```python
+# Any AI agent can now interact with Efrit
+efrit = EfritQueue()
+result = efrit.send_request("command", "split window and open dired")
+print(f"✓ {result['status']}")
 ```
 
 ## Architecture
 
 ### Core Philosophy
 
-Efrit follows the principle of **Elisp-centricity**: rather than building complex tool abstractions, it provides the AI with direct access to Emacs' powerful Elisp evaluation capabilities. This approach offers unlimited flexibility while staying within Emacs' natural paradigm.
+**Efrit is becoming a platform for autonomous AI development**:
+
+1. **Human-Friendly**: Rich interactive interfaces for users
+2. **Agent-Friendly**: File-based communication channel for AI systems
+3. **Self-Enhancing**: AI agents can improve Efrit's own capabilities
+4. **Zero Client Intelligence**: All AI processing happens in Claude, Efrit is pure executor
 
 ### Core Components
 
-- **efrit.el** - Main entry point and package coordination
-- **efrit-chat.el** - Multi-turn conversational interface with Claude API  
-- **efrit-do.el** - Natural language command interface
-- **efrit-multi-turn.el** - Multi-turn conversation state management
-- **efrit-tools.el** - Core functionality engine with Elisp evaluation
-- **efrit-debug.el** - Optional debugging and logging system
-- **efrit-agent.el** - Advanced agent loop for complex automation
+- **efrit.el** - Main entry point and coordination
+- **efrit-chat.el** - Conversational interfaces  
+- **efrit-do.el** - Natural language command execution
+- **efrit-remote-queue.el** - 🆕 Agent communication system
+- **efrit-tools.el** - Core Elisp evaluation engine
+- **efrit-agent.el** - Autonomous agent capabilities
 
-## Troubleshooting
+## 🛣️ Roadmap
 
-### Common Issues
+### Current Development
+- ✅ **File-based Agent Communication** - Complete
+- ✅ **Autonomous AI Development Environment** - Complete
+- 🔄 **Self-Enhancement Capabilities** - Next Phase  
 
-**"Cannot open load file: efrit"**
-- Verify the path in your `load-path` is correct
-- Ensure `efrit.el` exists in that directory
+### Vision
+Transform Efrit from a user assistant into an **autonomous AI development platform** where:
+- AI agents enhance Efrit's functionality independently
+- Multiple AI systems can collaborate through Efrit
+- Users benefit from continuously improving capabilities
 
-**"API key not found"**
-- Check `~/.authinfo` file exists and has correct format
-- Test with: `M-x auth-source-search RET machine api.anthropic.com RET`
+## Configuration
 
-**Connection timeout**
-- Check internet connection and API key validity
-- Try increasing `efrit-api-timeout`
-
-### Debug Mode
-
-Enable debug logging for troubleshooting:
 ```elisp
-(setq efrit-debug-enabled t)
+;; Standard Efrit settings
+(setq efrit-model "claude-3-5-sonnet-20241022")
+(setq efrit-max-tokens 8192)
+
+;; 🆕 Agent communication settings  
+(setq efrit-remote-queue-directory "~/.emacs.d/efrit-queue")
+(setq efrit-remote-queue-max-concurrent 10)
+
+;; Start agent communication on load (optional)
+(add-hook 'after-init-hook #'efrit-remote-queue-start)
 ```
-Then check: `M-x efrit-debug-show`
 
 ## Development
 
-### Building and Testing
+### For AI Agents
+See [`AUTONOMOUS_AI_PLAN.md`](AUTONOMOUS_AI_PLAN.md) for autonomous development architecture.
 
+### For Contributors
 ```bash
-# Build
-make compile
-
-# Run tests
-make test
-
-# Install system-wide
-make install
+make compile  # Build
+make test     # Run tests
 ```
 
-### Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
-- Development setup
-- Code standards and conventions
-- Testing procedures
-- Submitting changes
-
-## Version History
-
-**v0.2.0** (2025-01-07) - Major Stability Release
-- ✅ Fixed API integration issues and HTTP 400 errors
-- ✅ Enhanced token limits (1024 → 8192 tokens)
-- ✅ Improved message ordering and dark theme compatibility
-- ✅ Added multi-turn conversation system with configurable limits
-- ✅ Consolidated documentation and cleaned up codebase
-- ✅ Production-ready with comprehensive error handling
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## License
 
@@ -237,4 +197,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for detai
 
 ---
 
-*Efrit: Where AI meets the power of Emacs.*
+*Efrit: Autonomous AI development meets the power of Emacs.*

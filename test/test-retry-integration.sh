@@ -10,7 +10,7 @@ echo ""
 
 # Test 1: Basic retry functions exist and work
 echo "🔧 Testing retry function availability..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   (unless (fboundp 'efrit-do--extract-error-info)
     (error \"efrit-do--extract-error-info function not available\"))
@@ -20,7 +20,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 2: Configuration variables exist
 echo "🔧 Testing retry configuration variables..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   (unless (boundp 'efrit-do-max-retries)
     (error \"efrit-do-max-retries variable not available\"))
@@ -32,7 +32,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 3: Error extraction works correctly
 echo "🔧 Testing error extraction logic..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   (let ((syntax-error \"[Syntax Error in (bad-code: Invalid read syntax]\")
         (runtime-error \"[Error executing (nonexistent-fn): Symbol's function definition is void]\")
@@ -58,7 +58,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 4: Code extraction works correctly
 echo "🔧 Testing code extraction logic..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   (let ((syntax-error \"[Syntax Error in (bad-code: Invalid read syntax]\")
         (runtime-error \"[Error executing (nonexistent-fn): Symbol's function definition is void]\")
@@ -84,7 +84,7 @@ emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load 
 
 # Test 5: Retry system prompt generation
 echo "🔧 Testing retry system prompt generation..."
-emacs --batch --load efrit.el --load efrit-tools.el --load efrit-chat.el --load efrit-do.el --eval "
+emacs --batch --load ../lisp/efrit.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-chat.el --load ../lisp/efrit-do.el --eval "
 (progn
   ;; Test normal prompt (no retry)
   (let ((prompt (efrit-do--command-system-prompt)))
