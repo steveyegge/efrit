@@ -203,7 +203,7 @@
          (escaped-json (replace-regexp-in-string 
                        "[^\x00-\x7F]" 
                        (lambda (char)
-                         (format "\\u%04X" (string-to-char char)))
+                         (format "\\\\u%04X" (string-to-char char)))
                        json-string))
          (url-request-data (encode-coding-string escaped-json 'utf-8)))
     
