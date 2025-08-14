@@ -116,7 +116,7 @@ limit was reached."
   :type 'integer
   :group 'efrit-agent)
 
-(defcustom efrit-agent-model "claude-3-7-sonnet-20250219"
+(defcustom efrit-agent-model "anthropic/claude-sonnet-4"
   "LLM model to use for the agent.
 This should be a valid Anthropic Claude model identifier.
 The agent uses this model for planning, feedback processing,
@@ -222,7 +222,7 @@ Expects an entry in .authinfo or .authinfo.gpg like:
 machine api.anthropic.com login personal password YOUR_API_KEY
 
 Returns the API key as a string, or nil if no key was found."
-  (when-let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+  (when-let* ((auth-info (car (auth-source-search :host "openrouter.ai"
                                                  :user "personal"
                                                  :require '(:secret))))
               (secret (plist-get auth-info :secret)))
@@ -326,7 +326,7 @@ returns appropriate error messages if the API call fails."
   
   (let* ((api-key (or (efrit-agent--get-api-key)
                       (error "Failed to retrieve API key")))
-         (api-url "https://api.anthropic.com/v1/messages")
+         (api-url "https://openrouter.ai/api/v1/chat/completions")
          (messages-json (efrit-agent--build-messages prompt system-prompt))
          (response-buffer nil)
          (result nil))
