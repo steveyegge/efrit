@@ -56,7 +56,7 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 2. **Add to your Emacs configuration** (`~/.emacs.d/init.el`):
    ```elisp
-   (add-to-list 'load-path "/path/to/efrit")
+   (add-to-list 'load-path "/path/to/efrit/lisp")
    (require 'efrit)
    ```
 
