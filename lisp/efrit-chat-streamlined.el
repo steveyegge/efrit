@@ -223,9 +223,12 @@
   (efrit-streamlined--log-to-work "Received response")
   
   ;; Parse response and handle it
+  (set-buffer-multibyte t)
   (goto-char (point-min))
   (search-forward "\n\n")
-  (let* ((response-text (buffer-substring-no-properties (point) (point-max)))
+  (let* ((response-text (decode-coding-string 
+                        (buffer-substring-no-properties (point) (point-max))
+                        'utf-8))
          (response-data (condition-case err
                            (json-read-from-string response-text)
                          (error 
