@@ -80,6 +80,11 @@
   :type 'integer
   :group 'efrit)
 
+(defcustom efrit-max-turns 10
+  "Maximum number of turns in a conversation to prevent infinite loops."
+  :type 'integer
+  :group 'efrit)
+
 ;;; System Prompt Enhancement
 
 (defun efrit-streamlined--system-prompt ()
@@ -210,6 +215,9 @@
 (defvar efrit-streamlined--current-messages nil
   "Messages for the current conversation turn.")
 
+(defvar efrit-streamlined--turn-count 0
+  "Current turn count for the conversation.")
+
 (defun efrit-streamlined--handle-response (_status)
   "Handle API response with work buffer logging."
   (efrit-streamlined--log-to-work "Received response")
@@ -232,6 +240,9 @@
       (if-let* ((error-obj (alist-get 'error response-data)))
           (let ((error-type (alist-get 'type error-obj))
                 (error-message (alist-get 'message error-obj)))
+            (efrit-streamlined--log-to-work 
+             (format "API ERROR: %s - %s" error-type error-message))
+            (message "Efrit: API Error - %s" error-message)
             (efrit-streamlined--display-response 
              (format "API Error (%s): %s" error-type error-message)))
         
@@ -262,20 +273,37 @@
             (when tool-uses
               (setq tool-results (efrit-streamlined--execute-tools tool-uses)))
             
-            ;; Check if Claude wants to continue (has tool use without final text)
-            (let ((should-continue (and tool-uses 
-                                       (or (not has-text-content)
-                                           (string-match-p "\\.\\.\\.$\\|continue\\|more\\|next" text-content)))))
+            ;; Check if Claude wants to continue - default to continuing when tools are used
+            ;; unless Claude explicitly signals completion OR we hit turn limit
+            (let* ((at-turn-limit (>= efrit-streamlined--turn-count efrit-max-turns))
+            (claude-signals-done (or (string-match-p "\\bdone\\b\\|\\bcomplete\\b\\|\\bfinished\\b\\|\\bfinal\\b" 
+                                                         (downcase (or text-content "")))
+                                         ;; If Claude has no text content with tools, likely just executing
+                                         (and tool-uses (not has-text-content))))
+                 (should-continue (and tool-uses 
+                                      (not claude-signals-done)
+                                     (not at-turn-limit))))
+            
+            (efrit-streamlined--log-to-work 
+            (format "Turn %d/%d: %s" 
+            efrit-streamlined--turn-count efrit-max-turns
+            (if should-continue "continuing" "finishing")))
+               
+               (when at-turn-limit
+                 (message "Efrit: Turn limit reached (%d)" efrit-max-turns))
               
               (if should-continue
                   ;; Continue conversation with tool results
                   (progn
+                    (setq efrit-streamlined--turn-count (1+ efrit-streamlined--turn-count))
                     (efrit-streamlined--log-to-work "Continuing conversation with tool results")
                     (efrit-streamlined--continue-with-results tool-results text-content))
                 
                 ;; Final response - display it
-                (when has-text-content
-                  (efrit-streamlined--display-response text-content))))))))))
+                (progn
+                  (message "Efrit: Complete")
+                  (when has-text-content
+                    (efrit-streamlined--display-response text-content)))))))))))
 
 (defun efrit-streamlined--continue-with-results (tool-results text-content)
   "Continue conversation with TOOL-RESULTS from executed tools."
@@ -355,8 +383,8 @@
                        "Context not available - efrit-tools not loaded")))
          (efrit-streamlined--log-to-work 
           (format "Context: %d chars" (length context)))
-             ;; Add context result for Claude
-             (push (format "Tool result for %s: %s" tool-id (substring context 0 (min 500 (length context)))) results)))
+             ;; Add context result for Claude - send full context, don't truncate
+             (push (format "Tool result for %s: %s" tool-id context) results)))
          
          (t
           (efrit-streamlined--log-to-work 
@@ -406,7 +434,9 @@
   (interactive "sMessage: ")
   (let ((messages (list `((role . "user") (content . ,message)))))
     (setq efrit-streamlined--current-messages messages)
+    (setq efrit-streamlined--turn-count 0) ; Reset turn counter for new conversation
     (efrit-streamlined--log-to-work (format "User message: %s" message))
+    (message "Efrit: Processing request...")
     (efrit-streamlined--send-request messages)))
 
 (provide 'efrit-chat-streamlined)
