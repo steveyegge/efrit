@@ -23,6 +23,9 @@
 (declare-function efrit-do "efrit-do")
 (declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
+;; Variable declarations
+(defvar efrit-do-show-results)
+
 ;;; Customization
 
 (defgroup efrit-remote-queue nil
@@ -158,6 +161,31 @@
        (when efrit-remote-queue-debug
          (message "Error cleaning up file %s: %s" file-path (error-message-string err)))))))
 
+(defun efrit-remote-queue--startup-cleanup ()
+  "Clean up any stale files from previous sessions on startup."
+  (let ((cleanup-count 0))
+    (dolist (subdir '("processing" "requests" "responses"))
+      (let ((dir (efrit-remote-queue--get-directory subdir)))
+        (when (file-directory-p dir)
+          (dolist (file (directory-files dir t "\\.json$"))
+            (when (file-regular-p file)
+              ;; Clean up files older than cleanup delay
+              (let* ((file-time (nth 5 (file-attributes file)))
+                     (age (float-time (time-subtract (current-time) file-time))))
+                (when (> age efrit-remote-queue-cleanup-delay)
+                  (condition-case err
+                      (progn
+                        (delete-file file)
+                        (cl-incf cleanup-count)
+                        (when efrit-remote-queue-debug
+                          (message "Cleaned up stale file: %s" file)))
+                    (error
+                     (when efrit-remote-queue-debug
+                       (message "Error cleaning up stale file %s: %s" 
+                               file (error-message-string err))))))))))))
+    (when (and efrit-remote-queue-debug (> cleanup-count 0))
+      (message "Startup cleanup: removed %d stale files" cleanup-count))))
+
 ;;; Request processing
 
 (defun efrit-remote-queue--validate-request (request)
@@ -189,7 +217,7 @@
     (when context (puthash "context" context response))
     response))
 
-(defun efrit-remote-queue--process-request (request file-path)
+(defun efrit-remote-queue--process-request (request _file-path)
   "Process a REQUEST from FILE-PATH and return response data."
   (let* ((request-id (gethash "id" request))
          (request-type (gethash "type" request))
@@ -356,6 +384,9 @@
       (progn
         ;; Ensure directories exist
         (efrit-remote-queue--ensure-directories)
+        
+        ;; Clean up any stale files from previous sessions
+        (efrit-remote-queue--startup-cleanup)
         
         ;; Set up file watcher
         (let ((requests-dir (efrit-remote-queue--get-directory "requests")))

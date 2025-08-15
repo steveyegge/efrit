@@ -24,7 +24,7 @@
 ;; Forward declarations to avoid byte-compile warnings
 (declare-function efrit-tools-system-prompt "efrit-tools")
 (declare-function efrit-tools-get-context "efrit-tools")
-(declare-function efrit--get-api-key "efrit")
+(declare-function efrit--get-api-key "efrit-tools")
 
 ;; Declare external variables from efrit-chat
 (defvar efrit-model)
