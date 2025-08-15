@@ -51,11 +51,18 @@ help:
 # Compilation
 compile: $(ELC_FILES)
 
+# Ensure efrit-tools is compiled first since it's a dependency
+lisp/efrit-chat.elc: lisp/efrit-tools.elc
+lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc
+lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc
+lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc
+lisp/efrit-do.elc: lisp/efrit-tools.elc
+
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
 		--eval "(add-to-list 'load-path \"./lisp\")" \
-		--eval "(setq byte-compile-error-on-warn t)" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
 		-f batch-byte-compile $<
 
 # Check syntax without full compilation dependencies

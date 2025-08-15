@@ -47,7 +47,7 @@ echo "🧪 Testing basic functionality..."
 
 # Test basic tool functionality
 echo "🔧 Testing core tool functionality..."
-if emacs --batch -L . --eval "(progn (require 'efrit-tools) (message \"✅ efrit-tools loads and works: %s\" (efrit-tools-eval-sexp \"(+ 2 3)\")))" 2>/dev/null; then
+if emacs --batch -L ../lisp --eval "(progn (require 'efrit-tools) (message \"✅ efrit-tools loads and works: %s\" (efrit-tools-eval-sexp \"(+ 2 3)\")))" 2>/dev/null; then
     echo "✅ Core tools working"
 else
     echo "❌ Core tools failed to load"
