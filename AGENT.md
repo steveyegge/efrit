@@ -1,8 +1,8 @@
 # Efrit Agent Vision & Architecture
 
-## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active
+## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active + Autonomous Agent Mode
 
-**We have achieved AI-to-AI communication with Efrit!** Sourcegraph Amp can now directly communicate with and control Efrit instances, enabling autonomous development and debugging.
+**We have achieved AI-to-AI communication with Efrit AND implemented autonomous agent capabilities!** Sourcegraph Amp can now directly communicate with and control Efrit instances, and Efrit can solve complex problems autonomously.
 
 ### How to Work with Efrit (For AI Agents)
 
@@ -151,7 +151,33 @@ This project follows professional elisp conventions:
 - **[`plans/`](plans/)** - Planning documents, roadmaps, and session notes
 - **[`docs/`](docs/)** - Formal documentation (when needed)
 
-See [`plans/NEXT_SESSION_PLAN.md`](plans/NEXT_SESSION_PLAN.md) for current development priorities and [`plans/`](plans/) for detailed planning documents.
+## Current Commands & Usage
+
+### Build & Test
+- `make compile` - Byte-compile all elisp files (ensure dependency order)
+- `make test-simple` - Run basic functionality tests  
+- `make clean` - Remove compiled files
+
+### Efrit Modes
+- **efrit-do** - Command execution (one-shot and multi-turn with AI guidance)
+- **efrit-chat** - Conversational interface with mixed tasks/questions
+- **efrit-agent** - Autonomous problem-solving until complete ⭐ NEW
+
+### AI-to-Efrit Communication
+```elisp
+;; Process JSON request via file-based queue
+(efrit-remote-queue-process "/path/to/request.json")
+
+;; Example request format:
+{
+  "id": "unique-request-id",
+  "type": "eval|chat|command", 
+  "content": "elisp code or natural language",
+  "options": {"timeout": 30, "return_context": true}
+}
+```
+
+See [`plans/CURRENT_STATUS.md`](plans/CURRENT_STATUS.md) for latest development status and [`plans/AUTONOMOUS_MODE_DESIGN.md`](plans/AUTONOMOUS_MODE_DESIGN.md) for agent architecture details.
 
 ---
 

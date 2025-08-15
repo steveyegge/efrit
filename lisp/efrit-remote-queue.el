@@ -305,14 +305,19 @@
 
 (defun efrit-remote-queue--execute-chat (content)
   "Execute a chat-type request with CONTENT."
-  (if (fboundp 'efrit-streamlined-send)
-      (condition-case err
-          ;; This is more complex - we need to capture the chat response
-          ;; For now, return a placeholder
-          (format "Chat request received: %s" content)
-        (error
-         (format "Chat execution failed: %s" (error-message-string err))))
-    (error "efrit-chat not available")))
+  (condition-case err
+      (progn
+        ;; Load efrit-chat-streamlined if not already loaded
+        (unless (fboundp 'efrit-streamlined-send)
+          (require 'efrit-chat-streamlined))
+        
+        ;; Execute the chat request
+        ;; Note: This is a simplified version - real implementation would need
+        ;; to handle async responses properly
+        (efrit-streamlined-send content)
+        "Chat request sent to efrit-streamlined-send")
+    (error
+     (format "Chat execution failed: %s" (error-message-string err)))))
 
 (defun efrit-remote-queue--execute-eval (content)
   "Execute an eval-type request with CONTENT."
@@ -437,6 +442,37 @@
         (message "Queue Status: %d processed (%d ok, %d failed), %d processing, %.1fs avg, %.0fs uptime"
                  processed succeeded failed processing-count avg-time uptime))
     (message "Remote queue is not active")))
+
+;;;###autoload
+(defun efrit-remote-queue-process (request-file)
+  "Process a single REQUEST-FILE and return the response file path.
+This is the main entry point for external AI systems to communicate with Efrit."
+  (when (not (file-exists-p request-file))
+    (error "Request file does not exist: %s" request-file))
+  
+  (let* ((request (efrit-remote-queue--parse-request-file request-file))
+         (response-file (concat (file-name-sans-extension request-file) "_response.json")))
+    
+    (if request
+        (let ((validation (efrit-remote-queue--validate-request request)))
+          (if (car validation)
+              ;; Valid request - process it
+              (let ((response (efrit-remote-queue--process-request request request-file)))
+                (when response
+                  (efrit-remote-queue--write-response-file 
+                   (gethash "id" request) response)
+                  response-file))
+            ;; Invalid request
+            (let* ((request-id (or (gethash "id" request) "unknown"))
+                   (error-response (efrit-remote-queue--create-response 
+                                   request-id "error" nil (cdr validation))))
+              (efrit-remote-queue--write-response-file request-id error-response)
+              response-file)))
+      ;; Failed to parse
+      (let ((error-response (efrit-remote-queue--create-response 
+                            "unknown" "error" nil "Failed to parse request file")))
+        (efrit-remote-queue--write-response-file "unknown" error-response)
+        response-file))))
 
 ;;;###autoload
 (defun efrit-remote-queue-reset ()

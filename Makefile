@@ -49,7 +49,7 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: $(ELC_FILES)
+compile: lisp/efrit-tools.elc $(ELC_FILES)
 
 # Ensure efrit-tools is compiled first since it's a dependency
 lisp/efrit-chat.elc: lisp/efrit-tools.elc
@@ -57,6 +57,8 @@ lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc
 lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc
 lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc
 lisp/efrit-do.elc: lisp/efrit-tools.elc
+lisp/efrit-agent.elc: lisp/efrit-tools.elc
+lisp/efrit-command.elc: lisp/efrit-tools.elc
 
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."

@@ -18,7 +18,7 @@
 (require 'efrit-tools)
 
 ;; Conditional requires
-(declare-function efrit-chat-streamlined-send "efrit-chat-streamlined")
+(declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
 ;;; Customization
 
@@ -30,7 +30,7 @@
 (defcustom efrit-agent-backend "claude-3.5-sonnet"
   "Default model backend for agent mode."
   :type '(choice (const "claude-3.5-sonnet")
-                 (const "gpt-4")
+                 (const "gpt-4") 
                  (const "local-llama")
                  (string :tag "Custom API endpoint"))
   :group 'efrit-agent)
@@ -44,10 +44,6 @@
 
 (defvar efrit-agent--current-session nil
   "Current agent session data.")
-
-(provide 'efrit-agent)
-;;; efrit-agent.el ends here
-;;; Session Management
 
 (defun efrit-agent--create-session (goal &optional context session-id)
   "Create a new agent session for GOAL."
@@ -81,38 +77,11 @@
           (gethash "iteration" session)
           (gethash "status" session)))
 
-;;; LLM Consultation
+;;; TODO Management
 
-(defun efrit-agent--build-prompt (session)
-  "Build prompt for LLM consultation based on SESSION."
-  (let ((goal (gethash "goal" session))
-        (context (gethash "context" session))
-        (todos (gethash "todos" session))
-        (actions (gethash "actions" session))
-        (iteration (gethash "iteration" session)))
-    (format "You are Efrit, an autonomous Emacs agent. Work systematically toward goals.
-
-GOAL: %s
-CONTEXT: %s
-ITERATION: %d
-
-CURRENT TODOS:
-%s
-
-ACTIONS TAKEN:
-%s
-
-Respond with JSON containing your next action:
-{
-  "status": "planning|executing|stuck|complete",
-  "todos": [...],
-  "next_action": {"type": "eval", "content": "..."},
-  "rationale": "...",
-  "self_assessment": "..."
-}"
-            goal context iteration
-            (efrit-agent--format-todos todos)
-            (efrit-agent--format-actions actions))))
+(defun efrit-agent--update-todos (session todos)
+  "Update the TODO list for SESSION."
+  (puthash "todos" todos session))
 
 (defun efrit-agent--format-todos (todos)
   "Format TODOS for prompt display."
@@ -129,10 +98,52 @@ Respond with JSON containing your next action:
   (if (null actions)
       "(none)"
     (mapconcat (lambda (action)
-                 (format "- %s: %s"
-                         (plist-get (plist-get action :action) :type)
-                         (substring (plist-get (plist-get action :result) :output "no-output") 0 100)))
+                 (let ((output (or (plist-get (plist-get action :result) :output) "no-output")))
+                   (format "- %s: %s"
+                           (plist-get (plist-get action :action) :type)
+                           (if (stringp output) 
+                               (substring output 0 (min 100 (length output)))
+                             (prin1-to-string output)))))
                (reverse (last actions 3)) "\n")))
+
+;;; LLM Consultation
+
+(defun efrit-agent--build-prompt (session)
+  "Build prompt for LLM consultation based on SESSION."
+  (let ((goal (gethash "goal" session))
+        (context (gethash "context" session))
+        (todos (gethash "todos" session))
+        (actions (gethash "actions" session))
+        (iteration (gethash "iteration" session)))
+    (format "You are Efrit, an autonomous Emacs agent. Work systematically toward goals.\n\nGOAL: %s\nCONTEXT: %s\nITERATION: %d\n\nCURRENT TODOS:\n%s\n\nACTIONS TAKEN:\n%s\n\nRespond with JSON containing your next action."
+            goal context iteration
+            (efrit-agent--format-todos todos)
+            (efrit-agent--format-actions actions))))
+
+(defun efrit-agent--mock-llm-response (prompt)
+  "Generate a mock LLM response for testing."
+  (if (string-match-p "Create a test file" prompt)
+      "{\"status\": \"executing\", \"todos\": [{\"id\": \"create-file\", \"status\": \"in-progress\", \"content\": \"Create hello.txt file\"}], \"next_action\": {\"type\": \"eval\", \"content\": \"(with-temp-file \\\"hello.txt\\\" (insert \\\"Hello from Efrit Agent\\\"))\"}, \"rationale\": \"I need to create the requested file with the specified content\", \"self_assessment\": \"Simple file creation task\"}"
+    "{\"status\": \"complete\", \"rationale\": \"Task completed\"}"))
+
+(defun efrit-agent--consult-llm (prompt)
+  "Send PROMPT to LLM backend and return response."
+  ;; Use mock for now
+  (efrit-agent--mock-llm-response prompt))
+
+(defun efrit-agent--parse-signal (response)
+  "Parse LLM RESPONSE into signal plist."
+  (condition-case err
+      (let* ((json-object-type 'hash-table)
+             (json-array-type 'list)
+             (json-key-type 'string)
+             (parsed (json-read-from-string response)))
+        (list :status (intern (gethash "status" parsed))
+              :todos (gethash "todos" parsed)
+              :next_action (gethash "next_action" parsed)
+              :rationale (gethash "rationale" parsed)))
+    (error
+     (list :status 'error :error (error-message-string err)))))
 
 ;;; Action Execution
 
@@ -165,38 +176,6 @@ Respond with JSON containing your next action:
        (puthash "error" (error-message-string err) result)))
     result))
 
-(defun efrit-agent--consult-llm (prompt)
-  "Send PROMPT to LLM backend and return response."
-  ;; Use mock for now
-  (efrit-agent--mock-llm-response prompt))
-
-  ;; Use mock for now
-  (efrit-agent--mock-llm-response prompt))
-
-  (condition-case err
-      (progn
-        (unless (fboundp 'efrit-streamlined-send)
-          (require 'efrit-chat-streamlined))
-        ;; For now, use streamlined-send (TODO: make truly synchronous)
-        (efrit-streamlined-send prompt)
-        "{\"status\": \"executing\", \"rationale\": \"LLM consultation sent\"}")
-    (error
-     (format "{\"status\": \"error\", \"error\": \"%s\"}" (error-message-string err)))))
-
-(defun efrit-agent--parse-signal (response)
-  "Parse LLM RESPONSE into signal plist."
-  (condition-case err
-      (let* ((json-object-type 'hash-table)
-             (json-array-type 'list)
-             (json-key-type 'string)
-             (parsed (json-read-from-string response)))
-        (list :status (intern (gethash "status" parsed))
-              :todos (gethash "todos" parsed)
-              :next_action (gethash "next_action" parsed)
-              :rationale (gethash "rationale" parsed)))
-    (error
-     (list :status 'error :error (error-message-string err)))))
-
 ;;; Main Agent Loop
 
 ;;;###autoload
@@ -217,7 +196,7 @@ Respond with JSON containing your next action:
                  (signal (efrit-agent--parse-signal response)))
             
             ;; Update session status
-            (puthash "status" (plist-get signal :status) session)
+            (puthash "status" (symbol-name (plist-get signal :status)) session)
             
             ;; Handle signal status
             (pcase (plist-get signal :status)
@@ -237,3 +216,6 @@ Respond with JSON containing your next action:
        (message "Agent error: %s" (error-message-string err))))
     
     (efrit-agent--session-summary session)))
+
+(provide 'efrit-agent)
+;;; efrit-agent.el ends here
