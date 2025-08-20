@@ -15,6 +15,19 @@
 - **Action execution** framework (eval, shell, user_input)
 - **Mock LLM testing** infrastructure
 
+### TODO Management System
+- **Comprehensive TODO tracking** in efrit-do with tools (todo_add, todo_update, todo_show)
+- **Progress tracking** with status indicators (☐⟳☑) and priorities
+- **Context integration** - TODOs included in AI prompts for systematic task management
+- **User commands** for viewing and managing TODOs (efrit-do-show-todos, etc.)
+
+### Data Directory Organization
+- **Centralized configuration** via efrit-config.el
+- **Organized data structure** under ~/.emacs.d/.efrit/ with proper subdirectories
+- **Configurable location** via efrit-data-directory variable
+- **Automatic migration** from old scattered file locations
+- **Version control separation** with proper .gitignore
+
 ### Build System & Quality
 - **Professional elisp project structure** (lisp/, test/, bin/, plans/, docs/)
 - **Makefile with proper dependencies** 
@@ -40,14 +53,22 @@ efrit-agent  → Aggressive problem-solving until complete (NEW)
 ```
 
 ### Core Components
+- **efrit-config.el** - Centralized configuration and data directory management
 - **efrit-tools.el** - Core utilities and context gathering
+- **efrit-do.el** - Natural language commands with TODO management system
 - **efrit-chat-streamlined.el** - Multi-turn AI conversation
 - **efrit-remote-queue.el** - File-based AI communication
-- **efrit-agent.el** - Autonomous problem-solving (NEW)
+- **efrit-agent.el** - Autonomous problem-solving
 
 ## 🚀 Next Steps
 
-1. **Test efrit-agent** with chatgpt-shell upgrade challenge
+1. **Implement Efrit Dashboard** (see plans/DASHBOARD_DESIGN.md)
+   - TODO management panel with progress visualization
+   - Queue management for AI-to-efrit communication
+   - Session state and performance metrics
+   - Buffer navigation and quick actions
+
+2. **Test efrit-agent** with chatgpt-shell upgrade challenge
 2. **Replace mock LLM** with real AI backend integration
 3. **Implement UI** for TODO list display and progress tracking
 4. **Add interruption handling** for user input injection

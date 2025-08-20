@@ -57,6 +57,7 @@
       (require 'auth-source)
       
       ;; Load core modules in dependency order
+      (require 'efrit-config)     ; Configuration management - must be first
       (require 'efrit-tools)
       (require 'efrit-multi-turn) ; Multi-turn conversation management
       (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
