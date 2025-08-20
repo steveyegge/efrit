@@ -15,7 +15,7 @@ A centralized dashboard interface for monitoring efrit sessions, TODO progress, 
 - **Connection Status**: API connectivity, model info, rate limits
 - **Current Context**: Active buffers, working directory, recent commands
 - **Performance Metrics**: Response times, token usage, retry counts
-- **Error Log**: Recent failures and recovery actions
+- **Debug Log**: Unified efrit-log output with levels and subsystems
 
 ### 📊 Work Summary Panel
 - **Commands Executed**: History with results and timing
@@ -26,7 +26,7 @@ A centralized dashboard interface for monitoring efrit sessions, TODO progress, 
 ### 🪟 Quick Actions
 - **Buffer Navigation**: Jump to efrit logs, results, reports
 - **State Management**: Clear TODOs, reset context, save session
-- **Debug Access**: View raw API calls, tool executions, error details
+- **Debug Access**: View unified log (efrit-log-show), raw API calls, tool executions
 
 ## Implementation Approach
 

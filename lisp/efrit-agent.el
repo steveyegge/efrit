@@ -31,14 +31,6 @@
   :group 'efrit
   :prefix "efrit-agent-")
 
-(defcustom efrit-agent-backend "claude-3.5-sonnet"
-  "Default model backend for agent mode."
-  :type '(choice (const "claude-3.5-sonnet")
-                 (const "gpt-4") 
-                 (const "local-llama")
-                 (string :tag "Custom API endpoint"))
-  :group 'efrit-agent)
-
 (defcustom efrit-agent-max-iterations 50
   "Maximum iterations before forcing user consultation."
   :type 'integer
@@ -59,15 +51,14 @@
   :type 'integer
   :group 'efrit-agent)
 
-(defcustom efrit-agent-debug t
-  "Enable debug logging for agent operations."
-  :type 'boolean
-  :group 'efrit-agent)
+;; Use unified logging system
+(require 'efrit-log)
 
-(defcustom efrit-agent-log-buffer "*efrit-agent-debug*"
-  "Buffer name for agent debug logs."
-  :type 'string
-  :group 'efrit-agent)
+;; Compatibility aliases
+(defvaralias 'efrit-agent-debug 'efrit-log-level
+  "Enable debug logging for agent operations (now uses efrit-log-level).")
+(defvaralias 'efrit-agent-log-buffer 'efrit-log-buffer
+  "Buffer name for agent debug logs (now uses efrit-log-buffer).")
 
 ;;; Session Management
 
@@ -139,44 +130,35 @@
 
 (defun efrit-agent--log (level format-string &rest args)
   "Log message with LEVEL and FORMAT-STRING with ARGS."
-  (when efrit-agent-debug
-    (let ((message (apply #'format format-string args))
-          (timestamp (format-time-string "%H:%M:%S")))
-      (with-current-buffer (get-buffer-create efrit-agent-log-buffer)
-        (goto-char (point-max))
-        (insert (format "[%s] %s: %s\n" timestamp level message)))
-      (message "[Efrit Agent] %s: %s" level message))))
+  (apply #'efrit-log level format-string (append args '("agent"))))
 
 (defun efrit-agent--log-response (response-text)
   "Log raw API response for debugging."
-  (when efrit-agent-debug
-    (with-current-buffer (get-buffer-create efrit-agent-log-buffer)
-      (goto-char (point-max))
-      (insert (format "\n=== RAW API RESPONSE ===\n%s\n=== END RESPONSE ===\n\n" 
-                      (substring response-text 0 (min 2000 (length response-text))))))))
+  (efrit-log 'debug "RAW API RESPONSE:\n%s" 
+            (substring response-text 0 (min 2000 (length response-text))) "agent"))
 
 (defun efrit-agent--show-debug-buffer ()
   "Show the debug buffer in a window."
   (interactive)
-  (when-let* ((buffer (get-buffer efrit-agent-log-buffer)))
+  (when-let* ((buffer (get-buffer efrit-log-buffer)))
     (display-buffer buffer '(display-buffer-below-selected (window-height . 15)))))
 
 ;;; LLM Consultation
 
 (defun efrit-agent--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (efrit-agent--log "DEBUG" "Looking for API key in .authinfo")
+  (efrit-agent--log 'debug "Looking for API key in .authinfo")
   (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
                                             :user "personal"
                                             :require '(:secret))))
          (secret (plist-get auth-info :secret)))
     (if auth-info
         (progn
-          (efrit-agent--log "DEBUG" "Found API key entry")
+          (efrit-agent--log 'debug "Found API key entry")
           (if (functionp secret)
               (funcall secret)
             secret))
-      (efrit-agent--log "ERROR" "No API key found in .authinfo for api.anthropic.com")
+      (efrit-agent--log 'error "No API key found in .authinfo for api.anthropic.com")
       nil)))
 
 (defun efrit-agent--build-system-prompt ()
@@ -220,30 +202,30 @@ Work step-by-step until the goal is achieved.")
   "Validate HTTP response and extract body. Returns (success . body-text)."
   (with-current-buffer response-buffer
     (goto-char (point-min))
-    (efrit-agent--log "DEBUG" "=== HTTP RESPONSE HEADERS ===")
+    (efrit-agent--log 'debug "=== HTTP RESPONSE HEADERS ===")
     (let ((header-end (save-excursion (search-forward-regexp "^$" nil t))))
       (when header-end
-        (efrit-agent--log "DEBUG" (buffer-substring-no-properties (point-min) header-end))
+        (efrit-agent--log 'debug (buffer-substring-no-properties (point-min) header-end))
         
         ;; Check HTTP status
         (goto-char (point-min))
         (if (looking-at "HTTP/[0-9.]+ \\([0-9]+\\)")
             (let ((status-code (string-to-number (match-string 1))))
-              (efrit-agent--log "DEBUG" "HTTP status code: %d" status-code)
+              (efrit-agent--log 'debug "HTTP status code: %d" status-code)
               (if (= status-code 200)
                   (progn
                     (goto-char header-end)
                     (let ((body-text (buffer-substring-no-properties (point) (point-max))))
-                      (efrit-agent--log "DEBUG" "Response body length: %d characters" (length body-text))
+                      (efrit-agent--log 'debug "Response body length: %d characters" (length body-text))
                       (cons t body-text)))
-                (efrit-agent--log "ERROR" "HTTP error %d" status-code)
+                (efrit-agent--log 'error "HTTP error %d" status-code)
                 (cons nil (format "HTTP error %d" status-code))))
-          (efrit-agent--log "ERROR" "Invalid HTTP response format")
+          (efrit-agent--log 'error "Invalid HTTP response format")
           (cons nil "Invalid HTTP response format"))))))
 
 (defun efrit-agent--parse-api-response (response-buffer)
   "Parse Claude API response from RESPONSE-BUFFER and extract content."
-  (efrit-agent--log "DEBUG" "Parsing API response")
+  (efrit-agent--log 'debug "Parsing API response")
   (let ((validation (efrit-agent--validate-http-response response-buffer)))
     (if (car validation)
         (let ((raw-response (cdr validation)))
@@ -254,12 +236,12 @@ Work step-by-step until the goal is achieved.")
                      (json-key-type 'string)
                      (response (json-read-from-string raw-response)))
                 
-                (efrit-agent--log "DEBUG" "JSON parsed successfully")
+                (efrit-agent--log 'debug "JSON parsed successfully")
                 
                 ;; Check for API errors first
                 (if-let* ((error-obj (gethash "error" response)))
                     (progn
-                      (efrit-agent--log "ERROR" "API error: %s - %s" 
+                      (efrit-agent--log 'error "API error: %s - %s" 
                                        (gethash "type" error-obj "unknown")
                                        (gethash "message" error-obj "no message"))
                       (kill-buffer response-buffer)
@@ -267,50 +249,50 @@ Work step-by-step until the goal is achieved.")
                   
                   ;; Extract content
                   (let ((content (gethash "content" response)))
-                    (efrit-agent--log "DEBUG" "Content array has %d items" (if content (length content) 0))
+                    (efrit-agent--log 'debug "Content array has %d items" (if content (length content) 0))
                     (kill-buffer response-buffer)
                     content)))
             
             (json-error
-             (efrit-agent--log "ERROR" "JSON parse error: %s" (error-message-string err))
-             (efrit-agent--log "ERROR" "Raw response: %s" (substring raw-response 0 (min 500 (length raw-response))))
+             (efrit-agent--log 'error "JSON parse error: %s" (error-message-string err))
+             (efrit-agent--log 'error "Raw response: %s" (substring raw-response 0 (min 500 (length raw-response))))
              (kill-buffer response-buffer)
              nil)
             
             (error
-             (efrit-agent--log "ERROR" "Parse error: %s" (error-message-string err))
+             (efrit-agent--log 'error "Parse error: %s" (error-message-string err))
              (kill-buffer response-buffer)
              nil)))
       
       ;; HTTP validation failed
-      (efrit-agent--log "ERROR" "HTTP validation failed: %s" (cdr validation))
+      (efrit-agent--log 'error "HTTP validation failed: %s" (cdr validation))
       (kill-buffer response-buffer)
       nil)))
 
 (defun efrit-agent--consult-llm-callback (session callback-fn)
   "Callback function to handle LLM response for SESSION."
   (lambda (status)
-    (efrit-agent--log "DEBUG" "Callback invoked with status: %s" status)
+    (efrit-agent--log 'debug "Callback invoked with status: %s" status)
     (condition-case err
         (let ((content (efrit-agent--parse-api-response (current-buffer))))
           (if content
               (progn
-                (efrit-agent--log "INFO" "Successfully parsed API response")
+                (efrit-agent--log 'info "Successfully parsed API response")
                 (funcall callback-fn session content nil))
-            (efrit-agent--log "ERROR" "Failed to parse API response")
+            (efrit-agent--log 'error "Failed to parse API response")
             (funcall callback-fn session nil "Failed to parse API response")))
       (error
-       (efrit-agent--log "ERROR" "Callback error: %s" (error-message-string err))
+       (efrit-agent--log 'error "Callback error: %s" (error-message-string err))
        (funcall callback-fn session nil (format "Callback error: %s" (error-message-string err)))))))
 
 (defun efrit-agent--consult-llm-async (session prompt callback-fn)
   "Send PROMPT to LLM backend asynchronously and call CALLBACK-FN with result."
-  (efrit-agent--log "INFO" "Starting API request to Claude")
+  (efrit-agent--log 'info "Starting API request to Claude")
   (condition-case api-err
       (let* ((api-key (efrit-agent--get-api-key)))
         (if (not api-key)
             (progn
-              (efrit-agent--log "ERROR" "No API key available")
+              (efrit-agent--log 'error "No API key available")
               (funcall callback-fn session nil "No API key available. Check your .authinfo file."))
           
           (let* ((url-request-method "POST")
@@ -338,65 +320,65 @@ Work step-by-step until the goal is achieved.")
                  (url-request-data
                   (encode-coding-string (json-encode request-data) 'utf-8)))
             
-            (efrit-agent--log "DEBUG" "Request payload size: %d bytes" (length url-request-data))
-            (efrit-agent--log "DEBUG" "Model: %s, Max tokens: %d" efrit-agent-model efrit-agent-max-tokens)
-            (efrit-agent--log "INFO" "Sending request to %s" efrit-agent-api-url)
+            (efrit-agent--log 'debug "Request payload size: %d bytes" (length url-request-data))
+            (efrit-agent--log 'debug "Model: %s, Max tokens: %d" efrit-agent-model efrit-agent-max-tokens)
+            (efrit-agent--log 'info "Sending request to %s" efrit-agent-api-url)
             
             (url-retrieve efrit-agent-api-url 
                           (efrit-agent--consult-llm-callback session callback-fn)))))
     (error
-     (efrit-agent--log "ERROR" "API setup error: %s" (error-message-string api-err))
+     (efrit-agent--log 'error "API setup error: %s" (error-message-string api-err))
      (funcall callback-fn session nil (format "API setup error: %s" (error-message-string api-err))))))
 
 (defun efrit-agent--extract-text-from-content (content)
   "Extract text content from Claude's CONTENT array."
-  (efrit-agent--log "DEBUG" "Extracting text from content array")
+  (efrit-agent--log 'debug "Extracting text from content array")
   (let ((text ""))
     (when content
       (dotimes (i (length content))
         (let* ((item (aref content i))
                (type (gethash "type" item)))
-          (efrit-agent--log "DEBUG" "Processing content item %d: type=%s" i type)
+          (efrit-agent--log 'debug "Processing content item %d: type=%s" i type)
           (when (string= type "text")
             (when-let* ((item-text (gethash "text" item)))
-              (efrit-agent--log "DEBUG" "Found text content: %s" 
+              (efrit-agent--log 'debug "Found text content: %s" 
                                (substring item-text 0 (min 100 (length item-text))))
               (setq text (concat text item-text)))))))
-    (efrit-agent--log "DEBUG" "Total extracted text length: %d" (length text))
+    (efrit-agent--log 'debug "Total extracted text length: %d" (length text))
     text))
 
 (defun efrit-agent--parse-signal (content)
   "Parse Claude's CONTENT array into signal plist."
-  (efrit-agent--log "DEBUG" "Parsing signal from content")
+  (efrit-agent--log 'debug "Parsing signal from content")
   (condition-case err
       (let ((text (efrit-agent--extract-text-from-content content)))
-        (efrit-agent--log "DEBUG" "Checking if response is JSON format")
+        (efrit-agent--log 'debug "Checking if response is JSON format")
         (if (string-match-p "^[[:space:]]*{" text)
             ;; Try to parse as JSON
             (progn
-              (efrit-agent--log "DEBUG" "Attempting JSON parse of response")
+              (efrit-agent--log 'debug "Attempting JSON parse of response")
               (let* ((json-object-type 'hash-table)
                      (json-array-type 'list)
                      (json-key-type 'string)
                      (parsed (json-read-from-string text)))
-                (efrit-agent--log "INFO" "Successfully parsed JSON response")
+                (efrit-agent--log 'info "Successfully parsed JSON response")
                 (let ((status (intern (or (gethash "status" parsed) "executing")))
                       (next-action (gethash "next_action" parsed))
                       (rationale (gethash "rationale" parsed)))
-                  (efrit-agent--log "DEBUG" "Parsed status: %s" status)
-                  (efrit-agent--log "DEBUG" "Next action type: %s" (and next-action (plist-get next-action :type)))
+                  (efrit-agent--log 'debug "Parsed status: %s" status)
+                  (efrit-agent--log 'debug "Next action type: %s" (and next-action (plist-get next-action :type)))
                   (list :status status
                         :todos (gethash "todos" parsed)
                         :next_action next-action
                         :rationale rationale))))
           ;; If not JSON, create a simple action to execute the text as elisp
           (progn
-            (efrit-agent--log "INFO" "Response is not JSON, treating as elisp code")
+            (efrit-agent--log 'info "Response is not JSON, treating as elisp code")
             (list :status 'executing
                   :next_action `(:type eval :content ,text)
                   :rationale "Executing response as elisp"))))
     (error
-     (efrit-agent--log "ERROR" "Signal parse error: %s" (error-message-string err))
+     (efrit-agent--log 'error "Signal parse error: %s" (error-message-string err))
      (list :status 'error :rationale (format "Parse error: %s" (error-message-string err))))))
 
 ;;; Action Execution
@@ -407,53 +389,53 @@ Work step-by-step until the goal is achieved.")
         (content (plist-get action :content))
         (result (make-hash-table :test 'equal)))
     
-    (efrit-agent--log "INFO" "Executing action: %s" action-type)
-    (efrit-agent--log "DEBUG" "Action content: %s" (substring content 0 (min 200 (length content))))
+    (efrit-agent--log 'info "Executing action: %s" action-type)
+    (efrit-agent--log 'debug "Action content: %s" (substring content 0 (min 200 (length content))))
     
     (puthash "timestamp" (current-time) result)
     (puthash "action_type" action-type result)
     (condition-case err
         (pcase action-type
           ('eval
-           (efrit-agent--log "DEBUG" "Loading efrit-tools for eval")
+           (efrit-agent--log 'debug "Loading efrit-tools for eval")
            (require 'efrit-tools)
-           (efrit-agent--log "DEBUG" "Evaluating elisp: %s" content)
+           (efrit-agent--log 'debug "Evaluating elisp: %s" content)
            (let ((eval-result (efrit-tools-eval-sexp content)))
-             (efrit-agent--log "INFO" "Eval successful, result: %s" (prin1-to-string eval-result))
+             (efrit-agent--log 'info "Eval successful, result: %s" (prin1-to-string eval-result))
              (puthash "success" t result)
              (puthash "output" (prin1-to-string eval-result) result)))
           ('shell
-           (efrit-agent--log "DEBUG" "Executing shell command: %s" content)
+           (efrit-agent--log 'debug "Executing shell command: %s" content)
            (let ((shell-result (shell-command-to-string content)))
-             (efrit-agent--log "INFO" "Shell command completed")
+             (efrit-agent--log 'info "Shell command completed")
              (puthash "success" t result)
              (puthash "output" shell-result result)))
           ('user_input
-           (efrit-agent--log "DEBUG" "Requesting user input: %s" content)
+           (efrit-agent--log 'debug "Requesting user input: %s" content)
            (let ((user-response (read-string (format "Efrit needs input: %s " content))))
-             (efrit-agent--log "INFO" "User provided input: %s" user-response)
+             (efrit-agent--log 'info "User provided input: %s" user-response)
              (puthash "success" t result)
              (puthash "output" user-response result)))
           (_
-           (efrit-agent--log "ERROR" "Unknown action type: %s" action-type)
+           (efrit-agent--log 'error "Unknown action type: %s" action-type)
            (puthash "success" nil result)
            (puthash "error" (format "Unknown action type: %s" action-type) result)))
       (error
-       (efrit-agent--log "ERROR" "Action execution failed: %s" (error-message-string err))
+       (efrit-agent--log 'error "Action execution failed: %s" (error-message-string err))
        (puthash "success" nil result)
        (puthash "error" (error-message-string err) result)))
     
-    (efrit-agent--log "DEBUG" "Action execution result: success=%s" (gethash "success" result))
+    (efrit-agent--log 'debug "Action execution result: success=%s" (gethash "success" result))
     result))
 
 ;;; Main Agent Loop
 
 (defun efrit-agent--process-response (session content error-msg)
   "Process LLM CONTENT for SESSION and continue or complete."
-  (efrit-agent--log "INFO" "Processing agent response")
+  (efrit-agent--log 'info "Processing agent response")
   (if error-msg
       (progn
-        (efrit-agent--log "ERROR" "Response processing failed: %s" error-msg)
+        (efrit-agent--log 'error "Response processing failed: %s" error-msg)
         (message "🔥 Agent error: %s" error-msg)
         (efrit-agent--show-debug-buffer))
     (let ((signal (efrit-agent--parse-signal content)))
@@ -478,7 +460,7 @@ Work step-by-step until the goal is achieved.")
          ;; Execute next action
          (let ((next-action (plist-get signal :next_action)))
            (when next-action
-             (efrit-agent--log "INFO" "Executing next action: %s" (plist-get next-action :type))
+             (efrit-agent--log 'info "Executing next action: %s" (plist-get next-action :type))
          (message "🔧 Agent executing: %s" (plist-get next-action :type))
              (let ((result (efrit-agent--execute-action next-action)))
                (efrit-agent--update-session session next-action result signal)
@@ -495,10 +477,10 @@ Work step-by-step until the goal is achieved.")
 (defun efrit-agent-solve (goal &optional context session-id)
   "Autonomous problem-solving mode for GOAL."
   (interactive "sGoal: ")
-  (efrit-agent--log "INFO" "Starting new agent session with goal: %s" goal)
+  (efrit-agent--log 'info "Starting new agent session with goal: %s" goal)
   (let ((session (efrit-agent--create-session goal context session-id)))
     (setq efrit-agent--current-session session)
-    (efrit-agent--log "DEBUG" "Session created with ID: %s" (gethash "id" session))
+    (efrit-agent--log 'debug "Session created with ID: %s" (gethash "id" session))
     (message "🚀 Efrit Agent starting: %s" goal)
     (when efrit-agent-debug
       (message "Debug logging enabled. Use M-x efrit-agent--show-debug-buffer to view logs.")

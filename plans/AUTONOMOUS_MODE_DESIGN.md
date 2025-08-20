@@ -110,22 +110,11 @@ Respond with your next action as JSON...
 - Session state persists across interruptions
 - Markdown reports generated automatically
 
-### 4. **Model Backend Abstraction**
-```elisp
-(defcustom efrit-agent-backend "claude-3.5-sonnet"
-  "Default model backend for agent mode."
-  :type '(choice (const "claude-3.5-sonnet")
-                 (const "gpt-4") 
-                 (const "local-llama")
-                 (string :tag "Custom API endpoint")))
-```
-
 ## Implementation Plan
 
-1. **`efrit-agent.el`** - Core agent loop
+1. **`efrit-agent.el`** - Core agent loop (✅ implemented)
 2. **`efrit-agent-memory.el`** - Session state management  
-3. **`efrit-agent-backend.el`** - Model abstraction layer
-4. **`efrit-agent-ui.el`** - TODO display and progress UI
+3. **`efrit-agent-ui.el`** - TODO display and progress UI
 
 ## Test Case: ChatGPT-Shell Upgrade
 
