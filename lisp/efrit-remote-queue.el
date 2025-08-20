@@ -18,6 +18,7 @@
 (require 'filenotify)
 (require 'json)
 (require 'efrit-tools)
+(require 'efrit-config)
 
 ;; Conditional requires for efrit subsystems
 (declare-function efrit-do "efrit-do")
@@ -33,9 +34,11 @@
   :group 'efrit
   :prefix "efrit-remote-queue-")
 
-(defcustom efrit-remote-queue-directory "~/.emacs.d/efrit-queue"
-  "Root directory for the remote queue system."
-  :type 'directory
+(defcustom efrit-remote-queue-directory nil
+  "Root directory for the remote queue system.
+If nil, uses the default location in the efrit data directory."
+  :type '(choice (const :tag "Default location" nil)
+                 (directory :tag "Custom directory"))
   :group 'efrit-remote-queue)
 
 (defcustom efrit-remote-queue-max-file-size (* 1024 1024)
@@ -84,9 +87,14 @@
 
 ;;; Directory management
 
+(defun efrit-remote-queue--get-base-directory ()
+  "Get the base queue directory, using default if not configured."
+  (or efrit-remote-queue-directory 
+      (efrit-config-queue-dir)))
+
 (defun efrit-remote-queue--ensure-directories ()
   "Ensure all required queue directories exist."
-  (let ((queue-dir (expand-file-name efrit-remote-queue-directory)))
+  (let ((queue-dir (efrit-remote-queue--get-base-directory)))
     (dolist (subdir '("requests" "responses" "processing" "archive"))
       (let ((dir (expand-file-name subdir queue-dir)))
         (unless (file-directory-p dir)
@@ -96,7 +104,7 @@
   "Get the full path for a queue directory of TYPE."
   (expand-file-name 
    type 
-   (expand-file-name efrit-remote-queue-directory)))
+   (efrit-remote-queue--get-base-directory)))
 
 ;;; Request/Response file handling
 

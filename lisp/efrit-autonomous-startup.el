@@ -16,7 +16,7 @@
 ;; Usage:
 ;;   emacs --daemon=efrit-ai --load efrit-autonomous-startup.el
 ;;
-;; The AI agent communicates via the file queue system at ~/.emacs.d/efrit-queue-ai/
+;; The AI agent communicates via the file queue system in the efrit data directory
 
 ;;; Code:
 
@@ -41,7 +41,7 @@
 (message "Efrit Autonomous: Starting AI development environment...")
 
 ;; Set up isolated working directory
-(defvar efrit-autonomous-work-dir (expand-file-name "~/.emacs.d/efrit-ai-workspace")
+(defvar efrit-autonomous-work-dir nil
   "Working directory for autonomous AI development.")
 
 ;; Create workspace if it doesn't exist
@@ -66,7 +66,7 @@
 (add-to-list 'load-path efrit-source-dir)
 
 ;; Configure autonomous queue system BEFORE loading modules
-(defvar efrit-autonomous-queue-dir "~/.emacs.d/efrit-queue-ai"
+(defvar efrit-autonomous-queue-dir nil
   "Queue directory for autonomous AI communication.")
 
 (message "Efrit Autonomous: Setting up queue system at %s" efrit-autonomous-queue-dir)
@@ -77,6 +77,12 @@
 ;; Load Efrit modules in dependency order
 (condition-case err
     (progn
+      (require 'efrit-config)
+      ;; Initialize directories after config is loaded
+      (setq efrit-autonomous-work-dir (efrit-config-workspace-dir))
+      (setq efrit-autonomous-queue-dir (efrit-config-data-file "queue-ai"))
+      (message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
+      (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
       (require 'efrit-debug nil t) ; Optional debug module
       (require 'efrit-command)

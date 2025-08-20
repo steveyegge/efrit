@@ -21,9 +21,8 @@ dist/
 # macOS
 .DS_Store
 
-# Efrit specific
-.emacs.d/efrit-queue*/
-.emacs.d/efrit-ai-workspace/
+# Efrit specific - data directory (user state)
+.efrit/
 
 # IDE files
 .vscode/

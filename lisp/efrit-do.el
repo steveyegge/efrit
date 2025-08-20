@@ -22,6 +22,7 @@
 (declare-function efrit--insert-prompt "efrit-chat")
 
 (require 'efrit-tools)
+(require 'efrit-config)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -66,9 +67,11 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-do-context-file "~/.emacs.d/efrit-do-context.el"
-  "File to persist context data."
-  :type 'file
+(defcustom efrit-do-context-file nil
+  "File to persist context data.
+If nil, uses the default location in the efrit data directory."
+  :type '(choice (const :tag "Default location" nil)
+                 (file :tag "Custom file"))
   :group 'efrit-do)
 
 (defcustom efrit-do-max-retries 3
@@ -256,7 +259,8 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 (defun efrit-do--save-context ()
   "Save context ring to file."
   (when efrit-do--context-ring
-    (let ((file (expand-file-name efrit-do-context-file))
+    (let ((file (or efrit-do-context-file 
+                   (efrit-config-context-file "efrit-do-context.el")))
           (items (mapcar (lambda (item)
                           ;; Create a copy without window-config for serialization
                           (efrit-do-context-item-create
@@ -281,7 +285,8 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 
 (defun efrit-do--load-context ()
   "Load context ring from file."
-  (let ((file (expand-file-name efrit-do-context-file)))
+  (let ((file (or efrit-do-context-file 
+                 (efrit-config-context-file "efrit-do-context.el"))))
     (when (file-readable-p file)
       (condition-case err
           (progn

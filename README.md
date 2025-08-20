@@ -67,6 +67,27 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
+### Data Directory
+
+Efrit stores all user data (sessions, context, queues, logs) in `~/.emacs.d/.efrit/`:
+
+```
+~/.emacs.d/.efrit/
+├── cache/          # Temporary cache files
+├── context/        # Context persistence (efrit-do)
+├── queues/         # AI-to-efrit communication
+├── logs/           # Debug and activity logs
+├── sessions/       # Session data
+└── workspace/      # Autonomous workspace files
+```
+
+**Customization**: Configure location via `efrit-data-directory` variable:
+```elisp
+(setq efrit-data-directory "~/my-custom-efrit-data")
+```
+
+**Migration**: Existing efrit files are automatically migrated to the new structure.
+
 ### 🆕 Enable Agent Communication
 
 Start the remote queue to allow AI agents to interact with Efrit:
@@ -76,7 +97,7 @@ Start the remote queue to allow AI agents to interact with Efrit:
 (efrit-remote-queue-start)  ; or C-c C-e q
 ```
 
-This creates `~/.emacs.d/efrit-queue/` for AI agent communication.
+This creates `~/.emacs.d/.efrit/queues/` for AI agent communication.
 
 ## Usage
 
