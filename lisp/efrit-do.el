@@ -104,6 +104,12 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 (defvar efrit-do--last-result nil
   "Result of the last executed command.")
 
+(defvar efrit-do--current-todos nil
+  "Current TODO list for the active command session.")
+
+(defvar efrit-do--todo-counter 0
+  "Counter for generating unique TODO IDs.")
+
 ;;; Context system
 
 (cl-defstruct (efrit-do-context-item
@@ -169,6 +175,81 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   "Clear the context ring."
   (when efrit-do--context-ring
     (setq efrit-do--context-ring (make-ring efrit-do-context-size))))
+
+;;; TODO Management
+
+(cl-defstruct (efrit-do-todo-item
+                (:constructor efrit-do-todo-item-create)
+                (:type vector))
+  "TODO item structure."
+  id
+  content
+  status    ; 'todo, 'in-progress, 'completed
+  priority  ; 'low, 'medium, 'high
+  created-at
+  completed-at)
+
+(defun efrit-do--generate-todo-id ()
+  "Generate a unique TODO ID."
+  (setq efrit-do--todo-counter (1+ efrit-do--todo-counter))
+  (format "efrit-todo-%d" efrit-do--todo-counter))
+
+(defun efrit-do--add-todo (content &optional priority)
+  "Add a new TODO item with CONTENT and optional PRIORITY."
+  (let ((todo (efrit-do-todo-item-create
+               :id (efrit-do--generate-todo-id)
+               :content content
+               :status 'todo
+               :priority (or priority 'medium)
+               :created-at (current-time)
+               :completed-at nil)))
+    (push todo efrit-do--current-todos)
+    todo))
+
+(defun efrit-do--update-todo-status (id new-status)
+  "Update TODO with ID to NEW-STATUS."
+  (when-let* ((todo (seq-find (lambda (item) 
+                               (string= (efrit-do-todo-item-id item) id))
+                             efrit-do--current-todos)))
+    (setf (efrit-do-todo-item-status todo) new-status)
+    (when (eq new-status 'completed)
+      (setf (efrit-do-todo-item-completed-at todo) (current-time)))
+    todo))
+
+(defun efrit-do--format-todos-for-display ()
+  "Format current TODOs for user display."
+  (if (null efrit-do--current-todos)
+      "No current TODOs"
+    (let ((sorted-todos (sort (copy-sequence efrit-do--current-todos)
+                             (lambda (a b)
+                               (let ((status-order '(in-progress todo completed))
+                                     (priority-order '(high medium low)))
+                                 (or (< (seq-position status-order (efrit-do-todo-item-status a))
+                                       (seq-position status-order (efrit-do-todo-item-status b)))
+                                     (and (eq (efrit-do-todo-item-status a) (efrit-do-todo-item-status b))
+                                          (< (seq-position priority-order (efrit-do-todo-item-priority a))
+                                             (seq-position priority-order (efrit-do-todo-item-priority b))))))))))
+      (mapconcat (lambda (todo)
+                   (format "%s [%s] %s (%s)"
+                           (pcase (efrit-do-todo-item-status todo)
+                             ('todo "☐")
+                             ('in-progress "⟳")
+                             ('completed "☑"))
+                           (upcase (symbol-name (efrit-do-todo-item-priority todo)))
+                           (efrit-do-todo-item-content todo)
+                           (efrit-do-todo-item-id todo)))
+                 sorted-todos "\n"))))
+
+(defun efrit-do--format-todos-for-prompt ()
+  "Format current TODOs for AI prompt context."
+  (if (null efrit-do--current-todos)
+      ""
+    (concat "\n\nCURRENT TODOs:\n" (efrit-do--format-todos-for-display) "\n")))
+
+(defun efrit-do--clear-todos ()
+  "Clear all current TODOs."
+  (setq efrit-do--current-todos nil)
+  (setq efrit-do--todo-counter 0))
 
 ;;; Context persistence
 
@@ -367,7 +448,7 @@ Returns a formatted string with execution results or empty string on failure."
                      ((stringp tool-input) tool-input)
                      ((hash-table-p tool-input) 
                       (seq-some (lambda (key) (gethash key tool-input))
-                                '("expr" "expression" "code")))
+                                '("expr" "expression" "code" "command")))
                      (t (format "%S" tool-input)))))
     
     ;; Sanitize potentially over-escaped strings
@@ -378,21 +459,57 @@ Returns a formatted string with execution results or empty string on failure."
       (message "Tool use: %s with input: %S (extracted: %S)" 
                tool-name tool-input input-str))
     
-    (if (and (string= tool-name "eval_sexp") input-str)
-        ;; Validate elisp syntax before execution
-        (let ((validation (efrit-do--validate-elisp input-str)))
-          (if (car validation)
-              ;; Valid elisp - proceed with execution
-              (condition-case eval-err
-                  (let ((eval-result (efrit-tools-eval-sexp input-str)))
-                    (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
-                (error
-                 (format "\n[Error executing %s: %s]" 
-                         input-str (error-message-string eval-err))))
-            ;; Invalid elisp - report syntax error
-            (format "\n[Syntax Error in %s: %s]" 
-                    input-str (cdr validation))))
-      "")))
+    (cond
+     ;; Handle elisp evaluation
+     ((and (string= tool-name "eval_sexp") input-str)
+      ;; Validate elisp syntax before execution
+      (let ((validation (efrit-do--validate-elisp input-str)))
+        (if (car validation)
+            ;; Valid elisp - proceed with execution
+            (condition-case eval-err
+                (let ((eval-result (efrit-tools-eval-sexp input-str)))
+                  (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
+              (error
+               (format "\n[Error executing %s: %s]" 
+                       input-str (error-message-string eval-err))))
+          ;; Invalid elisp - report syntax error
+          (format "\n[Syntax Error in %s: %s]" 
+                  input-str (cdr validation)))))
+     
+     ;; Handle shell command execution
+     ((and (string= tool-name "shell_exec") input-str)
+      (condition-case shell-err
+          (let ((shell-result (shell-command-to-string input-str)))
+            (format "\n[Executed: %s]\n[Result: %s]" input-str shell-result))
+        (error
+         (format "\n[Error executing shell command %s: %s]" 
+                 input-str (error-message-string shell-err)))))
+     
+     ;; Handle TODO management
+     ((string= tool-name "todo_add")
+      (let* ((content (if (hash-table-p tool-input)
+                         (gethash "content" tool-input)
+                       tool-input))
+             (priority (when (hash-table-p tool-input)
+                        (intern (or (gethash "priority" tool-input) "medium"))))
+             (todo (efrit-do--add-todo content priority)))
+        (format "\n[Added TODO: %s (%s)]" content (efrit-do-todo-item-id todo))))
+     
+     ((string= tool-name "todo_update")
+      (let* ((id (if (hash-table-p tool-input)
+                    (gethash "id" tool-input)
+                  input-str))
+             (status (when (hash-table-p tool-input)
+                      (intern (gethash "status" tool-input)))))
+        (if (efrit-do--update-todo-status id status)
+            (format "\n[Updated TODO %s to %s]" id status)
+          (format "\n[Error: TODO %s not found]" id))))
+     
+     ((string= tool-name "todo_show")
+      (format "\n[Current TODOs:]\n%s" (efrit-do--format-todos-for-display)))
+     
+     ;; Unknown tool
+     (t ""))))
 
 ;;; Command execution
 
@@ -422,7 +539,10 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           
           "IMPORTANT: You are in COMMAND MODE. This means:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
-          "- Use the eval_sexp tool to execute the code immediately\n"
+          "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
+          "- BE PROACTIVE: For reports, lists, or analysis tasks, create dedicated buffers with nice formatting\n"
+          "- USE TODO MANAGEMENT: For complex tasks, break them into smaller TODO items using todo_add, todo_update, and todo_show\n"
+          "- TRACK PROGRESS: Mark TODOs as 'in-progress' when starting work, 'completed' when done\n"
           "- DO NOT explain what you're doing unless asked\n"
           "- DO NOT ask for clarification - make reasonable assumptions\n"
           "- ONLY use documented Emacs functions - NEVER invent function names\n"
@@ -465,7 +585,8 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
-          (or retry-info ""))))
+          (or retry-info "")
+          (efrit-do--format-todos-for-prompt))))
 
 (defun efrit-do--format-result (command result)
   "Format COMMAND and RESULT for display."
@@ -475,23 +596,77 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
     (insert result)
     (buffer-string)))
 
+(defun efrit-do--create-report-buffer (title content &optional mode)
+  "Create a dedicated report buffer with TITLE and CONTENT.
+MODE can be 'text, 'org, or nil (auto-detect)."
+  (let* ((buffer-name (format "*efrit-report: %s*" (truncate-string-to-width title 30 nil nil t)))
+         (buffer (get-buffer-create buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        
+        ;; Insert header
+        (insert (format "# Report: %s\n" title))
+        (insert (format "Generated: %s\n\n" (current-time-string)))
+        
+        ;; Insert content with formatting
+        (if (string-match-p "^[a-zA-Z0-9_-]+/" content)
+            ;; Looks like file paths - format as list
+            (progn
+              (insert "## Files:\n\n")
+              (dolist (line (split-string content "\n" t))
+                (when (string-match "^\\(.+\\)" line)
+                  (insert (format "- `%s`\n" (match-string 1 line))))))
+          ;; Other content - insert as-is with code formatting if appropriate
+          (insert "## Results:\n\n")
+          (insert "```\n")
+          (insert content)
+          (insert "\n```\n"))
+        
+        ;; Set appropriate mode
+        (cond
+         ((eq mode 'org) (org-mode))
+         ((eq mode 'text) (text-mode))
+         (t (if (fboundp 'markdown-mode) (markdown-mode) (text-mode))))
+        
+        (goto-char (point-min))
+        (setq buffer-read-only t)))
+    
+    ;; Display the buffer
+    (display-buffer buffer '(display-buffer-reuse-window
+                            display-buffer-pop-up-window
+                            (window-height . 0.5)))
+    buffer))
+
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.
 If ERROR-P is non-nil, this indicates an error result.
-When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
+When `efrit-do-show-errors-only' is non-nil, only show buffer for errors.
+For report-like commands, creates dedicated report buffers."
   (when efrit-do-show-results
-    (with-current-buffer (get-buffer-create efrit-do-buffer-name)
-      (let ((inhibit-read-only t))
-        (goto-char (point-max))
-        (unless (bobp)
-          (insert "\n\n"))
-        (insert (efrit-do--format-result command result)))
-      ;; Only display buffer if not in errors-only mode, or if this is an error
-      (when (or (not efrit-do-show-errors-only) error-p)
-        (display-buffer (current-buffer) 
-                        '(display-buffer-reuse-window
-                          display-buffer-below-selected
-                          (window-height . 10)))))))
+    ;; Check if this looks like a report command
+    (let ((is-report (string-match-p "\\breport\\b\\|\\blist\\b\\|\\bshow\\b\\|\\buntracked\\b" command)))
+      
+      (if (and is-report (not error-p) result)
+          ;; Create a dedicated report buffer for report-like commands
+          (let ((title (if (string-match "\\b\\(report\\|list\\|show\\).*\\b\\(on\\|for\\|of\\)\\s-+\\(.+\\)" command)
+                          (match-string 3 command)
+                        command)))
+            (efrit-do--create-report-buffer title result))
+        
+        ;; Use standard results buffer for other commands
+        (with-current-buffer (get-buffer-create efrit-do-buffer-name)
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (unless (bobp)
+              (insert "\n\n"))
+            (insert (efrit-do--format-result command result)))
+          ;; Only display buffer if not in errors-only mode, or if this is an error
+          (when (or (not efrit-do-show-errors-only) error-p)
+            (display-buffer (current-buffer) 
+                            '(display-buffer-reuse-window
+                              display-buffer-below-selected
+                              (window-height . 10))))))))
 
 (defun efrit-do--execute-command (command &optional retry-count error-msg previous-code)
   "Execute natural language COMMAND and return the result.
@@ -517,7 +692,35 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                             ("input_schema" . (("type" . "object")
                                               ("properties" . (("expr" . (("type" . "string")
                                                                           ("description" . "The Elisp expression to evaluate")))))
-                                              ("required" . ["expr"]))))])))
+                                              ("required" . ["expr"]))))
+                           (("name" . "shell_exec")
+                            ("description" . "Execute a shell command and return the result.")
+                            ("input_schema" . (("type" . "object")
+                                              ("properties" . (("command" . (("type" . "string")
+                                                                             ("description" . "The shell command to execute")))))
+                                              ("required" . ["command"]))))
+                           (("name" . "todo_add")
+                            ("description" . "Add a new TODO item to track progress.")
+                            ("input_schema" . (("type" . "object")
+                                              ("properties" . (("content" . (("type" . "string")
+                                                                             ("description" . "The TODO item description")))
+                                                              ("priority" . (("type" . "string")
+                                                                            ("enum" . ["low" "medium" "high"])
+                                                                            ("description" . "Priority level")))))
+                                              ("required" . ["content"]))))
+                           (("name" . "todo_update")
+                            ("description" . "Update the status of a TODO item.")
+                            ("input_schema" . (("type" . "object")
+                                              ("properties" . (("id" . (("type" . "string")
+                                                                        ("description" . "The TODO item ID")))
+                                                              ("status" . (("type" . "string")
+                                                                          ("enum" . ["todo" "in-progress" "completed"])
+                                                                          ("description" . "New status")))))
+                                              ("required" . ["id" "status"]))))
+                           (("name" . "todo_show")
+                            ("description" . "Show all current TODO items.")
+                            ("input_schema" . (("type" . "object")
+                                              ("properties" . ()))))])))
              (url-request-data
               (encode-coding-string (json-encode request-data) 'utf-8)))
         
@@ -705,11 +908,28 @@ error details back to Claude for correction."
   (message "History and context cleared"))
 
 ;;;###autoload
+(defun efrit-do-show-todos ()
+  "Show current TODO items."
+  (interactive)
+  (with-output-to-temp-buffer "*efrit-do-todos*"
+    (princ "Current efrit-do TODOs:\n\n")
+    (princ (efrit-do--format-todos-for-display))
+    (princ "\n\nUse efrit-do-clear-todos to clear all TODOs.")))
+
+;;;###autoload
+(defun efrit-do-clear-todos ()
+  "Clear all TODO items."
+  (interactive)
+  (efrit-do--clear-todos)
+  (message "All TODOs cleared"))
+
+;;;###autoload
 (defun efrit-do-clear-all ()
-  "Clear all efrit-do state: history, context, results buffer, and conversations."
+  "Clear all efrit-do state: history, context, results buffer, TODOs, and conversations."
   (interactive)
   (setq efrit-do-history nil)
   (efrit-do--clear-context)
+  (efrit-do--clear-todos)
   (setq efrit-do--last-result nil)
   
   ;; Clear results buffer if it exists
@@ -729,14 +949,15 @@ error details back to Claude for correction."
   "Interactive reset with options for different levels of clearing."
   (interactive)
   (let ((choice (read-char-choice 
-                 "Reset efrit-do: (h)istory only, (c)ontext only, (r)esults buffer, (a)ll state, or (q)uit? "
-                 '(?h ?c ?r ?a ?q))))
+                 "Reset efrit-do: (h)istory, (c)ontext, (r)esults, (t)odos, (a)ll state, or (q)uit? "
+                 '(?h ?c ?r ?t ?a ?q))))
     (cond
      ((eq choice ?h) (setq efrit-do-history nil)
                      (setq efrit-do--last-result nil)
                      (message "Command history cleared"))
      ((eq choice ?c) (efrit-do-clear-context))
      ((eq choice ?r) (efrit-do-clear-results))
+     ((eq choice ?t) (efrit-do-clear-todos))
      ((eq choice ?a) (efrit-do-clear-all))
      ((eq choice ?q) (message "Reset cancelled")))))
 
