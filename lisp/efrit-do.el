@@ -199,6 +199,10 @@ If nil, uses the default location in the efrit data directory."
 
 (defun efrit-do--add-todo (content &optional priority)
   "Add a new TODO item with CONTENT and optional PRIORITY."
+  (unless (and content (stringp content) (not (string= "" (string-trim content))))
+    (error "TODO content must be a non-empty string"))
+  (unless (member priority '(low medium high nil))
+    (error "TODO priority must be one of: low, medium, high"))
   (let ((todo (efrit-do-todo-item-create
                :id (efrit-do--generate-todo-id)
                :content content
@@ -207,41 +211,38 @@ If nil, uses the default location in the efrit data directory."
                :created-at (current-time)
                :completed-at nil)))
     (push todo efrit-do--current-todos)
+    (efrit-log 'debug "Added TODO: %s (priority: %s)" content (or priority 'medium))
     todo))
 
 (defun efrit-do--update-todo-status (id new-status)
   "Update TODO with ID to NEW-STATUS."
+  (unless (and (stringp id) (not (string= "" id)))
+    (error "TODO ID must be a non-empty string"))
+  (unless (member new-status '(todo in-progress completed))
+    (error "TODO status must be one of: todo, in-progress, completed"))
   (when-let* ((todo (seq-find (lambda (item) 
                                (string= (efrit-do-todo-item-id item) id))
                              efrit-do--current-todos)))
     (setf (efrit-do-todo-item-status todo) new-status)
     (when (eq new-status 'completed)
       (setf (efrit-do-todo-item-completed-at todo) (current-time)))
+    (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
     todo))
 
 (defun efrit-do--format-todos-for-display ()
-  "Format current TODOs for user display."
+  "Format current TODOs for user display in raw order."
   (if (null efrit-do--current-todos)
       "No current TODOs"
-    (let ((sorted-todos (sort (copy-sequence efrit-do--current-todos)
-                             (lambda (a b)
-                               (let ((status-order '(in-progress todo completed))
-                                     (priority-order '(high medium low)))
-                                 (or (< (seq-position status-order (efrit-do-todo-item-status a))
-                                       (seq-position status-order (efrit-do-todo-item-status b)))
-                                     (and (eq (efrit-do-todo-item-status a) (efrit-do-todo-item-status b))
-                                          (< (seq-position priority-order (efrit-do-todo-item-priority a))
-                                             (seq-position priority-order (efrit-do-todo-item-priority b))))))))))
-      (mapconcat (lambda (todo)
-                   (format "%s [%s] %s (%s)"
-                           (pcase (efrit-do-todo-item-status todo)
-                             ('todo "☐")
-                             ('in-progress "⟳")
-                             ('completed "☑"))
-                           (upcase (symbol-name (efrit-do-todo-item-priority todo)))
-                           (efrit-do-todo-item-content todo)
-                           (efrit-do-todo-item-id todo)))
-                 sorted-todos "\n"))))
+    (mapconcat (lambda (todo)
+                 (format "%s [%s] %s (%s)"
+                         (pcase (efrit-do-todo-item-status todo)
+                           ('todo "☐")
+                           ('in-progress "⟳")
+                           ('completed "☑"))
+                         (upcase (symbol-name (efrit-do-todo-item-priority todo)))
+                         (efrit-do-todo-item-content todo)
+                         (efrit-do-todo-item-id todo)))
+               efrit-do--current-todos "\n")))
 
 (defun efrit-do--format-todos-for-prompt ()
   "Format current TODOs for AI prompt context."
@@ -511,10 +512,64 @@ Returns a formatted string with execution results or empty string on failure."
           (format "\n[Error: TODO %s not found]" id))))
      
      ((string= tool-name "todo_show")
-      (format "\n[Current TODOs:]\n%s" (efrit-do--format-todos-for-display)))
+     (format "\n[Current TODOs:]\n%s" (efrit-do--format-todos-for-display)))
      
-     ;; Unknown tool
-     (t ""))))
+     ;; Handle buffer creation
+     ((string= tool-name "buffer_create")
+       (let* ((name (if (hash-table-p tool-input)
+                       (gethash "name" tool-input)
+                     ""))
+              (content (if (hash-table-p tool-input)
+                          (gethash "content" tool-input)
+                        input-str))
+              (mode (when (hash-table-p tool-input)
+                      (let ((mode-str (gethash "mode" tool-input)))
+                        (when mode-str (intern mode-str))))))
+         (condition-case err
+             (let ((result (efrit-tools-create-buffer name content mode)))
+               (format "\n[%s]" result))
+           (error
+            (format "\n[Error creating buffer: %s]" (error-message-string err))))))
+      
+      ;; Handle file list formatting
+      ((string= tool-name "format_file_list")
+       (condition-case err
+           (let ((result (efrit-tools-format-file-list input-str)))
+             (format "\n[Formatted file list]\n%s" result))
+         (error
+          (format "\n[Error formatting file list: %s]" (error-message-string err)))))
+      
+      ;; Handle TODO list formatting
+      ((string= tool-name "format_todo_list")
+       (let ((sort-by (when (hash-table-p tool-input)
+                        (let ((sort-str (gethash "sort_by" tool-input)))
+                          (when sort-str (intern sort-str))))))
+         (condition-case err
+             (let ((result (efrit-tools-format-todo-list efrit-do--current-todos sort-by)))
+               (format "\n[Formatted TODO list]\n%s" result))
+           (error
+            (format "\n[Error formatting TODO list: %s]" (error-message-string err))))))
+      
+      ;; Handle display in buffer
+      ((string= tool-name "display_in_buffer")
+       (let* ((buffer-name (if (hash-table-p tool-input)
+                              (gethash "buffer_name" tool-input)
+                            "*efrit-display*"))
+              (content (if (hash-table-p tool-input)
+                          (gethash "content" tool-input)
+                        input-str))
+              (height (when (hash-table-p tool-input)
+                        (gethash "window_height" tool-input))))
+         (condition-case err
+             (let ((result (efrit-tools-display-in-buffer buffer-name content height)))
+               (format "\n[%s]" result))
+           (error
+            (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+      
+      ;; Unknown tool
+      (t 
+       (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+       (format "\n[Unknown tool: %s]" tool-name))))))
 
 ;;; Command execution
 
@@ -545,7 +600,8 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           "IMPORTANT: You are in COMMAND MODE. This means:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
           "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
-          "- BE PROACTIVE: For reports, lists, or analysis tasks, create dedicated buffers with nice formatting\n"
+          "- FOR REPORTS/LISTS: Use buffer_create to make dedicated buffers with appropriate formatting\n"
+          "- FOR FILE LISTS: Use format_file_list to format paths as markdown lists\n"  
           "- USE TODO MANAGEMENT: For complex tasks, break them into smaller TODO items using todo_add, todo_update, and todo_show\n"
           "- TRACK PROGRESS: Mark TODOs as 'in-progress' when starting work, 'completed' when done\n"
           "- DO NOT explain what you're doing unless asked\n"
@@ -570,7 +626,19 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
           "- Case changes: (upcase-region (point-min) (point-max))\n\n"
           
+          "FORMATTING AND DISPLAY TOOLS:\n"
+          "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
+          "- format_file_list: Format raw text as markdown file lists with bullet points\n"
+          "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
+          "- display_in_buffer: Display content in specific buffers with custom window height\n\n"
+          
           "Examples:\n\n"
+          
+          "User: show me untracked files in ~/.emacs.d/\n"
+          "Assistant: I'll find untracked files and create a report.\n"
+          "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
+          "Tool call: format_file_list with content: \"[shell output]\"\n"
+          "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
           
           "User: open dired to my downloads folder\n"
           "Assistant: I'll open dired for your downloads folder.\n"
@@ -601,77 +669,26 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
     (insert result)
     (buffer-string)))
 
-(defun efrit-do--create-report-buffer (title content &optional mode)
-  "Create a dedicated report buffer with TITLE and CONTENT.
-MODE can be 'text, 'org, or nil (auto-detect)."
-  (let* ((buffer-name (format "*efrit-report: %s*" (truncate-string-to-width title 30 nil nil t)))
-         (buffer (get-buffer-create buffer-name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        
-        ;; Insert header
-        (insert (format "# Report: %s\n" title))
-        (insert (format "Generated: %s\n\n" (current-time-string)))
-        
-        ;; Insert content with formatting
-        (if (string-match-p "^[a-zA-Z0-9_-]+/" content)
-            ;; Looks like file paths - format as list
-            (progn
-              (insert "## Files:\n\n")
-              (dolist (line (split-string content "\n" t))
-                (when (string-match "^\\(.+\\)" line)
-                  (insert (format "- `%s`\n" (match-string 1 line))))))
-          ;; Other content - insert as-is with code formatting if appropriate
-          (insert "## Results:\n\n")
-          (insert "```\n")
-          (insert content)
-          (insert "\n```\n"))
-        
-        ;; Set appropriate mode
-        (cond
-         ((eq mode 'org) (org-mode))
-         ((eq mode 'text) (text-mode))
-         (t (if (fboundp 'markdown-mode) (markdown-mode) (text-mode))))
-        
-        (goto-char (point-min))
-        (setq buffer-read-only t)))
-    
-    ;; Display the buffer
-    (display-buffer buffer '(display-buffer-reuse-window
-                            display-buffer-pop-up-window
-                            (window-height . 0.5)))
-    buffer))
+
 
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.
 If ERROR-P is non-nil, this indicates an error result.
-When `efrit-do-show-errors-only' is non-nil, only show buffer for errors.
-For report-like commands, creates dedicated report buffers."
+When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
   (when efrit-do-show-results
-    ;; Check if this looks like a report command
-    (let ((is-report (string-match-p "\\breport\\b\\|\\blist\\b\\|\\bshow\\b\\|\\buntracked\\b" command)))
-      
-      (if (and is-report (not error-p) result)
-          ;; Create a dedicated report buffer for report-like commands
-          (let ((title (if (string-match "\\b\\(report\\|list\\|show\\).*\\b\\(on\\|for\\|of\\)\\s-+\\(.+\\)" command)
-                          (match-string 3 command)
-                        command)))
-            (efrit-do--create-report-buffer title result))
-        
-        ;; Use standard results buffer for other commands
-        (with-current-buffer (get-buffer-create efrit-do-buffer-name)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (unless (bobp)
-              (insert "\n\n"))
-            (insert (efrit-do--format-result command result)))
-          ;; Only display buffer if not in errors-only mode, or if this is an error
-          (when (or (not efrit-do-show-errors-only) error-p)
-            (display-buffer (current-buffer) 
-                            '(display-buffer-reuse-window
-                              display-buffer-below-selected
-                              (window-height . 10))))))))
+    ;; Always use standard results buffer - no smart detection
+    (with-current-buffer (get-buffer-create efrit-do-buffer-name)
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (unless (bobp)
+          (insert "\n\n"))
+        (insert (efrit-do--format-result command result)))
+      ;; Only display buffer if not in errors-only mode, or if this is an error
+      (when (or (not efrit-do-show-errors-only) error-p)
+        (display-buffer (current-buffer) 
+                        '(display-buffer-reuse-window
+                          display-buffer-below-selected
+                          (window-height . 10)))))))
 
 (defun efrit-do--execute-command (command &optional retry-count error-msg previous-code)
   "Execute natural language COMMAND and return the result.
@@ -725,7 +742,40 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                            (("name" . "todo_show")
                             ("description" . "Show all current TODO items.")
                             ("input_schema" . (("type" . "object")
-                                              ("properties" . ()))))])))
+                                              ("properties" . ()))))
+                            (("name" . "buffer_create")
+                             ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
+                             ("input_schema" . (("type" . "object")
+                                               ("properties" . (("name" . (("type" . "string")
+                                                                           ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
+                                                               ("content" . (("type" . "string")
+                                                                             ("description" . "Buffer content")))
+                                                               ("mode" . (("type" . "string")
+                                                                         ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
+                                               ("required" . ["name" "content"]))))
+                            (("name" . "format_file_list")
+                             ("description" . "Format content as a markdown file list with bullet points.")
+                             ("input_schema" . (("type" . "object")
+                                               ("properties" . (("content" . (("type" . "string")
+                                                                              ("description" . "Raw content to format as file list")))))
+                                               ("required" . ["content"]))))
+                            (("name" . "format_todo_list")
+                             ("description" . "Format TODO list with optional sorting.")
+                             ("input_schema" . (("type" . "object")
+                                               ("properties" . (("sort_by" . (("type" . "string")
+                                                                              ("enum" . ["status" "priority"])
+                                                                              ("description" . "Optional sorting criteria")))))
+                                               ("required" . []))))
+                            (("name" . "display_in_buffer")
+                             ("description" . "Display content in a specific buffer.")
+                             ("input_schema" . (("type" . "object")
+                                               ("properties" . (("buffer_name" . (("type" . "string")
+                                                                                  ("description" . "Buffer name")))
+                                                               ("content" . (("type" . "string")
+                                                                             ("description" . "Content to display")))
+                                                               ("window_height" . (("type" . "number")
+                                                                                   ("description" . "Optional window height")))))
+                                               ("required" . ["buffer_name" "content"]))))])))
              (url-request-data
               (encode-coding-string (json-encode request-data) 'utf-8)))
         

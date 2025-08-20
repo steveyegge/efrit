@@ -30,8 +30,7 @@ The directory will be created automatically if it doesn't exist."
   :type 'directory
   :group 'efrit
   :set (lambda (symbol value)
-         (set-default symbol (expand-file-name value))
-         (efrit-config--ensure-directories)))
+         (set-default symbol (expand-file-name value))))
 
 ;;; Directory Management
 
@@ -43,7 +42,7 @@ The directory will be created automatically if it doesn't exist."
                        "queues/processing" "queues/responses" "queues/archive"
                        "logs" "context" "workspace" "workspace/auto-saves" 
                        "workspace/backups"))
-        (let ((dir (if (string-empty-p subdir) 
+        (let ((dir (if (string= "" subdir)
                       base-dir 
                     (expand-file-name subdir base-dir))))
           (unless (file-directory-p dir)

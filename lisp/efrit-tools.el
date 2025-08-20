@@ -45,12 +45,49 @@
 (require 'cl-lib)
 (require 'auth-source)
 
+;; Declare functions from efrit-do.el to avoid warnings
+(declare-function efrit-do-todo-item-status "efrit-do")
+(declare-function efrit-do-todo-item-priority "efrit-do")
+(declare-function efrit-do-todo-item-content "efrit-do")
+(declare-function efrit-do-todo-item-id "efrit-do")
+
 ;;; Customization
 
 (defgroup efrit-tools nil
   "Tools for the Efrit conversational assistant."
   :group 'efrit
   :prefix "efrit-tools-")
+
+;;; Logging System
+
+(defcustom efrit-log-level 'info
+  "Minimum level to actually emit log messages.
+Valid levels are: debug, info, warn, error."
+  :type '(choice (const :tag "Debug" debug)
+                 (const :tag "Info"  info)
+                 (const :tag "Warn"  warn)
+                 (const :tag "Error" error))
+  :group 'efrit-tools)
+
+(defvar efrit-log-levels '(debug info warn error)
+  "Ordered list of log levels from most to least verbose.")
+
+(defmacro efrit-log (level fmt &rest args)
+  "Log a formatted message at LEVEL.
+LEVEL is one of: debug info warn error."
+  (declare (indent 1))
+  `(when (>= (or (seq-position efrit-log-levels ,level) 3)
+             (or (seq-position efrit-log-levels efrit-log-level) 1))
+     (let ((msg (format ,fmt ,@args)))
+       (message "Efrit[%s] %s" (upcase (symbol-name ,level)) msg)
+       ;; Optional file logging if available
+       (condition-case nil
+           (when-let* ((log-file (and (fboundp 'efrit-config-log-file)
+                                    (efrit-config-log-file "efrit.log"))))
+             (with-temp-buffer
+               (insert (format-time-string "[%F %T] ") msg "\n")
+               (append-to-file (point-min) (point-max) log-file)))
+         (error nil)))))
 
 (defcustom efrit-tools-sexp-evaluation-enabled t
   "Whether to allow the assistant to evaluate Lisp expressions."
@@ -80,6 +117,17 @@
       secret)))
 
 ;;; Core Elisp Evaluation
+
+(defun efrit-tools--safe-read (string)
+  "Read STRING into a single sexp, signalling an error if trailing data."
+  (let* ((read-data (read-from-string string))
+         (sexp  (car read-data))
+         (rest  (cdr read-data)))
+    (when (< rest (length string))
+      (let ((trailing (substring string rest)))
+        (unless (string-match-p "\\`[[:space:]]*\\'" trailing)
+          (error "Trailing data after expression: %s" trailing))))
+    sexp))
 
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
@@ -111,6 +159,8 @@ Return:
   (when (or (not sexp-string) (string-empty-p (string-trim sexp-string)))
     (error "Cannot evaluate empty Lisp expression"))
   
+  (efrit-log 'debug "Evaluating: %s" sexp-string)
+  
   (let ((result-data nil))
     (condition-case err
         (let* ((sexp-and-pos (with-temp-buffer
@@ -134,16 +184,21 @@ Return:
                   result-string))
           
           ;; Build structured result data with context
+          (efrit-log 'debug "Eval success: %s"
+              (if (> (length result-string) 100)
+            (concat (substring result-string 0 100) "...")
+          result-string))
           (setq result-data 
-                (list :success t
-                      :result result-string
-                      :input sexp-string
-                      :context (condition-case _
-                                  (efrit-tools-get-buffer-context)
-                                (error "Operation failed")))))
+          (list :success t
+          :result result-string
+                       :input sexp-string
+                       :context (condition-case _
+                                   (efrit-tools-get-buffer-context)
+                                 (error "Operation failed")))))
       
       ;; Error handling for various error types
       (invalid-read-syntax
+       (efrit-log 'error "Eval syntax error in %s: %s" sexp-string (error-message-string err))
        (setq result-data
              (list :success nil
                    :error (format "Invalid Lisp syntax: %s" (error-message-string err))
@@ -444,7 +499,7 @@ Arguments:
   
   (let ((results nil)
         (processed-text (or text ""))
-        (elisp-regex "<elisp>\\([^<]+?\\)</elisp>"))
+        (elisp-regex "<elisp>\\([\\s\\S]+?\\)</elisp>"))
     
     (condition-case-unless-debug extraction-err
         (progn
@@ -561,6 +616,83 @@ Return:
           "- What file is being edited? <elisp>(buffer-file-name)</elisp>\n\n"
           
           "Remember to use proper Elisp formatting with correct indentation and balanced parentheses."))
+
+;;; Pure Tools for Claude to Use Explicitly
+
+(defun efrit-tools-create-buffer (name content &optional mode)
+  "Create a buffer with NAME and CONTENT, optionally setting MODE.
+This is a pure executor tool - no smart decisions about formatting.
+MODE can be a symbol like \\='markdown-mode, \\='org-mode, \\='text-mode, etc."
+  (let ((buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert content)
+        (when mode
+          (funcall mode))
+        (goto-char (point-min))
+        (setq buffer-read-only t)))
+    
+    ;; Display the buffer
+    (display-buffer buffer '(display-buffer-reuse-window
+                            display-buffer-pop-up-window
+                            (window-height . 0.5)))
+    (format "Buffer '%s' created with %d characters" name (length content))))
+
+(defun efrit-tools-format-file-list (content)
+  "Format CONTENT as a markdown file list.
+This is a pure formatter - no intelligence about what constitutes a file path."
+  (if (stringp content)
+      (let ((lines (split-string content "\n" t)))
+        (concat "## Files:\n\n"
+                (mapconcat (lambda (line)
+                             (format "- `%s`" line))
+                           lines "\n")
+                "\n"))
+    (format "%S" content)))
+
+(defun efrit-tools-format-todo-list (todos &optional sort-by)
+  "Format TODOS list with optional SORT-BY criteria.
+SORT-BY can be \\='status, \\='priority, \\='created, or nil (no sort).
+This provides explicit sorting control to Claude rather than hardcoded logic."
+  (when todos
+    (let ((sorted-todos (cond
+                         ((eq sort-by 'status)
+                          (sort (copy-sequence todos)
+                                (lambda (a b)
+                                  (let ((status-order '(in-progress todo completed)))
+                                    (< (seq-position status-order (efrit-do-todo-item-status a))
+                                       (seq-position status-order (efrit-do-todo-item-status b)))))))
+                         ((eq sort-by 'priority)
+                          (sort (copy-sequence todos)
+                                (lambda (a b)
+                                  (let ((priority-order '(high medium low)))
+                                    (< (seq-position priority-order (efrit-do-todo-item-priority a))
+                                       (seq-position priority-order (efrit-do-todo-item-priority b)))))))
+                         (t todos))))  ; No sorting
+      (mapconcat (lambda (todo)
+                   (format "%s [%s] %s (%s)"
+                           (pcase (efrit-do-todo-item-status todo)
+                             ('todo "☐")
+                             ('in-progress "⟳")
+                             ('completed "☑"))
+                           (upcase (symbol-name (efrit-do-todo-item-priority todo)))
+                           (efrit-do-todo-item-content todo)
+                           (efrit-do-todo-item-id todo)))
+                 sorted-todos "\n"))))
+
+(defun efrit-tools-display-in-buffer (buffer-name content &optional window-height)
+  "Display CONTENT in buffer BUFFER-NAME with optional WINDOW-HEIGHT.
+Pure display control tool for Claude."
+  (with-current-buffer (get-buffer-create buffer-name)
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert content)))
+  (display-buffer (get-buffer buffer-name) 
+                  `(display-buffer-reuse-window
+                    display-buffer-below-selected
+                    (window-height . ,(or window-height 10))))
+  (format "Displayed content in buffer '%s'" buffer-name))
 
 (provide 'efrit-tools)
 ;;; efrit-tools.el ends here
