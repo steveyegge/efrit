@@ -69,24 +69,46 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 ### Data Directory
 
-Efrit stores all user data (sessions, context, queues, logs) in `~/.emacs.d/.efrit/`:
+Efrit organizes all user data under a single configurable directory (default: `~/.emacs.d/.efrit/`):
 
 ```
 ~/.emacs.d/.efrit/
-├── cache/          # Temporary cache files
-├── context/        # Context persistence (efrit-do)
-├── queues/         # AI-to-efrit communication
-├── logs/           # Debug and activity logs
-├── sessions/       # Session data
-└── workspace/      # Autonomous workspace files
+├── cache/              # Temporary cache files
+├── context/            # Context persistence (efrit-do)
+│   └── efrit-do-context.el
+├── queues/             # AI-to-efrit communication
+│   ├── requests/       # Incoming AI requests
+│   ├── processing/     # Currently processing  
+│   ├── responses/      # Completed responses
+│   └── archive/        # Archived communications
+├── queue-ai/           # Autonomous AI communication
+├── logs/               # Debug and activity logs
+├── sessions/           # Session persistence data
+└── workspace/          # Autonomous workspace
+    ├── auto-saves/     # Emacs auto-save files
+    ├── backups/        # Backup files  
+    └── startup.log     # Startup logging
 ```
 
-**Customization**: Configure location via `efrit-data-directory` variable:
+**Key Benefits**:
+- 🗂️ **Organized**: All efrit data in one predictable location
+- ⚙️ **Configurable**: Easily change location via `efrit-data-directory`
+- 🚫 **Version Control Safe**: Excluded from git via `.efrit/` in `.gitignore`
+- 📊 **Dashboard Ready**: Structured for easy monitoring and management
+
+**Customization**:
 ```elisp
+;; Custom location (set before loading efrit)
 (setq efrit-data-directory "~/my-custom-efrit-data")
+(require 'efrit)
 ```
 
-**Migration**: Existing efrit files are automatically migrated to the new structure.
+**Migration**: Existing scattered efrit files (`~/.emacs.d/efrit-*`) are automatically migrated to the organized structure on first load.
+
+**Maintenance**: 
+- Safe to delete individual subdirectories to reset specific components
+- Queue directories auto-recreate as needed
+- Context files can be manually backed up/restored
 
 ### 🆕 Enable Agent Communication
 

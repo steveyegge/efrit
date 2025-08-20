@@ -151,6 +151,29 @@ This project follows professional elisp conventions:
 - **[`plans/`](plans/)** - Planning documents, roadmaps, and session notes
 - **[`docs/`](docs/)** - Formal documentation (when needed)
 
+## Data Directory Structure (For AI Agents)
+
+Efrit organizes all runtime data under `~/.emacs.d/.efrit/` (configurable via `efrit-data-directory`):
+
+```
+~/.emacs.d/.efrit/
+├── queues/             # 🤖 AI-to-efrit communication
+│   ├── requests/       # Your JSON requests go here
+│   ├── processing/     # Currently being processed
+│   ├── responses/      # Completed responses
+│   └── archive/        # Historical communications
+├── context/            # efrit-do context persistence
+├── logs/               # Debug and activity logs  
+├── sessions/           # Session state data
+└── workspace/          # Autonomous development workspace
+```
+
+**Key Points for AI Agents:**
+- 📁 **Queue Management**: Monitor `queues/` directories for communication flow
+- 🔍 **Debug Access**: Check `logs/` for troubleshooting
+- 💾 **State Inspection**: `sessions/` contains persistent state data
+- ⚙️ **Configuration**: Controlled via `lisp/efrit-config.el`
+
 ## Current Commands & Usage
 
 ### Build & Test

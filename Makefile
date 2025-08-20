@@ -15,7 +15,7 @@ TEST_FILES = $(wildcard test/test-*.el)
 TEST_SCRIPTS = $(wildcard test/*.sh bin/*.sh)
 
 # Documentation files
-DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENT.md LICENSE
+DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
