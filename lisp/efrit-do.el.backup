@@ -568,29 +568,112 @@ Returns a formatted string with execution results or empty string on failure."
       (message "Tool use: %s with input: %S (extracted: %S)" 
                tool-name tool-input input-str))
     
-    ;; Dispatch to appropriate handler
     (cond
+     ;; Handle elisp evaluation
      ((and (string= tool-name "eval_sexp") input-str)
-      (efrit-do--handle-eval-sexp input-str))
+      ;; Validate elisp syntax before execution
+      (let ((validation (efrit-do--validate-elisp input-str)))
+        (if (car validation)
+            ;; Valid elisp - proceed with execution
+            (condition-case eval-err
+                (let ((eval-result (efrit-tools-eval-sexp input-str)))
+                  (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
+              (error
+               (format "\n[Error executing %s: %s]" 
+                       input-str (error-message-string eval-err))))
+          ;; Invalid elisp - report syntax error
+          (format "\n[Syntax Error in %s: %s]" 
+                  input-str (cdr validation)))))
+     
+     ;; Handle shell command execution
      ((and (string= tool-name "shell_exec") input-str)
-      (efrit-do--handle-shell-exec input-str))
+      (condition-case shell-err
+          (let ((shell-result (shell-command-to-string input-str)))
+            (format "\n[Executed: %s]\n[Result: %s]" input-str shell-result))
+        (error
+         (format "\n[Error executing shell command %s: %s]" 
+                 input-str (error-message-string shell-err)))))
+     
+     ;; Handle TODO management
      ((string= tool-name "todo_add")
-      (efrit-do--handle-todo-add tool-input))
+      (let* ((content (if (hash-table-p tool-input)
+                         (gethash "content" tool-input)
+                       tool-input))
+             (priority (when (hash-table-p tool-input)
+                        (intern (or (gethash "priority" tool-input) "medium"))))
+             (todo (efrit-do--add-todo content priority)))
+        (format "\n[Added TODO: %s (%s)]" content (efrit-do-todo-item-id todo))))
+     
      ((string= tool-name "todo_update")
-      (efrit-do--handle-todo-update tool-input input-str))
+      (let* ((id (if (hash-table-p tool-input)
+                    (gethash "id" tool-input)
+                  input-str))
+             (status (when (hash-table-p tool-input)
+                      (intern (gethash "status" tool-input)))))
+        (if (efrit-do--update-todo-status id status)
+            (format "\n[Updated TODO %s to %s]" id status)
+          (format "\n[Error: TODO %s not found]" id))))
+     
      ((string= tool-name "todo_show")
-      (efrit-do--handle-todo-show))
+     (format "\n[Current TODOs:]\n%s" (efrit-do--format-todos-for-display)))
+     
+     ;; Handle buffer creation
      ((string= tool-name "buffer_create")
-      (efrit-do--handle-buffer-create tool-input input-str))
-     ((string= tool-name "format_file_list")
-      (efrit-do--handle-format-file-list input-str))
-     ((string= tool-name "format_todo_list")
-      (efrit-do--handle-format-todo-list tool-input))
-     ((string= tool-name "display_in_buffer")
-      (efrit-do--handle-display-in-buffer tool-input input-str))
-     (t 
-      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-      (format "\n[Unknown tool: %s]" tool-name)))))
+       (let* ((name (if (hash-table-p tool-input)
+                       (gethash "name" tool-input)
+                     ""))
+              (content (if (hash-table-p tool-input)
+                          (gethash "content" tool-input)
+                        input-str))
+              (mode (when (hash-table-p tool-input)
+                      (let ((mode-str (gethash "mode" tool-input)))
+                        (when mode-str (intern mode-str))))))
+         (condition-case err
+             (let ((result (efrit-tools-create-buffer name content mode)))
+               (format "\n[%s]" result))
+           (error
+            (format "\n[Error creating buffer: %s]" (error-message-string err))))))
+      
+      ;; Handle file list formatting
+      ((string= tool-name "format_file_list")
+       (condition-case err
+           (let ((result (efrit-tools-format-file-list input-str)))
+             (format "\n[Formatted file list]\n%s" result))
+         (error
+          (format "\n[Error formatting file list: %s]" (error-message-string err)))))
+      
+      ;; Handle TODO list formatting
+      ((string= tool-name "format_todo_list")
+       (let ((sort-by (when (hash-table-p tool-input)
+                        (let ((sort-str (gethash "sort_by" tool-input)))
+                          (when sort-str (intern sort-str))))))
+         (condition-case err
+             (let ((result (efrit-tools-format-todo-list efrit-do--current-todos sort-by)))
+               (format "\n[Formatted TODO list]\n%s" result))
+           (error
+            (format "\n[Error formatting TODO list: %s]" (error-message-string err))))))
+      
+      ;; Handle display in buffer
+      ((string= tool-name "display_in_buffer")
+       (let* ((buffer-name (if (hash-table-p tool-input)
+                              (gethash "buffer_name" tool-input)
+                            "*efrit-display*"))
+              (content (if (hash-table-p tool-input)
+                          (gethash "content" tool-input)
+                        input-str))
+              (height (when (hash-table-p tool-input)
+                        (gethash "window_height" tool-input))))
+         (condition-case err
+             (let ((result (efrit-tools-display-in-buffer buffer-name content height)))
+               (format "\n[%s]" result))
+           (error
+            (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+      
+      ;; Unknown tool
+      (t 
+       (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+       (format "\n[Unknown tool: %s]" tool-name))))))
+
 ;;; Command execution
 
 (defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
