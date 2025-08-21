@@ -102,13 +102,13 @@
           (let ((agent-result (efrit-agent-run query buffer)))
             (efrit-command--log "Agent execution completed")
             
-            ;; Check if there were any errors
-            (when (alist-get 'error agent-result)
-              (efrit-command--log "Agent reported error: %s" (alist-get 'error agent-result)))
+            ;; Check if there were any errors (agent-result is a hash table)
+            (when (gethash "error" agent-result)
+              (efrit-command--log "Agent reported error: %s" (gethash "error" agent-result)))
             
             ;; Log the summary if available
-            (when (alist-get 'summary agent-result)
-              (efrit-command--log "Agent summary: %s" (alist-get 'summary agent-result)))
+            (when (gethash "summary" agent-result)
+              (efrit-command--log "Agent summary: %s" (gethash "summary" agent-result)))
             
             ;; Return the agent result
             agent-result)))
