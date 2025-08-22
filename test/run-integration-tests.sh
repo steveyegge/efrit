@@ -28,7 +28,8 @@ run_test() {
     echo -e "${BLUE}Running $test_name...${NC}"
     TESTS_RUN=$((TESTS_RUN + 1))
     
-    if emacs --batch --load "$test_file" 2>&1; then
+    # Use the correct load pattern with explicit file loading in dependency order
+    if emacs --batch --load ../lisp/efrit-debug.el --load ../lisp/efrit-config.el --load ../lisp/efrit.el --load ../lisp/efrit-agent.el --load ../lisp/efrit-tools.el --load ../lisp/efrit-do.el --load ../lisp/efrit-multi-turn.el --load ../lisp/efrit-command.el --load ../lisp/efrit-chat.el --load "$test_file" 2>&1; then
         echo -e "${GREEN}✅ $test_name PASSED${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else

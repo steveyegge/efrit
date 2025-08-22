@@ -108,7 +108,7 @@ LEVEL is one of: debug info warn error."
 
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+  (let* ((auth-info (car (auth-source-search :host "openrouter.ai"
                                             :user "personal"
                                             :require '(:secret))))
          (secret (plist-get auth-info :secret)))
@@ -499,7 +499,7 @@ Arguments:
   
   (let ((results nil)
         (processed-text (or text ""))
-        (elisp-regex "<elisp>\\([\\s\\S]+?\\)</elisp>"))
+        (elisp-regex "<elisp>\\([^<]*\\(?:\n[^<]*\\)*\\)</elisp>"))
     
     (condition-case-unless-debug extraction-err
         (progn

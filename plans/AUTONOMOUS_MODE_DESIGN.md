@@ -25,7 +25,7 @@ efrit-agent        → Aggressive problem-solving until complete (NEW)
   "context": "It's several versions behind, managed by straight.el",
   "session_id": "upgrade-20250814",
   "max_iterations": 50,
-  "model_backend": "claude-3.5-sonnet"
+  "model_backend": "anthropic/claude-sonnet-4"
 }
 ```
 
@@ -112,9 +112,9 @@ Respond with your next action as JSON...
 
 ### 4. **Model Backend Abstraction**
 ```elisp
-(defcustom efrit-agent-backend "claude-3.5-sonnet"
+(defcustom efrit-agent-backend "anthropic/claude-sonnet-4"
   "Default model backend for agent mode."
-  :type '(choice (const "claude-3.5-sonnet")
+  :type '(choice (const "anthropic/claude-sonnet-4")
                  (const "gpt-4") 
                  (const "local-llama")
                  (string :tag "Custom API endpoint")))

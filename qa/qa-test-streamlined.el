@@ -83,7 +83,7 @@
   
   ;; Test 1: Valid response with text content
   (let ((mock-response-text-only
-         "{\"content\":[{\"type\":\"text\",\"text\":\"Hello, this is a test response.\"}],\"model\":\"claude-3-5-sonnet-20241022\"}"))
+         "{\"content\":[{\"type\":\"text\",\"text\":\"Hello, this is a test response.\"}],\"model\":\"anthropic/claude-sonnet-4"}"))
     (condition-case err
         (let ((parsed (json-read-from-string mock-response-text-only)))
           (if parsed

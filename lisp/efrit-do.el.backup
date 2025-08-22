@@ -84,7 +84,7 @@ If nil, uses the default location in the efrit data directory."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "anthropic/claude-sonnet-4"
   "Claude model to use for efrit-do commands."
   :type 'string
   :group 'efrit-do)
@@ -94,7 +94,7 @@ If nil, uses the default location in the efrit data directory."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
+(defcustom efrit-api-url "https://openrouter.ai/api/v1/chat/completions"
   "URL for the Anthropic API endpoint used by efrit-do."
   :type 'string
   :group 'efrit-do)

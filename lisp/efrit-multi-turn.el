@@ -43,7 +43,7 @@
   :type 'boolean
   :group 'efrit)
 
-(defcustom efrit-multi-turn-completion-model "claude-3-5-haiku-20241022"
+(defcustom efrit-multi-turn-completion-model "anthropic/claude-sonnet-4"
   "Claude model to use for completion assessment.
 This should be a fast, lightweight model for efficiency."
   :type 'string
@@ -196,7 +196,7 @@ REASON: [brief explanation]"
     (efrit-debug-log "Sending completion check to Claude...")
     (condition-case err
         (with-current-buffer 
-            (url-retrieve-synchronously "https://api.anthropic.com/v1/messages" t nil efrit-multi-turn-api-timeout)
+            (url-retrieve-synchronously "https://openrouter.ai/api/v1/chat/completions" t nil efrit-multi-turn-api-timeout)
           (goto-char (point-min))
           (re-search-forward "\n\n" nil t) ; Skip headers
           (let* ((response-json (buffer-substring (point) (point-max)))

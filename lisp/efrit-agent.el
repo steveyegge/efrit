@@ -31,10 +31,10 @@
   :group 'efrit
   :prefix "efrit-agent-")
 
-(defcustom efrit-agent-backend "claude-3.5-sonnet"
+(defcustom efrit-agent-backend "anthropic/claude-sonnet-4"
   "Default model backend for agent mode."
-  :type '(choice (const "claude-3.5-sonnet")
-                 (const "gpt-4") 
+  :type '(choice (const "anthropic/claude-sonnet-4")
+                 (const "gpt-4")
                  (const "local-llama")
                  (string :tag "Custom API endpoint"))
   :group 'efrit-agent)
@@ -44,12 +44,12 @@
   :type 'integer
   :group 'efrit-agent)
 
-(defcustom efrit-agent-api-url "https://api.anthropic.com/v1/messages"
+(defcustom efrit-agent-api-url "https://openrouter.ai/api/v1/chat/completions"
   "API URL for Claude requests."
   :type 'string
   :group 'efrit-agent)
 
-(defcustom efrit-agent-model "claude-4-sonnet-20250514"
+(defcustom efrit-agent-model "anthropic/claude-sonnet-4"
   "Model to use for agent requests. Updated to latest Claude 4 Sonnet."
   :type 'string
   :group 'efrit-agent)
@@ -166,7 +166,7 @@
 (defun efrit-agent--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
   (efrit-agent--log "DEBUG" "Looking for API key in .authinfo")
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+  (let* ((auth-info (car (auth-source-search :host "openrouter.ai"
                                             :user "personal"
                                             :require '(:secret))))
          (secret (plist-get auth-info :secret)))
@@ -176,7 +176,7 @@
           (if (functionp secret)
               (funcall secret)
             secret))
-      (efrit-agent--log "ERROR" "No API key found in .authinfo for api.anthropic.com")
+      (efrit-agent--log "ERROR" "No API key found in .authinfo for openrouter.ai")
       nil)))
 
 (defun efrit-agent--build-system-prompt ()

@@ -62,7 +62,7 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 3. **Configure your API key** in `~/.authinfo`:
    ```
-   machine api.anthropic.com login personal password YOUR_API_KEY_HERE
+   machine openrouter.ai login personal password YOUR_API_KEY_HERE
    ```
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
@@ -218,7 +218,7 @@ Transform Efrit from a user assistant into an **autonomous AI development platfo
 
 ```elisp
 ;; Standard Efrit settings
-(setq efrit-model "claude-3-5-sonnet-20241022")
+(setq efrit-model "anthropic/claude-sonnet-4")
 (setq efrit-max-tokens 8192)
 
 ;; 🆕 Agent communication settings  

@@ -132,7 +132,7 @@
       (insert ";; Recommended production settings\n")
       (insert "(setq efrit-work-buffer-max-size 100000)  ; 100KB limit\n")
       (insert "(setq efrit-show-work-buffer nil)         ; Don't auto-show\n")
-      (insert "(setq efrit-model \"claude-3-5-sonnet-20241022\")  ; Latest model\n")
+      (insert "(setq efrit-model \"anthropic/claude-sonnet-4")  ; Latest model\n")
       (insert "(setq efrit-max-tokens 8192)              ; Maximum context\n")
       (insert "(setq efrit-temperature 0.1)              ; Focused responses\n")
       (insert "```\n\n")

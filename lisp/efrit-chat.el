@@ -46,7 +46,7 @@
   :type 'string
   :group 'efrit)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "anthropic/claude-sonnet-4"
   "Claude model to use for conversations."
   :type 'string
   :group 'efrit)
@@ -63,7 +63,7 @@ or 4096 without. This setting uses the higher limit."
   :type 'float
   :group 'efrit)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
+(defcustom efrit-api-url "https://openrouter.ai/api/v1/chat/completions"
   "URL for the Anthropic API endpoint."
   :type 'string
   :group 'efrit)
@@ -126,7 +126,7 @@ or 4096 without. This setting uses the higher limit."
 
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+  (let* ((auth-info (car (auth-source-search :host "openrouter.ai"
                                             :user "personal"
                                             :require '(:secret))))
          (secret (plist-get auth-info :secret)))
@@ -228,9 +228,7 @@ or 4096 without. This setting uses the higher limit."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
+          `(("Authorization" . ,(concat "Bearer " openrouter-api-key))
             ("content-type" . "application/json")))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
          (request-data
