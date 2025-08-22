@@ -40,7 +40,7 @@
   :group 'tools
   :prefix "efrit-")
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "anthropic/claude-sonnet-4"
   "Claude model to use for conversations."
   :type 'string
   :group 'efrit)
@@ -55,7 +55,7 @@
   :type 'float
   :group 'efrit)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
+(defcustom efrit-api-url "https://openrouter.ai/api/v1/chat/completions"
   "URL for the Anthropic API endpoint."
   :type 'string
   :group 'efrit)

@@ -89,7 +89,7 @@
                   "{\"type\":\"text\",\"text\":\"I'll create a haiku about Vim for you.\"},"
                   "{\"type\":\"tool_use\",\"id\":\"toolu_test\",\"name\":\"eval_sexp\","
                   "\"input\":{\"expr\":\"(get-buffer-create \\\"*vim-haiku*\\\")\"}}"
-                  "],\"model\":\"claude-3-5-sonnet-20241022\"}"))
+                  "],\"model\":\"anthropic/claude-sonnet-4"}"))
          (mock-buffer (get-buffer-create "*mock-api-response*")))
     
     ;; Set up mock response buffer
@@ -225,7 +225,7 @@
   ;; Check for hardcoded values that should be configurable
   (let ((system-prompt (efrit-streamlined--system-prompt)))
     (cond 
-     ((string-match-p "claude-3-5-sonnet" system-prompt)
+     ((string-match-p "anthropic/claude-sonnet-4" system-prompt)
       (message "⚠ System prompt contains hardcoded model name"))
      ((string-match-p "anthropic\\.com" system-prompt)
       (message "⚠ System prompt contains hardcoded API URL"))

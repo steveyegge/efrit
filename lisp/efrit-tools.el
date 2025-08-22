@@ -108,7 +108,7 @@ LEVEL is one of: debug info warn error."
 
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+  (let* ((auth-info (car (auth-source-search :host "openrouter.ai"
                                             :user "personal"
                                             :require '(:secret))))
          (secret (plist-get auth-info :secret)))

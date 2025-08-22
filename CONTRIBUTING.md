@@ -30,7 +30,7 @@ Thank you for your interest in contributing to Efrit! This guide will help you g
 
 2. **Set up your API key** in `~/.authinfo`:
    ```
-   machine api.anthropic.com login personal password YOUR_API_KEY_HERE
+   machine openrouter.ai login personal password YOUR_API_KEY_HERE
    ```
 
 3. **Load Efrit for development**:

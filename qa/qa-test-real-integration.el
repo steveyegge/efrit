@@ -248,7 +248,7 @@
   
   ;; Test 4: Different models
   (let ((original-model efrit-model))
-    (setq efrit-model "claude-3-haiku-20240307")
+    (setq efrit-model "anthropic/claude-sonnet-4")
     (unwind-protect
         (condition-case err
             (progn
