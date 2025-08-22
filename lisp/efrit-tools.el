@@ -499,7 +499,7 @@ Arguments:
   
   (let ((results nil)
         (processed-text (or text ""))
-        (elisp-regex "<elisp>\\(.*?\\)</elisp>"))
+        (elisp-regex "<elisp>\\([^<]*\\(?:\n[^<]*\\)*\\)</elisp>"))
     
     (condition-case-unless-debug extraction-err
         (progn
