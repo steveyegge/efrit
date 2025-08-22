@@ -201,7 +201,8 @@
   (setq efrit-do-history original-history))
 
 ;; Test 6: Context persistence after clearing
-(let ((temp-file efrit-do-context-file))
+(let ((temp-file (or efrit-do-context-file
+                     (efrit-config-context-file "efrit-do-context.el"))))
   
   ;; Create some context
   (efrit-do--capture-context "persistent-cmd" "persistent-result")
