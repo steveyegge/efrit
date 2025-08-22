@@ -228,9 +228,7 @@ or 4096 without. This setting uses the higher limit."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
+          `(("Authorization" . ,(concat "Bearer " openrouter-api-key))
             ("content-type" . "application/json")))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
          (request-data

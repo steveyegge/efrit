@@ -710,92 +710,102 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
                           display-buffer-below-selected
                           (window-height . 10)))))))
 
+
 (defun efrit-do--execute-command (command &optional retry-count error-msg previous-code)
   "Execute natural language COMMAND and return the result.
-Uses improved error handling. If RETRY-COUNT is provided, this is a retry 
+Uses improved error handling. If RETRY-COUNT is provided, this is a retry
 attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
       (let* ((api-key (efrit--get-api-key))
              (url-request-method "POST")
              (url-request-extra-headers
-              `(("x-api-key" . ,api-key)
-                ("anthropic-version" . "2023-06-01")
+              `(("Authorization" . ,(concat "Bearer " openrouter-api-key))
                 ("content-type" . "application/json")))
              (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
              (request-data
               `(("model" . ,efrit-model)
                 ("max_tokens" . ,efrit-max-tokens)
                 ("temperature" . 0.0)
-                ("messages" . [(("role" . "user")
+                ("messages" . [(("role" . "system")
+                               ("content" . ,system-prompt))
+                              (("role" . "user")
                                ("content" . ,command))])
-                ("system" . ,system-prompt)
-                ("tools" . [(("name" . "eval_sexp")
+                ("tools" . [(("type" . "function")
+                             ("function" . (("name" . "eval_sexp")
                             ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-                            ("input_schema" . (("type" . "object")
+                                           ("parameters" . (("type" . "object")
                                               ("properties" . (("expr" . (("type" . "string")
                                                                           ("description" . "The Elisp expression to evaluate")))))
-                                              ("required" . ["expr"]))))
-                           (("name" . "shell_exec")
+                                                             ("required" . ["expr"]))))))
+                            (("type" . "function")
+                             ("function" . (("name" . "shell_exec")
                             ("description" . "Execute a shell command and return the result.")
-                            ("input_schema" . (("type" . "object")
+                                           ("parameters" . (("type" . "object")
                                               ("properties" . (("command" . (("type" . "string")
                                                                              ("description" . "The shell command to execute")))))
-                                              ("required" . ["command"]))))
-                           (("name" . "todo_add")
+                                                             ("required" . ["command"]))))))
+                            (("type" . "function")
+                             ("function" . (("name" . "todo_add")
                             ("description" . "Add a new TODO item to track progress.")
-                            ("input_schema" . (("type" . "object")
+                                           ("parameters" . (("type" . "object")
                                               ("properties" . (("content" . (("type" . "string")
                                                                              ("description" . "The TODO item description")))
                                                               ("priority" . (("type" . "string")
                                                                             ("enum" . ["low" "medium" "high"])
                                                                             ("description" . "Priority level")))))
-                                              ("required" . ["content"]))))
-                           (("name" . "todo_update")
+                                                             ("required" . ["content"]))))))
+                            (("type" . "function")
+                             ("function" . (("name" . "todo_update")
                             ("description" . "Update the status of a TODO item.")
-                            ("input_schema" . (("type" . "object")
+                                           ("parameters" . (("type" . "object")
                                               ("properties" . (("id" . (("type" . "string")
                                                                         ("description" . "The TODO item ID")))
                                                               ("status" . (("type" . "string")
                                                                           ("enum" . ["todo" "in-progress" "completed"])
                                                                           ("description" . "New status")))))
-                                              ("required" . ["id" "status"]))))
-                           (("name" . "todo_show")
+                                                             ("required" . ["id" "status"]))))))
+                            (("type" . "function")
+                             ("function" . (("name" . "todo_show")
                             ("description" . "Show all current TODO items.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . ()))))
-                            (("name" . "buffer_create")
+                                           ("parameters" . (("type" . "object")
+                                                             ("properties" . ()))))))
+                            (("type" . "function")
+                              ("function" . (("name" . "buffer_create")
                              ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
-                             ("input_schema" . (("type" . "object")
+                                            ("parameters" . (("type" . "object")
                                                ("properties" . (("name" . (("type" . "string")
                                                                            ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
                                                                ("content" . (("type" . "string")
                                                                              ("description" . "Buffer content")))
                                                                ("mode" . (("type" . "string")
                                                                          ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
-                                               ("required" . ["name" "content"]))))
-                            (("name" . "format_file_list")
+                                                             ("required" . ["name" "content"]))))))
+                            (("type" . "function")
+                              ("function" . (("name" . "format_file_list")
                              ("description" . "Format content as a markdown file list with bullet points.")
-                             ("input_schema" . (("type" . "object")
+                                            ("parameters" . (("type" . "object")
                                                ("properties" . (("content" . (("type" . "string")
                                                                               ("description" . "Raw content to format as file list")))))
-                                               ("required" . ["content"]))))
-                            (("name" . "format_todo_list")
+                                                             ("required" . ["content"]))))))
+                            (("type" . "function")
+                              ("function" . (("name" . "format_todo_list")
                              ("description" . "Format TODO list with optional sorting.")
-                             ("input_schema" . (("type" . "object")
+                                            ("parameters" . (("type" . "object")
                                                ("properties" . (("sort_by" . (("type" . "string")
                                                                               ("enum" . ["status" "priority"])
-                                                                              ("description" . "Optional sorting criteria")))))
-                                               ("required" . []))))
-                            (("name" . "display_in_buffer")
+                                                                                           ("description" . "Sorting criteria")))))
+                                                             ("required" . []))))))
+                            (("type" . "function")
+                              ("function" . (("name" . "display_in_buffer")
                              ("description" . "Display content in a specific buffer.")
-                             ("input_schema" . (("type" . "object")
+                                            ("parameters" . (("type" . "object")
                                                ("properties" . (("buffer_name" . (("type" . "string")
                                                                                   ("description" . "Buffer name")))
                                                                ("content" . (("type" . "string")
                                                                              ("description" . "Content to display")))
                                                                ("window_height" . (("type" . "number")
                                                                                    ("description" . "Optional window height")))))
-                                               ("required" . ["buffer_name" "content"]))))])))
+                                                             ("required" . ["buffer_name" "content"]))))))])))
              (url-request-data
               (encode-coding-string (json-encode request-data) 'utf-8)))
         
@@ -825,26 +835,49 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                   (error-message (gethash "message" error-obj)))
               (format "API Error (%s): %s" error-type error-message))
           
-          ;; Process successful response
-          (let ((content (gethash "content" response)))
+          ;; Process successful response - OpenRouter format
+          (let* ((choices (gethash "choices" response))
+                 (first-choice (when (and choices (> (length choices) 0))
+                                (aref choices 0)))
+                 (message-obj (when first-choice
+                               (gethash "message" first-choice)))
+                 (content (when message-obj
+                           (gethash "content" message-obj)))
+                 (tool-calls (when message-obj
+                              (gethash "tool_calls" message-obj))))
+
             (when efrit-do-debug
-              (message "API Response content: %S" content))
+              (message "API Response content: %S" content)
+              (message "Tool calls: %S" tool-calls))
             
             (when content
-              (dotimes (i (length content))
-                (let* ((item (aref content i))
-                       (type (gethash "type" item)))
-                  (cond
-                   ;; Handle text content
-                   ((string= type "text")
-                    (when-let* ((text (gethash "text" item)))
-                      (setq message-text (concat message-text text))))
+              (setq message-text (concat message-text content)))
+
+            (when tool-calls
+              (dotimes (i (length tool-calls))
+                (let* ((tool-call (aref tool-calls i))
+                       (function-obj (gethash "function" tool-call))
+                       (tool-name (gethash "name" function-obj))
+                       (arguments-str (gethash "arguments" function-obj))
+                       (arguments (when arguments-str
+                                   (condition-case err
+                                       (json-read-from-string arguments-str)
+                                     (error
+                                      (when efrit-do-debug
+                                        (message "Failed to parse tool arguments: %s" (error-message-string err)))
+                                      nil))))
+                       (tool-item (make-hash-table :test 'equal)))
+
+                  ;; Create tool item in expected format
+                  (puthash "name" tool-name tool-item)
+                  (puthash "input" arguments tool-item)
+
+                  (when efrit-do-debug
+                    (message "Processing tool call: %s with args: %S" tool-name arguments))
                    
-                   ;; Handle tool use
-                   ((string= type "tool_use")
                     (setq message-text 
                           (concat message-text 
-                                  (efrit-do--execute-tool item))))))))
+                                (efrit-do--execute-tool tool-item))))))
             
             (or message-text "Command executed"))))
     (error
