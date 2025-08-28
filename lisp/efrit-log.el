@@ -55,7 +55,9 @@ Optional SUBSYSTEM can be provided as last argument if it's a string."
     (let* ((subsystem (when (and args (stringp (car (last args))))
                        (prog1 (car (last args))
                          (setq args (butlast args)))))
-           (message (apply #'format format-string args))
+           (message (if args 
+                       (apply #'format format-string args)
+                     format-string))
            (timestamp (format-time-string "%H:%M:%S"))
            (level-str (upcase (symbol-name level)))
            (prefix (if subsystem

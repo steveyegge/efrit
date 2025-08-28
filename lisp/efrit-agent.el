@@ -52,7 +52,11 @@
   :group 'efrit-agent)
 
 ;; Use unified logging system
+(require 'efrit-tools)
 (require 'efrit-log)
+
+;; Declare functions from other modules
+(declare-function efrit-common-get-api-key "efrit-common")
 
 ;; Compatibility aliases
 (defvaralias 'efrit-agent-debug 'efrit-log-level
@@ -135,7 +139,7 @@
 (defun efrit-agent--log-response (response-text)
   "Log raw API response for debugging."
   (efrit-log 'debug "RAW API RESPONSE:\n%s" 
-            (substring response-text 0 (min 2000 (length response-text))) "agent"))
+            (substring response-text 0 (min 2000 (length response-text)))))
 
 (defun efrit-agent--show-debug-buffer ()
   "Show the debug buffer in a window."
@@ -148,18 +152,14 @@
 (defun efrit-agent--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
   (efrit-agent--log 'debug "Looking for API key in .authinfo")
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
-                                            :user "personal"
-                                            :require '(:secret))))
-         (secret (plist-get auth-info :secret)))
-    (if auth-info
-        (progn
-          (efrit-agent--log 'debug "Found API key entry")
-          (if (functionp secret)
-              (funcall secret)
-            secret))
-      (efrit-agent--log 'error "No API key found in .authinfo for api.anthropic.com")
-      nil)))
+  (condition-case err
+      (progn
+        (require 'efrit-common)
+        (efrit-agent--log 'debug "Found API key entry")
+        (efrit-common-get-api-key))
+    (error 
+     (efrit-agent--log 'error "No API key found: %s" (error-message-string err))
+     nil)))
 
 (defun efrit-agent--build-system-prompt ()
   "Build system prompt for agent mode."

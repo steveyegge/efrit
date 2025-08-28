@@ -84,7 +84,7 @@ If nil, uses the default location in the efrit data directory."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "claude-sonnet-4-20250514"
   "Claude model to use for efrit-do commands."
   :type 'string
   :group 'efrit-do)
@@ -1015,7 +1015,7 @@ error details back to Claude for correction."
 
 ;;;###autoload
 (defun efrit-do-clear-all ()
-  "Clear all efrit-do state: history, context, results buffer, TODOs, and conversations."
+  "Clear all efrit-do state: history, context, results buffer, TODOs, conversations."
   (interactive)
   (setq efrit-do-history nil)
   (efrit-do--clear-context)

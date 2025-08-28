@@ -25,8 +25,8 @@
 
 (defcustom efrit-data-directory "~/.emacs.d/.efrit"
   "Directory for storing efrit data files.
-This includes context files, session data, communication queues, logs, and cache.
-The directory will be created automatically if it doesn't exist."
+This includes context files, session data, communication queues, logs,
+and cache. The directory will be created automatically if it doesn't exist."
   :type 'directory
   :group 'efrit
   :set (lambda (symbol value)
@@ -58,7 +58,7 @@ Optional SUBDIR specifies a subdirectory within the data directory."
 
 (defun efrit-config-queue-dir (&optional subdir)
   "Return path to efrit queue directory.
-Optional SUBDIR specifies a subdirectory within queues/ (e.g., 'requests')."
+Optional SUBDIR specifies a subdirectory within queues/ (e.g., \\='requests\\=')."
   (efrit-config-data-file (or subdir "") "queues"))
 
 (defun efrit-config-workspace-dir (&optional subdir)
@@ -108,5 +108,27 @@ This is called automatically when the data directory is initialized."
 (efrit-config-initialize)
 
 (provide 'efrit-config)
+
+;;; Model Configuration
+
+(defcustom efrit-default-model "claude-sonnet-4-20250514"
+  "Default Claude model for all efrit operations."
+  :type 'string
+  :group 'efrit)
+
+(defcustom efrit-completion-model "claude-sonnet-4-20250514"
+  "Claude model for completion assessment and lightweight operations."
+  :type 'string
+  :group 'efrit)
+
+(defcustom efrit-agent-model "claude-4-sonnet-20250514"
+  "Claude model for agent operations."
+  :type 'string
+  :group 'efrit)
+
+(defcustom efrit-default-max-tokens 8192
+  "Default maximum tokens for responses."
+  :type 'integer
+  :group 'efrit)
 
 ;;; efrit-config.el ends here

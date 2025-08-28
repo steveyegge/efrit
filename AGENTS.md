@@ -174,6 +174,16 @@ Efrit organizes all runtime data under `~/.emacs.d/.efrit/` (configurable via `e
 - 💾 **State Inspection**: `sessions/` contains persistent state data
 - ⚙️ **Configuration**: Controlled via `lisp/efrit-config.el`
 
+## File Access Permissions
+
+AI agents should be allowed to create files in these directories without prompting:
+- `~/.emacs.d/.efrit/queues/requests/` - AI-to-efrit communication requests
+- `~/.emacs.d/.efrit/queues/responses/` - Efrit response files  
+- `~/.emacs.d/.efrit/queues/processing/` - Files being processed
+- `~/.emacs.d/.efrit/logs/` - Debug and activity logs
+- `~/.emacs.d/.efrit/sessions/` - Session state data
+- `~/.emacs.d/.efrit/workspace/` - Autonomous development workspace
+
 ## Current Commands & Usage
 
 ### Build & Test

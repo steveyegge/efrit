@@ -24,7 +24,7 @@
 
 ;; Forward declarations
 (declare-function efrit--get-api-key "efrit-chat")
-(declare-function efrit-debug-log "efrit-debug" (format-string &rest args))
+(declare-function efrit-log-debug "efrit-debug" (format-string &rest args))
 
 ;;; Configuration
 
@@ -43,11 +43,9 @@
   :type 'boolean
   :group 'efrit)
 
-(defcustom efrit-multi-turn-completion-model "claude-3-5-haiku-20241022"
-  "Claude model to use for completion assessment.
-This should be a fast, lightweight model for efficiency."
-  :type 'string
-  :group 'efrit)
+;; Use centralized completion model configuration
+(require 'efrit-config)
+(defvaralias 'efrit-multi-turn-completion-model 'efrit-completion-model)
 
 (defcustom efrit-multi-turn-completion-max-tokens 150
   "Maximum tokens for completion check responses."
@@ -118,7 +116,7 @@ This should be a fast, lightweight model for efficiency."
   (let ((elapsed (float-time (time-subtract (current-time) 
                                            (efrit-conversation-last-activity conversation)))))
     (require 'efrit-debug)
-    (efrit-debug-log "Expiry check: elapsed=%.1fs, timeout=%ds" elapsed efrit-multi-turn-timeout)
+    (efrit-log-debug "Expiry check: elapsed=%.1fs, timeout=%ds" elapsed efrit-multi-turn-timeout)
     (> elapsed efrit-multi-turn-timeout)))
 
 (defun efrit--conversation-at-max-turns-p (conversation)
@@ -132,7 +130,7 @@ This should be a fast, lightweight model for efficiency."
   "Ask Claude whether CONVERSATION should continue.
 Returns \\='continue, \\='complete, or \\='error."
   (require 'efrit-debug)
-  (efrit-debug-log "Asking Claude about completion...")
+  (efrit-log-debug "Asking Claude about completion...")
   (let* ((original-request (efrit-conversation-original-request conversation))
          (history (efrit-conversation-context-history conversation))
          (context-summary (efrit--summarize-conversation-context history))
@@ -193,7 +191,7 @@ REASON: [brief explanation]"
     
     ;; Send synchronous request for completion check
     (require 'efrit-debug)
-    (efrit-debug-log "Sending completion check to Claude...")
+    (efrit-log-debug "Sending completion check to Claude...")
     (condition-case err
         (with-current-buffer 
             (url-retrieve-synchronously "https://api.anthropic.com/v1/messages" t nil efrit-multi-turn-api-timeout)
@@ -202,27 +200,27 @@ REASON: [brief explanation]"
           (let* ((response-json (buffer-substring (point) (point-max)))
                  (response-data (json-read-from-string response-json))
                  (content (cdr (assoc 'content response-data))))
-            (efrit-debug-log "Got completion check response")
+            (efrit-log-debug "Got completion check response")
             (if (and content (vectorp content) (> (length content) 0))
                 (let ((text (cdr (assoc 'text (aref content 0)))))
                   (efrit--parse-completion-response text conversation))
               (progn 
-                (efrit-debug-log "Invalid response structure from completion API")
+                (efrit-log-debug "Invalid response structure from completion API")
                 'error))))
       (error 
-       (efrit-debug-log "Error in completion check: %s" (error-message-string err))
+       (efrit-log-debug "Error in completion check: %s" (error-message-string err))
        'error))))
 
 (defun efrit--parse-completion-response (response-text _conversation)
   "Parse Claude's completion check RESPONSE-TEXT."
   (require 'efrit-debug)
-  (efrit-debug-log "Claude completion response: %s" response-text)
+  (efrit-log-debug "Claude completion response: %s" response-text)
   (if (string-match "CONTINUE:\\s-*\\(YES\\|NO\\)" response-text)
       (let ((should-continue (string= (match-string 1 response-text) "YES")))
-        (efrit-debug-log "Claude decision: %s" (if should-continue "CONTINUE" "COMPLETE"))
+        (efrit-log-debug "Claude decision: %s" (if should-continue "CONTINUE" "COMPLETE"))
         (if should-continue 'continue 'complete))
     (progn
-      (efrit-debug-log "Failed to parse Claude response - defaulting to error")
+      (efrit-log-debug "Failed to parse Claude response - defaulting to error")
       'error)))
 
 ;;; Continuation Logic
@@ -233,40 +231,40 @@ REASON: [brief explanation]"
   (cond
    ;; No conversation or multi-turn disabled
    ((or (not efrit-multi-turn-enabled) (not conversation))
-    (efrit-debug-log "Not continuing: multi-turn disabled (%s) or no conversation (%s)" 
+    (efrit-log-debug "Not continuing: multi-turn disabled (%s) or no conversation (%s)" 
                      efrit-multi-turn-enabled (not (null conversation)))
     nil)
    
    ;; Conversation expired
    ((efrit--conversation-expired-p conversation)
-    (efrit-debug-log "Not continuing: conversation expired")
+    (efrit-log-debug "Not continuing: conversation expired")
     (efrit--terminate-conversation conversation "expired")
     nil)
    
    ;; Max turns reached
    ((efrit--conversation-at-max-turns-p conversation)
-    (efrit-debug-log "Not continuing: max turns reached (%d)" 
+    (efrit-log-debug "Not continuing: max turns reached (%d)" 
                      (efrit-conversation-current-turn conversation))
     (efrit--terminate-conversation conversation "max-turns")
     nil)
    
    ;; First turn: always continue (give Claude a chance to work)
    ((= (efrit-conversation-current-turn conversation) 1)
-    (efrit-debug-log "Continuing: first turn always continues")
+    (efrit-log-debug "Continuing: first turn always continues")
     t)
    
    ;; For subsequent turns: simple heuristic (continue until max turns)
    (t
-    (efrit-debug-log "Turn %d: using simple continuation heuristic" 
+    (efrit-log-debug "Turn %d: using simple continuation heuristic" 
                      (efrit-conversation-current-turn conversation))
     (if (<= (efrit-conversation-current-turn conversation) efrit-multi-turn-simple-max-turns)
         (progn
-          (efrit-debug-log "Continuing: turn %d <= %d" 
+          (efrit-log-debug "Continuing: turn %d <= %d" 
                            (efrit-conversation-current-turn conversation)
                            efrit-multi-turn-simple-max-turns)
           t)
       (progn
-        (efrit-debug-log "Stopping: turn %d > %d" 
+        (efrit-log-debug "Stopping: turn %d > %d" 
                          (efrit-conversation-current-turn conversation)
                          efrit-multi-turn-simple-max-turns)
         (efrit--terminate-conversation conversation "max-simple-turns")
