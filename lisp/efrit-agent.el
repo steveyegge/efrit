@@ -149,18 +149,6 @@
 
 ;;; LLM Consultation
 
-(defun efrit-agent--get-api-key ()
-  "Get the Anthropic API key from .authinfo file."
-  (efrit-agent--log 'debug "Looking for API key in .authinfo")
-  (condition-case err
-      (progn
-        (require 'efrit-common)
-        (efrit-agent--log 'debug "Found API key entry")
-        (efrit-common-get-api-key))
-    (error 
-     (efrit-agent--log 'error "No API key found: %s" (error-message-string err))
-     nil)))
-
 (defun efrit-agent--build-system-prompt ()
   "Build system prompt for agent mode."
   "You are Efrit, an autonomous Emacs agent. Work systematically to achieve user goals.
@@ -289,7 +277,7 @@ Work step-by-step until the goal is achieved.")
   "Send PROMPT to LLM backend asynchronously and call CALLBACK-FN with result."
   (efrit-agent--log 'info "Starting API request to Claude")
   (condition-case api-err
-      (let* ((api-key (efrit-agent--get-api-key)))
+      (let* ((api-key (efrit--get-api-key)))
         (if (not api-key)
             (progn
               (efrit-agent--log 'error "No API key available")
@@ -319,12 +307,11 @@ Work step-by-step until the goal is achieved.")
                                                   ("properties" . ()))))])))
                  (url-request-data
                   (encode-coding-string (json-encode request-data) 'utf-8)))
-            
             (efrit-agent--log 'debug "Request payload size: %d bytes" (length url-request-data))
             (efrit-agent--log 'debug "Model: %s, Max tokens: %d" efrit-agent-model efrit-agent-max-tokens)
-            (efrit-agent--log 'info "Sending request to %s" efrit-agent-api-url)
+            (efrit-agent--log 'info "Sending request to %s" (efrit--get-api-url "v1/messages"))
             
-            (url-retrieve efrit-agent-api-url 
+            (url-retrieve (efrit--get-api-url "v1/messages") 
                           (efrit-agent--consult-llm-callback session callback-fn)))))
     (error
      (efrit-agent--log 'error "API setup error: %s" (error-message-string api-err))

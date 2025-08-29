@@ -108,6 +108,20 @@ LEVEL is one of: debug info warn error."
   :type 'boolean
   :group 'efrit-tools)
 
+(defcustom efrit-auth-helper nil
+  "Function to retrieve Anthropic API key.
+When set, this function is called instead of using auth-source.
+The function should take no arguments and return the API key as a string."
+  :type '(choice (const nil) function)
+  :group 'efrit-tools)
+
+(defcustom efrit-base-url nil
+  "Base URL for Anthropic API.
+Can be a string URL or a function that returns a URL string.
+When nil, uses the default https://api.anthropic.com."
+  :type '(choice (const nil) string function)
+  :group 'efrit-tools)
+
 ;;; Utility functions
 
 (defun efrit-tools--elisp-results-or-empty (result)
@@ -120,9 +134,24 @@ LEVEL is one of: debug info warn error."
     (format "%S" result)))
 
 (defun efrit--get-api-key ()
-  "Get the Anthropic API key from .authinfo file."
-  (require 'efrit-common)
-  (efrit-common-get-api-key))
+  "Get the Anthropic API key using authHelper if configured, otherwise auth-source."
+  (if efrit-auth-helper
+      (funcall efrit-auth-helper)
+    (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
+                                              :user "personal"
+                                              :require '(:secret))))
+           (secret (plist-get auth-info :secret)))
+      (if (functionp secret)
+          (funcall secret)
+        secret))))
+
+(defun efrit--get-api-url (endpoint)
+  "Get full API URL for ENDPOINT, respecting base URL configuration."
+  (let ((base (cond
+               ((functionp efrit-base-url) (funcall efrit-base-url))
+               (efrit-base-url)
+               (t "https://api.anthropic.com"))))
+    (concat base "/" endpoint)))
 
 ;;; Core Elisp Evaluation
 

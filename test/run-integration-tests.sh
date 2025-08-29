@@ -28,7 +28,7 @@ run_test() {
     echo -e "${BLUE}Running $test_name...${NC}"
     TESTS_RUN=$((TESTS_RUN + 1))
     
-    if emacs --batch --load "$test_file" 2>&1; then
+    if emacs --batch --eval "(add-to-list 'load-path \"../lisp\")" --load "$test_file" 2>&1; then
         echo -e "${GREEN}✅ $test_name PASSED${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
@@ -48,6 +48,7 @@ echo "Test Categories:"
 echo "  📦 Core Tests - Module loading and basic functionality"
 echo "  🔧 Execution Tests - Local elisp execution engine"
 echo "  📚 State Tests - History and context management"
+echo "  ⚙️ Config Tests - Authentication and base URL configuration"
 echo "  🌐 API Tests - Full pipeline with real Claude API calls"
 echo
 
@@ -64,6 +65,9 @@ run_test "test-execution-scenarios.el" "Execution Scenarios"
 
 # History functionality tests
 run_test "test-history-functionality.el" "History Management"
+
+# Configuration tests
+run_test "test-auth-config.el" "Authentication & Base URL Configuration"
 
 # API integration tests (optional - requires API key and credits)
 echo -e "${YELLOW}Checking for API integration tests...${NC}"
@@ -93,6 +97,7 @@ if [ ${#FAILED_TESTS[@]} -eq 0 ]; then
     echo "   ✅ Core functionality working"
     echo "   ✅ Execution engine working"  
     echo "   ✅ History management working"
+    echo "   ✅ Authentication & base URL configuration working"
     if [ -z "$EFRIT_SKIP_API_TESTS" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
         echo "   ✅ API integration working"
     else

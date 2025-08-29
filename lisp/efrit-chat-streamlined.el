@@ -213,7 +213,7 @@
              (if efrit-enable-tools "tools" "no tools")))
     
     ;; Send request
-    (url-retrieve efrit-api-url 'efrit-streamlined--handle-response nil t t)))
+    (url-retrieve (efrit--get-api-url "v1/messages") 'efrit-streamlined--handle-response nil t t)))
 
 ;;; Response Handler
 

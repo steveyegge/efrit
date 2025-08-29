@@ -137,12 +137,6 @@ or 4096 without. This setting uses the higher limit."
 
 ;;; Utility functions
 
-(defun efrit--get-api-key ()
-  "Get the Anthropic API key from .authinfo file."
-  (require 'efrit-common)
-  (efrit-common-get-api-key))
-
-
 
 ;;; Buffer management
 
@@ -278,7 +272,7 @@ or 4096 without. This setting uses the higher limit."
          (url-request-data
           (encode-coding-string (json-encode request-data) 'utf-8)))
     ;; Send request
-    (url-retrieve efrit-api-url 'efrit--handle-api-response nil t t)))
+    (url-retrieve (efrit--get-api-url "v1/messages") 'efrit--handle-api-response nil t t)))
 
 (defun efrit--process-http-status (status)
   "Process HTTP status and return non-nil if there's an error.

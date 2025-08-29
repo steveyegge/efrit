@@ -815,7 +815,7 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                             json-string))
               (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
-        (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
+        (if-let* ((response-buffer (url-retrieve-synchronously (efrit--get-api-url "v1/messages")))
                   (response-text (efrit-do--extract-response-text response-buffer)))
             (efrit-do--process-api-response response-text)
           (error "Failed to get response from API")))

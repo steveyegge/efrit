@@ -67,6 +67,24 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
+## Configuration
+
+### API Key Setup
+Add to `~/.authinfo`:
+```
+machine api.anthropic.com login personal password YOUR_API_KEY_HERE
+```
+
+### Advanced Configuration (Optional)
+```elisp
+;; Custom authentication function
+(setq efrit-auth-helper (lambda () (getenv "ANTHROPIC_API_KEY")))
+
+;; Custom API endpoint (string or function)
+(setq efrit-base-url "https://your-proxy.anthropic.com")
+(setq efrit-base-url (lambda () (or (getenv "ANTHROPIC_BASE_URL") "https://api.anthropic.com")))
+```
+
 ### Data Directory
 
 Efrit organizes all user data under a single configurable directory (default: `~/.emacs.d/.efrit/`):
@@ -120,6 +138,21 @@ Start the remote queue to allow AI agents to interact with Efrit:
 ```
 
 This creates `~/.emacs.d/.efrit/queues/` for AI agent communication.
+
+## Troubleshooting
+
+**"No API key found"**: Check your `~/.authinfo` file format and restart Emacs.
+
+**Connection issues**: Verify your API key works with:
+```bash
+curl -H "x-api-key: YOUR_KEY" https://api.anthropic.com/v1/messages
+```
+
+**Test configuration**:
+```elisp
+(message "API Key: %s" (if (efrit--get-api-key) "Found" "Missing"))
+(message "API URL: %s" (efrit--get-api-url "v1/messages"))
+```
 
 ## Usage
 
