@@ -30,6 +30,9 @@
 (declare-function efrit-remote-queue-start "efrit-remote-queue")
 (declare-function efrit-remote-queue-stop "efrit-remote-queue")
 (declare-function efrit-remote-queue-status "efrit-remote-queue")
+;; Compile-time visibility for efrit-config helpers used below
+(declare-function efrit-config-workspace-dir "efrit-config")
+(declare-function efrit-config-data-file "efrit-config")
 
 (require 'package)
 
@@ -44,12 +47,7 @@
 (defvar efrit-autonomous-work-dir nil
   "Working directory for autonomous AI development.")
 
-;; Create workspace if it doesn't exist
-(unless (file-directory-p efrit-autonomous-work-dir)
-  (make-directory efrit-autonomous-work-dir t))
-
-;; Set default directory to workspace
-(setq default-directory efrit-autonomous-work-dir)
+;; Note: workspace dir is initialized after efrit-config is loaded below.
 
 ;; Disable unnecessary UI elements for daemon mode
 (when (fboundp 'menu-bar-mode) (menu-bar-mode -1))
@@ -81,6 +79,11 @@
       ;; Initialize directories after config is loaded
       (setq efrit-autonomous-work-dir (efrit-config-workspace-dir))
       (setq efrit-autonomous-queue-dir (efrit-config-data-file "queue-ai"))
+      ;; Ensure workspace exists now that the path is known
+      (unless (file-directory-p efrit-autonomous-work-dir)
+        (make-directory efrit-autonomous-work-dir t))
+      ;; Set default directory to workspace
+      (setq default-directory efrit-autonomous-work-dir)
       (message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
       (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
