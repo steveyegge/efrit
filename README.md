@@ -67,6 +67,37 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
+### Use with use-package + straight.el
+
+Efrit is structured for lazy loading with `use-package`. Example setup using a local checkout and a custom data directory:
+
+```elisp
+(use-package efrit
+  :straight (:type git :host github :repo "steveyegge/efrit" :files ("lisp/*.el"))
+  :init
+  ;; Set data directory before loading to avoid side effects
+  (setq efrit-data-directory (expand-file-name "~/efrit-data"))
+  ;; Optional: disable auto-initialize to control when directories are created
+  ;; (setq efrit-auto-initialize nil)
+  :commands (efrit-chat efrit efrit-do efrit-agent-run
+             efrit-remote-queue-start efrit-remote-queue-status)
+  :config
+  ;; Bind a convenient prefix (optional)
+  (setq efrit-enable-global-keymap t)
+  (efrit-setup-keybindings))
+```
+
+Or, if you vendored Efrit locally:
+
+```elisp
+(add-to-list 'load-path (expand-file-name "~/repos/3p/efrit/lisp"))
+(setq efrit-data-directory (expand-file-name "~/efrit-data"))
+(require 'efrit)
+;; Optional keybindings
+;; (setq efrit-enable-global-keymap t)
+;; (efrit-setup-keybindings)
+```
+
 ### Data Directory
 
 Efrit organizes all user data under a single configurable directory (default: `~/.emacs.d/.efrit/`):

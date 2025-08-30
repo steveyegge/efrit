@@ -32,6 +32,14 @@ The directory will be created automatically if it doesn't exist."
   :set (lambda (symbol value)
          (set-default symbol (expand-file-name value))))
 
+;; Control whether configuration auto-initializes on load.
+;; Default is t for backward compatibility; users of use-package can set
+;; this to nil in :init to avoid side effects during load.
+(defcustom efrit-auto-initialize t
+  "Whether Efrit should initialize data directories automatically on load."
+  :type 'boolean
+  :group 'efrit)
+
 ;;; Directory Management
 
 (defun efrit-config--ensure-directories ()
@@ -104,8 +112,9 @@ This is called automatically when the data directory is initialized."
   (efrit-config--ensure-directories)
   (efrit-config-migrate-old-files))
 
-;; Initialize on load
-(efrit-config-initialize)
+;; Initialize on load only if enabled (default t for backward compatibility)
+(when efrit-auto-initialize
+  (efrit-config-initialize))
 
 (provide 'efrit-config)
 
