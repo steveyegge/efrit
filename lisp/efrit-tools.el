@@ -587,10 +587,11 @@ MODE can be a symbol like \\='markdown-mode, \\='org-mode, \\='text-mode, etc."
         (goto-char (point-min))
         (setq buffer-read-only t)))
     
-    ;; Display the buffer
-    (display-buffer buffer '(display-buffer-reuse-window
-                            display-buffer-pop-up-window
-                            (window-height . 0.5)))
+    ;; Display the buffer - use more aggressive display to ensure it shows
+    (pop-to-buffer buffer '(display-buffer-reuse-window
+                           display-buffer-pop-up-window
+                           display-buffer-below-selected
+                           (window-height . 0.5)))
     (format "Buffer '%s' created with %d characters" name (length content))))
 
 (defun efrit-tools-format-file-list (content)
