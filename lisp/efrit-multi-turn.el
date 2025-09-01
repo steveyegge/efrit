@@ -194,7 +194,7 @@ REASON: [brief explanation]"
     (efrit-log-debug "Sending completion check to Claude...")
     (condition-case err
         (with-current-buffer 
-            (url-retrieve-synchronously "https://api.anthropic.com/v1/messages" t nil efrit-multi-turn-api-timeout)
+            (url-retrieve-synchronously (efrit--get-api-url "v1/messages") t nil efrit-multi-turn-api-timeout)
           (goto-char (point-min))
           (re-search-forward "\n\n" nil t) ; Skip headers
           (let* ((response-json (buffer-substring (point) (point-max)))
