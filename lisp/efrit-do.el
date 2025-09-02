@@ -84,7 +84,7 @@ If nil, uses the default location in the efrit data directory."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-4-sonnet-20250514"
+(defcustom efrit-model "claude-sonnet-4-20250514"
   "Claude model to use for efrit-do commands."
   :type 'string
   :group 'efrit-do)
@@ -112,6 +112,76 @@ If nil, uses the default location in the efrit data directory."
 
 (defvar efrit-do--todo-counter 0
   "Counter for generating unique TODO IDs.")
+
+(defconst efrit-do--tools-schema
+  [(("name" . "eval_sexp")
+    ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("expr" . (("type" . "string")
+                                                  ("description" . "The Elisp expression to evaluate")))))
+                      ("required" . ["expr"]))))
+   (("name" . "shell_exec")
+    ("description" . "Execute a shell command and return the result.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("command" . (("type" . "string")
+                                                     ("description" . "The shell command to execute")))))
+                      ("required" . ["command"]))))
+   (("name" . "todo_add")
+    ("description" . "Add a new TODO item to track progress.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("content" . (("type" . "string")
+                                                     ("description" . "The TODO item description")))
+                                      ("priority" . (("type" . "string")
+                                                    ("enum" . ["low" "medium" "high"])
+                                                    ("description" . "Priority level")))))
+                      ("required" . ["content"]))))
+   (("name" . "todo_update")
+    ("description" . "Update the status of a TODO item.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("id" . (("type" . "string")
+                                                ("description" . "The TODO item ID")))
+                                      ("status" . (("type" . "string")
+                                                  ("enum" . ["todo" "in-progress" "completed"])
+                                                  ("description" . "New status")))))
+                      ("required" . ["id" "status"]))))
+   (("name" . "todo_show")
+    ("description" . "Show all current TODO items.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+    (("name" . "buffer_create")
+     ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("name" . (("type" . "string")
+                                                   ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
+                                       ("content" . (("type" . "string")
+                                                     ("description" . "Buffer content")))
+                                       ("mode" . (("type" . "string")
+                                                 ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
+                       ("required" . ["name" "content"]))))
+    (("name" . "format_file_list")
+     ("description" . "Format content as a markdown file list with bullet points.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("content" . (("type" . "string")
+                                                      ("description" . "Raw content to format as file list")))))
+                       ("required" . ["content"]))))
+    (("name" . "format_todo_list")
+     ("description" . "Format TODO list with optional sorting.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("sort_by" . (("type" . "string")
+                                                      ("enum" . ["status" "priority"])
+                                                      ("description" . "Optional sorting criteria")))))
+                       ("required" . []))))
+    (("name" . "display_in_buffer")
+     ("description" . "Display content in a specific buffer.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("buffer_name" . (("type" . "string")
+                                                          ("description" . "Buffer name")))
+                                       ("content" . (("type" . "string")
+                                                     ("description" . "Content to display")))
+                                       ("window_height" . (("type" . "number")
+                                                          ("description" . "Optional window height")))))
+                       ("required" . ["buffer_name" "content"]))))]
+  "Schema definition for all available tools in efrit-do mode.")
 
 ;;; Context system
 
@@ -146,7 +216,9 @@ If nil, uses the default location in the efrit data directory."
   (let ((item (efrit-do-context-item-create
                :timestamp (current-time)
                :command command
-               :result result
+               :result (when result
+                        ;; Truncate result to prevent context accumulation
+                        (truncate-string-to-width result 2000 nil nil t))
                :buffer (buffer-name)
                :directory default-directory
                :window-config (current-window-configuration)
@@ -267,7 +339,10 @@ If nil, uses the default location in the efrit data directory."
                           (efrit-do-context-item-create
                            :timestamp (efrit-do-context-item-timestamp item)
                            :command (efrit-do-context-item-command item)
-                           :result (efrit-do-context-item-result item)
+                           :result (when (efrit-do-context-item-result item)
+                                     ;; Truncate result to prevent context accumulation
+                                     (truncate-string-to-width 
+                                      (efrit-do-context-item-result item) 2000 nil nil t))
                            :buffer (efrit-do-context-item-buffer item)
                            :directory (efrit-do-context-item-directory item)
                            :window-config nil  ; Skip window config
@@ -620,7 +695,8 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           "IMPORTANT: You are in COMMAND MODE. This means:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
           "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
-          "- FOR REPORTS/LISTS: Use buffer_create to make dedicated buffers with appropriate formatting\n"
+          "- CRITICAL: When user asks to 'show', 'list', 'display' or create any kind of report, you MUST use buffer_create tool to create a dedicated buffer\n"
+          "- FOR REPORTS/LISTS: ALWAYS use buffer_create to make dedicated buffers with appropriate formatting\n"
           "- FOR FILE LISTS: Use format_file_list to format paths as markdown lists\n"  
           "- USE TODO MANAGEMENT: For complex tasks, break them into smaller TODO items using todo_add, todo_update, and todo_show\n"
           "- TRACK PROGRESS: Mark TODOs as 'in-progress' when starting work, 'completed' when done\n"
@@ -729,75 +805,15 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                 ("messages" . [(("role" . "user")
                                ("content" . ,command))])
                 ("system" . ,system-prompt)
-                ("tools" . [(("name" . "eval_sexp")
-                            ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("expr" . (("type" . "string")
-                                                                          ("description" . "The Elisp expression to evaluate")))))
-                                              ("required" . ["expr"]))))
-                           (("name" . "shell_exec")
-                            ("description" . "Execute a shell command and return the result.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("command" . (("type" . "string")
-                                                                             ("description" . "The shell command to execute")))))
-                                              ("required" . ["command"]))))
-                           (("name" . "todo_add")
-                            ("description" . "Add a new TODO item to track progress.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("content" . (("type" . "string")
-                                                                             ("description" . "The TODO item description")))
-                                                              ("priority" . (("type" . "string")
-                                                                            ("enum" . ["low" "medium" "high"])
-                                                                            ("description" . "Priority level")))))
-                                              ("required" . ["content"]))))
-                           (("name" . "todo_update")
-                            ("description" . "Update the status of a TODO item.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("id" . (("type" . "string")
-                                                                        ("description" . "The TODO item ID")))
-                                                              ("status" . (("type" . "string")
-                                                                          ("enum" . ["todo" "in-progress" "completed"])
-                                                                          ("description" . "New status")))))
-                                              ("required" . ["id" "status"]))))
-                           (("name" . "todo_show")
-                            ("description" . "Show all current TODO items.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . ()))))
-                            (("name" . "buffer_create")
-                             ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("name" . (("type" . "string")
-                                                                           ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
-                                                               ("content" . (("type" . "string")
-                                                                             ("description" . "Buffer content")))
-                                                               ("mode" . (("type" . "string")
-                                                                         ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
-                                               ("required" . ["name" "content"]))))
-                            (("name" . "format_file_list")
-                             ("description" . "Format content as a markdown file list with bullet points.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("content" . (("type" . "string")
-                                                                              ("description" . "Raw content to format as file list")))))
-                                               ("required" . ["content"]))))
-                            (("name" . "format_todo_list")
-                             ("description" . "Format TODO list with optional sorting.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("sort_by" . (("type" . "string")
-                                                                              ("enum" . ["status" "priority"])
-                                                                              ("description" . "Optional sorting criteria")))))
-                                               ("required" . []))))
-                            (("name" . "display_in_buffer")
-                             ("description" . "Display content in a specific buffer.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("buffer_name" . (("type" . "string")
-                                                                                  ("description" . "Buffer name")))
-                                                               ("content" . (("type" . "string")
-                                                                             ("description" . "Content to display")))
-                                                               ("window_height" . (("type" . "number")
-                                                                                   ("description" . "Optional window height")))))
-                                               ("required" . ["buffer_name" "content"]))))])))
-             (url-request-data
-              (encode-coding-string (json-encode request-data) 'utf-8)))
+                ("tools" . ,efrit-do--tools-schema)))
+             (json-string (json-encode request-data))
+             ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+              (escaped-json (replace-regexp-in-string 
+                            "[^\x00-\x7F]" 
+                            (lambda (char)
+                              (format "\\\\u%04X" (string-to-char char)))
+                            json-string))
+              (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
         (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
                   (response-text (efrit-do--extract-response-text response-buffer)))
@@ -1000,7 +1016,7 @@ error details back to Claude for correction."
 
 ;;;###autoload
 (defun efrit-do-clear-all ()
-  "Clear all efrit-do state: history, context, results buffer, TODOs, and conversations."
+  "Clear all efrit-do state: history, context, results buffer, TODOs, conversations."
   (interactive)
   (setq efrit-do-history nil)
   (efrit-do--clear-context)

@@ -40,10 +40,9 @@
   :group 'tools
   :prefix "efrit-")
 
-(defcustom efrit-model "claude-4-sonnet-20250514"
-  "Claude model to use for conversations."
-  :type 'string
-  :group 'efrit)
+;; Use centralized model configuration
+(require 'efrit-config)
+(defvaralias 'efrit-model 'efrit-default-model)
 
 (defcustom efrit-max-tokens 8192
   "Maximum number of tokens in the response."
@@ -80,8 +79,8 @@
   :type 'integer
   :group 'efrit)
 
-(defcustom efrit-max-turns 10
-  "Maximum number of turns in a conversation to prevent infinite loops."
+(defcustom efrit-max-turns 2
+  "Maximum number of turns in a conversation for streamlined interface."
   :type 'integer
   :group 'efrit)
 
@@ -420,7 +419,7 @@
 
 (defun efrit-streamlined--display-response (content)
   "Display CONTENT in chat buffer (Claude has decided appropriate length)."
-  (let* ((buffer-name (or (and (boundp 'efrit-buffer-name) efrit-buffer-name) "*efrit*"))
+  (let* ((buffer-name (or (and (boundp 'efrit-buffer-name) efrit-buffer-name) "*efrit-chat*"))
          (chat-buffer (get-buffer-create buffer-name)))
     (with-current-buffer chat-buffer
       ;; Ensure we're in chat mode
@@ -434,7 +433,7 @@
 
 ;;; Chat Mode Setup
 
-(defvar efrit-buffer-name "*efrit*"
+(defvar efrit-buffer-name "*efrit-chat*"
   "Name of the Efrit chat buffer.")
 
 (define-derived-mode efrit-chat-mode fundamental-mode "Efrit-Chat"
@@ -450,6 +449,10 @@
     (insert "========================\n\n")))
 
 ;;; Public Interface
+
+
+
+
 
 (defun efrit-streamlined-send (message)
   "Send MESSAGE using streamlined chat experience."

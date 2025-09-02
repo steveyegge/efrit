@@ -1,4 +1,4 @@
-;;; efrit-debug.el --- Debug logging for efrit -*- lexical-binding: t -*-
+;;; efrit-debug.el --- Debug logging compatibility layer -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 Steve Yegge
 
@@ -6,49 +6,60 @@
 ;; Keywords: ai, tools, debug
 
 ;;; Commentary:
-;; Simple debug logging system for efrit that writes to *efrit-debug* buffer
+;; Compatibility layer for legacy efrit-debug calls.
+;; New code should use efrit-log.el directly.
 
 ;;; Code:
 
+(require 'efrit-log)
+
+;; Compatibility variables (preserved but unused)
+;;;###obsolete
 (defvar efrit-debug-enabled nil
-  "Whether debug logging is enabled.")
+  "Whether debug logging is enabled.
+This variable is obsolete; use `efrit-log-level' instead.")
+(make-obsolete-variable 'efrit-debug-enabled 'efrit-log-level "0.2")
 
+;;;###obsolete
 (defvar efrit--debug-buffer-name "*efrit-debug*"
-  "Name of the debug buffer.")
+  "Name of the debug buffer.
+This variable is obsolete; use `efrit-log-buffer' instead.")
+(make-obsolete-variable 'efrit--debug-buffer-name 'efrit-log-buffer "0.2")
 
+;; Compatibility functions
+
+;;;###obsolete
 (defun efrit--debug-buffer ()
   "Get or create the efrit debug buffer."
-  (get-buffer-create efrit--debug-buffer-name))
+  (get-buffer-create efrit-log-buffer))
+(make-obsolete 'efrit--debug-buffer 'get-buffer-create "0.2")
 
+;;;###obsolete
 (defun efrit-debug-log (format-string &rest args)
-  "Log a debug message to the efrit debug buffer."
+  "Log a debug message (compatibility wrapper)."
   (when efrit-debug-enabled
-    (with-current-buffer (efrit--debug-buffer)
-      (goto-char (point-max))
-      (insert (format "[%s] %s\n" 
-                      (format-time-string "%H:%M:%S")
-                      (apply #'format format-string args)))
-      ;; Keep buffer size reasonable (last 1000 lines)
-      (when (> (count-lines (point-min) (point-max)) 1000)
-        (goto-char (point-min))
-        (forward-line 200)
-        (delete-region (point-min) (point))))))
+    (apply #'efrit-log-debug format-string args)))
+(make-obsolete 'efrit-debug-log 'efrit-log-debug "0.2")
 
+;;;###obsolete
 (defun efrit-debug-clear ()
-  "Clear the debug buffer."
+  "Clear the debug buffer (compatibility wrapper)."
   (interactive)
-  (with-current-buffer (efrit--debug-buffer)
-    (erase-buffer)
-    (efrit-debug-log "Debug buffer cleared")))
+  (efrit-log-clear))
+(make-obsolete 'efrit-debug-clear 'efrit-log-clear "0.2")
 
+;;;###obsolete
 (defun efrit-debug-show ()
-  "Show the debug buffer."
+  "Show the debug buffer (compatibility wrapper)."
   (interactive)
-  (pop-to-buffer (efrit--debug-buffer)))
+  (efrit-log-show))
+(make-obsolete 'efrit-debug-show 'efrit-log-show "0.2")
 
+;;;###obsolete
 (defun efrit-debug-section (section-name)
-  "Add a section separator to debug output."
-  (efrit-debug-log "=== %s ===" section-name))
+  "Add a section separator (compatibility wrapper)."
+  (efrit-log-section section-name))
+(make-obsolete 'efrit-debug-section 'efrit-log-section "0.2")
 
 (provide 'efrit-debug)
 

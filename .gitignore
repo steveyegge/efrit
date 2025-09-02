@@ -24,6 +24,9 @@ dist/
 # Efrit specific - data directory (user state)
 .efrit/
 
+# Generated context/state files (should be in data directory)
+lisp/*-context.el
+
 # IDE files
 .vscode/
 .idea/
