@@ -40,7 +40,7 @@
   :group 'tools
   :prefix "efrit-")
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "claude-4-sonnet-20250514"
   "Claude model to use for conversations."
   :type 'string
   :group 'efrit)

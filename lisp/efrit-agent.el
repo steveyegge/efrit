@@ -365,36 +365,81 @@ Work step-by-step until the goal is achieved.")
     (efrit-agent--log "DEBUG" "Total extracted text length: %d" (length text))
     text))
 
+(defun efrit-agent--extract-tool-use-from-content (content)
+  "Extract tool_use content from Claude's CONTENT array."
+  (efrit-agent--log "DEBUG" "Extracting tool_use from content array")
+  (let ((tool-uses '()))
+    (when content
+      (dotimes (i (length content))
+        (let* ((item (aref content i))
+               (type (gethash "type" item)))
+          (efrit-agent--log "DEBUG" "Processing content item %d: type=%s" i type)
+          (when (string= type "tool_use")
+            (let* ((tool-name (gethash "name" item))
+                   (tool-input (gethash "input" item)))
+              (efrit-agent--log "DEBUG" "Found tool_use: %s" tool-name)
+              (push (cons tool-name tool-input) tool-uses))))))
+    (nreverse tool-uses)))
+
 (defun efrit-agent--parse-signal (content)
   "Parse Claude's CONTENT array into signal plist."
   (efrit-agent--log "DEBUG" "Parsing signal from content")
   (condition-case err
-      (let ((text (efrit-agent--extract-text-from-content content)))
-        (efrit-agent--log "DEBUG" "Checking if response is JSON format")
-        (if (string-match-p "^[[:space:]]*{" text)
-            ;; Try to parse as JSON
+      (let ((text (efrit-agent--extract-text-from-content content))
+            (tool-uses (efrit-agent--extract-tool-use-from-content content)))
+        (efrit-agent--log "DEBUG" "Found %d tool uses" (length tool-uses))
+        
+        ;; Check for tool uses first
+        (if tool-uses
+            (let* ((first-tool (car tool-uses))
+                   (tool-name (car first-tool))
+                   (tool-input (cdr first-tool)))
+              (efrit-agent--log "INFO" "Processing tool_use: %s" tool-name)
+              (cond 
+               ((string= tool-name "eval_sexp")
+                (let ((expr (gethash "expr" tool-input)))
+                  (efrit-agent--log "DEBUG" "Found eval_sexp with expr: %s" 
+                                   (substring expr 0 (min 100 (length expr))))
+                  (list :status 'executing
+                        :next_action `(:type eval :content ,expr)
+                        :rationale (or text "Executing elisp code"))))
+               ((string= tool-name "get_context")
+                (list :status 'executing
+                      :next_action `(:type get_context :content "")
+                      :rationale (or text "Getting context")))
+               (t
+                (efrit-agent--log "WARN" "Unknown tool: %s" tool-name)
+                (list :status 'error
+                      :rationale (format "Unknown tool: %s" tool-name)))))
+          
+          ;; No tool uses, check if response is JSON
+          (efrit-agent--log "DEBUG" "No tool uses found, checking if response is JSON format")
+          (if (string-match-p "^[[:space:]]*{" text)
+              ;; Try to parse as JSON
+              (progn
+                (efrit-agent--log "DEBUG" "Attempting JSON parse of response")
+                (let* ((json-object-type 'hash-table)
+                       (json-array-type 'list)
+                       (json-key-type 'string)
+                       (parsed (json-read-from-string text)))
+                  (efrit-agent--log "INFO" "Successfully parsed JSON response")
+                  (let ((status (intern (or (gethash "status" parsed) "executing")))
+                        (next-action (gethash "next_action" parsed))
+                        (rationale (gethash "rationale" parsed)))
+                    (efrit-agent--log "DEBUG" "Parsed status: %s" status)
+                    (efrit-agent--log "DEBUG" "Next action type: %s" (and next-action (plist-get next-action :type)))
+                    (list :status status
+                          :todos (gethash "todos" parsed)
+                          :next_action next-action
+                          :rationale rationale))))
+            ;; No tool uses and not JSON - might be completion
             (progn
-              (efrit-agent--log "DEBUG" "Attempting JSON parse of response")
-              (let* ((json-object-type 'hash-table)
-                     (json-array-type 'list)
-                     (json-key-type 'string)
-                     (parsed (json-read-from-string text)))
-                (efrit-agent--log "INFO" "Successfully parsed JSON response")
-                (let ((status (intern (or (gethash "status" parsed) "executing")))
-                      (next-action (gethash "next_action" parsed))
-                      (rationale (gethash "rationale" parsed)))
-                  (efrit-agent--log "DEBUG" "Parsed status: %s" status)
-                  (efrit-agent--log "DEBUG" "Next action type: %s" (and next-action (plist-get next-action :type)))
-                  (list :status status
-                        :todos (gethash "todos" parsed)
-                        :next_action next-action
-                        :rationale rationale))))
-          ;; If not JSON, create a simple action to execute the text as elisp
-          (progn
-            (efrit-agent--log "INFO" "Response is not JSON, treating as elisp code")
-            (list :status 'executing
-                  :next_action `(:type eval :content ,text)
-                  :rationale "Executing response as elisp"))))
+              (efrit-agent--log "INFO" "Response has no tool uses and is not JSON")
+              (if (string-match-p "\\(complete\\|done\\|finished\\)" text)
+                  (list :status 'complete
+                        :rationale text)
+                (list :status 'executing
+                      :rationale text))))))
     (error
      (efrit-agent--log "ERROR" "Signal parse error: %s" (error-message-string err))
      (list :status 'error :rationale (format "Parse error: %s" (error-message-string err))))))

@@ -84,7 +84,7 @@ If nil, uses the default location in the efrit data directory."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "claude-4-sonnet-20250514"
   "Claude model to use for efrit-do commands."
   :type 'string
   :group 'efrit-do)
