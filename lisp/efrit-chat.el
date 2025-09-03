@@ -329,10 +329,38 @@ Returns the content hash-table from the API response, or nil if parsing fails."
            (content (gethash "content" response)))
       content)))
 
+(defun efrit--detect-incomplete-task (content message-text)
+  "Detect if CONTENT represents an incomplete multi-step task.
+Returns non-nil if the task appears incomplete and needs delegation."
+  (when (and content message-text)
+    (let ((tool-count 0)
+          (mentions-multiple-items nil))
+      
+      ;; Count tool calls
+      (dotimes (i (length content))
+        (let* ((item (aref content i))
+               (type (gethash "type" item)))
+          (when (string= type "tool_use")
+            (cl-incf tool-count))))
+      
+      ;; Check if text mentions creating multiple items
+      (when (or (string-match-p "\\(three\\|multiple\\|several\\) \\(buffers?\\|poems?\\|files?\\)" message-text)
+                (string-match-p "create.*and.*and" message-text)
+                (string-match-p "I'll create.*separate" message-text))
+        (setq mentions-multiple-items t))
+      
+      ;; Delegate if:
+      ;; 1. Text mentions multiple items but only 1 or 0 tools were called
+      ;; 2. Text says "Let me" or "I'll" suggesting more work to do
+      (or (and mentions-multiple-items (< tool-count 2))
+          (and (string-match-p "\\(Let me\\|I'll\\|I will\\).*\\(create\\|write\\|start\\)" message-text)
+               (< tool-count 2))))))
+
 (defun efrit--extract-content-and-tools (content)
   "Extract text content and execute tool calls from CONTENT array.
 Returns the processed message text with tool results."
-  (let ((message-text ""))
+  (let ((message-text "")
+        (should-delegate nil))
     (when content
       (dotimes (i (length content))
         (let* ((item (aref content i))
@@ -377,9 +405,15 @@ Returns the processed message text with tool results."
 
                 (let ((clean-result (efrit-tools--elisp-results-or-empty result)))
                   (when (not (string-empty-p clean-result))
-                    (setq message-text (concat message-text "\n" clean-result))))))))))
+                    (setq message-text (concat message-text "\n" clean-result)))))))))
+      
+      ;; Check if we should delegate to efrit-do
+      (when (efrit--detect-incomplete-task content message-text)
+        (efrit-log-debug "Detected incomplete task - will delegate")
+        (setq should-delegate t)))
 
-    message-text))
+    ;; Return both the message text and delegation flag
+    (cons message-text should-delegate)))
 
 (defun efrit--update-ui-with-response (message-text)
   "Update the UI with MESSAGE-TEXT response."
@@ -471,8 +505,16 @@ Returns the processed message text with tool results."
     (condition-case _api-err
         (let ((content (efrit--parse-api-response)))
           (if content
-              (let ((message-text (efrit--extract-content-and-tools content)))
-                (efrit--update-ui-with-response message-text))
+              (let* ((result (efrit--extract-content-and-tools content))
+                     (message-text (car result))
+                     (should-delegate (cdr result)))
+                (if should-delegate
+                    ;; Delegate to efrit-do for multi-step completion
+                    (progn
+                      (efrit-log-debug "Delegating to efrit-do")
+                      (efrit--delegate-to-do))
+                  ;; Normal response handling
+                  (efrit--update-ui-with-response message-text)))
             ;; Handle case where content is nil
             (efrit--handle-parse-error)))
       ;; Handle any errors during parsing
@@ -480,6 +522,44 @@ Returns the processed message text with tool results."
     ;; Note: Let url-retrieve handle its own buffer cleanup
     ;; Manual cleanup here causes format-message(nil) errors
     ))
+(defun efrit--delegate-to-do ()
+  "Delegate current request to efrit-do for multi-step completion."
+  (let ((original-request (when efrit--message-history
+                            (let ((first-msg (car (last efrit--message-history))))
+                              (when (eq (alist-get 'role first-msg) 'user)
+                                (alist-get 'content first-msg))))))
+    (when original-request
+      ;; Update chat UI to indicate delegation
+      (with-current-buffer (efrit--setup-buffer)
+        (setq buffer-read-only nil)
+        (let ((inhibit-read-only t))
+          ;; Remove "thinking" indicator
+          (when efrit--response-in-progress
+            (save-excursion
+              (goto-char (point-max))
+              (when (search-backward "System: Thinking..." nil t)
+                (let ((start (match-beginning 0)))
+                  (when (search-forward "Thinking..." nil t)
+                    (delete-region start (point)))))))
+          
+          ;; Clear in-progress flag
+          (setq-local efrit--response-in-progress nil)
+          
+          ;; Show delegation message
+          (efrit--display-message 
+           "[Delegating to efrit-do for multi-step task completion...]" 
+           'system)
+          
+          ;; Insert prompt and let user know
+          (efrit--insert-prompt)
+          
+          ;; Execute via efrit-do asynchronously
+          (run-at-time 0.1 nil
+                       (lambda ()
+                         (require 'efrit-do)
+                         (message "Executing via efrit-do: %s" original-request)
+                         (efrit-do original-request))))))))
+
 ;;; User Interface Commands
 
 ;;;###autoload
@@ -621,7 +701,7 @@ Returns the processed message text with tool results."
   
   ;; Show welcome message
   (efrit--display-message
-   (format "Efrit Chat Ready - Using model: %s\n\nNote: For complex multi-step tasks, use M-x efrit-do instead." efrit-model)
+   (format "Efrit Chat Ready - Using model: %s" efrit-model)
    'assistant)
   
   (efrit--insert-prompt))
