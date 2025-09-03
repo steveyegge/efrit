@@ -435,27 +435,8 @@ Returns the processed message text with tool results."
                    (content . ,message-text))
                   efrit--message-history))))
 
-      ;; Check if we should continue the conversation automatically
-      (when efrit--current-conversation
-        (efrit-log-debug "Checking continuation for conversation: %s (turn %d)" 
-                         (efrit-conversation-id efrit--current-conversation)
-                         (efrit-conversation-current-turn efrit--current-conversation)))
-      (if (and efrit--current-conversation
-               (efrit--should-continue-conversation-p efrit--current-conversation message-text))
-          (progn
-            ;; Continue the conversation
-            (efrit-log-debug "Continuing conversation - advancing to turn %d" 
-                             (1+ (efrit-conversation-current-turn efrit--current-conversation)))
-            (efrit--advance-conversation-turn efrit--current-conversation)
-            (efrit--add-to-conversation-history efrit--current-conversation nil message-text)
-            (let ((continuation-prompt (efrit--generate-continuation-prompt efrit--current-conversation)))
-              ;; Don't display the continuation prompt - just send it
-              (push `((role . "user") (content . ,continuation-prompt)) efrit--message-history)
-              (setq-local efrit--response-in-progress t)
-              (efrit--send-api-request (reverse efrit--message-history))))
-        ;; Insert prompt for next user input
-        (efrit-log-debug "Conversation ended - not continuing")
-        (efrit--insert-prompt)))))
+      ;; Don't auto-continue in chat mode - insert prompt for next user input
+      (efrit--insert-prompt))))
 
 (defun efrit--handle-parse-error ()
   "Handle parsing errors by displaying error message and resetting UI."
@@ -513,13 +494,8 @@ Returns the processed message text with tool results."
       ;; Display the user message
       (efrit--display-message message 'user)
 
-      ;; Start multi-turn conversation if this looks like a multi-step request
-      (unless efrit--current-conversation
-        (setq-local efrit--current-conversation
-                    (efrit--start-multi-turn-if-needed message (current-buffer)))
-        (when efrit--current-conversation
-          (efrit-log-debug "Started multi-turn conversation: %s" 
-                           (efrit-conversation-id efrit--current-conversation))))
+      ;; Don't use multi-turn in chat mode - users control the conversation
+      (setq-local efrit--current-conversation nil)
 
       ;; Set in-progress flag
       (setq-local efrit--response-in-progress t)
@@ -645,7 +621,7 @@ Returns the processed message text with tool results."
   
   ;; Show welcome message
   (efrit--display-message
-   (format "Efrit Chat Ready - Using model: %s" efrit-model)
+   (format "Efrit Chat Ready - Using model: %s\n\nNote: For complex multi-step tasks, use M-x efrit-do instead." efrit-model)
    'assistant)
   
   (efrit--insert-prompt))
