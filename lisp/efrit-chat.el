@@ -351,9 +351,9 @@ Returns non-nil if the task appears incomplete and needs delegation."
       
       ;; Delegate if:
       ;; 1. Text mentions multiple items but only 1 or 0 tools were called
-      ;; 2. Text says "Let me" or "I'll" suggesting more work to do
+      ;; 2. Text says "Let me" or "I'll" with words suggesting multiple steps
       (or (and mentions-multiple-items (< tool-count 2))
-          (and (string-match-p "\\(Let me\\|I'll\\|I will\\).*\\(create\\|write\\|start\\)" message-text)
+          (and (string-match-p "\\(Let me\\|I'll\\|I will\\).*\\(create\\|write\\|start\\).*\\(multiple\\|several\\|three\\|buffers\\)" message-text)
                (< tool-count 2))))))
 
 (defun efrit--extract-content-and-tools (content)
@@ -361,6 +361,7 @@ Returns non-nil if the task appears incomplete and needs delegation."
 Returns the processed message text with tool results."
   (let ((message-text "")
         (should-delegate nil))
+    (efrit-log-debug "Processing content with %d items" (length content))
     (when content
       (dotimes (i (length content))
         (let* ((item (aref content i))
@@ -403,9 +404,11 @@ Returns the processed message text with tool results."
                                                    (efrit--safe-error-message tool-err)
                                                  "Unknown error"))))))
 
-                (let ((clean-result (efrit-tools--elisp-results-or-empty result)))
-                  (when (not (string-empty-p clean-result))
-                    (setq message-text (concat message-text "\n" clean-result)))))))))
+                ;; In chat mode, don't display tool results inline
+                ;; Only show them if they're buffer objects or errors
+                (when (or (string-match-p "^#<buffer" result)
+                          (string-match-p "^Error:" result))
+                  (setq message-text (concat message-text "\n" result))))))))
       
       ;; Check if we should delegate to efrit-do
       (when (efrit--detect-incomplete-task content message-text)
@@ -505,16 +508,18 @@ Returns the processed message text with tool results."
     (condition-case _api-err
         (let ((content (efrit--parse-api-response)))
           (if content
-              (let* ((result (efrit--extract-content-and-tools content))
-                     (message-text (car result))
-                     (should-delegate (cdr result)))
-                (if should-delegate
-                    ;; Delegate to efrit-do for multi-step completion
-                    (progn
-                      (efrit-log-debug "Delegating to efrit-do")
-                      (efrit--delegate-to-do))
-                  ;; Normal response handling
-                  (efrit--update-ui-with-response message-text)))
+              ;; Execute tool processing in the chat buffer context
+              (with-current-buffer (efrit--setup-buffer)
+                (let* ((result (efrit--extract-content-and-tools content))
+                       (message-text (car result))
+                       (should-delegate (cdr result)))
+                  (if should-delegate
+                      ;; Delegate to efrit-do for multi-step completion
+                      (progn
+                        (efrit-log-debug "Delegating to efrit-do")
+                        (efrit--delegate-to-do))
+                    ;; Normal response handling
+                    (efrit--update-ui-with-response message-text))))
             ;; Handle case where content is nil
             (efrit--handle-parse-error)))
       ;; Handle any errors during parsing
