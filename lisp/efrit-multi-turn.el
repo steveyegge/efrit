@@ -101,8 +101,8 @@
                        :termination-reason nil
                        :context-history nil
                        :user-buffer user-buffer)))
-                       (puthash conv-id conversation efrit--multi-turn-conversations)
-                       conversation))
+    (puthash conv-id conversation efrit--multi-turn-conversations)
+    conversation))
 
 (defun efrit--update-conversation (conversation)
   "Update conversation state in the hash table."
@@ -253,22 +253,22 @@ REASON: [brief explanation]"
     (efrit-log-debug "Continuing: first turn always continues")
     t)
    
-   ;; For subsequent turns: simple heuristic (continue until max turns)
+   ;; For subsequent turns: ask Claude if we should continue
    (t
-    (efrit-log-debug "Turn %d: using simple continuation heuristic" 
+    (efrit-log-debug "Turn %d: asking Claude about continuation" 
                      (efrit-conversation-current-turn conversation))
-    (if (<= (efrit-conversation-current-turn conversation) efrit-multi-turn-simple-max-turns)
-        (progn
-          (efrit-log-debug "Continuing: turn %d <= %d" 
-                           (efrit-conversation-current-turn conversation)
-                           efrit-multi-turn-simple-max-turns)
-          t)
-      (progn
-        (efrit-log-debug "Stopping: turn %d > %d" 
-                         (efrit-conversation-current-turn conversation)
-                         efrit-multi-turn-simple-max-turns)
-        (efrit--terminate-conversation conversation "max-simple-turns")
-        nil)))))
+    (let ((decision (efrit--ask-claude-about-completion conversation)))
+      (efrit-log-debug "Claude decision: %s" decision)
+      (cl-case decision
+        (continue t)
+        (complete 
+         (efrit--terminate-conversation conversation "complete")
+         nil)
+        (t ; 'error or other
+         ;; On error, be conservative and stop
+         (efrit-log-debug "Error getting Claude decision, stopping conversation")
+         (efrit--terminate-conversation conversation "decision-error")
+         nil))))))
 
 (defun efrit--terminate-conversation (conversation reason)
   "Terminate CONVERSATION with the given REASON."
@@ -306,13 +306,10 @@ This removes client-side heuristics per Zero Client-Side Intelligence principle.
   (efrit--update-conversation conversation))
 
 (defun efrit--generate-continuation-prompt (conversation)
-  "Generate a generic continuation prompt for CONVERSATION.
-Removes client-side pattern matching per Zero Client-Side Intelligence
-principle."
-  (let ((original-request (efrit-conversation-original-request conversation))
-        (current-turn (efrit-conversation-current-turn conversation)))
-    (format "Continue with the next step of this request: \"%s\"\n\nThis is turn %d. Focus on any remaining tasks that haven't been completed yet. Don't repeat work that was already done in previous turns."
-            original-request current-turn)))
+  "Generate a continuation prompt for CONVERSATION.
+Let Claude manage continuation without verbose client instructions."
+  ;; Just send "continue" - Claude knows the context
+  "continue")
 
 ;;; Integration Points
 

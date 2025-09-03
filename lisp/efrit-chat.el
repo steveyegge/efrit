@@ -322,12 +322,11 @@ Returns the content hash-table from the API response, or nil if parsing fails."
     (let* ((json-object-type 'hash-table)
            (json-array-type 'vector)
            (json-key-type 'string)
-           (raw-response (buffer-substring-no-properties (point) (point-max)))
+           ;; Ensure proper UTF-8 decoding
+           (coding-system-for-read 'utf-8)
+           (raw-response (decode-coding-region (point) (point-max) 'utf-8 t))
            (response (json-read-from-string raw-response))
            (content (gethash "content" response)))
-      
-
-      
       content)))
 
 (defun efrit--extract-content-and-tools (content)
@@ -450,10 +449,9 @@ Returns the processed message text with tool results."
             (efrit--advance-conversation-turn efrit--current-conversation)
             (efrit--add-to-conversation-history efrit--current-conversation nil message-text)
             (let ((continuation-prompt (efrit--generate-continuation-prompt efrit--current-conversation)))
-              (efrit--display-message continuation-prompt 'user)
+              ;; Don't display the continuation prompt - just send it
               (push `((role . "user") (content . ,continuation-prompt)) efrit--message-history)
               (setq-local efrit--response-in-progress t)
-              (efrit--display-message "Thinking..." 'system)
               (efrit--send-api-request (reverse efrit--message-history))))
         ;; Insert prompt for next user input
         (efrit-log-debug "Conversation ended - not continuing")
