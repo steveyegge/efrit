@@ -44,6 +44,7 @@
 (require 'json)
 (require 'cl-lib)
 (require 'auth-source)
+(require 'efrit-log)
 
 ;; Declare functions from efrit-do.el to avoid warnings
 (declare-function efrit-do-todo-item-status "efrit-do")
@@ -64,34 +65,8 @@
 
 ;;; Logging System
 
-(defcustom efrit-log-level 'info
-  "Minimum level to actually emit log messages.
-Valid levels are: debug, info, warn, error."
-  :type '(choice (const :tag "Debug" debug)
-                 (const :tag "Info"  info)
-                 (const :tag "Warn"  warn)
-                 (const :tag "Error" error))
-  :group 'efrit-tools)
+;; Logging is now handled by efrit-log.el - use (efrit-log 'level ...) for logging
 
-(defvar efrit-log-levels '(debug info warn error)
-  "Ordered list of log levels from most to least verbose.")
-
-(defmacro efrit-log (level fmt &rest args)
-  "Log a formatted message at LEVEL.
-LEVEL is one of: debug info warn error."
-  (declare (indent 1))
-  `(when (>= (or (seq-position efrit-log-levels ,level) 3)
-             (or (seq-position efrit-log-levels efrit-log-level) 1))
-     (let ((msg (format ,fmt ,@args)))
-       (message "Efrit[%s] %s" (upcase (symbol-name ',level)) msg)
-       ;; Optional file logging if available
-       (condition-case nil
-           (when-let* ((log-file (and (fboundp 'efrit-config-log-file)
-                                    (efrit-config-log-file "efrit.log"))))
-             (with-temp-buffer
-               (insert (format-time-string "[%F %T] ") msg "\n")
-               (append-to-file (point-min) (point-max) log-file)))
-         (error nil)))))
 
 (defcustom efrit-tools-sexp-evaluation-enabled t
   "Whether to allow the assistant to evaluate Lisp expressions."
@@ -166,14 +141,14 @@ LEVEL is one of: debug info warn error."
 
 (defun efrit-tools--handle-eval-error (err sexp-string)
   "Handle evaluation error ERR for SEXP-STRING. Returns error data."
-  (efrit-log 'error "Eval error in %s: %s" sexp-string (error-message-string err))
+  (efrit-log 'error (format "Eval error in %s: %s" sexp-string (error-message-string err)))
   (list :success nil
         :error (format "%s: %s" 
                       (pcase (car err)
-                        ('void-function "Function not defined")
-                        ('wrong-number-of-arguments "Wrong number of arguments") 
-                        ('wrong-type-argument "Wrong type of argument")
-                        ('arith-error "Arithmetic error")
+                        (`void-function "Function not defined")
+                        (`wrong-number-of-arguments "Wrong number of arguments") 
+                        (`wrong-type-argument "Wrong type of argument")
+                        (`arith-error "Arithmetic error")
                         (_ "Error"))
                       (error-message-string err))
         :input sexp-string))

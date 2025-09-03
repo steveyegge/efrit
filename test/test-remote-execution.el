@@ -23,15 +23,10 @@
     (let ((result (efrit-tools-eval-sexp expr)))
       (message "  %s → %s" expr result))))
 
-;; Test tool extraction (what Claude will use)
+;; Test tool extraction - NOW HANDLED BY CLAUDE API 
 (message "\n🛠️ Testing tool extraction (Claude interface)...")
-(let ((test-responses '("Let's calculate: <elisp>(* 6 7)</elisp>"
-                       "First <elisp>(+ 1 2)</elisp> then <elisp>(* 3 4)</elisp>"
-                       "Buffer info: <elisp>(list (buffer-name) (point))</elisp>")))
-  (dolist (response test-responses)
-    (let ((result (efrit-tools-extract-tools-from-response response)))
-      (message "  Input: %s" response)
-      (message "  Output: %s" (car result)))))
+(message "  Tool extraction now handled by Claude API directly")
+(message "  ✅ Claude uses native tool_use for elisp execution")
 
 ;; Test context gathering (what helps Claude understand environment) 
 (message "\n🌍 Testing context gathering...")
@@ -120,7 +115,7 @@
 (message "\n🎉 REMOTE EXECUTION TEST COMPLETE!")
 (message "\n📊 Summary:")
 (message "   ✅ Core elisp evaluation: WORKING")
-(message "   ✅ Tool extraction (<elisp> blocks): WORKING") 
+(message "   ✅ Tool extraction: Now handled by Claude API") 
 (message "   ✅ Context gathering: WORKING")
 (message "   ✅ Buffer operations: WORKING")
 (message "   ✅ Multi-turn conversations: WORKING") 

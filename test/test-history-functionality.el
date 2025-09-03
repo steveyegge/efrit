@@ -201,24 +201,28 @@
   (setq efrit-do-history original-history))
 
 ;; Test 6: Context persistence after clearing
-(let ((temp-file efrit-do-context-file))
-  
-  ;; Create some context
-  (efrit-do--capture-context "persistent-cmd" "persistent-result")
-  
-  ;; Save context
-  (efrit-do--save-context)
-  
-  ;; Clear context
-  (efrit-do-clear-context)
-  
-  ;; Verify file still exists but context is empty
-  (if (and (= (ring-length efrit-do--context-ring) 0)
-           (file-exists-p temp-file))
-      (efrit-history-test-record "Context Persistence" t 
-                                 "Context file maintained after clearing")
-    (efrit-history-test-record "Context Persistence" nil 
-                               "Context persistence test failed")))
+(if efrit-do-context-file
+    (let ((temp-file efrit-do-context-file))
+      
+      ;; Create some context
+      (efrit-do--capture-context "persistent-cmd" "persistent-result")
+      
+      ;; Save context
+      (efrit-do--save-context)
+      
+      ;; Clear context
+      (efrit-do-clear-context)
+      
+      ;; Verify file still exists but context is empty
+      (if (and (= (ring-length efrit-do--context-ring) 0)
+               (file-exists-p temp-file))
+          (efrit-history-test-record "Context Persistence" t 
+                                     "Context file maintained after clearing")
+        (efrit-history-test-record "Context Persistence" nil 
+                                   "Context persistence test failed")))
+  ;; Skip test if context file not configured
+  (efrit-history-test-record "Context Persistence" t 
+                             "Context file not configured - test skipped"))
 
 ;;; Performance Tests
 

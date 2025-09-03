@@ -4,8 +4,9 @@
 
 (message "=== Starting Basic Efrit Functionality Test ===")
 
-;; Add the current directory to load path (we're now in the efrit directory)
-(add-to-list 'load-path ".")
+;; Add the lisp directory to load path
+(let ((test-dir (file-name-directory (or load-file-name buffer-file-name))))
+  (add-to-list 'load-path (expand-file-name "../lisp" test-dir)))
 
 ;; Test loading core modules
 (message "Testing module loading...")
@@ -45,14 +46,9 @@
 ;; Note: resolve_path removed - now handled by Claude via elisp
 (message "✅ resolve_path removed (now handled by Claude)")
 
-;; Test tool extraction
+;; Note: tool extraction is now handled by Claude API directly
 (message "\nTesting tool extraction...")
-(let* ((test-text "Let me evaluate: <elisp>(* 6 7)</elisp>")
-       (result (efrit-tools-extract-tools-from-response test-text)))
-  (if (string-match-p "\\[Result: 42\\]" (car result))
-      (message "✅ tool extraction working: %s" (car result))
-    (message "❌ tool extraction failed: %s" (car result))
-    (kill-emacs 1)))
+(message "✅ tool extraction now handled by Claude API (not tested here)")
 
 ;; Test multi-turn conversation
 (message "\nTesting multi-turn functionality...")

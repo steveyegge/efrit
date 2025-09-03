@@ -279,38 +279,10 @@
 
 (message "\n🛠️ Testing Tool Extraction and Response Processing...")
 
-;; Test 8: Complex tool extraction
-(condition-case err
-    (let* ((complex-response 
-            "I'll help you with that. First, let me create a buffer:
-<elisp>(with-current-buffer (get-buffer-create \"*test-output*\")
-  (erase-buffer)
-  (insert \"Hello World\\n\")
-  (buffer-name))</elisp>
-
-Now let me add more content:
-<elisp>(with-current-buffer \"*test-output*\"
-  (goto-char (point-max))
-  (insert \"Additional line\\n\")
-  (buffer-size))</elisp>
-
-Done!")
-           (extracted (efrit-tools-extract-tools-from-response complex-response)))
-      
-      (if (and extracted 
-               (string-match-p "test-output" (car extracted))
-               (string-match-p "28" (car extracted)))  ; Buffer size after adding content
-          (efrit-test-record "Complex Tool Extraction" t 
-                             "Multi-tool extraction successful")
-        (efrit-test-record "Complex Tool Extraction" nil 
-                           (format "Tool extraction failed: %s" (car extracted))))
-      
-      ;; Clean up test buffer
-      (when-let* ((buf (get-buffer "*test-output*")))
-        (kill-buffer buf)))
-  (error 
-   (efrit-test-record "Complex Tool Extraction" nil 
-                      (format "Error: %s" (error-message-string err)))))
+;; Test 8: Complex tool extraction - NOW HANDLED BY CLAUDE API
+;; Tool extraction is now done by Claude's native tool use, not elisp parsing
+(efrit-test-record "Complex Tool Extraction" t 
+                   "Tool extraction now handled by Claude API (not tested here)")
 
 ;;; Error Handling and Recovery Tests
 

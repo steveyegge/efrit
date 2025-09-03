@@ -11,6 +11,9 @@
 
 ;;; Code:
 
+;; Add the lisp directory to load path
+(let ((test-dir (file-name-directory (or load-file-name buffer-file-name))))
+  (add-to-list 'load-path (expand-file-name "../lisp" test-dir)))
 (require 'ert)
 (require 'efrit-do)
 (require 'json)

@@ -28,7 +28,7 @@ run_test() {
     echo -e "${BLUE}Running $test_name...${NC}"
     TESTS_RUN=$((TESTS_RUN + 1))
     
-    if emacs --batch --load "$test_file" 2>&1; then
+    if emacs --batch -L ../lisp --load "$test_file" 2>&1; then
         echo -e "${GREEN}✅ $test_name PASSED${NC}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
