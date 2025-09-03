@@ -92,4 +92,4 @@ VOLUME ["/home/efrit/.emacs.d/.efrit"]
 LABEL maintainer="Steve Yegge <steve.yegge@gmail.com>"
 LABEL description="Efrit - AI-Powered Autonomous Emacs Assistant"
 LABEL version="0.3.0"
-LABEL org.opencontainers.image.source="https://github.com/awdemos/efrit"
+LABEL org.opencontainers.image.source="https://github.com/steveyegge/efrit"
