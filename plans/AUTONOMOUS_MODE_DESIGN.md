@@ -5,7 +5,7 @@
 1. **Self-Aware via LLM** - Efrit knows it's an agent, tracks its own state, delegates reasoning to backend LLM
 2. **Signal-Based Protocol** - Client decodes LLM signals (TODO updates, action types, completion status)
 3. **Model-Agnostic Backend** - Can switch between Claude, GPT, local models
-4. **Aggressive Autonomy** - Only stops when succeeded or genuinely stuck needing user input
+4. **Aggressive Autonomy** - Only stops when succeeded or when execution cannot proceed due to unrecoverable errors or needing user input
 5. **TODO-Driven Progress** - Maintains detailed markdown plans, updated before/after every action
 
 ## Mode Hierarchy
