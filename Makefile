@@ -18,7 +18,7 @@ TEST_SCRIPTS = $(wildcard test/*.sh bin/*.sh)
 DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 
 # Distribution files
-DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
+DIST_FILES = lisp/ test/ bin/ plans/ mcp/ $(DOC_FILES) Makefile .gitignore
 
 .PHONY: all compile test clean distclean install uninstall check help dist
 
@@ -48,8 +48,13 @@ help:
 	@echo "  install     - Install to Emacs site-lisp"
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
-# Compilation
-compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
+# Compilation  
+compile: $(ELC_FILES) mcp-build
+
+# MCP Server build
+mcp-build:
+	@echo "Building MCP server..."
+	@cd mcp && npm install && npm run build
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
 lisp/efrit-log.elc: lisp/efrit-config.elc
@@ -118,6 +123,7 @@ clean:
 	@echo "Removing compiled files..."
 	@rm -f lisp/*.elc
 	@rm -f lisp/*.elc~
+	@cd mcp && npm run clean 2>/dev/null || true
 
 distclean: clean
 	@echo "Removing all generated files..."
