@@ -66,6 +66,15 @@ Throws error if not found."
       (concat (substring str 0 max-length) "...")
     str))
 
+(defun efrit-common-escape-json-unicode (json-string)
+  "Escape unicode characters in JSON-STRING for HTTP transmission.
+This prevents multibyte encoding errors when sending to APIs."
+  (replace-regexp-in-string 
+   "[^\x00-\x7F]" 
+   (lambda (char)
+     (format "\\\\u%04X" (string-to-char char)))
+   json-string))
+
 (provide 'efrit-common)
 
 ;;; efrit-common.el ends here

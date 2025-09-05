@@ -59,6 +59,7 @@
       ;; Load core modules in dependency order
       (require 'efrit-config)     ; Configuration management - must be first
       (require 'efrit-tools)
+      (require 'efrit-context)    ; Context management utilities
       (require 'efrit-multi-turn) ; Multi-turn conversation management
       (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
       (require 'efrit-chat-streamlined) ; New streamlined chat system

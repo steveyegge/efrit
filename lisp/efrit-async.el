@@ -19,6 +19,7 @@
 (require 'url)
 (require 'efrit-log)
 (require 'efrit-common)
+(require 'efrit-context)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
@@ -104,7 +105,8 @@
       (efrit-log 'info "Started session %s" session-id)))
   
   (when efrit-async--active-session
-    (push (cons elisp result) 
+    ;; Store the entry - note work log stores (result . code) pairs
+    (push (cons result elisp) 
           (efrit-session-work-log efrit-async--active-session))
     
     ;; Limit work log size to prevent memory growth
@@ -113,9 +115,13 @@
         (setf (efrit-session-work-log efrit-async--active-session)
               (seq-take work-log efrit-async-max-work-log-entries))))
     
-    (efrit-log 'debug "Session %s: logged step %d" 
-               session-id
-               (length (efrit-session-work-log efrit-async--active-session)))))
+    ;; Log with context info
+    (let ((context-state (efrit-context-capture-state)))
+      (efrit-log 'debug "Session %s: step %d in buffer %s at point %d" 
+                 session-id
+                 (length (efrit-session-work-log efrit-async--active-session))
+                 (efrit-context-state-buffer-name context-state)
+                 (efrit-context-state-point context-state)))))
 
 (defun efrit-async--complete-session (session-id result)
   "Mark session SESSION-ID complete with final RESULT and process queue."
@@ -161,14 +167,10 @@
 (defun efrit-session--compress-log (session)
   "Create compressed summary of SESSION work for Claude."
   (when session
-    (let ((log (efrit-session-work-log session)))
-      `((step-count . ,(length log))
-        (elapsed-time . ,(float-time (time-since (efrit-session-start-time session))))
-        (last-result . ,(when log (cdr (car log))))
-        ;; Include key context without full elisp history
-        (buffer-modified . ,(when (buffer-live-p (efrit-session-buffer session))
-                             (with-current-buffer (efrit-session-buffer session)
-                               (buffer-modified-p))))))))
+    ;; Use the context utilities for smart compression
+    (efrit-context-compress-work-log 
+     (efrit-session-work-log session)
+     'smart)))
 
 ;;; User Commands
 
@@ -237,11 +239,7 @@ CALLBACK is called with the parsed response or error information."
       (let* ((api-key (efrit-common-get-api-key))
              (json-string (json-encode request-data))
              ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-             (escaped-json (replace-regexp-in-string 
-                           "[^\x00-\x7F]" 
-                           (lambda (char)
-                             (format "\\\\u%04X" (string-to-char char)))
-                           json-string))
+             (escaped-json (efrit-common-escape-json-unicode json-string))
              (url-request-data (encode-coding-string escaped-json 'utf-8))
              (url-request-method "POST")
              (url-request-extra-headers (efrit-common-build-headers api-key)))

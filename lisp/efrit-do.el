@@ -697,9 +697,8 @@ Returns a formatted string with execution results or empty string on failure."
     (when input-str
       (setq input-str (efrit-do--sanitize-elisp-string input-str)))
     
-    (when efrit-do-debug
-      (message "Tool use: %s with input: %S (extracted: %S)" 
-               tool-name tool-input input-str))
+    (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)" 
+               tool-name tool-input input-str)
     
     ;; Dispatch to appropriate handler
     (cond
@@ -892,11 +891,7 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                 ("tools" . ,efrit-do--tools-schema)))
              (json-string (json-encode request-data))
              ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-              (escaped-json (replace-regexp-in-string 
-                            "[^\x00-\x7F]" 
-                            (lambda (char)
-                              (format "\\\\u%04X" (string-to-char char)))
-                            json-string))
+              (escaped-json (efrit-common-escape-json-unicode json-string))
               (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
         (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
@@ -915,9 +910,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
              (response (json-read-from-string response-text))
              (message-text ""))
         
-        (when efrit-do-debug
-          (message "Raw API Response: %s" response-text)
-          (message "Parsed response: %S" response))
+        (efrit-log 'debug "Raw API Response: %s" response-text)
+        (efrit-log 'debug "Parsed response: %S" response)
         
         ;; Check for API errors first
         (if-let* ((error-obj (gethash "error" response)))
@@ -978,8 +972,7 @@ Returns the final result after all retry attempts."
                       (progn
                         (setq last-error (cdr error-info))
                         (setq last-code (efrit-do--extract-executed-code result))
-                        (when efrit-do-debug
-                          (message "Error detected: %s. Will retry..." last-error)))
+                        (efrit-log 'debug "Error detected: %s. Will retry..." last-error))
                     ;; Success or no more retries
                     (setq final-result result)))
               ;; No result - treat as error
