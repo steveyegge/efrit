@@ -9,7 +9,7 @@
 (require 'efrit-tools)
 (require 'efrit-multi-turn) 
 (require 'efrit-chat)
-(require 'efrit-command)
+(require 'efrit-do)
 
 (message "✅ All efrit modules loaded successfully")
 

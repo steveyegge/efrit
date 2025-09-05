@@ -1040,7 +1040,8 @@ error details back to Claude for correction."
 
 ;;;###autoload
 (defun efrit-do-clear-all ()
-  "Clear all efrit-do state: history, context, results buffer, TODOs, conversations."
+  "Clear all efrit-do state.
+This includes: history, context, results buffer, TODOs, and conversations."
   (interactive)
   (setq efrit-do-history nil)
   (efrit-do--clear-context)

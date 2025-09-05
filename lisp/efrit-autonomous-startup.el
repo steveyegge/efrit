@@ -32,6 +32,7 @@
 (declare-function efrit-remote-queue-status "efrit-remote-queue")
 
 (require 'package)
+(require 'efrit-config)
 
 ;; Minimal package setup for autonomous mode
 (setq package-enable-at-startup nil)

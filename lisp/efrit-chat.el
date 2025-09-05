@@ -36,6 +36,7 @@
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
+(declare-function efrit-do "efrit-do" (command))
 
 ;;; Customization
 

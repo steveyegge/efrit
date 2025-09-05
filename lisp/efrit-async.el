@@ -57,8 +57,7 @@
   (when efrit-async-show-progress
     (when efrit-async--active-session
       (let* ((elapsed (float-time (time-since (efrit-session-start-time 
-                                              efrit-async--active-session))))
-             (steps (length (efrit-session-work-log efrit-async--active-session))))
+                                              efrit-async--active-session)))))
         (setq efrit-async-mode-line-string
               (format "[Efrit: %s (%.1fs)]" message elapsed))
         (force-mode-line-update t))))
@@ -93,7 +92,7 @@
                session-id
                (length (efrit-session-work-log efrit-async--active-session)))))
 
-(defun efrit-async--complete-session (session-id result)
+(defun efrit-async--complete-session (session-id _result)
   "Mark session SESSION-ID complete with final RESULT and process queue."
   (efrit-async--show-progress "Complete!")
   (when efrit-async--active-session
@@ -113,11 +112,11 @@
 (defun efrit-async--process-queue ()
   "Process next queued command if any."
   (when efrit-async--session-queue
-    (let ((next-command (pop efrit-async--session-queue)))
-      (message "Efrit: Processing queued command (%d remaining)" 
-               (length efrit-async--session-queue))
-      ;; This will be connected to efrit-do in the next step
-      )))
+    (pop efrit-async--session-queue)
+    (message "Efrit: Processing queued command (%d remaining)" 
+             (length efrit-async--session-queue))
+    ;; This will be connected to efrit-do in the next step
+    ))
 
 ;;; Work Log Compression
 

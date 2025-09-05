@@ -305,7 +305,7 @@ This removes client-side heuristics per Zero Client-Side Intelligence principle.
                   (list history-entry))))
   (efrit--update-conversation conversation))
 
-(defun efrit--generate-continuation-prompt (conversation)
+(defun efrit--generate-continuation-prompt (_conversation)
   "Generate a continuation prompt for CONVERSATION.
 Let Claude manage continuation without verbose client instructions."
   ;; Just send "continue" - Claude knows the context
