@@ -25,6 +25,7 @@
 (declare-function efrit-tools-system-prompt "efrit-tools")
 (declare-function efrit-tools-get-context "efrit-tools")
 (declare-function efrit--get-api-key "efrit-tools")
+(declare-function efrit--build-headers "efrit-chat" (api-key))
 
 ;; Declare external variables from efrit-chat
 (defvar efrit-model)
@@ -165,45 +166,41 @@
   ;; Use enhanced system prompt
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-            ("content-type" . "application/json")))
+         (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (efrit-streamlined--system-prompt))
          (cleaned-messages (mapcar (lambda (msg)
-                                   `(("role" . ,(alist-get 'role msg))
-                                   ("content" . ,(substring-no-properties (alist-get 'content msg)))))
-                               messages))
+                                     `(("role" . ,(alist-get 'role msg))
+                                       ("content" . ,(substring-no-properties (alist-get 'content msg)))))
+                                   messages))
          (request-data
-         `(("model" . ,efrit-model)
-         ("max_tokens" . ,efrit-max-tokens)
-         ("temperature" . ,efrit-temperature)
-         ("system" . ,system-prompt)
-         ("messages" . ,(vconcat cleaned-messages))
-         ,@(when efrit-enable-tools
-         '(("tools" . [
-         (("name" . "eval_sexp")
-         ("description" . "Evaluate Elisp expression")
-         ("input_schema" . (("type" . "object")
-         ("properties" . (("expr" . (("type" . "string")
-         ("description" . "Elisp expression")))))
-         ("required" . ["expr"]))))
-         (("name" . "get_context")
-         ("description" . "Get Emacs environment context")
-         ("input_schema" . (("type" . "object")
-         ("properties" . (("request" . (("type" . "string")
-         ("description" . "Context request")))))
-         ("required" . []))))
-         ])))
-         ))
+          `(("model" . ,efrit-model)
+            ("max_tokens" . ,efrit-max-tokens)
+            ("temperature" . ,efrit-temperature)
+            ("system" . ,system-prompt)
+            ("messages" . ,(vconcat cleaned-messages))
+            ,@(when efrit-enable-tools
+                '(("tools" . [
+                              (("name" . "eval_sexp")
+                               ("description" . "Evaluate Elisp expression")
+                               ("input_schema" . (("type" . "object")
+                                                  ("properties" . (("expr" . (("type" . "string")
+                                                                              ("description" . "Elisp expression")))))
+                                                  ("required" . ["expr"]))))
+                              (("name" . "get_context")
+                               ("description" . "Get Emacs environment context")
+                               ("input_schema" . (("type" . "object")
+                                                  ("properties" . (("request" . (("type" . "string")
+                                                                                 ("description" . "Context request")))))
+                                                  ("required" . []))))
+                              ])))
+            ))
          (json-string (json-encode request-data))
          ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
          (escaped-json (replace-regexp-in-string 
-                       "[^\x00-\x7F]" 
-                       (lambda (char)
-                         (format "\\\\u%04X" (string-to-char char)))
-                       json-string))
+                        "[^\x00-\x7F]" 
+                        (lambda (char)
+                          (format "\\\\u%04X" (string-to-char char)))
+                        json-string))
          (url-request-data (encode-coding-string escaped-json 'utf-8)))
     
     ;; Log request details to work buffer
