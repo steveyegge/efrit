@@ -67,6 +67,7 @@
       (require 'efrit-agent)      ; Depends on efrit-tools
       (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
       (require 'efrit-async)      ; Async infrastructure for non-blocking commands
+      (require 'efrit-unified)    ; Unified command interface
       (require 'efrit-remote-queue) ; File-based remote queue system
       
       (message "Efrit modules loaded successfully"))
@@ -92,11 +93,13 @@
     (define-key map (kbd "e") 'efrit)         ; 'e' for command interface  
     (define-key map (kbd "a") 'efrit-agent-run)
     (define-key map (kbd "o") 'efrit-show-output)
-    (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute
+    (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (sync)
     (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
+    (define-key map (kbd "u") 'efrit-unified-do) ; 'u' for unified (Claude decides)
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
     (define-key map (kbd "A") 'efrit-async-status) ; 'A' for async status
+    (define-key map (kbd "S") 'efrit-unified-status) ; 'S' for unified status
     map)
   "Keymap for Efrit commands.")
 
@@ -129,6 +132,12 @@
 
 ;;;###autoload
 (autoload 'efrit-do-async "efrit-do" "Execute natural language command in Emacs asynchronously" t)
+
+;;;###autoload
+(autoload 'efrit-unified-do "efrit-unified" "Execute command with Claude-determined mode" t)
+
+;;;###autoload
+(autoload 'efrit-unified-status "efrit-unified" "Show Efrit execution status" t)
 
 ;;;###autoload
 (autoload 'efrit-streamlined-send "efrit-chat-streamlined" "Send message via streamlined chat" t)
