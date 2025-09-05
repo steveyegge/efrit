@@ -21,8 +21,12 @@
 (declare-function efrit--display-message "efrit-chat")
 (declare-function efrit--insert-prompt "efrit-chat")
 
+;; Declare external functions from efrit-async
+(declare-function efrit-async-execute-command "efrit-async")
+
 (require 'efrit-tools)
 (require 'efrit-config)
+(require 'efrit-common)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -180,7 +184,13 @@ If nil, uses the default location in the efrit data directory."
                                                      ("description" . "Content to display")))
                                        ("window_height" . (("type" . "number")
                                                           ("description" . "Optional window height")))))
-                       ("required" . ["buffer_name" "content"]))))]
+                       ("required" . ["buffer_name" "content"]))))
+   (("name" . "session_complete")
+    ("description" . "Mark the current session as complete with a final result message.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("message" . (("type" . "string")
+                                                     ("description" . "Completion message summarizing what was accomplished")))))
+                      ("required" . ["message"]))))]
   "Schema definition for all available tools in efrit-do mode.")
 
 ;;; Context system
@@ -202,6 +212,47 @@ If nil, uses the default location in the efrit data directory."
 
 (defvar efrit-do--context-hooks nil
   "Hooks run when context is captured.")
+
+;;; Session protocol instructions
+
+(defun efrit-do--session-protocol-instructions ()
+  "Return detailed instructions for Claude about the session protocol."
+  (concat
+   "SESSION PROTOCOL:\n"
+   "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
+   
+   "1. WORK LOG INTERPRETATION:\n"
+   "   - The work log shows your previous steps: [[\"result1\", \"code1\"], [\"result2\", \"code2\"], ...]\n"
+   "   - Each entry contains [result, code] from a previous tool execution\n"
+   "   - Use this to understand what you've already done and what remains\n\n"
+   
+   "2. CONTINUATION DECISION:\n"
+   "   - Analyze the work log and original command to determine next steps\n"
+   "   - If the task is incomplete, execute the next logical step\n"
+   "   - If the task is complete, use the session_complete tool with final result\n\n"
+   
+   "3. TWO-PHASE EXECUTION MODEL:\n"
+   "   Phase 1 - Context Gathering (if needed):\n"
+   "   - Use eval_sexp to gather information about Emacs state\n"
+   "   - Examples: (buffer-list), (point), (buffer-substring-no-properties ...)\n"
+   "   - Results help you make informed decisions\n\n"
+   "   Phase 2 - Action Execution:\n"
+   "   - Based on Phase 1 results (if any) and work log, execute the action\n"
+   "   - Examples: create buffers, modify text, run commands\n"
+   "   - Each execution adds to the work log for next continuation\n\n"
+   
+   "4. MULTI-STEP EXAMPLE:\n"
+   "   Command: 'fetch weather and format it'\n"
+   "   Step 1: shell_exec to fetch weather data\n"
+   "   Step 2: buffer_create to display formatted result\n"
+   "   Step 3: session_complete with success message\n\n"
+   
+   "5. IMPORTANT RULES:\n"
+   "   - Execute ONE meaningful action per continuation\n"
+   "   - Each step should make progress toward the goal\n"
+   "   - Use session_complete when task is fully done\n"
+   "   - Keep responses minimal - focus on execution\n"
+   "   - The work log provides your memory across steps\n"))
 
 ;;; Context ring management
 
@@ -606,6 +657,13 @@ This handles cases where JSON escaping has been applied multiple times."
       (error
        (format "\n[Error formatting TODO list: %s]" (error-message-string err))))))
 
+(defun efrit-do--handle-session-complete (tool-input)
+  "Handle session_complete tool with TOOL-INPUT hash table.
+This signals that a multi-step session is complete."
+  (let ((message (gethash "message" tool-input)))
+    ;; Return a special marker that the async handler can detect
+    (format "\n[SESSION-COMPLETE: %s]" (or message "Task completed"))))
+
 (defun efrit-do--handle-display-in-buffer (tool-input input-str)
   "Handle display in buffer."
   (let* ((buffer-name (if (hash-table-p tool-input)
@@ -663,6 +721,8 @@ Returns a formatted string with execution results or empty string on failure."
       (efrit-do--handle-format-todo-list tool-input))
      ((string= tool-name "display_in_buffer")
       (efrit-do--handle-display-in-buffer tool-input input-str))
+     ((string= tool-name "session_complete")
+      (efrit-do--handle-session-complete tool-input))
      (t 
       (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
       (format "\n[Unknown tool: %s]" tool-name)))))
@@ -715,10 +775,11 @@ Returns a formatted string with execution results or empty string on failure."
    "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
    "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
 
-(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
+(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code session-id work-log)
   "Generate system prompt for command execution with optional context.
 Uses previous command context if available. If RETRY-COUNT is provided,
-include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
+include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE.
+If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
   (let ((context-info (when efrit-do--last-result
                         (let ((recent-items (efrit-do--get-context-items 1)))
                           (when recent-items
@@ -736,10 +797,18 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
                                 retry-count efrit-do-max-retries 
                                 (or previous-code "Unknown") 
                                 (or error-msg "Unknown error")
-                                rich-context)))))
+                                rich-context))))
+        (session-info (when session-id
+                       (format "\n\nSESSION MODE ACTIVE:\nSession ID: %s\nWork Log: %s\n\n%s\n\n"
+                              session-id
+                              (or work-log "[]")
+                              (efrit-do--session-protocol-instructions)))))
     (concat "You are Efrit, an AI assistant that executes natural language commands in Emacs.\n\n"
           
-          "IMPORTANT: You are in COMMAND MODE. This means:\n"
+          (if session-id
+              "IMPORTANT: You are in SESSION MODE. Follow the session protocol for multi-step execution.\n\n"
+            "IMPORTANT: You are in COMMAND MODE. This means:\n")
+          
           "- Generate valid Elisp code to accomplish the user's request\n"
           "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
           "- CRITICAL: When user asks to 'show', 'list', 'display' or create any kind of report, you MUST use buffer_create tool to create a dedicated buffer\n"
@@ -764,6 +833,8 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           (efrit-do--command-common-tasks)
           (efrit-do--command-formatting-tools)
           (efrit-do--command-examples)
+          
+          session-info
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
@@ -804,7 +875,7 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
 Uses improved error handling. If RETRY-COUNT is provided, this is a retry 
 attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
-      (let* ((api-key (efrit--get-api-key))
+      (let* ((api-key (efrit-common-get-api-key))
              (url-request-method "POST")
              (url-request-extra-headers
               `(("x-api-key" . ,api-key)
@@ -948,6 +1019,36 @@ Returns the final result after all retry attempts."
       (setq efrit-do--last-result fallback-error)
       (efrit-do--display-result command fallback-error t)
       (user-error "%s" fallback-error))))
+
+;;;###autoload
+(defun efrit-do-async (command)
+  "Execute natural language COMMAND in Emacs asynchronously.
+The command is sent to Claude using async infrastructure, providing
+non-blocking execution with progress feedback. Results are displayed
+when the command completes."
+  (interactive
+   (list (read-string "Command (async): " nil 'efrit-do-history)))
+  
+  ;; Add to history
+  (add-to-history 'efrit-do-history command efrit-do-history-max)
+  
+  ;; Execute asynchronously
+  (require 'efrit-async)
+  (message "Executing asynchronously: %s..." command)
+  (efrit-async-execute-command 
+   command
+   (lambda (result)
+     (let* ((error-info (efrit-do--extract-error-info result))
+            (is-error (car error-info)))
+       ;; Store result and update context
+       (setq efrit-do--last-result result)
+       (efrit-do--capture-context command result)
+       (efrit-do--display-result command result is-error)
+       
+       ;; Show completion message
+       (if is-error
+           (message "Async command failed: %s" (cdr error-info))
+         (message "Async command completed successfully"))))))
 
 ;;;###autoload
 (defun efrit-do (command)

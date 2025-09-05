@@ -21,9 +21,9 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url)
+(require 'efrit-common)
 
 ;; Forward declarations
-(declare-function efrit--get-api-key "efrit-chat")
 (declare-function efrit-log-debug "efrit-debug" (format-string &rest args))
 
 ;;; Configuration
@@ -173,7 +173,7 @@ REASON: [brief explanation]"
 
 (defun efrit--send-completion-check-request (prompt conversation)
   "Send lightweight completion check request to Claude."
-  (let* ((api-key (efrit--get-api-key))
+  (let* ((api-key (efrit-common-get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers
           `(("x-api-key" . ,api-key)

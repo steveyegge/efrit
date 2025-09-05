@@ -65,6 +65,7 @@
       (require 'efrit-command)    ; Depends on efrit-chat
       (require 'efrit-agent)      ; Depends on efrit-tools
       (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
+      (require 'efrit-async)      ; Async infrastructure for non-blocking commands
       (require 'efrit-remote-queue) ; File-based remote queue system
       
       (message "Efrit modules loaded successfully"))
@@ -91,8 +92,10 @@
     (define-key map (kbd "a") 'efrit-agent-run)
     (define-key map (kbd "o") 'efrit-show-output)
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute
+    (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
+    (define-key map (kbd "A") 'efrit-async-status) ; 'A' for async status
     map)
   "Keymap for Efrit commands.")
 
@@ -124,6 +127,9 @@
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
 
 ;;;###autoload
+(autoload 'efrit-do-async "efrit-do" "Execute natural language command in Emacs asynchronously" t)
+
+;;;###autoload
 (autoload 'efrit-streamlined-send "efrit-chat-streamlined" "Send message via streamlined chat" t)
 
 ;;;###autoload
@@ -134,6 +140,15 @@
 
 ;;;###autoload
 (autoload 'efrit-remote-queue-status "efrit-remote-queue" "Show remote queue status" t)
+
+;;;###autoload
+(autoload 'efrit-async-status "efrit-async" "Show status of async operations" t)
+
+;;;###autoload
+(autoload 'efrit-async-show-log "efrit-async" "Show work log for a session" t)
+
+;;;###autoload
+(autoload 'efrit-async-cancel "efrit-async" "Cancel an async operation" t)
 
 ;; Verify that key functions are available
 (unless (and (fboundp 'efrit-chat) (fboundp 'efrit-do))

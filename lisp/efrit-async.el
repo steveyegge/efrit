@@ -18,17 +18,20 @@
 (require 'json)
 (require 'url)
 (require 'efrit-log)
+(require 'efrit-common)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
-(declare-function efrit--api-headers "efrit-common")
-(declare-function efrit-do--display-error "efrit-do")
+(declare-function efrit-do--execute-tool "efrit-do")
+(declare-function efrit-do--command-system-prompt "efrit-do")
+(defvar efrit-do--tools-schema)
 
 ;;; Session Data Structure
 
 (cl-defstruct efrit-session
   "Session tracking for multi-step operations."
   id              ; Unique identifier from Claude
+  command         ; Original command from user
   work-log        ; List of (elisp . result) pairs  
   start-time      ; When session started
   status          ; 'active, 'waiting, 'complete
@@ -47,10 +50,25 @@
   :type 'boolean
   :group 'efrit)
 
+(defcustom efrit-async-max-work-log-entries 50
+  "Maximum number of work log entries to keep in session history."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-async-max-session-queue-size 20
+  "Maximum number of sessions allowed in the queue."
+  :type 'integer
+  :group 'efrit)
+
 ;;; Progress Display
 
 (defvar efrit-async-mode-line-string nil
   "Mode line indicator for active Efrit session.")
+
+(defun efrit-async--clear-mode-line ()
+  "Clear mode line indicators and force update."
+  (setq efrit-async-mode-line-string nil)
+  (force-mode-line-update t))
 
 (defun efrit-async--show-progress (message)
   "Update progress indicators with MESSAGE."
@@ -88,11 +106,18 @@
   (when efrit-async--active-session
     (push (cons elisp result) 
           (efrit-session-work-log efrit-async--active-session))
+    
+    ;; Limit work log size to prevent memory growth
+    (let ((work-log (efrit-session-work-log efrit-async--active-session)))
+      (when (> (length work-log) efrit-async-max-work-log-entries)
+        (setf (efrit-session-work-log efrit-async--active-session)
+              (seq-take work-log efrit-async-max-work-log-entries))))
+    
     (efrit-log 'debug "Session %s: logged step %d" 
                session-id
                (length (efrit-session-work-log efrit-async--active-session)))))
 
-(defun efrit-async--complete-session (session-id _result)
+(defun efrit-async--complete-session (session-id result)
   "Mark session SESSION-ID complete with final RESULT and process queue."
   (efrit-async--show-progress "Complete!")
   (when efrit-async--active-session
@@ -105,9 +130,21 @@
                  session-id elapsed steps)))
   
   (setq efrit-async--active-session nil)
-  (setq efrit-async-mode-line-string nil)
-  (force-mode-line-update t)
+  (efrit-async--clear-mode-line)
   (efrit-async--process-queue))
+
+(defun efrit-async--add-to-queue (command)
+  "Add COMMAND to session queue, enforcing size limits."
+  (when (>= (length efrit-async--session-queue) efrit-async-max-session-queue-size)
+    ;; Queue is full - remove oldest entries
+    (efrit-log 'warn "Session queue full, dropping oldest entries")
+    (setq efrit-async--session-queue 
+          (seq-take efrit-async--session-queue 
+                    (1- efrit-async-max-session-queue-size))))
+  
+  (setq efrit-async--session-queue 
+        (append efrit-async--session-queue (list command)))
+  (efrit-log 'debug "Added command to queue (size: %d)" (length efrit-async--session-queue)))
 
 (defun efrit-async--process-queue ()
   "Process next queued command if any."
@@ -158,8 +195,7 @@
     (efrit-log 'info "User cancelled session %s" 
                (efrit-session-id efrit-async--active-session))
     (setq efrit-async--active-session nil)
-    (setq efrit-async-mode-line-string nil)
-    (force-mode-line-update t)
+    (efrit-async--clear-mode-line)
     (message "Efrit: Session cancelled")
     (efrit-async--process-queue)))
 
@@ -191,24 +227,61 @@
 
 ;;; Async API Infrastructure
 
-(defun efrit-async--api-request (data callback)
-  "Send DATA to Claude API asynchronously, calling CALLBACK with response.
-This is a minimal implementation for testing - will be expanded later."
-  (efrit-log 'debug "Async API request: %S" data)
+(defun efrit-async--api-request (request-data callback)
+  "Send REQUEST-DATA to Claude API asynchronously, calling CALLBACK with response.
+REQUEST-DATA should be the JSON data structure to send.
+CALLBACK is called with the parsed response or error information."
+  (efrit-log 'debug "Async API request starting")
   (condition-case err
-      ;; For now, just simulate async with a timer
-      ;; Real implementation will use url-retrieve
-      (run-with-timer 
-       0.5 nil
-       (lambda ()
-         ;; Simulate a response
-         (let ((response `((elisp . "(message \"Hello from async!\")")
-                          (session . ((id . "test-session")
-                                    (status . "complete"))))))
-           (funcall callback response))))
+      (let* ((api-key (efrit-common-get-api-key))
+             (json-string (json-encode request-data))
+             ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+             (escaped-json (replace-regexp-in-string 
+                           "[^\x00-\x7F]" 
+                           (lambda (char)
+                             (format "\\\\u%04X" (string-to-char char)))
+                           json-string))
+             (url-request-data (encode-coding-string escaped-json 'utf-8))
+             (url-request-method "POST")
+             (url-request-extra-headers (efrit-common-build-headers api-key)))
+        
+        (url-retrieve
+         efrit-common-api-url
+         (lambda (status)
+           (efrit-async--handle-url-response status callback))
+         nil t))
     (error 
-     (efrit-log 'error "API request failed: %s" (error-message-string err))
+     (efrit-log 'error "API request setup failed: %s" (error-message-string err))
      (efrit-async--handle-error err))))
+
+(defun efrit-async--handle-url-response (status callback)
+  "Handle url-retrieve STATUS and call CALLBACK with parsed response."
+  (unwind-protect
+      (condition-case err
+          (progn
+            ;; Check for HTTP errors
+            (when (plist-get status :error)
+              (error "HTTP error: %s" (plist-get status :error)))
+            
+            ;; Extract response text
+            (goto-char (point-min))
+            (when (search-forward-regexp "^$" nil t)
+              (let ((response-text (buffer-substring-no-properties (point) (point-max))))
+                
+                ;; Parse and process the response
+                (if (string-empty-p (string-trim response-text))
+                    (funcall callback nil)
+                  (let* ((json-object-type 'hash-table)
+                         (json-array-type 'vector)
+                         (json-key-type 'string)
+                         (parsed-response (json-read-from-string response-text)))
+                    (funcall callback parsed-response))))))
+        (error
+         (efrit-log 'error "Response handling failed: %s" (error-message-string err))
+         (funcall callback nil)))
+    ;; Always clean up the buffer in unwind-protect
+    (when (buffer-live-p (current-buffer))
+      (kill-buffer (current-buffer)))))
 
 (defun efrit-async--handle-error (error)
   "Handle ERROR during async operations."
@@ -220,38 +293,164 @@ This is a minimal implementation for testing - will be expanded later."
     
     ;; Clear session on error
     (setq efrit-async--active-session nil)
-    (setq efrit-async-mode-line-string nil)
-    (force-mode-line-update t)))
+    (efrit-async--clear-mode-line)))
 
-(defun efrit-async--handle-response (response)
-  "Handle RESPONSE from Claude - execute elisp and check status.
-Minimal implementation for testing."
-  (efrit-log 'debug "Handling response: %S" response)
-  (let* ((elisp (alist-get 'elisp response))
-         (session-info (alist-get 'session response))
-         (session-id (alist-get 'id session-info))
-         (status (alist-get 'status session-info)))
+(defun efrit-async--handle-response (response callback)
+  "Handle RESPONSE from Claude API and execute tools, then call CALLBACK.
+RESPONSE should be the parsed JSON response from Claude API.
+CALLBACK will be called with the final result string."
+  (efrit-log 'debug "Handling Claude API response")
+  (condition-case err
+      (if (not response)
+          (progn
+            (efrit-async--handle-error "No response from API")
+            (when callback (funcall callback "Error: No response from API")))
+        
+        ;; Check for API errors first
+        (if-let* ((error-obj (gethash "error" response)))
+            (let* ((error-type (gethash "type" error-obj))
+                   (error-message (gethash "message" error-obj))
+                   (error-str (format "API Error (%s): %s" error-type error-message)))
+              (efrit-async--handle-error error-str)
+              (when callback (funcall callback error-str)))
+          
+          ;; Process successful response - similar to efrit-do's implementation
+          (let ((content (gethash "content" response))
+                (result-text "")
+                (session-complete-p nil)
+                (completion-message nil)
+                (tool-results '()))
+            
+            (when content
+              ;; Process each content item
+              (dotimes (i (length content))
+                (let* ((item (aref content i))
+                       (type (gethash "type" item)))
+                  (cond
+                   ;; Handle text content
+                   ((string= type "text")
+                    (when-let* ((text (gethash "text" item)))
+                      (setq result-text (concat result-text text))))
+                   
+                   ;; Handle tool use - delegate to efrit-do's tool execution
+                   ((string= type "tool_use")
+                    (let* ((tool-result (efrit-async--execute-tool item))
+                           (tool-input (gethash "input" item)))
+                      (setq result-text 
+                            (concat result-text tool-result))
+                      ;; Check for session completion
+                      (when (string-match "\\[SESSION-COMPLETE: \\(.+\\)\\]" tool-result)
+                        (setq session-complete-p t)
+                        (setq completion-message (match-string 1 tool-result)))
+                      ;; Track tool execution for work log
+                      (when efrit-async--active-session
+                        (push (list tool-result 
+                                  (format "%S" tool-input))
+                              tool-results))))))))
+            
+            ;; Handle session continuation or completion
+            (cond
+             ;; Session is complete or no active session
+             ((or (not efrit-async--active-session) session-complete-p)
+              (when efrit-async--active-session
+                (efrit-async--complete-session 
+                 (efrit-session-id efrit-async--active-session) 
+                 (or completion-message result-text)))
+              (when callback 
+                (funcall callback (or completion-message result-text))))
+             
+             ;; Session needs to continue
+             (t
+              ;; Update session work log with new results
+              (dolist (result (nreverse tool-results))
+                (efrit-async--update-session 
+                 (efrit-session-id efrit-async--active-session) 
+                 (car result) 
+                 (cadr result)))
+              ;; Continue the session
+              (efrit-async--continue-session efrit-async--active-session callback))))))
+    (error
+     (let ((error-msg (format "Response handling error: %s" (error-message-string err))))
+       (efrit-async--handle-error error-msg)
+       (when callback (funcall callback error-msg))))))
+
+(defun efrit-async--execute-tool (tool-item)
+  "Execute a tool by delegating to efrit-do's tool system.
+TOOL-ITEM is the tool_use object from Claude's response."
+  (require 'efrit-do)  ; Ensure efrit-do is loaded
+  (efrit-do--execute-tool tool-item))
+
+;;; Main Async Interface
+
+(defun efrit-async--continue-session (session callback)
+  "Continue a multi-step SESSION by calling Claude again.
+CALLBACK is the original completion callback."
+  (let* ((session-id (efrit-session-id session))
+         (work-log (efrit-session--compress-log session))
+         (original-command (efrit-session-command session))
+         (system-prompt (efrit-async--build-system-prompt session-id work-log))
+         (request-data
+          `(("model" . "claude-sonnet-4-20250514")
+            ("max_tokens" . 8192)
+            ("temperature" . 0.0)
+            ("messages" . [(("role" . "user")
+                           ("content" . ,original-command))])
+            ("system" . ,system-prompt)
+            ("tools" . ,(efrit-async--get-tools-schema)))))
     
-    ;; Execute the elisp
-    (let ((result (if elisp
-                      (eval (car (read-from-string elisp)))
-                    "No elisp provided")))
+    (efrit-log 'debug "Continuing session %s with work log: %S" session-id work-log)
+    (efrit-async--show-progress "Continuing...")
+    
+    (efrit-async--api-request 
+     request-data
+     (lambda (response)
+       (efrit-async--handle-response response callback)))))
+
+(defun efrit-async-execute-command (command callback)
+  "Execute natural language COMMAND asynchronously.
+CALLBACK is called with the result when complete.
+This is the async version of efrit-do's command execution."
+  ;; Create a new session for multi-step execution
+  (let ((session-id (format "async-%s" (format-time-string "%Y%m%d%H%M%S"))))
+    (setq efrit-async--active-session
+          (make-efrit-session
+           :id session-id
+           :command command
+           :status 'active
+           :start-time (current-time)
+           :work-log '()))
+    
+    (efrit-async--show-progress "Processing...")
+    
+    (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
+           (request-data
+            `(("model" . "claude-sonnet-4-20250514")
+              ("max_tokens" . 8192)
+              ("temperature" . 0.0)
+              ("messages" . [(("role" . "user")
+                             ("content" . ,command))])
+              ("system" . ,system-prompt)
+              ("tools" . ,(efrit-async--get-tools-schema)))))
       
-      ;; Update session
-      (when elisp
-        (efrit-async--update-session session-id result elisp))
-      
-      ;; Handle status
-      (cond
-       ((equal status "continue")
-        (efrit-async--show-progress "Continuing...")
-        (message "Would continue session %s here" session-id))
-       
-       ((equal status "complete")
-        (efrit-async--complete-session session-id result))
-       
-       ((equal status "need-input")
-        (message "Would wait for input here"))))))
+      (efrit-async--api-request 
+       request-data
+       (lambda (response)
+         (efrit-async--handle-response 
+          response
+          (lambda (result)
+            (efrit-async--show-progress "Complete!")
+            (when callback (funcall callback result)))))))))
+
+(defun efrit-async--build-system-prompt (&optional session-id work-log)
+  "Build system prompt for async commands - delegates to efrit-do.
+If SESSION-ID is provided, include session protocol with WORK-LOG."
+  (require 'efrit-do)
+  (efrit-do--command-system-prompt nil nil nil session-id work-log))
+
+(defun efrit-async--get-tools-schema ()
+  "Get tools schema - delegates to efrit-do."
+  (require 'efrit-do)
+  efrit-do--tools-schema)
 
 (provide 'efrit-async)
 ;;; efrit-async.el ends here
