@@ -668,6 +668,53 @@ Returns a formatted string with execution results or empty string on failure."
       (format "\n[Unknown tool: %s]" tool-name)))))
 ;;; Command execution
 
+(defun efrit-do--command-examples ()
+  "Return examples section for command system prompt."
+  (concat
+   "Examples:\n\n"
+   
+   "User: show me untracked files in ~/.emacs.d/\n"
+   "Assistant: I'll find untracked files and create a report.\n"
+   "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
+   "Tool call: format_file_list with content: \"[shell output]\"\n"
+   "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
+   
+   "User: open dired to my downloads folder\n"
+   "Assistant: I'll open dired for your downloads folder.\n"
+   "Tool call: eval_sexp with expr: \"(dired (expand-file-name \\\"~/Downloads/\\\"))\"\n\n"
+   
+   "User: split window and show scratch buffer\n"
+   "Assistant: I'll split the window and show the scratch buffer.\n"
+   "Tool call: eval_sexp with expr: \"(progn (split-window-horizontally) (other-window 1) (switch-to-buffer \\\"*scratch*\\\"))\"\n\n"
+   
+   "User: save all buffers\n"
+   "Assistant: I'll save all modified buffers.\n"
+   "Tool call: eval_sexp with expr: \"(save-some-buffers t)\"\n\n"
+   
+   "User: wrap the text to 2500 columns\n"
+   "Assistant: I'll wrap the text to 2500 columns.\n"
+   "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"))
+
+(defun efrit-do--command-formatting-tools ()
+  "Return formatting tools documentation for command system prompt."
+  (concat
+   "FORMATTING AND DISPLAY TOOLS:\n"
+   "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
+   "- format_file_list: Format raw text as markdown file lists with bullet points\n"
+   "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
+   "- display_in_buffer: Display content in specific buffers with custom window height\n\n"))
+
+(defun efrit-do--command-common-tasks ()
+  "Return common tasks section for command system prompt."
+  (concat
+   "Common tasks:\n"
+   "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
+   "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
+   "- Window operations: (split-window-horizontally), (other-window 1)\n"
+   "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
+   "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
+   "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
+
 (defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
   "Generate system prompt for command execution with optional context.
 Uses previous command context if available. If RETRY-COUNT is provided,
@@ -714,43 +761,9 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           "- Only operate on current paragraph/region if explicitly specified\n"
           "- For buffer-wide operations, prefer whole-buffer functions\n\n"
           
-          "Common tasks:\n"
-          "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
-          "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
-          "- Window operations: (split-window-horizontally), (other-window 1)\n"
-          "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
-          "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
-          "- Case changes: (upcase-region (point-min) (point-max))\n\n"
-          
-          "FORMATTING AND DISPLAY TOOLS:\n"
-          "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
-          "- format_file_list: Format raw text as markdown file lists with bullet points\n"
-          "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
-          "- display_in_buffer: Display content in specific buffers with custom window height\n\n"
-          
-          "Examples:\n\n"
-          
-          "User: show me untracked files in ~/.emacs.d/\n"
-          "Assistant: I'll find untracked files and create a report.\n"
-          "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
-          "Tool call: format_file_list with content: \"[shell output]\"\n"
-          "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
-          
-          "User: open dired to my downloads folder\n"
-          "Assistant: I'll open dired for your downloads folder.\n"
-          "Tool call: eval_sexp with expr: \"(dired (expand-file-name \\\"~/Downloads/\\\"))\"\n\n"
-          
-          "User: split window and show scratch buffer\n"
-          "Assistant: I'll split the window and show the scratch buffer.\n"
-          "Tool call: eval_sexp with expr: \"(progn (split-window-horizontally) (other-window 1) (switch-to-buffer \\\"*scratch*\\\"))\"\n\n"
-          
-          "User: save all buffers\n"
-          "Assistant: I'll save all modified buffers.\n"
-          "Tool call: eval_sexp with expr: \"(save-some-buffers t)\"\n\n"
-          
-          "User: wrap the text to 2500 columns\n"
-          "Assistant: I'll wrap the text to 2500 columns.\n"
-          "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
+          (efrit-do--command-common-tasks)
+          (efrit-do--command-formatting-tools)
+          (efrit-do--command-examples)
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
@@ -866,23 +879,9 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
     (error
      (format "JSON parsing error: %s" (error-message-string json-err)))))
 
-;;;###autoload
-(defun efrit-do (command)
-  "Execute natural language COMMAND in Emacs.
-The command is sent to Claude, which translates it into Elisp
-and executes it immediately. Results are displayed in a dedicated
-buffer if `efrit-do-show-results' is non-nil.
-
-If retry is enabled and errors occur, automatically retry by sending 
-error details back to Claude for correction."
-  (interactive
-   (list (read-string "Command: " nil 'efrit-do-history)))
-  
-  ;; Add to history
-  (add-to-history 'efrit-do-history command efrit-do-history-max)
-  
-  ;; Execute with retry logic
-  (message "Executing: %s..." command)
+(defun efrit-do--execute-with-retry (command)
+  "Execute COMMAND with retry logic if enabled.
+Returns the final result after all retry attempts."
   (let ((attempt 0)
         (max-attempts (if efrit-do-retry-on-errors (1+ efrit-do-max-retries) 1))
         result error-info last-error last-code final-result)
@@ -924,28 +923,53 @@ error details back to Claude for correction."
                (setq last-error error-msg)
              (setq final-result error-msg))))))
     
-    ;; Process final result
-    (if final-result
-        (let* ((error-info (efrit-do--extract-error-info final-result))
-               (is-error (car error-info)))
-          (setq efrit-do--last-result final-result)
-          (efrit-do--capture-context command final-result)
-          (efrit-do--display-result command final-result is-error)
-          
-          (if is-error
-              (progn
-                (message "Command failed after %d attempt%s" 
-                        attempt (if (> attempt 1) "s" ""))
-                (user-error "%s" (cdr error-info)))
-            (message "Command executed successfully%s" 
-                    (if (> attempt 1) 
-                        (format " (after %d attempts)" attempt) 
-                        ""))))
-      ;; Should never reach here, but handle just in case
-      (let ((fallback-error "Failed to execute command"))
-        (setq efrit-do--last-result fallback-error)
-        (efrit-do--display-result command fallback-error t)
-        (user-error "%s" fallback-error)))))
+    (cons final-result attempt)))
+
+(defun efrit-do--process-result (command result attempt)
+  "Process the final RESULT from executing COMMAND after ATTEMPT attempts."
+  (if result
+      (let* ((error-info (efrit-do--extract-error-info result))
+             (is-error (car error-info)))
+        (setq efrit-do--last-result result)
+        (efrit-do--capture-context command result)
+        (efrit-do--display-result command result is-error)
+        
+        (if is-error
+            (progn
+              (message "Command failed after %d attempt%s" 
+                      attempt (if (> attempt 1) "s" ""))
+              (user-error "%s" (cdr error-info)))
+          (message "Command executed successfully%s" 
+                  (if (> attempt 1) 
+                      (format " (after %d attempts)" attempt) 
+                      ""))))
+    ;; Should never reach here, but handle just in case
+    (let ((fallback-error "Failed to execute command"))
+      (setq efrit-do--last-result fallback-error)
+      (efrit-do--display-result command fallback-error t)
+      (user-error "%s" fallback-error))))
+
+;;;###autoload
+(defun efrit-do (command)
+  "Execute natural language COMMAND in Emacs.
+The command is sent to Claude, which translates it into Elisp
+and executes it immediately. Results are displayed in a dedicated
+buffer if `efrit-do-show-results' is non-nil.
+
+If retry is enabled and errors occur, automatically retry by sending 
+error details back to Claude for correction."
+  (interactive
+   (list (read-string "Command: " nil 'efrit-do-history)))
+  
+  ;; Add to history
+  (add-to-history 'efrit-do-history command efrit-do-history-max)
+  
+  ;; Execute with retry logic
+  (message "Executing: %s..." command)
+  (let* ((result-and-attempt (efrit-do--execute-with-retry command))
+         (final-result (car result-and-attempt))
+         (attempt (cdr result-and-attempt)))
+    (efrit-do--process-result command final-result attempt)))
 
 ;;;###autoload
 (defun efrit-do-repeat ()
