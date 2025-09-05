@@ -41,13 +41,57 @@
 
 ;;; Mode Decision Protocol
 
+(defun efrit-unified--make-mode-request-message (prompt)
+  "Create message structure for mode decision request with PROMPT."
+  `(("role" . "user")
+    ("content" . ,prompt)))
+
 (defun efrit-unified--ask-claude-for-mode (command)
   "Ask Claude whether COMMAND should run sync or async.
 Returns \\='sync or \\='async based on Claude's analysis."
-  ;; For now, default to sync until we implement the protocol
-  ;; TODO: Add special tool for Claude to indicate execution mode
-  (efrit-log 'debug "Mode decision for command: %s" command)
-  'sync)
+  (condition-case err
+      (let* ((api-key (efrit-common-get-api-key))
+             (prompt (format "Analyze this command and decide if it should run synchronously or asynchronously:\n\"%s\"\n\nUse the suggest_execution_mode tool to indicate your decision." command))
+             (request-data `(("model" . "claude-3-5-sonnet-20241022")
+                           ("max_tokens" . 1000)
+                           ("messages" . [,(efrit-unified--make-mode-request-message prompt)])
+                           ("tools" . [,efrit-unified--mode-decision-tool])))
+             (json-data (efrit-common-escape-json-unicode 
+                        (json-encode request-data)))
+             (url-request-method "POST")
+             (url-request-extra-headers (efrit-common-build-headers api-key))
+             (url-request-data json-data)
+             (response-buffer (url-retrieve-synchronously
+                              efrit-common-api-url nil t 5))
+             response-data)
+        
+        (when response-buffer
+          (with-current-buffer response-buffer
+            (goto-char (point-min))
+            (re-search-forward "\n\n" nil t)
+            (setq response-data (json-read))
+            (kill-buffer)))
+        
+        ;; Extract mode from Claude's tool use
+        (let* ((content-array (cdr (assoc 'content response-data)))
+               (tool-use (seq-find (lambda (item)
+                                   (equal (cdr (assoc 'type item)) "tool_use"))
+                                 content-array))
+               (input (when tool-use (cdr (assoc 'input tool-use))))
+               (mode-str (when input (cdr (assoc 'mode input)))))
+          (if mode-str
+              (progn
+                (efrit-log 'debug "Claude suggests %s mode for: %s" mode-str command)
+                (intern mode-str))
+            ;; If no tool use found, default to sync
+            (efrit-log 'debug "No mode suggestion from Claude, defaulting to sync")
+            'sync)))
+    
+    ;; On any error, default to sync
+    (error 
+     (efrit-log 'warn "Failed to get mode decision from Claude: %s" 
+                (efrit-common-safe-error-message err))
+     'sync)))
 
 ;;; Unified Command Interface
 
