@@ -57,6 +57,8 @@ Thank you for your interest in contributing to Efrit! This guide will help you g
 - **Package prefix**: Use `efrit-` for all public functions and variables
 - **Docstrings**: Required for all functions and variables
 - **Line length**: Keep under 100 characters when possible
+- **Function length**: Keep individual functions under 100 lines for better readability and ripgrep chunking
+- **File length**: No restrictions - long files are normal in Elisp
 
 ### Code Quality
 
