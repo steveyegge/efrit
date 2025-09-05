@@ -126,8 +126,9 @@
           (steps (length (efrit-session-work-log efrit-async--active-session))))
       (message "Efrit: Session %s complete (%.1fs, %d steps)"
                session-id elapsed steps)
-      (efrit-log 'info "Completed session %s: %.1fs, %d steps" 
-                 session-id elapsed steps)))
+      (efrit-log 'info "Completed session %s: %.1fs, %d steps, result: %s" 
+                 session-id elapsed steps 
+                 (efrit-common-truncate-string (format "%s" result) 100))))
   
   (setq efrit-async--active-session nil)
   (efrit-async--clear-mode-line)
