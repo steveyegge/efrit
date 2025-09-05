@@ -41,6 +41,18 @@
 
 ;;; Mode Decision Protocol
 
+(defconst efrit-unified--mode-decision-tool
+  '(("name" . "suggest_execution_mode")
+    ("description" . "Suggest whether this command should run synchronously or asynchronously")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("mode" . (("type" . "string")
+                                                   ("enum" . ["sync" "async"])
+                                                   ("description" . "Suggested execution mode")))
+                                      ("reason" . (("type" . "string")
+                                                   ("description" . "Brief explanation for the suggestion")))))
+                      ("required" . ["mode"]))))
+  "Tool schema for Claude to suggest execution mode.")
+
 (defun efrit-unified--make-mode-request-message (prompt)
   "Create message structure for mode decision request with PROMPT."
   `(("role" . "user")
@@ -184,27 +196,6 @@ This is a simple wrapper around efrit-do-async for consistency."
           (insert (format "  - %s\n" cmd)))))
     
     (switch-to-buffer buffer)))
-
-;;; Future Enhancement: Claude Mode Decision
-
-(defconst efrit-unified--mode-decision-tool
-  '(("name" . "suggest_execution_mode")
-    ("description" . "Suggest whether this command should run synchronously or asynchronously")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("mode" . (("type" . "string")
-                                                   ("enum" . ["sync" "async"])
-                                                   ("description" . "Suggested execution mode")))
-                                      ("reason" . (("type" . "string")
-                                                   ("description" . "Brief explanation for the suggestion")))))
-                      ("required" . ["mode"]))))
-  "Tool schema for Claude to suggest execution mode.
-This will be added to the tools schema in a future update.")
-
-;; TODO: Implement protocol for Claude to analyze command and suggest mode
-;; This would involve:
-;; 1. Special initial API call with just the command
-;; 2. Claude uses suggest_execution_mode tool
-;; 3. Client dispatches based on Claude's suggestion
 
 (provide 'efrit-unified)
 ;;; efrit-unified.el ends here

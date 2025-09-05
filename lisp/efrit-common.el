@@ -46,7 +46,8 @@ Throws error if not found."
   `(("Content-Type" . "application/json")
     ("anthropic-version" . ,efrit-common-api-version)
     ("x-api-key" . ,api-key)
-    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")))
+    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
+    ("x-channel" . "ai-efrit")))
 
 ;;; Error Handling
 
