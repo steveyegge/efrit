@@ -17,7 +17,8 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url)
-(require 'efrit-log)
+;; (require 'efrit-log) ; TODO: Fix circular dependency
+(declare-function efrit-log "efrit-log")
 (require 'efrit-common)
 (require 'efrit-context)
 (require 'efrit-protocol)

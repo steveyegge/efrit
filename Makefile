@@ -59,9 +59,16 @@ lisp/efrit-debug.elc: lisp/efrit-log.elc
 lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc lisp/efrit-common.elc
 lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
 lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
+lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
+lisp/efrit-protocol.elc: lisp/efrit-config.elc
+lisp/efrit-performance.elc: lisp/efrit-config.elc
+lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
+lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc lisp/efrit-session-tracker.elc
 lisp/efrit-agent.elc: lisp/efrit-tools.elc lisp/efrit-log.elc lisp/efrit-common.elc
+lisp/efrit-async.elc: lisp/efrit-common.elc lisp/efrit-context.elc lisp/efrit-protocol.elc lisp/efrit-performance.elc lisp/efrit-progress.elc
+lisp/efrit-session-tracker.elc: lisp/efrit-config.elc
+lisp/efrit-dashboard.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/efrit-command.elc: lisp/efrit-tools.elc
 lisp/efrit-autonomous-startup.elc: lisp/efrit-config.elc
 lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc

@@ -44,7 +44,15 @@
 (require 'json)
 (require 'cl-lib)
 (require 'auth-source)
-(require 'efrit-log)
+
+;; Load efrit-log if it exists, otherwise use minimal logging
+(condition-case nil
+    (require 'efrit-log)
+  (error 
+   (defun efrit-log (level format-string &rest args)
+     "Fallback logging function when efrit-log is not available."
+     (when (memq level '(warn error))
+       (message (apply #'format format-string args))))))
 
 ;; Declare functions from efrit-do.el to avoid warnings
 (declare-function efrit-do-todo-item-status "efrit-do")
@@ -55,6 +63,8 @@
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
 (declare-function efrit-common-truncate-string "efrit-common")
+
+;; efrit-log is loaded above or defined as fallback
 
 ;;; Customization
 

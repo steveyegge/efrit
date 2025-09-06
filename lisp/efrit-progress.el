@@ -162,9 +162,27 @@ TYPE can be 'claude, 'error, 'success, or nil."
                 (_ nil))))
     (efrit-progress--append message face)))
 
+(defvar efrit-progress--last-tool nil
+  "Track the last tool called to detect loops.")
+
+(defvar efrit-progress--tool-repeat-count 0
+  "Count consecutive calls to the same tool.")
+
 (defun efrit-progress-show-tool-start (tool-name input)
   "Show the start of TOOL-NAME execution with INPUT."
   (when (memq efrit-progress-verbosity '(normal verbose))
+    ;; Detect repeated tool calls
+    (if (equal tool-name efrit-progress--last-tool)
+        (progn
+          (setq efrit-progress--tool-repeat-count (1+ efrit-progress--tool-repeat-count))
+          (when (>= efrit-progress--tool-repeat-count 3)
+            (efrit-progress--append
+             (format "\n⚠️ WARNING: %s called %d times in a row - possible loop!\n" 
+                     tool-name efrit-progress--tool-repeat-count)
+             'error)))
+      (setq efrit-progress--tool-repeat-count 1))
+    (setq efrit-progress--last-tool tool-name)
+    
     (efrit-progress--append 
      (format "▶ Executing tool: %s" tool-name)
      'efrit-progress-tool-name)
