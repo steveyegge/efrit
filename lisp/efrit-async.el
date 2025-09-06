@@ -28,7 +28,7 @@
 (declare-function efrit-tools-eval-sexp "efrit-tools")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (defvar efrit-do--tools-schema)
-(defvar efrit-model)
+(defvar efrit-default-model)  ; From efrit-config
 
 (defvar efrit-async--active-session nil
   "Currently active session.")
@@ -374,7 +374,9 @@ CALLBACK will be called with the final result string."
                       ;; Track tool execution for work log
                       (when efrit-async--active-session
                         (push (list tool-result 
-                                  (format "%S" tool-input))
+                                  (if (hash-table-p tool-input)
+                                      (json-encode tool-input)
+                                    (format "%S" tool-input)))
                               tool-results))))))))
             
             ;; Handle session continuation or completion
@@ -406,8 +408,12 @@ CALLBACK will be called with the final result string."
 (defun efrit-async--execute-tool (tool-item)
   "Execute a tool using the shared protocol.
 TOOL-ITEM is the tool_use object from Claude's response."
-  (let ((tool-name (cdr (assoc 'name tool-item)))
-        (input-data (cdr (assoc 'input tool-item))))
+  (let ((tool-name (if (hash-table-p tool-item)
+                       (gethash "name" tool-item)
+                     (cdr (assoc 'name tool-item))))
+        (input-data (if (hash-table-p tool-item)
+                       (gethash "input" tool-item)
+                     (cdr (assoc 'input tool-item)))))
     (efrit-protocol-execute-tool tool-name input-data)))
 
 ;;; Main Async Interface
@@ -420,7 +426,7 @@ CALLBACK is the original completion callback."
          (original-command (efrit-session-command session))
          (system-prompt (efrit-async--build-system-prompt session-id work-log))
          (request-data
-          `(("model" . efrit-model)
+          `(("model" . ,efrit-default-model)
             ("max_tokens" . 8192)
             ("temperature" . 0.0)
             ("messages" . [(("role" . "user")
@@ -477,7 +483,7 @@ This is the async version of efrit-do's command execution."
           
           (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
              (request-data
-              `(("model" . efrit-model)
+              `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
                 ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")

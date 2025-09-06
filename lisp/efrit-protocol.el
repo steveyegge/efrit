@@ -38,18 +38,20 @@ This is a dispatcher that routes to the appropriate tool handler.
 Returns the result of the tool execution or signals an error."
   (efrit-log 'debug "Executing tool: %s" tool-name)
   
-  ;; Import the tool executor from efrit-tools
-  (require 'efrit-tools)
+  ;; Import the tool executor from efrit-do
+  (require 'efrit-do)
   (require 'efrit-progress)
   
   ;; Show tool start in progress buffer
   (efrit-progress-show-tool-start tool-name input-data)
   
-  ;; Delegate to the tools module
-  (let ((tool-item `((name . ,tool-name)
-                     (input . ,input-data))))
+  ;; Create tool item in the format expected by efrit-do
+  (let ((tool-item (make-hash-table :test 'equal)))
+    (puthash "name" tool-name tool-item)
+    (puthash "input" input-data tool-item)
+    
     (condition-case err
-        (let ((result (efrit-tools--execute-item tool-item)))
+        (let ((result (efrit-do--execute-tool tool-item)))
           ;; Show successful result
           (efrit-progress-show-tool-result tool-name result t)
           result)
