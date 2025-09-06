@@ -21,6 +21,7 @@
 (require 'efrit-common)
 (require 'efrit-context)
 (require 'efrit-protocol)
+(require 'efrit-performance)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
@@ -32,6 +33,9 @@
 
 (defvar efrit-async--session-queue nil  
   "Queue of pending commands.")
+
+(defvar efrit-async--sessions (make-hash-table :test 'equal)
+  "Hash table of all sessions by ID.")
 
 ;;; Customization
 
@@ -91,6 +95,9 @@
              :start-time (current-time)
              :status 'active
              :buffer (current-buffer)))
+      ;; Track session for memory management
+      (puthash session-id efrit-async--active-session efrit-async--sessions)
+      (efrit-performance-touch-session session-id)
       (efrit-log 'info "Started session %s" session-id)))
   
   (when efrit-async--active-session
@@ -118,12 +125,21 @@
   (when efrit-async--active-session
     (let ((elapsed (float-time (time-since (efrit-session-start-time 
                                            efrit-async--active-session))))
-          (steps (length (efrit-session-work-log efrit-async--active-session))))
+          (steps (length (efrit-session-work-log efrit-async--active-session)))
+          (command (efrit-session-command efrit-async--active-session)))
       (message "Efrit: Session %s complete (%.1fs, %d steps)"
                session-id elapsed steps)
       (efrit-log 'info "Completed session %s: %.1fs, %d steps, result: %s" 
                  session-id elapsed steps 
-                 (efrit-common-truncate-string (format "%s" result) 100))))
+                 (efrit-common-truncate-string (format "%s" result) 100))
+      
+      ;; Cache the result for future use
+      (when command
+        (let* ((context (efrit-context-capture-state))
+               (cache-key (efrit-performance-cache-key command context)))
+          (efrit-performance-cache-put cache-key result)
+          (efrit-log 'debug "Cached result for command: %s" 
+                     (efrit-common-truncate-string command 50))))))
   
   (setq efrit-async--active-session nil)
   (efrit-async--clear-mode-line)
@@ -244,11 +260,15 @@ CALLBACK is called with the parsed response or error information."
              (escaped-json (efrit-common-escape-json-unicode json-string))
              (url-request-data (encode-coding-string escaped-json 'utf-8))
              (url-request-method "POST")
-             (url-request-extra-headers (efrit-common-build-headers api-key)))
+             (url-request-extra-headers (efrit-common-build-headers api-key))
+             (start-time (float-time)))
         
         (url-retrieve
          efrit-common-api-url
          (lambda (status)
+           (let ((elapsed (- (float-time) start-time)))
+             (efrit-performance-record-api-time elapsed)
+             (efrit-log 'info "API call completed in %.2fs" elapsed))
            (efrit-async--handle-url-response status callback))
          nil t))
     (error 
@@ -419,15 +439,27 @@ This is the async version of efrit-do's command execution."
         (message "Efrit: Command queued (position %d)" 
                  (length efrit-async--session-queue)))
     
-    ;; No active session, execute immediately
-    (let ((session-id (format "async-%s" (format-time-string "%Y%m%d%H%M%S"))))
-      (setq efrit-async--active-session
-            (make-efrit-session
-             :id session-id
-             :command command
-             :status 'active
-             :start-time (current-time)
-             :work-log '()))
+    ;; No active session, check cache first
+    (let* ((context (efrit-context-capture-state))
+           (cache-key (efrit-performance-cache-key command context))
+           (cached-response (efrit-performance-get-cached cache-key)))
+      
+      (if cached-response
+          ;; Use cached response
+          (progn
+            (efrit-log 'info "Using cached response for command: %s"
+                       (efrit-common-truncate-string command 50))
+            (funcall callback cached-response))
+        
+        ;; No cache hit, execute normally
+        (let ((session-id (format "async-%s" (format-time-string "%Y%m%d%H%M%S"))))
+          (setq efrit-async--active-session
+                (make-efrit-session
+                 :id session-id
+                 :command command
+                 :status 'active
+                 :start-time (current-time)
+                 :work-log '())))
       
       (efrit-async--show-progress "Processing...")
       

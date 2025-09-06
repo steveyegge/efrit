@@ -63,6 +63,7 @@
       (require 'efrit-protocol)   ; Shared protocols (fixes circular deps)
       (require 'efrit-tools)
       (require 'efrit-context)    ; Context management utilities
+      (require 'efrit-performance) ; Performance optimizations
       (require 'efrit-multi-turn) ; Multi-turn conversation management
       (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
       (require 'efrit-chat-streamlined) ; New streamlined chat system

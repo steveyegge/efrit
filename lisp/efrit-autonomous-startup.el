@@ -86,11 +86,11 @@
       (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
       (require 'efrit-debug nil t) ; Optional debug module
-      (require 'efrit-command)
+      ;; efrit-command no longer exists
       (require 'efrit-do)
       (require 'efrit-chat)
       (require 'efrit-remote-queue)
-      (require 'efrit-agent)
+      ;; efrit-agent no longer exists
       (require 'efrit)
       (message "Efrit modules loaded successfully"))
   (error 
