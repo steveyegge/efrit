@@ -171,8 +171,8 @@ or 4096 without. This setting uses the higher limit."
       ;; Go to end of buffer
       (goto-char (point-max))
       
-      ;; Add spacing before input area
-      (unless (bobp) (insert "\n\n"))
+      ;; Add spacing before input area (single newline since message already has one)
+      (unless (bobp) (insert "\n"))
       
       ;; Set the marker for beginning of input area
       (set-marker efrit--input-marker (point))
@@ -209,14 +209,14 @@ or 4096 without. This setting uses the higher limit."
             (goto-char (marker-position efrit--input-marker))
           (goto-char (point-max))))
       
-      ;; Add spacing before message
-      (unless (bobp) (insert "\n\n"))
+      ;; Add spacing before message (single newline to separate from previous content)
+      (unless (bobp) (insert "\n"))
       
       ;; Insert the message with appropriate prefix
       (let ((start (point)))
-        (insert prefix message)
+        (insert prefix message "\n")  ; Add newline after message
         (when face
-          (add-text-properties start (point) `(face ,face))))
+          (add-text-properties start (- (point) 1) `(face ,face))))  ; Don't apply face to newline
       
       ;; Update conversation marker to end of this message
       (set-marker efrit--conversation-marker (point))
@@ -424,14 +424,16 @@ Returns the processed message text with tool results."
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
-      ;; Remove "thinking" indicator
+      ;; Remove "thinking" indicator (but only if it's actually at the end)
       (when efrit--response-in-progress
         (save-excursion
           (goto-char (point-max))
           (when (search-backward "System: Thinking..." nil t)
             (let ((start (match-beginning 0)))
-              (when (search-forward "Thinking..." nil t)
-                (delete-region start (point)))))))
+              ;; Only delete if this is at the very end of the buffer to avoid deleting user content
+              (when (and (search-forward "Thinking..." nil t)
+                        (= (point) (point-max)))
+                (delete-region start (point-max)))))))
 
       ;; Clear progress flag
       (setq-local efrit--response-in-progress nil)
@@ -577,8 +579,14 @@ Returns the processed message text with tool results."
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
-      ;; Display the user message
-      (efrit--display-message message 'user)
+      ;; Display the user message only if not already displayed
+      ;; (efrit-send-buffer-message already formats it properly)
+      (unless (save-excursion
+                (goto-char (point-max))
+                (forward-line -1)
+                (and (looking-at "You: ")
+                     (string-match-p (regexp-quote message) (thing-at-point 'line))))
+        (efrit--display-message message 'user))
 
       ;; Don't use multi-turn in chat mode - users control the conversation
       (setq-local efrit--current-conversation nil)
@@ -612,9 +620,13 @@ Returns the processed message text with tool results."
                           (replace-regexp-in-string "^>\\s-*" "" raw-input))))
             (if (string-empty-p message)
                 (message "No input to send")
-              ;; Delete the input area
+              ;; Replace the input area with properly formatted user message  
               (delete-region efrit--input-marker (point-max))
-              ;; Send the message
+              (goto-char efrit--input-marker)
+              (insert (format "You: %s\n" message))
+              ;; Update conversation marker to track conversation end
+              (set-marker efrit--conversation-marker (point))
+              ;; Send message (will add assistant response after user message)
               (efrit-send-message message)))
         ;; Debug: marker not set up properly
         (progn
