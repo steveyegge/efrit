@@ -91,9 +91,9 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
     (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
-    (define-key map (kbd "e") 'efrit)         ; 'e' for command interface  
-    (define-key map (kbd "a") 'efrit-agent-run)
-    (define-key map (kbd "o") 'efrit-show-output)
+    ;; (define-key map (kbd "e") 'efrit)       ; removed - efrit-command no longer exists  
+    ;; (define-key map (kbd "a") 'efrit-agent-run) ; removed
+    ;; (define-key map (kbd "o") 'efrit-show-output) ; removed
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (sync)
     (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
     (define-key map (kbd "u") 'efrit-unified-do) ; 'u' for unified (Claude decides)
@@ -119,14 +119,9 @@
 ;;;###autoload
 (autoload 'efrit-chat "efrit-chat" "Start a new Efrit chat session" t)
 
-;;;###autoload
-(autoload 'efrit "efrit-command" "Open Efrit command interface" t)
+;; efrit-command no longer exists - removed autoloads
 
-;;;###autoload
-(autoload 'efrit-show-output "efrit-command" "Show Efrit output buffer" t)
-
-;;;###autoload
-(autoload 'efrit-agent-run "efrit-agent" "Run the agent loop with a request" t)
+;; efrit-agent no longer exists - removed autoload
 
 ;;;###autoload
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)

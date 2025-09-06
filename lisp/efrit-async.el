@@ -448,7 +448,7 @@ This is the async version of efrit-do's command execution."
             response
             (lambda (result)
               (efrit-async--show-progress "Complete!")
-              (when callback (funcall callback result)))))))))))
+              (when callback (funcall callback result)))))))))
 
 (defun efrit-async--build-system-prompt (&optional session-id work-log)
   "Build system prompt for async commands - delegates to efrit-do.
