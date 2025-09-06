@@ -40,11 +40,24 @@ Returns the result of the tool execution or signals an error."
   
   ;; Import the tool executor from efrit-tools
   (require 'efrit-tools)
+  (require 'efrit-progress)
+  
+  ;; Show tool start in progress buffer
+  (efrit-progress-show-tool-start tool-name input-data)
   
   ;; Delegate to the tools module
   (let ((tool-item `((name . ,tool-name)
                      (input . ,input-data))))
-    (efrit-tools--execute-item tool-item)))
+    (condition-case err
+        (let ((result (efrit-tools--execute-item tool-item)))
+          ;; Show successful result
+          (efrit-progress-show-tool-result tool-name result t)
+          result)
+      (error
+       ;; Show error result
+       (let ((error-msg (error-message-string err)))
+         (efrit-progress-show-tool-result tool-name error-msg nil)
+         (signal (car err) (cdr err)))))))
 
 ;;; API Communication Protocol
 

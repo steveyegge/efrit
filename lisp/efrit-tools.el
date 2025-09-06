@@ -438,7 +438,14 @@ Arguments:
                    (call-start (match-beginning 0))
                    (call-end (match-end 0))
                    (result (condition-case eval-err
-                               (efrit-tools-eval-sexp elisp-code)
+                               (progn
+                                 ;; Show elisp eval in progress if available
+                                 (when (fboundp 'efrit-progress-show-elisp-eval)
+                                   (require 'efrit-progress))
+                                 (let ((eval-result (efrit-tools-eval-sexp elisp-code)))
+                                   (when (fboundp 'efrit-progress-show-elisp-eval)
+                                     (efrit-progress-show-elisp-eval elisp-code eval-result))
+                                   eval-result))
                              (error
                               (format "Error in Elisp evaluation: %s" 
                                      (error-message-string eval-err))))))

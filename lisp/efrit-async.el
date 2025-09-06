@@ -22,6 +22,7 @@
 (require 'efrit-context)
 (require 'efrit-protocol)
 (require 'efrit-performance)
+(require 'efrit-progress)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
@@ -124,6 +125,7 @@
   "Mark session SESSION-ID complete with final RESULT and process queue."
   (efrit-async--show-progress "Complete!")
   (when efrit-async--active-session
+    (efrit-progress-end-session (efrit-session-id efrit-async--active-session) t)
     (let ((elapsed (float-time (time-since (efrit-session-start-time 
                                            efrit-async--active-session))))
           (steps (length (efrit-session-work-log efrit-async--active-session)))
@@ -312,6 +314,9 @@ CALLBACK is called with the parsed response or error information."
                    (error-message-string error))))
     (efrit-async--show-progress "Error!")
     (message "Efrit error: %s" message)
+    (efrit-progress-show-message message 'error)
+    (when efrit-async--active-session
+      (efrit-progress-end-session (efrit-session-id efrit-async--active-session) nil))
     
     ;; Clear session on error
     (setq efrit-async--active-session nil)
@@ -352,7 +357,9 @@ CALLBACK will be called with the final result string."
                    ;; Handle text content
                    ((string= type "text")
                     (when-let* ((text (gethash "text" item)))
-                      (setq result-text (concat result-text text))))
+                      (setq result-text (concat result-text text))
+                      ;; Show Claude's message in progress
+                      (efrit-progress-show-message text 'claude)))
                    
                    ;; Handle tool use - delegate to efrit-do's tool execution
                    ((string= type "tool_use")
@@ -466,6 +473,7 @@ This is the async version of efrit-do's command execution."
           (efrit-performance-touch-session session-id)
           
           (efrit-async--show-progress "Processing...")
+          (efrit-progress-start-session session-id command)
           
           (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
              (request-data

@@ -71,6 +71,7 @@
       (require 'efrit-async)      ; Async infrastructure for non-blocking commands
       (require 'efrit-unified)    ; Unified command interface
       (require 'efrit-remote-queue) ; File-based remote queue system
+      (require 'efrit-progress)   ; Progress display for async operations
       
       (message "Efrit modules loaded successfully"))
   (error 
