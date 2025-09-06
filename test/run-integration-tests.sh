@@ -1,115 +1,45 @@
-#!/bin/bash
-
-# run-integration-tests.sh - Run all efrit test suites
+#!/usr/bin/env bash
+# Run Efrit integration tests against production API
 
 set -e
 
-echo "=== Efrit Test Suite ==="
-echo "Running comprehensive test coverage..."
-echo
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+echo "==================================="
+echo "Efrit Integration Tests"
+echo "==================================="
+echo "WARNING: These tests use the production API and will consume tokens!"
+echo "Make sure your API key is configured in ~/.authinfo"
+echo ""
+read -p "Continue? (y/N) " -n 1 -r
+echo ""
 
-# Test results tracking
-TESTS_RUN=0
-TESTS_PASSED=0
-FAILED_TESTS=()
-
-run_test() {
-    local test_file="$1"
-    local test_name="$2"
-    local optional="$3"
-    
-    echo -e "${BLUE}Running $test_name...${NC}"
-    TESTS_RUN=$((TESTS_RUN + 1))
-    
-    if emacs --batch -L ../lisp --load "$test_file" 2>&1; then
-        echo -e "${GREEN}✅ $test_name PASSED${NC}"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        if [ "$optional" = "optional" ]; then
-            echo -e "${YELLOW}⚠️ $test_name SKIPPED (optional)${NC}"
-            TESTS_RUN=$((TESTS_RUN - 1))  # Don't count skipped tests
-        else
-            echo -e "${RED}❌ $test_name FAILED${NC}"
-            FAILED_TESTS+=("$test_name")
-        fi
-    fi
-    echo
-}
-
-# Display test categories
-echo "Test Categories:"
-echo "  📦 Core Tests - Module loading and basic functionality"
-echo "  🔧 Execution Tests - Local elisp execution engine"
-echo "  📚 State Tests - History and context management"
-echo "  🌐 API Tests - Full pipeline with real Claude API calls"
-echo
-
-# Run all test suites
-echo "Starting test execution..."
-echo
-
-# Core functionality tests
-run_test "test-basic-functionality.el" "Core Functionality"
-run_test "test-remote-execution.el" "Remote Execution Engine"
-
-# Local execution tests (renamed for clarity)
-run_test "test-execution-scenarios.el" "Execution Scenarios"
-
-# History functionality tests
-run_test "test-history-functionality.el" "History Management"
-
-# API integration tests (optional - requires API key and credits)
-echo -e "${YELLOW}Checking for API integration tests...${NC}"
-if [ -z "$EFRIT_SKIP_API_TESTS" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo -e "${YELLOW}⚠️  API tests will consume Anthropic credits!${NC}"
-    echo -e "${YELLOW}   Set EFRIT_SKIP_API_TESTS=1 to skip these tests${NC}"
-    echo
-    run_test "test-api-integration.el" "API Integration"
-else
-    if [ -z "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${YELLOW}⚠️  Skipping API tests (no ANTHROPIC_API_KEY)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Skipping API tests (EFRIT_SKIP_API_TESTS is set)${NC}"
-    fi
-    echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Tests cancelled."
+    exit 1
 fi
 
-# Print summary
-echo "=== TEST SUMMARY ==="
-echo "Tests run: $TESTS_RUN"
-echo "Tests passed: $TESTS_PASSED"
-echo "Tests failed: $((TESTS_RUN - TESTS_PASSED))"
+echo ""
+echo "Running integration tests..."
+echo ""
 
-if [ ${#FAILED_TESTS[@]} -eq 0 ]; then
-    echo -e "${GREEN}"
-    echo "🎉 ALL TESTS PASSED!"
-    echo "   ✅ Core functionality working"
-    echo "   ✅ Execution engine working"  
-    echo "   ✅ History management working"
-    if [ -z "$EFRIT_SKIP_API_TESTS" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo "   ✅ API integration working"
-    else
-        echo "   ⚠️  API integration not tested (skipped)"
-    fi
-    echo
-    echo "🚀 efrit is ready for production use!"
-    echo -e "${NC}"
-    exit 0
-else
-    echo -e "${RED}"
-    echo "❌ SOME TESTS FAILED:"
-    for test in "${FAILED_TESTS[@]}"; do
-        echo "   - $test"
-    done
-    echo
-    echo "Please review the test output above for details."
-    echo -e "${NC}"
+# Run the tests
+emacs -Q --batch \
+    -L "$PROJECT_ROOT/lisp" \
+    -L "$SCRIPT_DIR" \
+    -l efrit \
+    -l efrit-integration-tests \
+    -f efrit-run-integration-tests-batch \
+    2>&1 | tee integration-test-results.log
+
+# Check if tests passed
+if grep -q "FAILED" integration-test-results.log; then
+    echo ""
+    echo "❌ Some tests failed. See integration-test-results.log for details."
     exit 1
+else
+    echo ""
+    echo "✅ All integration tests passed!"
+    exit 0
 fi
