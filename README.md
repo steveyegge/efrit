@@ -2,16 +2,18 @@
 
 *A sophisticated AI coding agent that enables autonomous development through direct Elisp evaluation and agent-to-agent communication.*
 
-## 🚀 What's New: Agent-to-Agent Architecture
+## 🚀 What's New: Session-Based Architecture & Performance
 
-**Efrit is evolving into a platform for autonomous AI development**:
+**Efrit now features advanced session management and performance optimizations**:
 
-- **🤖 Agent Communication Channel**: File-based queue system enables any AI coding agent (Claude Code, GitHub Copilot, Sourcegraph Amp, etc.) to interact directly with Efrit
-- **🔧 Self-Enhancing Capabilities**: AI agents can debug, test, and enhance Efrit's own functionality autonomously  
-- **⚡ Autonomous Development Mode**: Spawn independent Emacs instances for hours-long AI development sessions
-- **💬 Multi-Modal Interface**: Chat, command, and agent modes for different interaction styles
+- **🔄 Session-Based Architecture**: Multi-step operations with Claude-controlled flow and context preservation
+- **⚡ Async Execution**: Non-blocking commands with queue management for responsive interaction
+- **📊 Performance Optimizations**: Response caching, memory management, and API call tracking
+- **🤖 Agent Communication Channel**: File-based queue system enables any AI coding agent to interact with Efrit
+- **🔧 Self-Enhancing Capabilities**: AI agents can debug, test, and enhance Efrit's functionality
+- **💬 Unified Interface**: Claude decides whether commands run synchronously or asynchronously
 
-*This positions Efrit as both a powerful user assistant AND a platform for AI-driven development.*
+*Zero client-side intelligence - Claude makes all decisions about execution mode and flow.*
 
 ---
 
@@ -20,23 +22,29 @@
 Efrit provides multiple interfaces for AI-powered Emacs development:
 
 - **efrit-chat** - Multi-turn conversational interface for complex discussions  
-- **efrit-do** - Natural language command execution for quick tasks
-- **efrit-remote-queue** - 🆕 File-based channel for AI agent communication
-- **efrit-agent-run** - Advanced autonomous agent loop
+- **efrit-do** - Synchronous natural language command execution
+- **efrit-do-async** - 🆕 Asynchronous command execution with session management
+- **efrit-unified-do** - 🆕 Claude decides sync/async execution mode
+- **efrit-remote-queue** - File-based channel for AI agent communication
+- **efrit-streamlined-send** - Streamlined chat interface
 
 ## Key Features
 
 ### Core Capabilities
 - **Direct Elisp Evaluation**: Full access to Emacs' native programmability
-- **Multi-turn Conversations**: Maintains context across exchanges
+- **Session Management**: Multi-step operations with context preservation
+- **Async Execution**: Non-blocking commands with automatic queue processing
+- **Performance Optimized**: Response caching, memory management, API tracking
 - **Tool Integration**: Manipulate buffers, execute functions, interact with environment
 - **Safety-First Design**: Comprehensive error handling and confirmation systems
 
-### 🆕 Agent-to-Agent Features
+### 🆕 Advanced Features
+- **Session Protocol**: Claude controls multi-step execution flow
+- **Work Log Compression**: Efficient context management for long sessions
+- **Performance Monitoring**: Track API call times and cache hit rates
 - **Remote Queue System**: AI agents communicate via JSON file exchange
 - **Autonomous Operation**: AI can spawn and control its own Emacs instances  
 - **Self-Enhancement**: Agents can modify and improve Efrit's source code
-- **Multi-Agent Support**: Designed for any AI coding agent, not just one client
 
 ## Installation
 
@@ -126,12 +134,23 @@ This creates `~/.emacs.d/.efrit/queues/` for AI agent communication.
 ### Interactive Usage (Human → Efrit)
 
 ```elisp
-M-x efrit-chat          ; Conversational interface
-M-x efrit-do           ; Natural language commands  
-M-x efrit-streamlined-send  ; Streamlined chat mode
+M-x efrit-chat              ; Conversational interface
+M-x efrit-do               ; Synchronous command execution
+M-x efrit-do-async         ; Asynchronous command execution
+M-x efrit-unified-do       ; Let Claude decide sync/async
+M-x efrit-streamlined-send ; Streamlined chat mode
+M-x efrit-performance-show-stats ; View performance statistics
 ```
 
-**Key Bindings**: `C-c C-e` + `c`/`d`/`s`/`a`/`q`
+**Key Bindings**: 
+- `C-c C-e c` - Chat interface
+- `C-c C-e d` - Sync command execution  
+- `C-c C-e D` - Async command execution
+- `C-c C-e u` - Unified (Claude decides)
+- `C-c C-e s` - Streamlined chat
+- `C-c C-e q` - Start queue
+- `C-c C-e Q` - Queue status
+- `C-c C-e A` - Async status
 
 ### Example: Creative Content Generation
 
@@ -196,10 +215,14 @@ print(f"✓ {result['status']}")
 
 - **efrit.el** - Main entry point and coordination
 - **efrit-chat.el** - Conversational interfaces  
-- **efrit-do.el** - Natural language command execution
-- **efrit-remote-queue.el** - 🆕 Agent communication system
+- **efrit-do.el** - Synchronous natural language command execution
+- **efrit-async.el** - 🆕 Asynchronous execution with session management
+- **efrit-unified.el** - 🆕 Claude-controlled execution mode selection
+- **efrit-context.el** - 🆕 Context capture and work log compression
+- **efrit-performance.el** - 🆕 Caching, memory management, and stats
+- **efrit-protocol.el** - 🆕 Shared protocols and tool dispatch
+- **efrit-remote-queue.el** - Agent communication system
 - **efrit-tools.el** - Core Elisp evaluation engine
-- **efrit-agent.el** - Autonomous agent capabilities
 
 ## 🛣️ Roadmap
 
@@ -220,6 +243,11 @@ Transform Efrit from a user assistant into an **autonomous AI development platfo
 ;; Standard Efrit settings
 (setq efrit-model "claude-3-5-sonnet-20241022")
 (setq efrit-max-tokens 8192)
+
+;; 🆕 Performance settings
+(setq efrit-performance-cache-ttl 300) ; Cache for 5 minutes
+(setq efrit-performance-max-sessions 10) ; Memory management
+(setq efrit-async-max-work-log-entries 50) ; Prevent memory growth
 
 ;; 🆕 Agent communication settings  
 (setq efrit-remote-queue-directory "~/.emacs.d/efrit-queue")
