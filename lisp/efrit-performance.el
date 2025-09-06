@@ -81,8 +81,16 @@
 (defun efrit-performance-cache-key (command context)
   "Generate cache key from COMMAND and CONTEXT."
   (secure-hash 'sha256 (format "%s:%s" command 
-                                (if context (efrit-common--truncate-string 
-                                           (json-encode context) 1000)
+                                (if context 
+                                    (efrit-common-truncate-string 
+                                     (json-encode 
+                                      (if (cl-typep context 'efrit-context-state)
+                                          ;; Convert struct to alist for JSON encoding
+                                          (list (cons 'buffer-name (efrit-context-state-buffer-name context))
+                                                (cons 'buffer-mode (format "%s" (efrit-context-state-buffer-mode context)))
+                                                (cons 'directory (efrit-context-state-directory context)))
+                                        context))
+                                     1000)
                                   ""))))
 
 (defun efrit-performance-get-cached (key)

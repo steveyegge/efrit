@@ -24,24 +24,67 @@
 
 ;;; API Configuration
 
+(defcustom efrit-api-key nil
+  "Anthropic API key for Efrit.
+This can be:
+- nil: Use auth-source lookup (recommended)
+- A string: The API key directly (not recommended for security)
+- A symbol naming an environment variable (e.g. 'ANTHROPIC_API_KEY)
+- A function that returns the API key"
+  :type '(choice (const :tag "Use auth-source" nil)
+                 (string :tag "API key string")
+                 (symbol :tag "Environment variable name")
+                 (function :tag "Function returning API key"))
+  :group 'efrit)
+
+(defcustom efrit-api-auth-source-host "api.anthropic.com"
+  "Host to use for auth-source lookup of API key."
+  :type 'string
+  :group 'efrit)
+
+(defcustom efrit-api-auth-source-user "personal"
+  "User to use for auth-source lookup of API key."
+  :type 'string
+  :group 'efrit)
+
 (defun efrit-common-get-api-key ()
-  "Get the Anthropic API key from .authinfo file.
-Checks efrit-api-channel to determine which key to use.
+  "Get the Anthropic API key using BYOK (Bring Your Own Key) system.
+Tries in order:
+1. `efrit-api-key' if set (direct string, env var, or function)
+2. Environment variable ANTHROPIC_API_KEY
+3. Auth-source lookup using `efrit-api-auth-source-host' and `efrit-api-auth-source-user'
 Throws error if not found."
-  (let* ((channel (and (boundp 'efrit-api-channel) efrit-api-channel))
-         (host (if (equal channel "ai-efrit")
-                   "api.anthropic.com/sourcegraph"
-                 "api.anthropic.com"))
-         (user (if (equal channel "ai-efrit")
-                   "apikey"
-                 "personal"))
-         (auth-info (car (auth-source-search :host host
-                                            :user user
-                                            :require '(:secret))))
-         (secret (when auth-info (plist-get auth-info :secret))))
-    (if (and secret (functionp secret))
-        (funcall secret)
-      (error "No API key found. Add to ~/.authinfo: machine %s login %s password YOUR_KEY" host user))))
+  (cond
+   ;; Direct string API key
+   ((stringp efrit-api-key)
+    efrit-api-key)
+   
+   ;; Symbol naming an environment variable (but not nil)
+   ((and (symbolp efrit-api-key) efrit-api-key)
+    (or (getenv (symbol-name efrit-api-key))
+        (error "Environment variable %s not set" efrit-api-key)))
+   
+   ;; Function that returns API key
+   ((functionp efrit-api-key)
+    (or (funcall efrit-api-key)
+        (error "API key function returned nil")))
+   
+   ;; Try ANTHROPIC_API_KEY environment variable
+   ((getenv "ANTHROPIC_API_KEY"))
+   
+   ;; Fall back to auth-source
+   (t
+    (let* ((auth-info (car (auth-source-search :host efrit-api-auth-source-host
+                                               :user efrit-api-auth-source-user
+                                               :require '(:secret))))
+           (secret (when auth-info (plist-get auth-info :secret))))
+      (if (and secret (functionp secret))
+          (funcall secret)
+        (error "No API key found. Try one of:
+1. Set efrit-api-key variable
+2. Set ANTHROPIC_API_KEY environment variable  
+3. Add to ~/.authinfo: machine %s login %s password YOUR_KEY"
+               efrit-api-auth-source-host efrit-api-auth-source-user))))))
 
 (defconst efrit-common-api-url "https://api.anthropic.com/v1/messages"
   "Anthropic API endpoint for all efrit modules.")
@@ -54,8 +97,7 @@ Throws error if not found."
   `(("Content-Type" . "application/json")
     ("anthropic-version" . ,efrit-common-api-version)
     ("x-api-key" . ,api-key)
-    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-    ("x-channel" . ,(or (and (boundp 'efrit-api-channel) efrit-api-channel) "default"))))
+    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")))
 
 ;;; Error Handling
 
