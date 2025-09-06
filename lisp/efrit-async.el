@@ -27,6 +27,7 @@
 (declare-function efrit-tools-eval-sexp "efrit-tools")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (defvar efrit-do--tools-schema)
+(defvar efrit-model)
 
 (defvar efrit-async--active-session nil
   "Currently active session.")

@@ -12,22 +12,29 @@ All notable changes to Efrit will be documented in this file.
 - **Context Compression**: Smart work log compression for efficient token usage
 - **Performance Statistics**: Track API call times and view performance metrics
 - **Integration Tests**: Comprehensive test suite that hits production API
+- **Multi-Channel Support**: Support for different API channels with channel-specific keys
 
 ### Changed
 - Restructured modules to eliminate circular dependencies via `efrit-protocol.el`
 - Unified context management under `efrit-context.el`
 - Improved memory management with automatic session cleanup
 - Enhanced error handling and logging throughout
+- Updated model from claude-sonnet-4 to claude-3-5-sonnet-20241022
 
 ### Fixed
+- **Critical**: Syntax error in efrit-async.el preventing module from loading
+- **Critical**: Wrong API key selection for ai-efrit channel
 - Buffer memory leaks in chat interface
 - Circular dependency issues between modules
 - Byte compilation warnings
 - Unicode handling in API requests
+- Session-id variable scope issue in efrit-async-execute-command
+- Missing final newline in efrit-async.el
 
 ### Removed
 - Client-side heuristics for execution mode decisions (now 100% Claude-controlled)
 - References to non-existent `efrit-command` and `efrit-agent` modules
+- Temporary debug and test files
 
 ## [0.2.0] - 2024-12-20
 

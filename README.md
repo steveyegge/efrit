@@ -4,14 +4,15 @@
 
 ## 🚀 What's New: Session-Based Architecture & Performance
 
-**Efrit now features advanced session management and performance optimizations**:
+**Efrit v0.3.0 features advanced session management and performance optimizations**:
 
 - **🔄 Session-Based Architecture**: Multi-step operations with Claude-controlled flow and context preservation
 - **⚡ Async Execution**: Non-blocking commands with queue management for responsive interaction
 - **📊 Performance Optimizations**: Response caching, memory management, and API call tracking
-- **🤖 Agent Communication Channel**: File-based queue system enables any AI coding agent to interact with Efrit
+- **🤖 Multi-Channel Support**: Support for different API channels (default, ai-efrit) with channel-specific keys
 - **🔧 Self-Enhancing Capabilities**: AI agents can debug, test, and enhance Efrit's functionality
 - **💬 Unified Interface**: Claude decides whether commands run synchronously or asynchronously
+- **🐛 Bug Fixes**: Fixed critical syntax errors, API key selection, and model configuration
 
 *Zero client-side intelligence - Claude makes all decisions about execution mode and flow.*
 
