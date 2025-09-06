@@ -51,6 +51,11 @@
   :type 'string
   :group 'efrit-progress)
 
+(defcustom efrit-progress-auto-shrink t
+  "When non-nil, progress buffer automatically shrinks to fit content."
+  :type 'boolean
+  :group 'efrit-progress)
+
 ;;; Faces
 
 (defface efrit-progress-timestamp
@@ -163,10 +168,27 @@ TYPE can be 'claude, 'error, 'success, or nil."
     (efrit-progress--append 
      (format "▶ Executing tool: %s" tool-name)
      'efrit-progress-tool-name)
-    (when (eq efrit-progress-verbosity 'verbose)
+    ;; Show meaningful info for TODO tools
+    (cond
+     ((and (string= tool-name "todo_add") input)
+      (let ((content (if (hash-table-p input)
+                       (gethash "content" input)
+                     input)))
+        (when content
+          (efrit-progress--append 
+           (format "\n  → Adding: %s" content)
+           'font-lock-comment-face))))
+     ((and (string= tool-name "todo_update") input)
+      (let ((id (when (hash-table-p input) (gethash "id" input)))
+            (status (when (hash-table-p input) (gethash "status" input))))
+        (when (and id status)
+          (efrit-progress--append
+           (format "\n  → Marking %s as %s" id status)
+           'font-lock-comment-face))))
+     ((eq efrit-progress-verbosity 'verbose)
       (efrit-progress--append 
        (format "  Input: %s" (efrit-common-truncate-string 
-                              (format "%S" input) 200))))))
+                              (format "%S" input) 200)))))))
 
 (defun efrit-progress-show-tool-result (tool-name result success-p)
   "Show the RESULT of TOOL-NAME execution.
@@ -271,9 +293,59 @@ SUCCESS-P indicates if the execution was successful."
   (message "Progress verbosity: %s" efrit-progress-verbosity))
 
 (defun efrit-progress-show ()
-  "Show the progress buffer."
+  "Show the progress buffer with shrink-to-fit."
   (interactive)
-  (display-buffer (efrit-progress--get-buffer)))
+  (let* ((buffer (efrit-progress--get-buffer))
+         (window (display-buffer buffer
+                                (if efrit-progress-auto-shrink
+                                    '((display-buffer-reuse-window
+                                       display-buffer-below-selected)
+                                      (window-height . fit-window-to-buffer)
+                                      (window-parameters . ((no-delete-other-windows . t))))
+                                  '(display-buffer-reuse-window
+                                    display-buffer-below-selected)))))
+    (when (and window efrit-progress-auto-shrink)
+      (fit-window-to-buffer window nil nil 20 nil))))
+
+(defun efrit-progress-show-todos ()
+  "Display current TODOs in progress buffer."
+  (require 'efrit-do)
+  (when (bound-and-true-p efrit-do--current-todos)
+    (let ((buffer (efrit-progress--get-buffer)))
+      (with-current-buffer buffer
+        (goto-char (point-max))
+        (efrit-progress--append "\n━━━ TODO List ━━━\n" 'font-lock-function-name-face)
+        (if (null efrit-do--current-todos)
+            (efrit-progress--append "No TODOs\n")
+          (let ((total (length efrit-do--current-todos))
+                (completed (seq-count (lambda (todo)
+                                       (eq (efrit-do-todo-item-status todo) 'completed))
+                                     efrit-do--current-todos))
+                (in-progress (seq-count (lambda (todo)
+                                         (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                       efrit-do--current-todos)))
+            (efrit-progress--append (format "Progress: %d/%d completed, %d in progress\n\n" 
+                                          completed total in-progress)
+                                  'font-lock-comment-face)
+            (dolist (todo efrit-do--current-todos)
+              (let* ((status (efrit-do-todo-item-status todo))
+                     (icon (pcase status
+                             ('todo "☐")
+                             ('in-progress "⟳")
+                             ('completed "☑")))
+                     (face (pcase status
+                             ('todo 'default)
+                             ('in-progress 'font-lock-warning-face)
+                             ('completed 'font-lock-comment-face))))
+                (efrit-progress--append (format "%s %s\n" icon 
+                                              (efrit-do-todo-item-content todo))
+                                      face)))))))))
+
+(defun efrit-progress-update-todo (todo-id new-status)
+  "Update TODO display when TODO-ID changes to NEW-STATUS."
+  (efrit-progress-show-message 
+   (format "TODO %s → %s" todo-id new-status)
+   (if (eq new-status 'completed) 'success 'info)))
 
 (provide 'efrit-progress)
 
