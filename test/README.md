@@ -7,19 +7,15 @@
 - **efrit-test-simple.sh** - Basic functionality smoke tests
 
 ### Integration Tests (Real API Calls) 🔥
-- **test-api-dashboard-integration.sh** ⭐ NEW - API + Dashboard integration test with real API calls
-- **test-dashboard-integration-minimal.el** ⭐ NEW - Minimal dashboard integration test (no API calls)
-- **efrit-basic-integration-test.el** - Basic integration scenarios (updated with dashboard tests)
+- **test-api-dashboard-integration.sh** - API + Dashboard integration test with real API calls
+- **test-dashboard-integration-minimal.el** - Dashboard integration test (no API calls)
+- **efrit-basic-integration-test.el** - Basic integration scenarios
 - **efrit-integration-tests.el** - Original integration test suite
 - **run-integration-tests.sh** - Script to run original integration tests
 
-### Dashboard & Session Tests  
-- **test-final-demo.el** - Demonstration of dashboard and session integration
-- **test-final-validation.el** - Code quality and production readiness validation
-- **test-dashboard.el** - Dashboard-specific functionality tests
-
-### Legacy Tests (Maintained for Historical Reference)
-- **test-basic-functionality.el** - Core functionality tests
+### Chat & Interactive Tests
+- **interactive-chat-test.el** - Interactive chat testing with instructions
+- **test-chat-minimal.el** - Minimal chat functionality test
 
 ## Test Organization
 
@@ -44,7 +40,7 @@ cd test && emacs --batch --no-init-file --load test-comprehensive.el
 cd test && emacs --batch --no-init-file --load test-final-validation.el
 
 # Run integration tests with REAL API calls (uses tokens!)
-cd test && ./test-api-dashboard-integration.sh      # NEW: API + Dashboard integration
+cd test && ./test-api-dashboard-integration.sh      # API + Dashboard integration
 cd test && ./run-integration-tests.sh               # Original integration tests
 
 # Quick integration check (minimal API usage)
@@ -52,6 +48,9 @@ cd test && emacs --batch --no-init-file --load efrit-basic-integration-test.el
 
 # Dashboard integration test (no API calls)
 cd test && emacs --batch --no-init-file --load test-dashboard-integration-minimal.el
+
+# Interactive chat testing
+emacs -Q --load ./start-chat.el                     # NEW: Fixed chat with safety system
 ```
 
 ## ⚠️ Integration Test Warning

@@ -56,22 +56,48 @@
       (require 'url)
       (require 'auth-source)
       
-      ;; Load core modules in dependency order
+      ;; Load core modules in dependency order (simplified for reliability)
       (require 'efrit-config)     ; Configuration management - must be first
       (require 'efrit-common)     ; Common utilities
       (require 'efrit-log)        ; Logging system
-      (require 'efrit-protocol)   ; Shared protocols (fixes circular deps)
-      (require 'efrit-tools)
-      (require 'efrit-context)    ; Context management utilities
-      (require 'efrit-performance) ; Performance optimizations
-      (require 'efrit-multi-turn) ; Multi-turn conversation management
-      (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
-      (require 'efrit-chat-streamlined) ; New streamlined chat system
-      (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
-      (require 'efrit-async)      ; Async infrastructure for non-blocking commands
-      (require 'efrit-unified)    ; Unified command interface
-      (require 'efrit-remote-queue) ; File-based remote queue system
-      (require 'efrit-progress)   ; Progress display for async operations
+      (require 'efrit-tools)      ; Core tools
+      
+      ;; Load essential chat functionality
+      (condition-case err
+          (progn
+            (require 'efrit-debug)
+            (require 'efrit-multi-turn)
+            (require 'efrit-chat))
+        (error 
+         (message "Warning: Could not load chat modules: %s" (error-message-string err))))
+      
+      ;; Load command execution
+      (condition-case err
+          (require 'efrit-do)
+        (error 
+         (message "Warning: Could not load efrit-do: %s" (error-message-string err))))
+      
+      ;; Load dashboard and session tracking  
+      (condition-case err
+          (progn
+            (require 'efrit-session-tracker)
+            (require 'efrit-dashboard))
+        (error 
+         (message "Warning: Could not load dashboard modules: %s" (error-message-string err))))
+      
+      ;; Load optional advanced modules
+      (condition-case err
+          (progn
+            (require 'efrit-context)
+            (require 'efrit-chat-streamlined)
+            (require 'efrit-async)
+            (require 'efrit-unified)
+            (require 'efrit-remote-queue)
+            (require 'efrit-progress)
+            (require 'efrit-performance)
+            (require 'efrit-protocol))
+        (error 
+         (message "Warning: Some optional modules failed to load: %s" (error-message-string err))))
       
       (message "Efrit modules loaded successfully"))
   (error 
