@@ -27,6 +27,7 @@
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
+(require 'efrit-context)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -66,17 +67,7 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-do-context-size 10
-  "Size of the context ring."
-  :type 'integer
-  :group 'efrit-do)
-
-(defcustom efrit-do-context-file nil
-  "File to persist context data.
-If nil, uses the default location in the efrit data directory."
-  :type '(choice (const :tag "Default location" nil)
-                 (file :tag "Custom file"))
-  :group 'efrit-do)
+;; Context configuration moved to efrit-context.el
 
 (defcustom efrit-do-max-retries 3
   "Maximum number of retry attempts when commands fail."
@@ -202,25 +193,7 @@ If nil, uses the default location in the efrit data directory."
                       ("required" . ["mode"]))))]
   "Schema definition for all available tools in efrit-do mode.")
 
-;;; Context system
-
-(cl-defstruct (efrit-do-context-item
-            (:constructor efrit-do-context-item-create)
-            (:type vector))
-  "Context item structure."
-  timestamp
-  command
-  result
-  buffer
-  directory
-  window-config
-  metadata)
-
-(defvar efrit-do--context-ring nil
-  "Ring buffer for context items.")
-
-(defvar efrit-do--context-hooks nil
-  "Hooks run when context is captured.")
+;;; Context system - delegates to efrit-context.el
 
 ;;; Session protocol instructions
 
@@ -266,50 +239,29 @@ If nil, uses the default location in the efrit data directory."
 ;;; Context ring management
 
 (defun efrit-do--ensure-context-ring ()
-  "Ensure the context ring is initialized."
-  (unless efrit-do--context-ring
-    (setq efrit-do--context-ring (make-ring efrit-do-context-size))))
+  "Ensure the context system is initialized."
+  (efrit-context-init))
 
 (defun efrit-do--capture-context (command result)
   "Capture current context after executing COMMAND with RESULT."
   (efrit-do--ensure-context-ring)
-  (let ((item (efrit-do-context-item-create
-               :timestamp (current-time)
-               :command command
-               :result (when result
-                        ;; Truncate result to prevent context accumulation
-                        (truncate-string-to-width result 2000 nil nil t))
-               :buffer (buffer-name)
-               :directory default-directory
-               :window-config (current-window-configuration)
-               :metadata (list :point (point)
-                              :mark (mark)
-                              :major-mode major-mode))))
-    (ring-insert efrit-do--context-ring item)
-    (run-hook-with-args 'efrit-do--context-hooks item)))
+  (let ((metadata (list :point (point)
+                       :mark (mark)
+                       :major-mode major-mode)))
+    (efrit-context-ring-add command result metadata)))
 
 (defun efrit-do--get-context-items (&optional n)
   "Get N most recent context items (default all)."
   (efrit-do--ensure-context-ring)
-  (let ((ring efrit-do--context-ring)
-        (count (or n (ring-length efrit-do--context-ring)))
-        items)
-    (dotimes (i (min count (ring-length ring)))
-      (push (ring-ref ring i) items))
-    items))
+  (efrit-context-ring-get-recent n))
 
 (defun efrit-do--context-to-string (item)
   "Convert context ITEM to string representation."
-  (format "[%s] %s -> %s (in %s)"
-          (format-time-string "%H:%M:%S" (efrit-do-context-item-timestamp item))
-          (efrit-do-context-item-command item)
-          (truncate-string-to-width (or (efrit-do-context-item-result item) "") 50 nil nil t)
-          (efrit-do-context-item-buffer item)))
+  (efrit-context-item-to-string item))
 
 (defun efrit-do--clear-context ()
   "Clear the context ring."
-  (when efrit-do--context-ring
-    (setq efrit-do--context-ring (make-ring efrit-do-context-size))))
+  (efrit-context-ring-clear))
 
 ;;; TODO Management
 
@@ -391,51 +343,11 @@ If nil, uses the default location in the efrit data directory."
 
 (defun efrit-do--save-context ()
   "Save context ring to file."
-  (when efrit-do--context-ring
-    (let ((file (or efrit-do-context-file 
-                   (efrit-config-context-file "efrit-do-context.el")))
-          (items (mapcar (lambda (item)
-                          ;; Create a copy without window-config for serialization
-                          (efrit-do-context-item-create
-                           :timestamp (efrit-do-context-item-timestamp item)
-                           :command (efrit-do-context-item-command item)
-                           :result (when (efrit-do-context-item-result item)
-                                     ;; Truncate result to prevent context accumulation
-                                     (truncate-string-to-width 
-                                      (efrit-do-context-item-result item) 2000 nil nil t))
-                           :buffer (efrit-do-context-item-buffer item)
-                           :directory (efrit-do-context-item-directory item)
-                           :window-config nil  ; Skip window config
-                           :metadata (efrit-do-context-item-metadata item)))
-                        (efrit-do--get-context-items))))
-      ;; Ensure directory exists
-      (make-directory (file-name-directory file) t)
-      (condition-case err
-          (with-temp-file file
-            (insert ";;; Efrit-do context data\n")
-            (insert (format ";; Saved: %s\n" (current-time-string)))
-            (insert (format "(setq efrit-do--saved-context-data\n'%S)\n" items)))
-        (error
-         (when efrit-do-debug
-           (message "Error saving context: %s" (error-message-string err))))))))
+  (efrit-context-ring-persist))
 
 (defun efrit-do--load-context ()
   "Load context ring from file."
-  (let ((file (or efrit-do-context-file 
-                 (efrit-config-context-file "efrit-do-context.el"))))
-    (when (file-readable-p file)
-      (condition-case err
-          (progn
-            (load-file file)
-            (efrit-do--ensure-context-ring)
-            (when (boundp 'efrit-do--saved-context-data)
-              (dolist (item (reverse efrit-do--saved-context-data))
-                (when (vectorp item)
-                  (ring-insert efrit-do--context-ring item)))
-              (makunbound 'efrit-do--saved-context-data)))
-        (error
-         (when efrit-do-debug
-           (message "Error loading context: %s" (error-message-string err))))))))
+  (efrit-context-ring-restore))
 
 ;;; Helper functions for improved error handling
 
@@ -485,9 +397,9 @@ Returns a string with current Emacs state, buffer info, and recent history."
       (push "RECENT COMMANDS:" context-parts)
       (dolist (item recent-context)
         (push (format "  %s -> %s" 
-                      (efrit-do-context-item-command item)
+                      (efrit-context-item-command item)
                       (truncate-string-to-width 
-                       (or (efrit-do-context-item-result item) "no result") 
+                       (or (efrit-context-item-result item) "no result") 
                        60 nil nil t))
               context-parts)))
     
@@ -793,8 +705,8 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
                           (when recent-items
                             (let ((item (car recent-items)))
                               (format "\n\nPREVIOUS CONTEXT:\nLast command: %s\nLast result: %s\n\n"
-                                      (efrit-do-context-item-command item)
-                                      (efrit-do-context-item-result item)))))))
+                                      (efrit-context-item-command item)
+                                      (efrit-context-item-result item)))))))
         (retry-info (when retry-count
                       (let ((rich-context (condition-case err
                                               (efrit-do--build-error-context)
@@ -1207,9 +1119,9 @@ Include last N commands (default 5)."
           
           ;; Convert each context item to conversation
           (dolist (item items) ; Show oldest first (items already in oldest-first order)
-            (let ((command (efrit-do-context-item-command item))
-                  (result (efrit-do-context-item-result item))
-                  (timestamp (efrit-do-context-item-timestamp item)))
+            (let ((command (efrit-context-item-command item))
+                  (result (efrit-context-item-result item))
+                  (timestamp (efrit-context-item-timestamp item)))
               
               ;; Display user command
               (efrit--display-message 
@@ -1226,8 +1138,8 @@ Include last N commands (default 5)."
           ;; Build history in correct order for efrit-chat (newest first)
           ;; Process items in reverse order so newest ends up first
           (dolist (item items)
-            (let ((command (efrit-do-context-item-command item))
-                  (result (efrit-do-context-item-result item)))
+            (let ((command (efrit-context-item-command item))
+                  (result (efrit-context-item-result item)))
               (push `((role . "assistant") (content . ,result)) efrit--message-history)
               (push `((role . "user") (content . ,command)) efrit--message-history)))
           

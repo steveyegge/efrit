@@ -283,14 +283,127 @@ This is a heuristic that can help Claude decide, but Claude has final say."
    ;; Default to continue
    (t t)))
 
+;;; Command History Ring
+
+(defcustom efrit-context-ring-size 10
+  "Size of the command history ring."
+  :type 'integer
+  :group 'efrit-context)
+
+(defcustom efrit-context-persist-file nil
+  "File to persist context data.
+If nil, uses the default location in the efrit data directory."
+  :type '(choice (const :tag "Default location" nil)
+                 (file :tag "Custom file"))
+  :group 'efrit-context)
+
+(cl-defstruct (efrit-context-item
+            (:constructor efrit-context-item-create)
+            (:type vector))
+  "Context item structure for command history."
+  timestamp
+  command
+  result
+  buffer
+  directory
+  window-config
+  metadata)
+
+(defvar efrit-context--ring nil
+  "Ring buffer for context items.")
+
+(defvar efrit-context--hooks nil
+  "Hooks run when context is captured.")
+
+(defun efrit-context-ring-init ()
+  "Initialize or reinitialize the context ring."
+  (unless efrit-context--ring
+    (setq efrit-context--ring (make-ring efrit-context-ring-size))))
+
+(defun efrit-context-ring-add (command result &optional metadata)
+  "Add a new context item for COMMAND with RESULT and optional METADATA."
+  (efrit-context-ring-init)
+  (let ((item (efrit-context-item-create
+               :timestamp (current-time)
+               :command command
+               :result result
+               :buffer (buffer-name)
+               :directory default-directory
+               :window-config (current-window-configuration)
+               :metadata metadata)))
+    (ring-insert efrit-context--ring item)
+    (run-hook-with-args 'efrit-context--hooks item)
+    item))
+
+(defun efrit-context-ring-get-recent (&optional n)
+  "Get N most recent context items (default all)."
+  (when efrit-context--ring
+    (let ((ring efrit-context--ring)
+          (count (or n (ring-length efrit-context--ring)))
+          (items '()))
+      (dotimes (i (min count (ring-length ring)))
+        (push (ring-ref ring i) items))
+      (nreverse items))))
+
+(defun efrit-context-item-to-string (item)
+  "Convert context ITEM to string representation."
+  (format "[%s] %s -> %s (in %s)"
+          (format-time-string "%H:%M:%S" (efrit-context-item-timestamp item))
+          (efrit-context-item-command item)
+          (truncate-string-to-width (or (efrit-context-item-result item) "") 50 nil nil t)
+          (efrit-context-item-buffer item)))
+
+(defun efrit-context-ring-clear ()
+  "Clear the context ring."
+  (when efrit-context--ring
+    (setq efrit-context--ring (make-ring efrit-context-ring-size))))
+
+(defun efrit-context-ring-persist ()
+  "Persist context ring to file."
+  (when efrit-context--ring
+    (require 'efrit-config)
+    (let ((file (or efrit-context-persist-file 
+                   (efrit-config-context-file "efrit-context-ring.el")))
+          (items (efrit-context-ring-get-recent)))
+      (when items
+        (with-temp-file file
+          (insert ";; Efrit context ring data\n")
+          (insert ";; Saved: " (current-time-string) "\n\n")
+          (prin1 items (current-buffer)))
+        (efrit-log 'debug "Persisted %d context items to %s" (length items) file)))))
+
+(defun efrit-context-ring-restore ()
+  "Restore context ring from file."
+  (require 'efrit-config)
+  (let ((file (or efrit-context-persist-file
+                 (efrit-config-context-file "efrit-context-ring.el"))))
+    (when (file-exists-p file)
+      (condition-case err
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (search-forward "\n\n" nil t)
+            (let ((items (read (current-buffer))))
+              (efrit-context-ring-init)
+              (dolist (item (reverse items))
+                (ring-insert efrit-context--ring item))
+              (efrit-log 'debug "Restored %d context items from %s" 
+                        (length items) file)))
+        (error
+         (efrit-log 'warn "Failed to restore context: %s" 
+                   (efrit-common-safe-error-message err)))))))
+
 ;;; Public API
 
 (defun efrit-context-init ()
   "Initialize context system."
+  (efrit-context-ring-init)
+  (efrit-context-ring-restore)
   (efrit-log 'debug "Context system initialized"))
 
 (defun efrit-context-reset ()
   "Reset context system state."
+  (efrit-context-ring-clear)
   (efrit-log 'debug "Context system reset"))
 
 (provide 'efrit-context)
