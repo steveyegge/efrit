@@ -459,11 +459,11 @@ This is the async version of efrit-do's command execution."
                  :command command
                  :status 'active
                  :start-time (current-time)
-                 :work-log '())))
+                 :work-log '()))
+          
+          (efrit-async--show-progress "Processing...")
       
-      (efrit-async--show-progress "Processing...")
-      
-      (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
+          (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
              (request-data
               `(("model" . "claude-sonnet-4-20250514")
                 ("max_tokens" . 8192)
@@ -480,7 +480,7 @@ This is the async version of efrit-do's command execution."
             response
             (lambda (result)
               (efrit-async--show-progress "Complete!")
-              (when callback (funcall callback result)))))))))
+              (when callback (funcall callback result))))))))))
 
 (defun efrit-async--build-system-prompt (&optional session-id work-log)
   "Build system prompt for async commands - delegates to efrit-do.
