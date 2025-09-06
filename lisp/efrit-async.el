@@ -144,12 +144,22 @@
 
 (defun efrit-async--process-queue ()
   "Process next queued command if any."
-  (when efrit-async--session-queue
-    (pop efrit-async--session-queue)
-    (message "Efrit: Processing queued command (%d remaining)" 
-             (length efrit-async--session-queue))
-    ;; This will be connected to efrit-do in the next step
-    ))
+  (when (and efrit-async--session-queue
+             (not efrit-async--active-session))
+    (let ((next-command (pop efrit-async--session-queue)))
+      (efrit-log 'info "Processing queued command: %s (%d remaining)" 
+                 (efrit-common-truncate-string next-command 50)
+                 (length efrit-async--session-queue))
+      (message "Efrit: Processing queued command (%d remaining)" 
+               (length efrit-async--session-queue))
+      ;; Execute the command asynchronously
+      (efrit-async-execute-command 
+       next-command
+       (lambda (result)
+         ;; When this command completes, the completion handler
+         ;; will call process-queue again
+         (efrit-log 'debug "Queued command completed: %s" 
+                   (efrit-common-truncate-string result 100)))))))
 
 ;;; Work Log Compression
 
@@ -176,6 +186,9 @@
                (efrit-session-status session)
                elapsed steps
                (length efrit-async--session-queue))))
+   ((> (length efrit-async--session-queue) 0)
+    (message "Efrit: No active session, %d commands queued" 
+             (length efrit-async--session-queue)))
    (t
     (message "No active Efrit session"))))
 
@@ -399,36 +412,43 @@ CALLBACK is the original completion callback."
   "Execute natural language COMMAND asynchronously.
 CALLBACK is called with the result when complete.
 This is the async version of efrit-do's command execution."
-  ;; Create a new session for multi-step execution
-  (let ((session-id (format "async-%s" (format-time-string "%Y%m%d%H%M%S"))))
-    (setq efrit-async--active-session
-          (make-efrit-session
-           :id session-id
-           :command command
-           :status 'active
-           :start-time (current-time)
-           :work-log '()))
+  ;; If there's already an active session, queue this command
+  (if efrit-async--active-session
+      (progn
+        (efrit-async--add-to-queue command)
+        (message "Efrit: Command queued (position %d)" 
+                 (length efrit-async--session-queue)))
     
-    (efrit-async--show-progress "Processing...")
-    
-    (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
-           (request-data
-            `(("model" . "claude-sonnet-4-20250514")
-              ("max_tokens" . 8192)
-              ("temperature" . 0.0)
-              ("messages" . [(("role" . "user")
-                             ("content" . ,command))])
-              ("system" . ,system-prompt)
-              ("tools" . ,(efrit-async--get-tools-schema)))))
+    ;; No active session, execute immediately
+    (let ((session-id (format "async-%s" (format-time-string "%Y%m%d%H%M%S"))))
+      (setq efrit-async--active-session
+            (make-efrit-session
+             :id session-id
+             :command command
+             :status 'active
+             :start-time (current-time)
+             :work-log '()))
       
-      (efrit-async--api-request 
-       request-data
-       (lambda (response)
-         (efrit-async--handle-response 
-          response
-          (lambda (result)
-            (efrit-async--show-progress "Complete!")
-            (when callback (funcall callback result)))))))))
+      (efrit-async--show-progress "Processing...")
+      
+      (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
+             (request-data
+              `(("model" . "claude-sonnet-4-20250514")
+                ("max_tokens" . 8192)
+                ("temperature" . 0.0)
+                ("messages" . [(("role" . "user")
+                               ("content" . ,command))])
+                ("system" . ,system-prompt)
+                ("tools" . ,(efrit-async--get-tools-schema)))))
+        
+        (efrit-async--api-request 
+         request-data
+         (lambda (response)
+           (efrit-async--handle-response 
+            response
+            (lambda (result)
+              (efrit-async--show-progress "Complete!")
+              (when callback (funcall callback result)))))))))))
 
 (defun efrit-async--build-system-prompt (&optional session-id work-log)
   "Build system prompt for async commands - delegates to efrit-do.
@@ -440,6 +460,42 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
   "Get tools schema - delegates to efrit-do."
   (when (require 'efrit-do nil t)
     efrit-do--tools-schema))
+
+;;;###autoload
+(defun efrit-async-show-queue ()
+  "Show the current command queue."
+  (interactive)
+  (let ((buffer (get-buffer-create "*Efrit Queue*")))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert "Efrit Command Queue\n")
+      (insert "==================\n\n")
+      
+      (if efrit-async--active-session
+          (insert (format "Active: %s\n\n" 
+                         (efrit-common-truncate-string 
+                          (efrit-session-command efrit-async--active-session) 60)))
+        (insert "Active: None\n\n"))
+      
+      (if (null efrit-async--session-queue)
+          (insert "Queue is empty.")
+        (insert (format "Queued commands (%d):\n\n" 
+                       (length efrit-async--session-queue)))
+        (cl-loop for cmd in efrit-async--session-queue
+                 for i from 1
+                 do (insert (format "%d. %s\n" i 
+                                   (efrit-common-truncate-string cmd 70))))))
+    (switch-to-buffer buffer)))
+
+;;;###autoload
+(defun efrit-async-clear-queue ()
+  "Clear the command queue."
+  (interactive)
+  (when (and efrit-async--session-queue
+             (y-or-n-p (format "Clear %d queued commands? " 
+                              (length efrit-async--session-queue))))
+    (setq efrit-async--session-queue nil)
+    (message "Efrit: Queue cleared")))
 
 (provide 'efrit-async)
 ;;; efrit-async.el ends here
