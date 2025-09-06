@@ -79,9 +79,15 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-sonnet-4-20250514"
+(defcustom efrit-model "claude-3-5-sonnet-20241022"
   "Claude model to use for efrit-do commands."
   :type 'string
+  :group 'efrit-do)
+
+(defcustom efrit-api-channel nil
+  "API channel to use. Can be 'ai-efrit' or nil for default."
+  :type '(choice (const :tag "Default" nil)
+                 (const :tag "AI-Efrit" "ai-efrit"))
   :group 'efrit-do)
 
 (defcustom efrit-max-tokens 8192

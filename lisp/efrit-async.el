@@ -412,7 +412,7 @@ CALLBACK is the original completion callback."
          (original-command (efrit-session-command session))
          (system-prompt (efrit-async--build-system-prompt session-id work-log))
          (request-data
-          `(("model" . "claude-sonnet-4-20250514")
+          `(("model" . efrit-model)
             ("max_tokens" . 8192)
             ("temperature" . 0.0)
             ("messages" . [(("role" . "user")
@@ -460,12 +460,15 @@ This is the async version of efrit-do's command execution."
                  :status 'active
                  :start-time (current-time)
                  :work-log '()))
+          ;; Track session for memory management
+          (puthash session-id efrit-async--active-session efrit-async--sessions)
+          (efrit-performance-touch-session session-id)
           
           (efrit-async--show-progress "Processing...")
-      
+          
           (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
              (request-data
-              `(("model" . "claude-sonnet-4-20250514")
+              `(("model" . efrit-model)
                 ("max_tokens" . 8192)
                 ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")
@@ -480,7 +483,7 @@ This is the async version of efrit-do's command execution."
             response
             (lambda (result)
               (efrit-async--show-progress "Complete!")
-              (when callback (funcall callback result))))))))))
+              (when callback (funcall callback result))))))))))))
 
 (defun efrit-async--build-system-prompt (&optional session-id work-log)
   "Build system prompt for async commands - delegates to efrit-do.

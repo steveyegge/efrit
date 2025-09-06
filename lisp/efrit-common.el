@@ -26,14 +26,22 @@
 
 (defun efrit-common-get-api-key ()
   "Get the Anthropic API key from .authinfo file.
+Checks efrit-api-channel to determine which key to use.
 Throws error if not found."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
-                                            :user "personal"
+  (let* ((channel (and (boundp 'efrit-api-channel) efrit-api-channel))
+         (host (if (equal channel "ai-efrit")
+                   "api.anthropic.com/sourcegraph"
+                 "api.anthropic.com"))
+         (user (if (equal channel "ai-efrit")
+                   "apikey"
+                 "personal"))
+         (auth-info (car (auth-source-search :host host
+                                            :user user
                                             :require '(:secret))))
          (secret (when auth-info (plist-get auth-info :secret))))
     (if (and secret (functionp secret))
         (funcall secret)
-      (error "No API key found. Add to ~/.authinfo: machine api.anthropic.com login personal password YOUR_KEY"))))
+      (error "No API key found. Add to ~/.authinfo: machine %s login %s password YOUR_KEY" host user))))
 
 (defconst efrit-common-api-url "https://api.anthropic.com/v1/messages"
   "Anthropic API endpoint for all efrit modules.")
@@ -47,7 +55,7 @@ Throws error if not found."
     ("anthropic-version" . ,efrit-common-api-version)
     ("x-api-key" . ,api-key)
     ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-    ("x-channel" . "ai-efrit")))
+    ("x-channel" . ,(or (and (boundp 'efrit-api-channel) efrit-api-channel) "default"))))
 
 ;;; Error Handling
 

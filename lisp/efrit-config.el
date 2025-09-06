@@ -111,12 +111,12 @@ This is called automatically when the data directory is initialized."
 
 ;;; Model Configuration
 
-(defcustom efrit-default-model "claude-sonnet-4-20250514"
+(defcustom efrit-default-model "claude-3-5-sonnet-20241022"
   "Default Claude model for all efrit operations."
   :type 'string
   :group 'efrit)
 
-(defcustom efrit-completion-model "claude-sonnet-4-20250514"
+(defcustom efrit-completion-model "claude-3-5-sonnet-20241022"
   "Claude model for completion assessment and lightweight operations."
   :type 'string
   :group 'efrit)
