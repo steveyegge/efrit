@@ -190,7 +190,16 @@ If nil, uses the default location in the efrit data directory."
     ("input_schema" . (("type" . "object")
                       ("properties" . (("message" . (("type" . "string")
                                                      ("description" . "Completion message summarizing what was accomplished")))))
-                      ("required" . ["message"]))))]
+                      ("required" . ["message"]))))
+   (("name" . "suggest_execution_mode")
+    ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("mode" . (("type" . "string")
+                                                  ("enum" . ["sync" "async"])
+                                                  ("description" . "Suggested execution mode")))
+                                      ("reason" . (("type" . "string")
+                                                   ("description" . "Brief explanation for the suggestion")))))
+                      ("required" . ["mode"]))))]
   "Schema definition for all available tools in efrit-do mode.")
 
 ;;; Context system
