@@ -163,6 +163,21 @@
                       (error-message-string err))
         :input sexp-string))
 
+(defun efrit-tools--validate-safe-operation (sexp-string)
+  "Validate that SEXP-STRING does not contain dangerous operations."
+  (let ((dangerous-patterns '("\\(reverse-region\\|delete-region\\|erase-buffer\\|kill-buffer\\|flush-lines\\)"
+                             "\\(point-min\\).*\\(point-max\\)" ; operations on entire buffer
+                             "\\(replace-regexp\\|replace-string\\).*\\(point-min\\|point-max\\)" ; global replacements
+                             "\\(save-excursion.*erase-buffer\\|save-excursion.*delete-region\\)"))) ; destructive operations in save-excursion
+    
+    (dolist (pattern dangerous-patterns)
+      (when (string-match-p pattern sexp-string)
+        (let ((current-buffer-name (buffer-name)))
+          ;; Always block destructive operations on chat, dashboard, and log buffers
+          (when (string-match-p "\\*efrit\\|\\*Messages\\*\\|\\*scratch\\*" current-buffer-name)
+            (error "Blocked destructive operation '%s' on protected buffer '%s'" 
+                   (match-string 0 sexp-string) current-buffer-name)))))))
+
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
 Handles parsing, evaluation, error handling, and result formatting."
@@ -173,6 +188,9 @@ Handles parsing, evaluation, error handling, and result formatting."
   ;; Validate input
   (when (or (not sexp-string) (string-empty-p (string-trim sexp-string)))
     (error "Cannot evaluate empty Lisp expression"))
+  
+  ;; Safety check: prevent destructive operations on important buffers
+  (efrit-tools--validate-safe-operation sexp-string)
   
   (efrit-log 'debug "Evaluating: %s" sexp-string)
   
@@ -189,6 +207,36 @@ Handles parsing, evaluation, error handling, and result formatting."
         (format "Error evaluating %s: %s" 
                 (efrit-common-truncate-string (plist-get result-data :input) 30)
                 (plist-get result-data :error))))))
+
+;;; Safe Text Manipulation Functions
+
+(defun efrit-tools-reverse-lines (text)
+  "Safely reverse the order of lines in TEXT.
+Returns the text with lines in reverse order."
+  (when text
+    (let ((lines (split-string text "\n" t)))
+      (mapconcat 'identity (reverse lines) "\n"))))
+
+(defun efrit-tools-reverse-words (text)
+  "Safely reverse the order of words in TEXT.
+Returns the text with words in reverse order."
+  (when text
+    (let ((words (split-string text "\\s-+" t)))
+      (mapconcat 'identity (reverse words) " "))))
+
+(defun efrit-tools-reverse-chars (text)
+  "Safely reverse the characters in TEXT.
+Returns the text with characters in reverse order."
+  (when text
+    (concat (reverse (string-to-list text)))))
+
+(defun efrit-tools-create-buffer-with-content (buffer-name content)
+  "Safely create a buffer with BUFFER-NAME and insert CONTENT.
+Returns the buffer name if successful."
+  (with-current-buffer (get-buffer-create buffer-name)
+    (erase-buffer)
+    (insert content)
+    buffer-name))
 
 ;;; Context Gathering
 
