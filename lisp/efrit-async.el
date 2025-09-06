@@ -20,23 +20,12 @@
 (require 'efrit-log)
 (require 'efrit-common)
 (require 'efrit-context)
+(require 'efrit-protocol)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
-(declare-function efrit-do--execute-tool "efrit-do")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (defvar efrit-do--tools-schema)
-
-;;; Session Data Structure
-
-(cl-defstruct efrit-session
-  "Session tracking for multi-step operations."
-  id              ; Unique identifier from Claude
-  command         ; Original command from user
-  work-log        ; List of (elisp . result) pairs  
-  start-time      ; When session started
-  status          ; 'active, 'waiting, 'complete
-  buffer)         ; Original buffer for context
 
 (defvar efrit-async--active-session nil
   "Currently active session.")
@@ -374,10 +363,11 @@ CALLBACK will be called with the final result string."
        (when callback (funcall callback error-msg))))))
 
 (defun efrit-async--execute-tool (tool-item)
-  "Execute a tool by delegating to efrit-do's tool system.
+  "Execute a tool using the shared protocol.
 TOOL-ITEM is the tool_use object from Claude's response."
-  (require 'efrit-do)  ; Ensure efrit-do is loaded
-  (efrit-do--execute-tool tool-item))
+  (let ((tool-name (cdr (assoc 'name tool-item)))
+        (input-data (cdr (assoc 'input tool-item))))
+    (efrit-protocol-execute-tool tool-name input-data)))
 
 ;;; Main Async Interface
 
@@ -443,13 +433,13 @@ This is the async version of efrit-do's command execution."
 (defun efrit-async--build-system-prompt (&optional session-id work-log)
   "Build system prompt for async commands - delegates to efrit-do.
 If SESSION-ID is provided, include session protocol with WORK-LOG."
-  (require 'efrit-do)
-  (efrit-do--command-system-prompt nil nil nil session-id work-log))
+  (when (require 'efrit-do nil t)
+    (efrit-do--command-system-prompt nil nil nil session-id work-log)))
 
 (defun efrit-async--get-tools-schema ()
   "Get tools schema - delegates to efrit-do."
-  (require 'efrit-do)
-  efrit-do--tools-schema)
+  (when (require 'efrit-do nil t)
+    efrit-do--tools-schema))
 
 (provide 'efrit-async)
 ;;; efrit-async.el ends here

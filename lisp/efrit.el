@@ -58,13 +58,14 @@
       
       ;; Load core modules in dependency order
       (require 'efrit-config)     ; Configuration management - must be first
+      (require 'efrit-common)     ; Common utilities
+      (require 'efrit-log)        ; Logging system
+      (require 'efrit-protocol)   ; Shared protocols (fixes circular deps)
       (require 'efrit-tools)
       (require 'efrit-context)    ; Context management utilities
       (require 'efrit-multi-turn) ; Multi-turn conversation management
       (require 'efrit-chat)       ; Depends on efrit-tools, efrit-multi-turn
       (require 'efrit-chat-streamlined) ; New streamlined chat system
-      (require 'efrit-command)    ; Depends on efrit-chat
-      (require 'efrit-agent)      ; Depends on efrit-tools
       (require 'efrit-do)         ; Depends on efrit-chat, efrit-tools
       (require 'efrit-async)      ; Async infrastructure for non-blocking commands
       (require 'efrit-unified)    ; Unified command interface
