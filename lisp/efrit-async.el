@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url)
+(require 'efrit-loop-detection)
 ;; (require 'efrit-log) ; TODO: Fix circular dependency
 (declare-function efrit-log "efrit-log")
 (require 'efrit-common)
@@ -28,6 +29,10 @@
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
 (declare-function efrit-do--command-system-prompt "efrit-do")
+(declare-function efrit-do-todo-item-id "efrit-do")
+(declare-function efrit-do-todo-item-content "efrit-do")
+(declare-function efrit-do-todo-item-status "efrit-do")
+(declare-function efrit-do-todo-item-priority "efrit-do")
 (defvar efrit-do--tools-schema)
 (defvar efrit-default-model)  ; From efrit-config
 
@@ -97,10 +102,16 @@
              :id session-id
              :start-time (current-time)
              :status 'active
-             :buffer (current-buffer)))
+             :buffer (current-buffer)
+             :tool-history nil
+             :loop-warnings (make-hash-table :test 'equal)
+             :continuation-count 0
+             :last-error nil))
       ;; Track session for memory management
       (puthash session-id efrit-async--active-session efrit-async--sessions)
       (efrit-performance-touch-session session-id)
+      ;; Initialize efrit-do for tool access (but don't reset loop counters)
+      (require 'efrit-do)
       (efrit-log 'info "Started session %s" session-id)))
   
   (when efrit-async--active-session
@@ -419,6 +430,72 @@ CALLBACK will be called with the final result string."
        (efrit-async--handle-error error-msg)
        (when callback (funcall callback error-msg))))))
 
+;;; Progress Tracking (Oracle's Recommendation)
+
+;;; Functions moved to efrit-loop-detection.el
+
+(defun efrit-progress-made-p (session)
+  "Return t if something material changed since last tool call.
+This is the Oracle's recommended approach for simpler, more reliable loop
+detection."
+  (when session
+    (let ((last-tick (or (efrit-session-last-progress-tick session) 0))
+          (current-tick (+ (or (efrit-session-buffer-modifications session) 0)
+                          (or (efrit-session-todo-status-changes session) 0)
+                          (or (efrit-session-buffers-created session) 0)
+                          (or (efrit-session-files-modified session) 0)
+                          (or (efrit-session-execution-outputs session) 0))))
+      (> current-tick last-tick))))
+
+(defun efrit-record-progress (session progress-type)
+  "Record that progress was made in the session.
+PROGRESS-TYPE can be: buffer-modification, todo-change, buffer-creation,
+file-modification, execution-output"
+  (when session
+    (pcase progress-type
+      ('buffer-modification
+       (setf (efrit-session-buffer-modifications session)
+             (1+ (or (efrit-session-buffer-modifications session) 0))))
+      ('todo-change
+       (setf (efrit-session-todo-status-changes session)
+             (1+ (or (efrit-session-todo-status-changes session) 0))))
+      ('buffer-creation
+       (setf (efrit-session-buffers-created session)
+             (1+ (or (efrit-session-buffers-created session) 0))))
+      ('file-modification
+       (setf (efrit-session-files-modified session)
+             (1+ (or (efrit-session-files-modified session) 0))))
+      ('execution-output
+       (setf (efrit-session-execution-outputs session)
+             (1+ (or (efrit-session-execution-outputs session) 0)))))
+    ;; Update progress tick
+    (setf (efrit-session-last-progress-tick session)
+          (+ (or (efrit-session-buffer-modifications session) 0)
+             (or (efrit-session-todo-status-changes session) 0)
+             (or (efrit-session-buffers-created session) 0)
+             (or (efrit-session-files-modified session) 0)
+             (or (efrit-session-execution-outputs session) 0)))))
+
+;;; Loop Detection Functions
+
+(defcustom efrit-async-max-continuations 30
+  "Maximum API calls per session before emergency stop."
+  :type 'integer
+  :group 'efrit)
+
+(defun efrit-async--track-tool-call (session tool-name input-data result)
+  "Track tool call in session history for loop detection."
+  (when session
+    (let ((timestamp (current-time))
+          (progress-tick (or (efrit-session-last-progress-tick session) 0))
+          (input-hash (secure-hash 'sha1 (format "%s" input-data)))
+          (result-hash (secure-hash 'sha1 (format "%s" result))))
+      ;; Format: (tool-name timestamp progress-tick input-hash result-hash)
+      (push (list tool-name timestamp progress-tick input-hash result-hash)
+            (efrit-session-tool-history session)))))
+
+;;; Legacy function removed - replaced by efrit-loop-check in efrit-loop-detection.el
+
 (defun efrit-async--execute-tool (tool-item)
   "Execute a tool using the shared protocol.
 TOOL-ITEM is the tool_use object from Claude's response."
@@ -427,8 +504,20 @@ TOOL-ITEM is the tool_use object from Claude's response."
                      (cdr (assoc 'name tool-item))))
         (input-data (if (hash-table-p tool-item)
                        (gethash "input" tool-item)
-                     (cdr (assoc 'input tool-item)))))
-    (efrit-protocol-execute-tool tool-name input-data)))
+                     (cdr (assoc 'input tool-item))))
+        (session efrit-async--active-session))
+    
+    ;; Check for loops BEFORE execution using progress-based detection
+    (let ((loop-error (efrit-loop-check session tool-name)))
+      (if loop-error
+          (progn
+            (when session (setf (efrit-session-last-error session) loop-error))
+            (error "%s" loop-error))
+        ;; Execute the tool
+        (let ((result (efrit-protocol-execute-tool tool-name input-data)))
+          ;; Track the execution
+          (efrit-async--track-tool-call session tool-name input-data result)
+          result)))))
 
 ;;; Main Async Interface
 
@@ -448,7 +537,14 @@ CALLBACK is the original completion callback."
             ("system" . ,system-prompt)
             ("tools" . ,(efrit-async--get-tools-schema)))))
     
-    (efrit-log 'debug "Continuing session %s with work log: %S" session-id work-log)
+    ;; Initialize efrit-do for tool access (but preserve loop detection state)
+    (require 'efrit-do)
+    
+    ;; Increment continuation counter for loop detection
+    (cl-incf (efrit-session-continuation-count session))
+    
+    (efrit-log 'debug "Continuing session %s (continuation #%d) with work log: %S" 
+               session-id (efrit-session-continuation-count session) work-log)
     (efrit-async--show-progress "Continuing...")
     
     (efrit-async--api-request 
@@ -487,7 +583,11 @@ This is the async version of efrit-do's command execution."
                  :command command
                  :status 'active
                  :start-time (current-time)
-                 :work-log '()))
+                 :work-log '()
+                 :tool-history nil
+                 :loop-warnings (make-hash-table :test 'equal)
+                 :continuation-count 0
+                 :last-error nil))
           ;; Track session for memory management
           (puthash session-id efrit-async--active-session efrit-async--sessions)
           (efrit-performance-touch-session session-id)
@@ -581,16 +681,16 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
                            (efrit-session-command efrit-async--active-session)))
             
             ;; Show statistics
-            (let ((total (length efrit-do--current-todos))
+            (let ((total (length (symbol-value 'efrit-do--current-todos)))
                   (completed (seq-count (lambda (todo)
                                          (eq (efrit-do-todo-item-status todo) 'completed))
-                                       efrit-do--current-todos))
+                                       (symbol-value 'efrit-do--current-todos)))
                   (in-progress (seq-count (lambda (todo)
                                            (eq (efrit-do-todo-item-status todo) 'in-progress))
-                                         efrit-do--current-todos))
+                                         (symbol-value 'efrit-do--current-todos)))
                   (pending (seq-count (lambda (todo)
                                        (eq (efrit-do-todo-item-status todo) 'todo))
-                                     efrit-do--current-todos)))
+                                     (symbol-value 'efrit-do--current-todos))))
               (insert (format "Progress: %d/%d completed (%d%%), %d in progress, %d pending\n\n"
                              completed total 
                              (if (> total 0) (/ (* 100 completed) total) 0)
@@ -599,7 +699,7 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
             ;; Show TODO list
             (insert "TODO List:\n")
             (insert "─────────\n")
-            (dolist (todo efrit-do--current-todos)
+            (dolist (todo (symbol-value 'efrit-do--current-todos))
               (let* ((status (efrit-do-todo-item-status todo))
                      (icon (pcase status
                              ('todo "☐")
