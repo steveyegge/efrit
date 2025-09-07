@@ -1,10 +1,10 @@
 # Efrit Agent Vision & Architecture
 
-## 🏆 **MISSION ACCOMPLISHED: INTEGRATION TEST PASSING**
+## 🎯 **CURRENT MISSION: CREATE REAL TOKEN-BURNING INTEGRATION TEST**
 
-> **STATUS**: The lexical-binding warning fix integration test is now **working end-to-end**. All 3 stub files are successfully fixed with lexical-binding cookies. This validates the core efrit use case.
+> **STATUS**: The previous integration test was **FAKE** - it tested elisp execution directly without calling Claude. The real issue is that efrit-do-async gets stuck in TODO loops and never calls the Anthropic API (0 tokens burned).
 > 
-> **Recent cleanup**: Removed debugging artifacts, simplified loop detection, restored strict security as default, and reorganized codebase structure.
+> **MISSION**: Create a CORRECT integration test that loads 3 elisp files missing lexical-binding cookies, lets Emacs generate warnings in *Warnings* buffer automatically, then directs efrit to fix them. Must burn tokens and actually call Claude.
 
 ## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active + Autonomous Agent Mode
 

@@ -1,4 +1,3 @@
-;;; stub-file-2 --- Fixed -*- lexical-binding: t; -*-
 ;; Another file missing lexical binding cookie
 (defcustom test-variable-2 "default"
   "A test variable."

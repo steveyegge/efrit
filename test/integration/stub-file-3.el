@@ -1,4 +1,3 @@
-;;; stub-file-3 --- Fixed -*- lexical-binding: t; -*-
 ;; Third stub file without proper header
 (defmacro test-macro-3 (body)
   "A test macro."

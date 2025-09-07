@@ -1,69 +1,62 @@
 # Efrit Development Roadmap
 
-## 🎯 **PHASE 1: INTEGRATION TEST SUCCESS** (Current Priority)
+## 🚨 **CRITICAL ISSUE: CORE WORKFLOW BROKEN**
 
-> **Mission-Critical**: The lexical-binding integration test is our top priority. This validates the entire efrit system end-to-end and represents our core use case.
+> **URGENT DISCOVERY**: efrit-do-async doesn't work - gets stuck in TODO loops and never calls Claude API. Previous integration test was fake and tested offline elisp execution only.
 
-### Critical Path 🚨
-- [ ] **Lexical-Binding Integration Test** - **TOP PRIORITY**
-  - Get Claude to autonomously fix lexical-binding warnings in elisp files
-  - This validates the entire efrit system end-to-end
-  - See `INTEGRATION_TEST_HANDOFF.md` for current status and instructions
+## Phase 1: Fix Core Workflow 🚨 CRITICAL
 
-### Known Issues to Fix (Blocking Integration Test)
-- [ ] **TODO System Loop Detection** - Fix `todo_get_instructions` infinite loops
-- [ ] **Security vs Functionality** - Better balance for file modifications  
-- [ ] **Instruction Interpretation** - Improve buffer code execution understanding
+### Immediate Priorities (Blocking Everything)
+- [ ] **Debug TODO Loop Issue** - efrit-do-async gets stuck in `todo_get_instructions` infinite loops
+- [ ] **Fix API Calling** - Sessions show 0 API calls despite running for minutes  
+- [ ] **Create REAL Integration Test** - One that actually burns tokens and calls Claude API
+- [ ] **Verify Autonomy** - Test Claude can discover warnings and fix files independently
 
----
-
-## PHASE 2: Core Stabilization (After Integration Test Success)
-
-### Integration Test Suite Expansion
-- [ ] **Real-world scenarios** with chatgpt-shell upgrade
-- [ ] **Multi-buffer operations** testing
-- [ ] **Error recovery** and resume testing
-
-### Architecture Improvements
-- [ ] **TODO System Robustness** - Add loop detection to all TODO tools
-- [ ] **Security System Refinement** - Configurable security levels for different use cases
-- [ ] **Performance Optimization** - API call batching, caching, memory monitoring
+### Root Cause Analysis Needed
+- Why does `todo_get_instructions` loop infinitely?
+- Why does efrit-do-async never reach Claude API?
+- What's blocking the async workflow from completing?
 
 ---
 
-## PHASE 3: Trimodal Problem-Solving Architecture (Future)
+## Phase 2: Real Integration Testing (After Core Fix)
 
-### Vision: Three Complementary Modes
+### Token-Burning Integration Test
+- [ ] **Automatic Warning Generation** - Load 3 elisp files missing lexical-binding cookies
+- [ ] **Natural Language Direction** - `(efrit-do-async "Fix lexical-binding warnings")`  
+- [ ] **Claude Discovery** - Let Claude find warnings in *Warnings* buffer autonomously
+- [ ] **Autonomous Fix** - Claude writes elisp code and fixes files without pre-written solutions
+- [ ] **Token Verification** - Confirm API calls occurred and money was spent
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│ CHAT MODE   │    │ ONE-OFF     │    │ AGENT MODE  │
-│ efrit-chat  │    │ efrit-do    │    │ efrit-agent │
-├─────────────┤    ├─────────────┤    ├─────────────┤
-│ Preserved   │    │ Enhanced    │    │ New Build   │
-│ Current     │    │ Error       │    │ Aggressive  │
-│ Behavior    │    │ Recovery    │    │ Takeover    │
-│             │    │ One Session │    │ Until Done  │
-│ Q&A Focus   │    │ Quick Tasks │    │ Complex     │
-│ No Agendas  │    │ Smart Retry │    │ Problems    │
-└─────────────┘    └─────────────┘    └─────────────┘
-```
-
-### Current State (v0.2.1)
-- ✅ Working chat interface (`efrit-chat`)  
-- ✅ Working one-off commands (`efrit-do`)
-- ✅ Basic multi-turn conversations
-- ✅ Comprehensive test suite
-- ✅ Elisp syntax validation in `efrit-do`
-- ✅ Intelligent retry logic with Claude error feedback
-- ✅ Dashboard and session tracking system
-
-## Implementation Priorities
-
-**Priority 1**: Integration test success (validates everything works)
-**Priority 2**: Stabilize core systems (TODO loops, security, performance)
-**Priority 3**: Expand capabilities (agent mode, advanced features)
+### Validation Criteria
+- [ ] Session logs show `"api-calls": > 0`
+- [ ] All 3 files get lexical-binding headers added  
+- [ ] *Warnings* buffer clears after fixes
+- [ ] Real network traffic to Claude API
+- [ ] Actual cost in API tokens
 
 ---
 
-*The lexical-binding integration test is our north star - everything else is secondary until this works reliably.*
+## Phase 3: Architecture Improvements (After Real Test Works)
+
+### Workflow Robustness  
+- [ ] Loop detection in TODO system
+- [ ] Better error handling and recovery
+- [ ] Security system refinement
+- [ ] Performance optimization
+
+### Test Suite Expansion
+- [ ] Multi-file modification scenarios
+- [ ] Complex warning types beyond lexical-binding
+- [ ] Integration with real projects
+- [ ] Autonomous development workflows
+
+## Success Metrics
+
+**Phase 1 Success**: efrit-do-async successfully calls Claude API and burns tokens
+**Phase 2 Success**: Real integration test fixes lexical-binding warnings autonomously  
+**Phase 3 Success**: Robust workflow handles complex real-world scenarios
+
+## Current Blocker
+
+The fundamental efrit-do-async workflow is broken. Until we fix the TODO loops preventing API calls, no real testing or development can proceed.

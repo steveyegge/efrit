@@ -1,107 +1,68 @@
 # Efrit Current Status
 
-## 🎯 **MAIN MISSION: LEXICAL-BINDING INTEGRATION TEST**
+## 🚨 **CRITICAL DISCOVERY: FAKE INTEGRATION TEST**
 
-> **TOP PRIORITY**: Get the lexical-binding warning fix integration test working end-to-end. This is our most robust test of the entire efrit system and represents the core use case: Claude autonomously fixing real code issues.
+> **URGENT**: The integration test was **COMPLETELY FAKE** - it tested elisp execution directly without calling Claude. The real issue is efrit-do-async gets stuck in TODO loops and never calls the Anthropic API (0 tokens burned).
 
-### Integration Test Status ⚠️ **IN PROGRESS**
+## Current Mission: Real Integration Test
 
-**Current State**: We have **fully debugged** the root causes but need to implement the final fixes.
+**GOAL**: Create a CORRECT token-burning integration test that:
 
-#### Root Causes Identified ✅
-1. **Security System Blocking File Modifications** - `efrit-tools-security-level` set to `'strict` blocks `insert`, `write-file`
-2. **TODO System Infinite Loop** - `todo_get_instructions` lacks loop detection, causes Claude to loop endlessly  
-3. **Claude Buffer Instruction Misinterpretation** - When asked to "execute code in buffer", Claude reads buffer instead of executing the code
+1. **Loads 3 elisp files missing lexical-binding cookies**
+2. **Lets Emacs generate warnings in *Warnings* buffer automatically** 
+3. **Uses efrit-do-async to direct efrit to fix the warnings**
+4. **Has Claude discover warnings and fix files autonomously**  
+5. **Actually burns tokens by calling Claude API**
 
-#### Working Solution Components ✅
-- **Security**: Disable with `(setq efrit-tools-security-level 'disabled)`
-- **Direct Elisp**: Provide complete elisp code in prompt rather than in buffer
-- **Bypass TODOs**: Use direct instructions to avoid TODO system loops
+## Key Issues Discovered
 
-#### Files Created During Debug
-- `test/integration/test-working-fix.el` - The final working test (needs refinement)
-- `test/integration/debug-telemetry.el` - Comprehensive debugging tools
-- `test/integration/debug-comprehensive.el` - Full debug suite
-- Various other test files that can be cleaned up
+### 1. efrit-do-async Never Calls Claude API ❌
+- Session logs show `"api-calls":0` despite running for minutes
+- Gets stuck in TODO loops: "todo_get_instructions called 14 times in a row - possible loop!"
+- Duration: 92+ seconds with no progress
 
-#### Next Steps for Integration Test
-1. **Implement final fix** - Combine all working elements into clean solution
-2. **Verify end-to-end** - Ensure Claude actually modifies all 3 stub files
-3. **Clean up debug files** - Remove temporary debugging artifacts
-4. **Document working approach** - Create reproducible integration test
+### 2. Previous Test Was Fake ❌ 
+- Used `efrit-protocol-execute-tool` directly (offline)
+- Pre-wrote the exact elisp code instead of letting Claude discover
+- Never tested Claude's autonomous problem-solving
+- 0 tokens burned, no real AI workflow
 
----
+### 3. TODO System Broken ❌
+- `todo_get_instructions` causes infinite loops
+- Prevents efrit-do-async from reaching Claude API
+- Core workflow completely broken
 
-## ✅ Completed Major Milestones
+## Files That Need Real Testing
 
-### AI-to-Efrit Communication Channel
-- **File-based queue system** working perfectly (`efrit-remote-queue.el`)
-- **JSON request/response protocol** functional
-- **Rich context gathering** from Emacs environment
-- **Proven with chatgpt-shell investigation** - identified 83 commits behind
-
-### Core Agent Architecture 
-- **efrit-agent.el** implemented with autonomous problem-solving loop
-- **Session management** with goal/TODO tracking
-- **JSON signal protocol** for LLM communication
-- **Action execution** framework (eval, shell, user_input)
-- **Mock LLM testing** infrastructure
-
-### TODO Management System
-- **Comprehensive TODO tracking** in efrit-do with tools (todo_add, todo_update, todo_show)
-- **Progress tracking** with status indicators (☐⟳☑) and priorities
-- **Context integration** - TODOs included in AI prompts for systematic task management
-- **User commands** for viewing and managing TODOs (efrit-do-show-todos, etc.)
-
-### Dashboard and Session Tracking System ⭐
-- **Efrit Dashboard** - Comprehensive UI with TODO management, session state, queue status, and real-time metrics
-- **Session Tracker** - Automatic capture of commands, TODOs, API calls, buffers, files, and tool usage
-- **Performance Optimized** - O(1) logging, efficient JSON handling, sub-100ms refresh times
-- **Production Ready** - Zero compilation warnings, 36/36 tests pass, full customization support
-
-### Data Directory Organization
-- **Centralized configuration** via efrit-config.el
-- **Organized data structure** under ~/.emacs.d/.efrit/ with proper subdirectories
-- **Configurable location** via efrit-data-directory variable
-- **Automatic migration** from old scattered file locations
-
-### Build System & Quality
-- **Professional elisp project structure** (lisp/, test/, bin/, plans/, docs/)
-- **Makefile with proper dependencies** 
-- **Byte-compilation working** (with dependency fixes)
-- **Test suite passing** (efrit-test-simple.sh)
-- **Git repository** properly organized
-
-## 🏗️ Architecture Overview
-
-### Mode Hierarchy
-```
-efrit-do     → Command execution (one-shot and multi-turn)
-efrit-chat   → Conversational with mixed tasks/questions  
-efrit-agent  → Aggressive problem-solving until complete
+```elisp
+;; These files should trigger automatic Emacs warnings
+test/integration/broken-file-1.el  ; Missing lexical-binding cookie
+test/integration/broken-file-2.el  ; Missing lexical-binding cookie  
+test/integration/broken-file-3.el  ; Missing lexical-binding cookie
 ```
 
-### Core Components
-- **efrit-config.el** - Centralized configuration and data directory management
-- **efrit-tools.el** - Core utilities and context gathering
-- **efrit-do.el** - Natural language commands with TODO management system
-- **efrit-chat-streamlined.el** - Multi-turn AI conversation
-- **efrit-remote-queue.el** - File-based AI communication
-- **efrit-agent.el** - Autonomous problem-solving
+## Required Test Workflow
 
-## 🚀 Next Steps (After Integration Test)
+```elisp
+;; 1. Load files (should generate warnings automatically)
+;; 2. Call efrit with natural language
+(efrit-do-async "Fix the lexical-binding warnings in the *Warnings* buffer")
 
-1. **Fix TODO System Loop Detection** - Add loop prevention to `todo_get_instructions`
-2. **Improve Security System** - Better balance between safety and functionality
-3. **Test efrit-agent** with chatgpt-shell upgrade challenge
-4. **Replace mock LLM** with real AI backend integration
+;; 3. Verify tokens burned and files fixed
+```
 
-## 📊 Metrics
+## Success Criteria
 
-- **18 elisp files** in professional structure
-- **Zero byte-compile errors** (after dependency fixes)
-- **AI-to-Efrit channel proven** functional for diagnostic tasks
-- **Autonomous agent foundation** ready for testing
+- [ ] Emacs automatically shows lexical-binding warnings
+- [ ] efrit-do-async calls Claude API (burns tokens)  
+- [ ] Session logs show `"api-calls": > 0`
+- [ ] Claude discovers warnings autonomously
+- [ ] All 3 files get lexical-binding headers added
+- [ ] Real money spent on API tokens
 
----
-*Updated: September 7, 2025 - Integration Test Debug Complete, Final Implementation In Progress*
+## Next Steps
+
+1. **Debug TODO loop issue** - Fix infinite `todo_get_instructions` calls
+2. **Create correct test** - Generate real Emacs warnings, call efrit-do-async
+3. **Verify token burning** - Ensure Claude API is actually called
+4. **Test autonomy** - Verify Claude discovers and fixes warnings without pre-written code

@@ -1,4 +1,3 @@
-;;; stub-file-1 --- Fixed -*- lexical-binding: t; -*-
 ;; File without lexical binding cookie - should trigger warning
 (defun test-function-1 ()
   "A simple test function."
