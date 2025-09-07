@@ -54,12 +54,12 @@ compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efr
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
 lisp/efrit-log.elc: lisp/efrit-config.elc
 lisp/efrit-common.elc: lisp/efrit-config.elc
-lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-common.elc
+lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc
 lisp/efrit-debug.elc: lisp/efrit-log.elc
 lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc lisp/efrit-common.elc
 lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
 lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
+lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-tools.elc
 lisp/efrit-protocol.elc: lisp/efrit-config.elc
 lisp/efrit-performance.elc: lisp/efrit-config.elc
 lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
@@ -76,7 +76,7 @@ lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
-		--eval "(add-to-list 'load-path \"./lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		-f batch-byte-compile $<
 
