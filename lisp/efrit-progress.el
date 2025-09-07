@@ -20,6 +20,9 @@
 (require 'efrit-log)
 (require 'ansi-color)
 
+(declare-function efrit-do-todo-item-status "efrit-do")
+(declare-function efrit-do-todo-item-content "efrit-do")
+
 ;;; Customization
 
 (defgroup efrit-progress nil
@@ -154,7 +157,7 @@
 
 (defun efrit-progress-show-message (message &optional type)
   "Show MESSAGE in progress buffer with optional TYPE.
-TYPE can be 'claude, 'error, 'success, or nil."
+TYPE can be \\='claude, \\='error, \\='success, or nil."
   (let ((face (pcase type
                 ('claude 'efrit-progress-claude-message)
                 ('error 'efrit-progress-error)

@@ -15,6 +15,10 @@
 (require 'efrit-log)
 (require 'efrit-common)
 
+(declare-function efrit-context-state-buffer-name "efrit-context")
+(declare-function efrit-context-state-buffer-mode "efrit-context") 
+(declare-function efrit-context-state-directory "efrit-context")
+
 ;;; Memory Management
 
 (defcustom efrit-performance-max-sessions 10
@@ -84,12 +88,12 @@
                                 (if context 
                                     (efrit-common-truncate-string 
                                      (json-encode 
-                                      (if (cl-typep context 'efrit-context-state)
-                                          ;; Convert struct to alist for JSON encoding
-                                          (list (cons 'buffer-name (efrit-context-state-buffer-name context))
-                                                (cons 'buffer-mode (format "%s" (efrit-context-state-buffer-mode context)))
-                                                (cons 'directory (efrit-context-state-directory context)))
-                                        context))
+                                     (if (and context (fboundp 'efrit-context-state-buffer-name))
+                                     ;; Convert struct to alist for JSON encoding
+                                     (list (cons 'buffer-name (efrit-context-state-buffer-name context))
+                                     (cons 'buffer-mode (format "%s" (efrit-context-state-buffer-mode context)))
+                                     (cons 'directory (efrit-context-state-directory context)))
+                                     context))
                                      1000)
                                   ""))))
 

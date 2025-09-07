@@ -22,6 +22,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(declare-function efrit-config-context-file "efrit-config")
+(require 'ring)
 (require 'efrit-log)
 (require 'efrit-common)
 
