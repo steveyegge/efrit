@@ -92,7 +92,7 @@ This affects both `efrit-do-show-todos' and `efrit-async-show-todos'."
   :group 'efrit-do)
 
 (defcustom efrit-api-channel nil
-  "API channel to use. Can be 'ai-efrit' or nil for default."
+  "API channel to use. Can be \\='ai-efrit or nil for default."
   :type '(choice (const :tag "Default" nil)
                  (const :tag "AI-Efrit" "ai-efrit"))
   :group 'efrit-do)
@@ -225,7 +225,15 @@ Possible states:
     ("description" . "Get the next pending TODO item to work on.")
     ("input_schema" . (("type" . "object")
                       ("properties" . ()))))
-   (("name" . "todo_complete_check")
+   (("name" . "todo_execute_next")
+   ("description" . "Execute the next pending TODO by marking it in-progress and providing clear task instructions.")
+   ("input_schema" . (("type" . "object")
+   ("properties" . ()))))
+   (("name" . "todo_get_instructions")
+     ("description" . "Get execution instructions for the next pending TODO. Marks the TODO as in-progress and returns detailed guidance for completing the task. This is an INFORMATION tool - it provides instructions but does NOT execute code.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . ()))))
+    (("name" . "todo_complete_check")
     ("description" . "Check if all TODOs are completed. Returns true if all done, false if work remains.")
     ("input_schema" . (("type" . "object")
                       ("properties" . ()))))
@@ -250,17 +258,21 @@ Possible states:
    "SESSION PROTOCOL:\n"
    "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
    
-   "0. IMMEDIATE SESSION CONTINUATION CHECK:\n"
-   "   - FIRST ACTION: Call todo_status ONCE to see current TODOs\n"
-   "   - Based on the response:\n"
-   "     * If response says \"EMPTY - No TODOs exist\":\n"
-   "       → IMMEDIATELY call todo_analyze with the original command\n"
-   "       → DO NOT call todo_status again!\n"
-   "     * If response shows TODO counts (X total, Y pending, etc):\n"
-   "       → Check todo_complete_check\n"
-   "       → If all complete → session_complete\n"
-   "       → If not → work on next TODO\n"
+   "0. FIRST ACTION - MANDATORY WORKFLOW:\n"
+   "   - For NEW tasks (like this one): ALWAYS start with todo_analyze to break down the task\n"  
+   "   - For CONTINUING sessions: The system will provide work log context\n"
+   "   - NEVER call todo_status first on a new task - it will fail!\n"
    "   - CRITICAL: Never call the same tool twice in a row!\n\n"
+    
+    "LOOP PREVENTION PROTOCOL:\n"
+    "1. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
+    "   - Read the error message carefully\n"
+    "   - Follow the IMMEDIATE ACTION REQUIRED instructions\n"
+    "   - Never repeat the tool that caused the error\n"
+    "2. If you're making no progress after 3 attempts:\n"
+    "   - Call session_complete with an explanation\n"
+    "3. Trust the error messages - they prevent infinite loops\n"
+    "4. Maximum session limit is 30 API calls - respect circuit breakers\n\n"
    
    "1. WORK LOG INTERPRETATION:\n"
    "   - The work log shows your previous steps: [[\"result1\", \"code1\"], [\"result2\", \"code2\"], ...]\n"
@@ -293,16 +305,25 @@ Possible states:
    "5. TODO-DRIVEN EXAMPLE:\n"
    "   Command: 'fix all warnings in buffer'\n"
    "   Initial: todo_analyze, then todo_add for each warning found\n"
-   "   Loop: todo_status → todo_next → fix warning → todo_update\n"
+   "   Loop: todo_status → todo_get_instructions → eval_sexp/shell_exec → todo_update\n"
    "   End: todo_complete_check → session_complete\n\n"
    
    "6. IMPORTANT RULES:\n"
    "   - ALWAYS use TODOs for multi-step tasks to prevent loops\n"
+   "   - PREFER todo_get_instructions over todo_execute_next (clearer intent)\n"
+   "   - todo_get_instructions provides instructions but does NOT execute - you must use eval_sexp/shell_exec\n"
    "   - Execute ONE meaningful action per continuation\n"
    "   - Check TODO completion before continuing session\n"
    "   - Use session_complete when all TODOs are done\n"
    "   - Keep responses minimal - focus on execution\n"
-   "   - The work log provides your memory across steps\n"))
+   "   - The work log provides your memory across steps\n\n"
+   
+   "7. ANTI-LOOP PROTECTIONS:\n"
+   "   - DO NOT alternate between todo_status and todo_analyze\n"
+   "   - DO NOT call todo_analyze multiple times without creating TODOs\n"
+   "   - After todo_status shows pending TODOs: call todo_get_instructions (preferred) or todo_execute_next\n"
+     "   - After todo_get_instructions: DO the actual work with eval_sexp/shell_exec, then todo_update to mark complete\n"
+     "   - Focus on EXECUTION not endless analysis\n"))
 
 ;;; Context ring management
 
@@ -380,6 +401,12 @@ Possible states:
       (setf (efrit-do-todo-item-completed-at todo) (current-time)))
     (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
     todo))
+
+(defun efrit-do--find-todo (id)
+  "Find TODO item by ID."
+  (seq-find (lambda (item) 
+              (string= (efrit-do-todo-item-id item) id))
+           efrit-do--current-todos))
 
 (defun efrit-do--format-todos-for-display ()
   "Format current TODOs for user display in raw order."
@@ -579,14 +606,90 @@ This handles cases where JSON escaping has been applied multiple times."
       (format "\n[Syntax Error in %s: %s]" 
               input-str (cdr validation)))))
 
+(defcustom efrit-do-shell-security-enabled t
+  "When non-nil, enforce security restrictions on shell commands.
+Recommended to keep enabled for safety."
+  :type 'boolean
+  :group 'efrit)
+
+(defvar efrit-do-allowed-shell-commands
+  '("ls" "pwd" "date" "whoami" "uname" "df" "ps" "top"
+    "cat" "head" "tail" "wc" "grep" "find" "which"
+    "echo" "printf" "basename" "dirname" "realpath"
+    "git" "make" "emacs" "python" "node" "npm"
+    "curl" "wget")
+  "List of shell commands considered safe for AI execution.")
+
+(defvar efrit-do-forbidden-shell-patterns
+  '("\\brm\\b" "rmdir" "mkdir" "touch" "\\bmv\\b" "\\bcp\\b"
+    "chmod" "chown" "sudo" "su" "passwd"
+    "kill" "killall" "pkill" "shutdown" "reboot"
+    "\\bdd\\b" "fdisk" "mkfs" "mount" "umount"
+    "export" "unset" "source" "\\berl\\b"
+    "[^a-zA-Z0-9_]>[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]>>[^a-zA-Z0-9_]" 
+    "[^a-zA-Z0-9_]<[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]|[^a-zA-Z0-9_]"
+    "[^a-zA-Z0-9_]&[^a-zA-Z0-9_]" "&&" "||" "[^a-zA-Z0-9_];[^a-zA-Z0-9_]"
+    "\\$(" "`" "\\${")
+  "Patterns that are forbidden in shell commands.")
+
+(defun efrit-do--validate-shell-command (command)
+  "Validate that COMMAND is safe for execution.
+Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
+  (cl-block validate-shell
+    (if (not efrit-do-shell-security-enabled)
+        (cons t nil) ; Security disabled, allow all
+      
+      (let ((command-clean (string-trim command)))
+        
+        ;; Check for empty command
+        (when (string-empty-p command-clean)
+          (cl-return-from validate-shell 
+            (cons nil "Empty shell command not allowed")))
+        
+        ;; Extract the main command (first word)
+        (let ((main-command (car (split-string command-clean))))
+          
+          ;; Check if main command is in allowed list
+          (unless (member main-command efrit-do-allowed-shell-commands)
+            (cl-return-from validate-shell
+              (cons nil (format "Shell command '%s' not in allowed whitelist" main-command))))
+          
+          ;; Check for forbidden patterns
+          (dolist (pattern efrit-do-forbidden-shell-patterns)
+            (when (string-match-p pattern command-clean)
+              (cl-return-from validate-shell
+                (cons nil (format "Shell command contains forbidden pattern: %s" pattern)))))
+          
+          ;; Additional safety checks
+          (when (> (length command-clean) 200)
+            (cl-return-from validate-shell
+              (cons nil "Shell command too long (>200 chars)")))
+          
+          ;; Command appears safe
+          (cons t nil))))))
+
 (defun efrit-do--handle-shell-exec (input-str)
-  "Handle shell command execution."
-  (condition-case shell-err
-      (let ((shell-result (shell-command-to-string input-str)))
-        (format "\n[Executed: %s]\n[Result: %s]" input-str shell-result))
-    (error
-     (format "\n[Error executing shell command %s: %s]" 
-             input-str (error-message-string shell-err)))))
+  "Handle shell command execution with security validation."
+  (let ((validation (efrit-do--validate-shell-command input-str)))
+    (if (car validation)
+        ;; Command is safe, execute it
+        (condition-case shell-err
+            (let* ((start-time (current-time))
+                   (shell-result (with-timeout (10) ; 10 second timeout
+                                   (shell-command-to-string input-str)))
+                   (end-time (current-time))
+                   (duration (float-time (time-subtract end-time start-time))))
+              (format "\n[🔧 Executed: %s]\n[⏱️ Duration: %.2fs]\n[📤 Result: %s]" 
+                      input-str duration 
+                      (if (> (length shell-result) 1000)
+                          (concat (substring shell-result 0 1000) "\n... (output truncated)")
+                        shell-result)))
+          (timeout (format "\n[❌ Shell command timed out after 10 seconds: %s]" input-str))
+          (error (format "\n[❌ Error executing shell command '%s': %s]" 
+                         input-str (error-message-string shell-err))))
+      ;; Command failed validation
+      (format "\n[🚫 SECURITY: Shell command blocked - %s]\n[Command: %s]" 
+              (cdr validation) input-str))))
 
 (defun efrit-do--handle-todo-add (tool-input)
   "Handle TODO item addition."
@@ -656,10 +759,10 @@ This handles cases where JSON escaping has been applied multiple times."
     (setq efrit-do--tool-call-count 1))
   (setq efrit-do--last-tool-called 'todo_analyze)
   
-  ;; Hard stop after 2 calls
+  ;; Hard stop after 2 calls - throw actual exception
   (if (> efrit-do--tool-call-count 2)
-      (format "\n[ERROR: todo_analyze called %d times - STOPPING\nYou MUST call eval_sexp or todo_add next!]" 
-              efrit-do--tool-call-count)
+      (error "🚨 CRITICAL LOOP: todo_analyze called %d times! You MUST call eval_sexp or todo_add next!"
+             efrit-do--tool-call-count)
     ;; Continue with normal processing
     (let ((command (if (hash-table-p tool-input)
                        (gethash "command" tool-input)
@@ -681,16 +784,42 @@ This handles cases where JSON escaping has been applied multiple times."
       ;; Provide specific guidance based on command type
       (cond
        ((string-match-p "\\(fix\\|resolve\\).*\\(warning\\|error\\)" command)
-        (format "\n[Analysis: Multi-step task detected - '%s'
-
-REQUIRED NEXT ACTIONS:
-1. IMMEDIATELY use eval_sexp with: (with-current-buffer \"*Warnings*\" (buffer-string))
-2. Then parse the output to count warnings
-3. For EACH warning, use todo_add to create a TODO item
-4. Add one final todo_add for \"Verify all warnings resolved\"
-5. Only after creating all TODOs, start working through them
-
-DO NOT call todo_analyze again - proceed with the actions above!]" command))
+       ;; Actually analyze warnings and create TODOs automatically
+         (condition-case err
+             (progn
+               ;; Try to get warnings from the buffer
+               (let ((warnings-content 
+                      (if (get-buffer "*Warnings*")
+                          (with-current-buffer "*Warnings*"
+                            (buffer-string))
+                        "No *Warnings* buffer found")))
+                 ;; Parse warnings and create TODOs
+                 (let ((todo-count 0))
+                   (when (and warnings-content (not (string= warnings-content "No *Warnings* buffer found")))
+                     ;; Split into lines and create a TODO for each warning
+                     (dolist (line (split-string warnings-content "\n" t))
+                       (when (string-match-p "Warning\\|Error" line)
+                         (efrit-do--add-todo (format "Fix: %s" (string-trim line)) 'medium)
+                         (cl-incf todo-count))))
+                   ;; Add verification TODO
+                   (when (> todo-count 0)
+                     (efrit-do--add-todo "Verify all warnings are resolved" 'low)
+                     (cl-incf todo-count))
+                   ;; Update workflow state
+                   (setq efrit-do--workflow-state 'todos-created)
+                   ;; Return success message
+                   (format "\n[Analysis Complete: Created %d TODOs for '%s'
+✓ Automatically created TODO items for each warning
+✓ Added verification TODO
+NEXT ACTION: Call todo_get_instructions to start working on the first TODO]" 
+                          todo-count command))))
+           (error 
+            ;; Fallback to manual instructions if auto-analysis fails
+            (format "\n[Auto-analysis failed: %s
+FALLBACK - Manual steps required:
+1. Use eval_sexp with: (with-current-buffer \"*Warnings*\" (buffer-string))
+2. Create TODOs manually with todo_add for each warning
+3. Then call todo_get_instructions to start working]" (error-message-string err)))))
        
        ((string-match-p "\\(create\\|make\\|build\\)" command)
         (format "\n[Analysis: Creation task - '%s'
@@ -710,13 +839,11 @@ Break this down into steps and use todo_add for each step]" command))
     (setq efrit-do--tool-call-count 1))
   (setq efrit-do--last-tool-called 'todo_status)
   
-  ;; Hard error after 2 calls
-  (if (> efrit-do--tool-call-count 2)
-      (format "\n[ERROR: todo_status called %d times - STOPPING\n%s]" 
-              efrit-do--tool-call-count
-              (if (= (length efrit-do--current-todos) 0)
-                  "You MUST call todo_analyze next!"
-                "You MUST call todo_next or start working on TODOs!"))
+  ;; Hard error after 2 calls - throw actual exception
+  (if (>= efrit-do--tool-call-count 2)
+      (error "🚨 CRITICAL LOOP: todo_status called %d times! Use todo_analyze (if empty) or todo_get_instructions (if TODOs exist). Current count: %d"
+             efrit-do--tool-call-count
+             (length efrit-do--current-todos))
     ;; Continue with normal processing
     (let ((total (length efrit-do--current-todos))
         (pending (seq-count (lambda (todo) 
@@ -740,7 +867,7 @@ Break this down into steps and use todo_add for each step]" command))
      ;; Have TODOs
      (t 
       (setq efrit-do--workflow-state 'todos-created)
-      (format "\n[TODO Status: %d total, %d pending, %d in-progress, %d completed\nNEXT ACTION: Call todo_next to get the next TODO.]"
+      (format "\n[TODO Status: %d total, %d pending, %d in-progress, %d completed\nNEXT ACTION: Call todo_get_instructions to start working on the next TODO.]"
               total pending in-progress completed))))))
 
 (defun efrit-do--handle-todo-next ()
@@ -753,6 +880,34 @@ Break this down into steps and use todo_add for each step]" command))
                 (efrit-do-todo-item-content next-todo)
                 (efrit-do-todo-item-id next-todo))
       "\n[No pending TODOs]")))
+
+(defun efrit-do--handle-todo-execute-next ()
+  "Execute the next pending TODO by marking it in-progress and providing details."
+  (let ((next-todo (seq-find (lambda (todo)
+                              (eq (efrit-do-todo-item-status todo) 'todo))
+                            efrit-do--current-todos)))
+    (if next-todo
+        (let ((todo-id (efrit-do-todo-item-id next-todo))
+              (todo-content (efrit-do-todo-item-content next-todo)))
+          ;; Mark as in-progress
+          (efrit-do--update-todo-status todo-id 'in-progress)
+          ;; Return directive to execute the task
+          (format "\n[EXECUTING TODO %s: %s]
+🎯 TASK STARTED - You must now complete this specific task:
+
+\"%s\"
+
+IMPORTANT INSTRUCTIONS:
+- Focus ONLY on completing this exact task
+- Use eval_sexp or other appropriate tools to implement the solution
+- When the task is done, call: todo_update with id=\"%s\" and status=\"completed\"
+- Do NOT call todo_analyze or todo_status until this task is marked completed
+- If you need clarification, work on what you can understand from the task description
+
+CURRENT TASK STATUS: IN-PROGRESS
+NEXT STEP: Execute the task now using appropriate tools (eval_sexp, shell_exec, etc.)"
+                 todo-id todo-content todo-content todo-id))
+      "\n[No pending TODOs to execute]")))
 
 (defun efrit-do--handle-todo-complete-check ()
   "Check if all TODOs are completed."
@@ -859,9 +1014,13 @@ Returns a formatted string with execution results or empty string on failure."
      ((string= tool-name "todo_status")
       (efrit-do--handle-todo-status))
      ((string= tool-name "todo_next")
-      (efrit-do--handle-todo-next))
-     ((string= tool-name "todo_complete_check")
-      (efrit-do--handle-todo-complete-check))
+     (efrit-do--handle-todo-next))
+     ((string= tool-name "todo_execute_next")
+     (efrit-do--handle-todo-execute-next))
+     ((string= tool-name "todo_get_instructions")
+       (efrit-do--handle-todo-execute-next))  ; Same handler, clearer name
+       ((string= tool-name "todo_complete_check")
+       (efrit-do--handle-todo-complete-check))
      ((string= tool-name "buffer_create")
       (efrit-do--handle-buffer-create tool-input input-str))
      ((string= tool-name "format_file_list")
