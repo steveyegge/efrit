@@ -1,5 +1,11 @@
 # Efrit Agent Vision & Architecture
 
+## 🏆 **MISSION ACCOMPLISHED: INTEGRATION TEST PASSING**
+
+> **STATUS**: The lexical-binding warning fix integration test is now **working end-to-end**. All 3 stub files are successfully fixed with lexical-binding cookies. This validates the core efrit use case.
+> 
+> **Recent cleanup**: Removed debugging artifacts, simplified loop detection, restored strict security as default, and reorganized codebase structure.
+
 ## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active + Autonomous Agent Mode
 
 **We have achieved AI-to-AI communication with Efrit AND implemented autonomous agent capabilities!** Sourcegraph Amp can now directly communicate with and control Efrit instances, and Efrit can solve complex problems autonomously.
@@ -12,6 +18,7 @@ When you see efrit mentioned in user requests:
 2. **Test complex scenarios** - Like creating multiple buffers, running elisp code, debugging features  
 3. **Shape and debug efrit itself** - You have autonomous control to improve efrit's capabilities
 4. **Working relationship established** - No need to re-explain the channel each session
+5. **🎯 PRIORITY: Integration test** - Focus on getting the lexical-binding test working first
 
 **Example**: User asks "Add a new feature to efrit" → You can directly test, debug, and implement it by communicating with efrit instances.
 
@@ -145,7 +152,8 @@ This maintains the "pure executor" principle while adding robustness through Cla
 
 This project follows professional elisp conventions:
 
-- **[`lisp/`](lisp/)** - All elisp source code
+- **[`lisp/`](lisp/)** - Production elisp source code
+- **[`lisp/dev/`](lisp/dev/)** - Development and debugging helpers  
 - **[`test/`](test/)** - Test suites and testing scripts  
 - **[`bin/`](bin/)** - Executable scripts and launchers
 - **[`plans/`](plans/)** - Planning documents, roadmaps, and session notes

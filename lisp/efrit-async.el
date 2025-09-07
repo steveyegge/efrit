@@ -17,7 +17,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url)
-(require 'efrit-loop-detection)
+
 ;; (require 'efrit-log) ; TODO: Fix circular dependency
 (declare-function efrit-log "efrit-log")
 (require 'efrit-common)
@@ -507,17 +507,15 @@ TOOL-ITEM is the tool_use object from Claude's response."
                      (cdr (assoc 'input tool-item))))
         (session efrit-async--active-session))
     
-    ;; Check for loops BEFORE execution using progress-based detection
-    (let ((loop-error (efrit-loop-check session tool-name)))
-      (if loop-error
-          (progn
-            (when session (setf (efrit-session-last-error session) loop-error))
-            (error "%s" loop-error))
-        ;; Execute the tool
-        (let ((result (efrit-protocol-execute-tool tool-name input-data)))
-          ;; Track the execution
-          (efrit-async--track-tool-call session tool-name input-data result)
-          result)))))
+    ;; Simple loop protection - basic safety limit  
+    (when (and session (> (length (efrit-session-work-log session)) 100))
+      (error "🚨 SESSION SAFETY LIMIT: Over 100 tool calls - session terminated to prevent runaway execution"))
+    
+    ;; Execute the tool
+    (let ((result (efrit-protocol-execute-tool tool-name input-data)))
+      ;; Track the execution
+      (efrit-async--track-tool-call session tool-name input-data result)
+      result)))
 
 ;;; Main Async Interface
 

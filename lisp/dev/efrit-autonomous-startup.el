@@ -85,7 +85,6 @@
       (message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
       (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
-      (require 'efrit-debug nil t) ; Optional debug module
       ;; efrit-command no longer exists
       (require 'efrit-do)
       (require 'efrit-chat)

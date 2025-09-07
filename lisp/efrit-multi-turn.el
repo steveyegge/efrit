@@ -115,7 +115,6 @@
   "Check if CONVERSATION has exceeded timeout limits."
   (let ((elapsed (float-time (time-subtract (current-time) 
                                            (efrit-conversation-last-activity conversation)))))
-    (require 'efrit-debug)
     (efrit-log-debug "Expiry check: elapsed=%.1fs, timeout=%ds" elapsed efrit-multi-turn-timeout)
     (> elapsed efrit-multi-turn-timeout)))
 
@@ -129,7 +128,6 @@
 (defun efrit--ask-claude-about-completion (conversation)
   "Ask Claude whether CONVERSATION should continue.
 Returns \\='continue, \\='complete, or \\='error."
-  (require 'efrit-debug)
   (efrit-log-debug "Asking Claude about completion...")
   (let* ((original-request (efrit-conversation-original-request conversation))
          (history (efrit-conversation-context-history conversation))
@@ -190,7 +188,6 @@ REASON: [brief explanation]"
            (encode-coding-string (json-encode request-data) 'utf-8)))
     
     ;; Send synchronous request for completion check
-    (require 'efrit-debug)
     (efrit-log-debug "Sending completion check to Claude...")
     (condition-case err
         (with-current-buffer 
@@ -213,7 +210,6 @@ REASON: [brief explanation]"
 
 (defun efrit--parse-completion-response (response-text _conversation)
   "Parse Claude's completion check RESPONSE-TEXT."
-  (require 'efrit-debug)
   (efrit-log-debug "Claude completion response: %s" response-text)
   (if (string-match "CONTINUE:\\s-*\\(YES\\|NO\\)" response-text)
       (let ((should-continue (string= (match-string 1 response-text) "YES")))
@@ -227,7 +223,6 @@ REASON: [brief explanation]"
 
 (defun efrit--should-continue-conversation-p (conversation _response)
   "Determine if CONVERSATION should continue using Claude-based assessment."
-  (require 'efrit-debug)
   (cond
    ;; No conversation or multi-turn disabled
    ((or (not efrit-multi-turn-enabled) (not conversation))

@@ -32,7 +32,6 @@
 (require 'auth-source)
 (require 'efrit-tools)
 (require 'efrit-multi-turn)
-(require 'efrit-debug)
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")

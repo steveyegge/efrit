@@ -65,7 +65,6 @@
       ;; Load essential chat functionality
       (condition-case err
           (progn
-            (require 'efrit-debug)
             (require 'efrit-multi-turn)
             (require 'efrit-chat))
         (error 
