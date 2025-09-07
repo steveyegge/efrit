@@ -46,6 +46,7 @@
 (require 'auth-source)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
+(declare-function efrit-log "efrit-log")
 (condition-case nil
     (require 'efrit-log)
   (error 
@@ -77,6 +78,16 @@
 
 ;; Logging is now handled by efrit-log.el - use (efrit-log 'level ...) for logging
 
+
+(defcustom efrit-tools-security-level 'strict
+  "Security level for code execution.
+- \\='strict: Only allow whitelisted safe functions (recommended)
+- \\='permissive: Allow most functions except explicitly forbidden ones  
+- \\='disabled: Legacy pattern-based protection only (NOT recommended)"
+  :type '(choice (const :tag "Strict Security (Recommended)" strict)
+                 (const :tag "Permissive (Dangerous)" permissive) 
+                 (const :tag "Disabled (Very Dangerous)" disabled))
+  :group 'efrit-tools)
 
 (defcustom efrit-tools-sexp-evaluation-enabled t
   "Whether to allow the assistant to evaluate Lisp expressions."
@@ -163,20 +174,149 @@
                       (error-message-string err))
         :input sexp-string))
 
+;;; Security Sandboxing Configuration
+
+(defun efrit-tools--security-enabled-p ()
+  "Return t if security sandboxing should be enforced."
+  (not (eq efrit-tools-security-level 'disabled)))
+
+(defvar efrit-tools-allowed-functions
+  '(;; Basic Lisp operations
+    + - * / % mod
+    = < > <= >= /= eq equal string= string< string>
+    not and or
+    cons car cdr list append reverse length nth
+    ;; String operations (safe)
+    substring string-trim string-match string-match-p
+    replace-regexp-in-string split-string
+    upcase downcase capitalize
+    concat format
+    ;; Math operations
+    abs floor ceiling round truncate
+    min max
+    sin cos tan asin acos atan exp log sqrt
+    ;; Buffer inspection (read-only)
+    buffer-name buffer-size point point-min point-max
+    current-buffer buffer-list buffer-live-p
+    line-number-at-pos current-column
+    ;; Buffer content inspection (read-only)
+    buffer-substring buffer-substring-no-properties
+    thing-at-point bounds-of-thing-at-point
+    ;; Position operations (read-only)
+    goto-char forward-char backward-char
+    forward-word backward-word
+    beginning-of-line end-of-line
+    forward-line previous-line next-line
+    ;; Search operations (read-only)
+    search-forward search-backward
+    re-search-forward re-search-backward
+    looking-at looking-back
+    ;; Window operations (safe)
+    selected-window window-list window-buffer
+    window-point window-height window-width
+    ;; File operations (read-only)
+    file-name-directory file-name-nondirectory
+    file-name-extension file-exists-p
+    directory-files file-directory-p
+    ;; Time operations
+    current-time format-time-string
+    ;; Basic data structures
+    make-hash-table gethash puthash hash-table-p
+    ;; Safe utility functions
+    identity ignore
+    ;; Mode inspection
+    major-mode minor-mode-list
+    ;; Text properties (inspection only)
+    get-text-property text-properties-at)
+  "List of functions that are considered safe for AI execution.
+Only these functions can be used in eval_sexp calls when security is enabled.")
+
+(defvar efrit-tools-forbidden-functions
+  '(;; File system operations
+    delete-file write-region copy-file rename-file
+    make-directory delete-directory
+    find-file save-buffer kill-buffer
+    ;; Network operations
+    url-retrieve url-retrieve-synchronously
+    make-network-process
+    ;; Process operations
+    start-process call-process shell-command
+    shell-command-to-string async-shell-command
+    ;; Buffer modification
+    insert delete-char delete-region
+    erase-buffer kill-region kill-line
+    replace-string replace-regexp
+    ;; System operations
+    load require autoload
+    set-variable setq setf
+    kill-emacs save-buffers-kill-terminal
+    ;; Hook modifications
+    add-hook remove-hook
+    ;; Dangerous evaluation
+    eval apply funcall
+    ;; Package operations
+    package-install package-delete)
+  "List of functions that are explicitly forbidden in AI code execution.")
+
+(defun efrit-tools--extract-function-calls (sexp)
+  "Extract all function calls from SEXP recursively."
+  (let ((functions '()))
+    (cond
+     ((and (listp sexp) (symbolp (car sexp)))
+      (push (car sexp) functions)
+      (dolist (arg (cdr sexp))
+        (setq functions (append functions (efrit-tools--extract-function-calls arg)))))
+     ((listp sexp)
+      (dolist (item sexp)
+        (setq functions (append functions (efrit-tools--extract-function-calls item))))))
+    functions))
+
 (defun efrit-tools--validate-safe-operation (sexp-string)
-  "Validate that SEXP-STRING does not contain dangerous operations."
-  (let ((dangerous-patterns '("\\(reverse-region\\|delete-region\\|erase-buffer\\|kill-buffer\\|flush-lines\\)"
-                             "\\(point-min\\).*\\(point-max\\)" ; operations on entire buffer
-                             "\\(replace-regexp\\|replace-string\\).*\\(point-min\\|point-max\\)" ; global replacements
-                             "\\(save-excursion.*erase-buffer\\|save-excursion.*delete-region\\)"))) ; destructive operations in save-excursion
-    
-    (dolist (pattern dangerous-patterns)
+  "Validate that SEXP-STRING contains only allowed operations.
+Implements comprehensive security sandboxing when enabled."
+  (when (efrit-tools--security-enabled-p)
+    (let* ((sexp (condition-case nil
+                     (car (read-from-string sexp-string))
+                   (error nil)))
+           (function-calls (when sexp (efrit-tools--extract-function-calls sexp))))
+      
+      ;; Check for forbidden functions (both strict and permissive modes)
+      (dolist (func function-calls)
+        (when (memq func efrit-tools-forbidden-functions)
+          (error "🚫 SECURITY: Forbidden function '%s' blocked for safety" func)))
+      
+      ;; In strict mode, check whitelist; in permissive mode, only check blacklist
+      (when (eq efrit-tools-security-level 'strict)
+        (dolist (func function-calls)
+          (unless (or (memq func efrit-tools-allowed-functions)
+                      ;; Allow basic special forms
+                      (memq func '(let let* progn if when unless cond case
+                                   lambda function quote defun defvar defcustom
+                                   condition-case catch throw unwind-protect
+                                   save-excursion save-restriction save-current-buffer
+                                   with-current-buffer)))
+            (error "🚫 SECURITY: Function '%s' not in allowed whitelist" func))))
+      
+      ;; Additional pattern-based checks for complex attacks
+      (let ((dangerous-patterns '("\\(eval\\|apply\\|funcall\\)\\s-*("
+                                 "\\(shell-command\\|start-process\\|call-process\\)"
+                                 "\\(delete-file\\|write-region\\|save-buffer\\)"
+                                 "\\(load\\|require\\)\\s-*['\"]"
+                                 "\\(setq\\|setf\\|set\\)\\s-+[a-zA-Z-]+-\\(hook\\|function\\)")))
+        (dolist (pattern dangerous-patterns)
+          (when (string-match-p pattern sexp-string)
+            (error "🚫 SECURITY: Dangerous pattern detected in code"))))))
+
+  ;; Legacy protection for specific buffer types (still active regardless of security mode)
+  (let ((dangerous-legacy-patterns '("\\(reverse-region\\|delete-region\\|erase-buffer\\|kill-buffer\\|flush-lines\\)"
+                                     "\\(point-min\\).*\\(point-max\\)"
+                                     "\\(replace-regexp\\|replace-string\\).*\\(point-min\\|point-max\\)")))
+    (dolist (pattern dangerous-legacy-patterns)
       (when (string-match-p pattern sexp-string)
         (let ((current-buffer-name (buffer-name)))
-          ;; Always block destructive operations on chat, dashboard, and log buffers
           (when (string-match-p "\\*efrit\\|\\*Messages\\*\\|\\*scratch\\*" current-buffer-name)
-            (error "Blocked destructive operation '%s' on protected buffer '%s'" 
-                   (match-string 0 sexp-string) current-buffer-name)))))))
+            (error "🚫 LEGACY: Blocked destructive operation on protected buffer '%s'" 
+                   current-buffer-name)))))))
 
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.

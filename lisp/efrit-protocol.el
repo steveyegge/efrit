@@ -19,6 +19,10 @@
 (require 'efrit-common)
 (require 'efrit-log)
 
+(declare-function efrit-progress-show-tool-start "efrit-progress")
+(declare-function efrit-progress-show-tool-result "efrit-progress")
+(declare-function efrit-do--execute-tool "efrit-do")
+
 ;;; Session Data Structure
 
 (cl-defstruct efrit-session
@@ -28,7 +32,20 @@
   work-log        ; List of (elisp . result) pairs  
   start-time      ; When session started
   status          ; 'active, 'waiting, 'complete
-  buffer)         ; Original buffer for context
+  buffer          ; Original buffer for context
+  ;; Loop detection and session tracking
+  tool-history    ; List of (tool-name timestamp input-hash result-hash)
+  loop-warnings   ; Hash table of tool -> warning-count  
+  continuation-count ; Total API calls in this session
+  last-error      ; Last error message if any
+  ;; Progress tracking for Oracle's improved loop detection
+  last-progress-tick        ; Last time progress was made
+  buffer-modifications      ; Count of buffer modifications
+  todo-status-changes       ; Count of TODO status changes  
+  buffers-created          ; Count of buffers created
+  files-modified           ; Count of files modified
+  execution-outputs        ; Count of non-empty eval_sexp/shell_exec outputs
+  last-tool-called)        ; Last tool name for simple repeat detection
 
 ;;; Tool Execution Protocol
 
@@ -87,9 +104,12 @@ Returns the parsed response data."
     ;; Make the request
     (let* ((json-data (efrit-common-escape-json-unicode 
                       (json-encode request-data)))
+           ;; These variables are used implicitly by url-retrieve-synchronously
            (url-request-method "POST")
            (url-request-extra-headers (efrit-common-build-headers api-key))
            (url-request-data json-data)
+           ;; Suppress unused variable warnings
+           (_ (list url-request-method url-request-extra-headers url-request-data))
            (response-buffer (url-retrieve-synchronously
                             efrit-common-api-url nil t)))
       
