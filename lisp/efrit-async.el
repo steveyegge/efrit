@@ -430,7 +430,7 @@ CALLBACK will be called with the final result string."
               ;; Continue the session
               (efrit-async--continue-session efrit-async--active-session callback))))))
     (error
-     (let ((error-msg (format "Response handling error: %s" (error-message-string err))))
+     (let ((error-msg (format "Response handling error: %s" (or (error-message-string err) "Unknown error"))))
        (efrit-async--handle-error error-msg)
        (when callback (funcall callback error-msg))))))
 
