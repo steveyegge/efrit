@@ -847,11 +847,19 @@ Break this down into steps and use todo_add for each step]" command))
     (setq efrit-do--tool-call-count 1))
   (setq efrit-do--last-tool-called 'todo_status)
   
-  ;; Hard error after 2 calls - throw actual exception
+  ;; Prevent loops with completion guidance after 2 calls
   (if (>= efrit-do--tool-call-count 2)
-      (error "🚨 CRITICAL LOOP: todo_status called %d times! Use todo_analyze (if empty) or todo_get_instructions (if TODOs exist). Current count: %d"
-             efrit-do--tool-call-count
-             (length efrit-do--current-todos))
+      (let ((total (length efrit-do--current-todos))
+            (completed (seq-count (lambda (todo)
+                                   (eq (efrit-do-todo-item-status todo) 'completed))
+                                 efrit-do--current-todos)))
+        (if (= total completed)
+            "\n[🎉 TASK COMPLETE: All TODOs finished! Stop calling todo_status. Your work is done.]"
+          (format "\n[🚨 LOOP PREVENTION: You've called todo_status %d times! 
+TODOs remain: %d total, %d completed. 
+REQUIRED ACTION: Call todo_get_instructions (if TODOs pending) or eval_sexp (to execute code).
+STOP calling todo_status repeatedly!]" 
+                  efrit-do--tool-call-count total completed)))
     ;; Continue with normal processing
     (let ((total (length efrit-do--current-todos))
         (pending (seq-count (lambda (todo) 
