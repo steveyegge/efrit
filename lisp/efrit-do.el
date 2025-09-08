@@ -143,11 +143,11 @@ Possible states:
 
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
-    ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("expr" . (("type" . "string")
-                                                  ("description" . "The Elisp expression to evaluate")))))
-                      ("required" . ["expr"]))))
+  ("description" . "PRIMARY TOOL: Execute Elisp code directly. Use for simple tasks like opening files, buffer operations, single commands. For complex multi-step tasks, use todo_analyze first.")
+  ("input_schema" . (("type" . "object")
+  ("properties" . (("expr" . (("type" . "string")
+  ("description" . "The Elisp expression to evaluate")))))
+  ("required" . ["expr"]))))
    (("name" . "shell_exec")
     ("description" . "Execute a shell command and return the result.")
     ("input_schema" . (("type" . "object")
@@ -216,13 +216,13 @@ Possible states:
                                                      ("description" . "Completion message summarizing what was accomplished")))))
                       ("required" . ["message"]))))
    (("name" . "todo_analyze")
-    ("description" . "Analyze a command and create TODO items for each step needed to complete it.")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("command" . (("type" . "string")
-                                                     ("description" . "The command to analyze")))
-                                      ("context" . (("type" . "string")
-                                                    ("description" . "Additional context about the current state")))))
-                      ("required" . ["command"]))))
+   ("description" . "COMPLEX TASKS ONLY: Break down multi-step workflows into TODO items. Use eval_sexp for simple single-action tasks like opening files.")
+   ("input_schema" . (("type" . "object")
+   ("properties" . (("command" . (("type" . "string")
+   ("description" . "The command to analyze")))
+   ("context" . (("type" . "string")
+   ("description" . "Additional context about the current state")))))
+   ("required" . ["command"]))))
    (("name" . "todo_status")
     ("description" . "Get summary of TODO list: total, pending, in-progress, completed.")
     ("input_schema" . (("type" . "object")
@@ -268,11 +268,12 @@ Possible states:
    "SESSION PROTOCOL:\n"
    "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
    
-   "0. FIRST ACTION - MANDATORY WORKFLOW:\n"
-   "   - For NEW tasks (like this one): ALWAYS start with todo_analyze to break down the task\n"  
+   "0. CHOOSE YOUR APPROACH:\n"
+   "   - SIMPLE tasks (open files, single commands): Use eval_sexp directly\n"  
+   "   - COMPLEX tasks (multi-step workflows): Use todo_analyze to break down\n"
    "   - For CONTINUING sessions: The system will provide work log context\n"
    "   - NEVER call todo_status first on a new task - it will fail!\n"
-   "   - CRITICAL: Never call the same tool twice in a row!\n\n"
+    "   - CRITICAL: Never call the same tool twice in a row!\n\n"
     
     "LOOP PREVENTION PROTOCOL:\n"
     "1. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
