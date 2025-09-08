@@ -1,10 +1,16 @@
 # Efrit Agent Vision & Architecture
 
-## 🎯 **CURRENT MISSION: CREATE REAL TOKEN-BURNING INTEGRATION TEST**
+## 🎯 **CURRENT MISSION: FIX INTEGRATION TEST - CLAUDE TOOL SELECTION**
 
-> **STATUS**: The previous integration test was **FAKE** - it tested elisp execution directly without calling Claude. The real issue is that efrit-do-async gets stuck in TODO loops and never calls the Anthropic API (0 tokens burned).
+> **STATUS**: Dynamic schema switching implemented ✅ but Claude API doesn't enforce schemas strictly. Claude still calls `todo_get_instructions` instead of `eval_sexp` in execution mode, causing test failure.
 > 
-> **MISSION**: Create a CORRECT integration test that loads 3 elisp files missing lexical-binding cookies, lets Emacs generate warnings in *Warnings* buffer automatically, then directs efrit to fix them. Must burn tokens and actually call Claude.
+> **MISSION**: Get the lexical-binding integration test passing by making Claude call `eval_sexp` when code is ready for execution. Root cause: API-level tool schema enforcement is weak.
+> 
+> **PROGRESS**: 
+> - ✅ Dynamic schemas working (3 tools in execution mode)
+> - ✅ Fail-fast blocking at tool dispatcher level  
+> - ❌ Claude still ignores schema and calls wrong tool
+> - ❌ Integration test fails - no files modified
 
 ## 🚀 BREAKTHROUGH: AI-to-Efrit Communication Channel Active + Autonomous Agent Mode
 

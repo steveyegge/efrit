@@ -91,9 +91,12 @@ Returns the parsed response data."
                         ("max_tokens" . ,max-tokens)
                         ("messages" . ,messages))))
     
-    ;; Add tools if available
-    (when (bound-and-true-p efrit-do--tools-schema)
-      (push `("tools" . ,efrit-do--tools-schema) request-data))
+    ;; Add tools if available - use dynamic schema
+    (when (and (boundp 'efrit-do--tools-schema) efrit-do--tools-schema)
+    (let ((schema (if (fboundp 'efrit-do--get-current-tools-schema)
+                         (efrit-do--get-current-tools-schema)
+                       efrit-do--tools-schema)))
+         (push `("tools" . ,schema) request-data)))
     
     ;; Add session data if provided
     (when session-data

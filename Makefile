@@ -37,6 +37,8 @@ help:
 	@echo "Testing:"
 	@echo "  test        - Run all tests"
 	@echo "  test-simple - Run basic tests only"
+	@echo "  test-loop   - Test TODO loop detection (safe)"
+	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
 	@echo "  check       - Check syntax and compilation"
 	@echo ""
 	@echo "Development:"
@@ -110,6 +112,20 @@ test: compile
 test-simple:
 	@echo "Running basic tests..."
 	@cd test && ./efrit-test-simple.sh
+
+test-loop: compile
+	@echo "Testing TODO loop detection (safe, no API calls)..."
+	@$(EMACS_BATCH) -L lisp -l test/test-todo-loop-debug.el
+	@echo "✅ TODO loop test completed"
+
+test-integration: compile
+	@echo "⚠️  WARNING: This will make REAL API calls and BURN TOKENS!"
+	@echo "⚠️  Make sure you have Claude API credits available."
+	@echo -n "Press Enter to continue or Ctrl+C to cancel: "
+	@read dummy
+	@echo "🚀 Running REAL integration test..."
+	@$(EMACS_BATCH) -L lisp -l test/test-real-integration.el
+	@echo "✅ Integration test completed"
 
 # Debug build (with extra information)
 debug:

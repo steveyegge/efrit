@@ -619,9 +619,11 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
     (efrit-do--command-system-prompt nil nil nil session-id work-log)))
 
 (defun efrit-async--get-tools-schema ()
-  "Get tools schema - delegates to efrit-do."
+  "Get tools schema - delegates to efrit-do with dynamic schema support."
   (when (require 'efrit-do nil t)
-    efrit-do--tools-schema))
+    (if (fboundp 'efrit-do--get-current-tools-schema)
+        (efrit-do--get-current-tools-schema)
+      efrit-do--tools-schema)))
 
 ;;;###autoload
 (defun efrit-async-show-queue ()
