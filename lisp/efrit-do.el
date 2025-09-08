@@ -787,10 +787,17 @@ Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
     (setq efrit-do--tool-call-count 1))
   (setq efrit-do--last-tool-called 'todo_analyze)
   
-  ;; Hard stop after 2 calls - throw actual exception
+  ;; Hard stop after 2 calls - return guidance instead of error
   (if (> efrit-do--tool-call-count 2)
-      (error "🚨 CRITICAL LOOP: todo_analyze called %d times! You MUST call eval_sexp or todo_add next!"
-             efrit-do--tool-call-count)
+  (format "🚨 CRITICAL LOOP: todo_analyze called %d times!
+
+🎯 IMMEDIATE NEXT ACTION:
+- For opening images: Call eval_sexp with: (find-file \"~/Documents/image1.png\")
+- For fixing warnings: Call eval_sexp with: (with-current-buffer \"*Warnings*\" (buffer-string))
+- For general tasks: Call eval_sexp with elisp code to examine the situation
+
+DO NOT call todo_analyze again!"
+              efrit-do--tool-call-count)
     ;; Continue with normal processing
     (let ((command (if (hash-table-p tool-input)
                        (gethash "command" tool-input)
