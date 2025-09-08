@@ -138,6 +138,9 @@ Possible states:
 (defvar efrit-do--force-complete nil
   "When t, forces session completion on next API response.")
 
+(defvar efrit-do--todo-awaiting-completion nil
+  "TODO ID that executed code but hasn't been marked completed yet.")
+
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
     ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
@@ -442,7 +445,8 @@ Possible states:
   (setq efrit-do--todo-counter 0)
   (setq efrit-do--workflow-state 'initial)
   (setq efrit-do--last-tool-called nil)
-  (setq efrit-do--tool-call-count 0))
+  (setq efrit-do--tool-call-count 0)
+  (setq efrit-do--todo-awaiting-completion nil))
 
 ;;; Context persistence
 
@@ -605,8 +609,20 @@ This handles cases where JSON escaping has been applied multiple times."
         ;; Valid elisp - proceed with execution
         (condition-case eval-err
             (let ((eval-result (efrit-tools-eval-sexp input-str)))
-
-              (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
+              ;; Check if there's a TODO in-progress that needs completion
+              (let ((in-progress-todo (seq-find (lambda (todo)
+                                                (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                              efrit-do--current-todos)))
+                (when in-progress-todo
+                  (setq efrit-do--todo-awaiting-completion (efrit-do-todo-item-id in-progress-todo))))
+              
+              (format "\n[Executed: %s]\n[Result: %s]%s" 
+                      input-str 
+                      eval-result
+                      (if efrit-do--todo-awaiting-completion
+                          (format "\n⚠️ NEXT REQUIRED: Call todo_update with id=\"%s\" status=\"completed\""
+                                  efrit-do--todo-awaiting-completion)
+                        "")))
           (error
            (format "\n[Error executing %s: %s]" 
                    input-str (error-message-string eval-err))))
@@ -734,6 +750,10 @@ Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
                   (intern (gethash "status" tool-input)))))
     (if (efrit-do--update-todo-status id status)
         (progn
+          ;; Clear awaiting completion when TODO is updated
+          (when (string= id efrit-do--todo-awaiting-completion)
+            (setq efrit-do--todo-awaiting-completion nil))
+          
           ;; Track TODO completion
           (when (eq status 'completed)
             (let ((todo-item (efrit-do--find-todo id)))
@@ -923,10 +943,13 @@ STOP calling todo_status repeatedly!]"
 
 \"%s\"
 
-🚨 MANDATORY: Call eval_sexp to execute Elisp code for this task.
-STOP calling todo_get_instructions. Execute code with eval_sexp immediately.
-When done, call todo_update with id=\"%s\" status=\"completed\"."
-                 todo-id todo-content todo-content todo-id))
+🚨 MANDATORY WORKFLOW:
+1. Call eval_sexp to execute Elisp code for this task
+2. IMMEDIATELY call todo_update with id=\"%s\" status=\"completed\"
+3. STOP calling todo_get_instructions
+
+⚠️ CRITICAL: You MUST call todo_update after each eval_sexp success or the system will loop!"
+                  todo-id todo-content todo-content todo-id))
       "\n[No pending TODOs to execute]"))))
 
 (defun efrit-do--handle-todo-complete-check ()
