@@ -178,11 +178,25 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
     (if (equal tool-name efrit-progress--last-tool)
         (progn
           (setq efrit-progress--tool-repeat-count (1+ efrit-progress--tool-repeat-count))
-          (when (>= efrit-progress--tool-repeat-count 3)
+          (cond
+           ;; First warning at 3 repetitions
+           ((= efrit-progress--tool-repeat-count 3)
             (efrit-progress--append
-             (format "\n⚠️ WARNING: %s called %d times in a row - possible loop!\n" 
+             (format "\n⚠️ WARNING: %s called %d times in a row - possible loop!\n🚨 NEXT ACTION: Try a different tool or approach!" 
                      tool-name efrit-progress--tool-repeat-count)
-             'error)))
+             'error))
+           ;; Stronger warning at 5 repetitions
+           ((= efrit-progress--tool-repeat-count 5)
+            (efrit-progress--append
+             (format "\n🚨 CRITICAL LOOP: %s called %d times!\n🔄 MANDATORY: Change your approach - current strategy is failing!\n💡 SUGGESTION: If using todo_analyze repeatedly, try eval_sexp instead!"
+                     tool-name efrit-progress--tool-repeat-count)
+             'error))
+           ;; Emergency stop at 7 repetitions
+           ((>= efrit-progress--tool-repeat-count 7)
+            (efrit-progress--append
+             (format "\n🛑 EMERGENCY STOP: %s called %d times - FORCING TOOL CHANGE!\n⚠️ The system is preventing infinite loops. You MUST use a different tool."
+                     tool-name efrit-progress--tool-repeat-count)
+             'error))))
       (setq efrit-progress--tool-repeat-count 1))
     (setq efrit-progress--last-tool tool-name)
     

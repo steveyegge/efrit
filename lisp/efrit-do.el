@@ -143,17 +143,33 @@ Possible states:
 
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
-  ("description" . "PRIMARY TOOL: Execute Elisp code directly. Use for simple tasks like opening files, buffer operations, single commands. For complex multi-step tasks, use todo_analyze first.")
+  ("description" . "PRIMARY TOOL: Execute Elisp code directly. Use for simple tasks like opening files, buffer operations, single commands. For complex multi-step tasks, use todo_analyze first.
+
+EXAMPLES:
+- Open files: (find-file \"/path/to/file.txt\")
+- Open all images: (dolist (f (directory-files-recursively \"~/Pictures\" \"\\\\.\\\\(?:png\\\\|jpe?g\\\\)$\")) (find-file f))
+- Create buffer: (switch-to-buffer (get-buffer-create \"*My Buffer*\"))
+- Edit text: (with-current-buffer \"file.txt\" (goto-char (point-min)) (insert \"Hello\"))
+- Navigate: (goto-line 50) or (goto-char (point-max))
+- Search: (re-search-forward \"pattern\" nil t)")
   ("input_schema" . (("type" . "object")
   ("properties" . (("expr" . (("type" . "string")
   ("description" . "The Elisp expression to evaluate")))))
   ("required" . ["expr"]))))
    (("name" . "shell_exec")
-    ("description" . "Execute a shell command and return the result.")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("command" . (("type" . "string")
-                                                     ("description" . "The shell command to execute")))))
-                      ("required" . ["command"]))))
+   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools.
+
+EXAMPLES:
+- File system info: \"ls -la ~/Documents\"
+- Process management: \"ps aux | grep emacs\"
+- System commands: \"git status\" or \"make build\"
+- External tools: \"curl -s https://api.example.com\"
+
+DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("command" . (("type" . "string")
+                                                      ("description" . "The shell command to execute")))))
+                       ("required" . ["command"]))))
    (("name" . "todo_add")
     ("description" . "Add a new TODO item to track progress.")
     ("input_schema" . (("type" . "object")
@@ -216,7 +232,17 @@ Possible states:
                                                      ("description" . "Completion message summarizing what was accomplished")))))
                       ("required" . ["message"]))))
    (("name" . "todo_analyze")
-   ("description" . "COMPLEX TASKS ONLY: Break down multi-step workflows into TODO items. Use eval_sexp for simple single-action tasks like opening files.")
+   ("description" . "COMPLEX TASKS ONLY: Break down multi-step workflows into TODO items. Use eval_sexp for simple single-action tasks like opening files.
+
+USE WHEN:
+- Multiple dependent steps (e.g., \"fix all warnings in buffer\" requires: scan warnings, create fix for each, apply fixes)
+- Conditional logic (e.g., \"organize files by type\" requires: check each file, categorize, move to appropriate folders)
+- Async operations (e.g., \"download and process multiple files\")
+
+DO NOT USE for simple tasks:
+- Opening files: Use eval_sexp directly
+- Single buffer operations: Use eval_sexp directly  
+- Basic navigation/editing: Use eval_sexp directly")
    ("input_schema" . (("type" . "object")
    ("properties" . (("command" . (("type" . "string")
    ("description" . "The command to analyze")))
@@ -244,14 +270,29 @@ Possible states:
     ("input_schema" . (("type" . "object")
                       ("properties" . ()))))
    (("name" . "suggest_execution_mode")
-    ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
-    ("input_schema" . (("type" . "object")
-                      ("properties" . (("mode" . (("type" . "string")
-                                                  ("enum" . ["sync" "async"])
-                                                  ("description" . "Suggested execution mode")))
-                                      ("reason" . (("type" . "string")
-                                                   ("description" . "Brief explanation for the suggestion")))))
-                      ("required" . ["mode"]))))]
+   ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
+   ("input_schema" . (("type" . "object")
+   ("properties" . (("mode" . (("type" . "string")
+   ("enum" . ["sync" "async"])
+   ("description" . "Suggested execution mode")))
+   ("reason" . (("type" . "string")
+   ("description" . "Brief explanation for the suggestion")))))
+   ("required" . ["mode"]))))
+    (("name" . "glob_files")
+     ("description" . "Get list of files matching a pattern. INFORMATIONAL ONLY - does not open files. Use results with eval_sexp to perform actions.
+
+EXAMPLES:
+- Find images: pattern=\"~/Pictures\" extension=\"png,jpg,jpeg\"  
+- Find code files: pattern=\"~/project/src\" extension=\"py,js,ts\"
+- Find all files: pattern=\"~/Documents\" extension=\"*\"")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("pattern" . (("type" . "string")
+                                                      ("description" . "Directory path to search (supports ~ expansion)")))
+                                       ("extension" . (("type" . "string")
+                                                      ("description" . "File extensions to match (comma-separated, or * for all)")))
+                                       ("recursive" . (("type" . "boolean")
+                                                      ("description" . "Whether to search subdirectories (default: true)")))))
+                       ("required" . ["pattern" "extension"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-current-tools-schema ()
@@ -1026,7 +1067,47 @@ This signals that a multi-step session is complete."
         (let ((result (efrit-tools-display-in-buffer buffer-name content height)))
           (format "\n[%s]" result))
       (error
-       (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+      (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+
+(defun efrit-do--handle-glob-files (tool-input)
+  "Handle glob_files tool to list files matching pattern."
+  (let* ((pattern (if (hash-table-p tool-input)
+                     (gethash "pattern" tool-input)
+                   "~/"))
+         (extension (if (hash-table-p tool-input)
+                       (gethash "extension" tool-input)
+                     "*"))
+         (recursive (if (hash-table-p tool-input)
+                       (gethash "recursive" tool-input)
+                     t)))
+    (condition-case err
+        (let* ((expanded-pattern (expand-file-name pattern))
+               (extensions (if (string= extension "*")
+                              '("")
+                            (split-string extension ",")))
+               (all-files '()))
+          (dolist (ext extensions)
+            (let* ((ext-clean (string-trim ext))
+                   (search-pattern (if recursive
+                                      (format "%s/**/*.%s" expanded-pattern ext-clean)
+                                    (format "%s/*.%s" expanded-pattern ext-clean)))
+                   (files (if (string= ext-clean "")
+                             (if recursive
+                                 (directory-files-recursively expanded-pattern ".*")
+                               (directory-files expanded-pattern t "^[^.]"))
+                           (file-expand-wildcards search-pattern))))
+              (setq all-files (append all-files files))))
+          (let ((file-count (length all-files))
+                (preview (if (> (length all-files) 10)
+                            (append (seq-take all-files 8) 
+                                   (list (format "... and %d more files" (- (length all-files) 8))))
+                          all-files)))
+            (format "\n[Found %d files in %s:\n%s]"
+                    file-count
+                    pattern
+                    (mapconcat #'identity preview "\n"))))
+      (error
+       (format "\n[Error finding files: %s]" (error-message-string err))))))
 
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
@@ -1081,10 +1162,12 @@ Returns a formatted string with execution results or empty string on failure."
      ((string= tool-name "display_in_buffer")
       (efrit-do--handle-display-in-buffer tool-input input-str))
      ((string= tool-name "session_complete")
-      (efrit-do--handle-session-complete tool-input))
+     (efrit-do--handle-session-complete tool-input))
+     ((string= tool-name "glob_files")
+     (efrit-do--handle-glob-files tool-input))
      (t 
-      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-      (format "\n[Unknown tool: %s]" tool-name)))))
+       (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+       (format "\n[Unknown tool: %s]" tool-name)))))
 ;;; Command execution
 
 (defun efrit-do--command-examples ()
@@ -1145,6 +1228,29 @@ Returns a formatted string with execution results or empty string on failure."
    "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
    "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
 
+(defun efrit-do--classify-task-complexity (command)
+  "Classify COMMAND as simple or complex based on content analysis.
+Returns \\='simple for single-action tasks, \\='complex for multi-step workflows."
+  (let ((simple-patterns '("open" "find" "goto" "show" "display" "list" 
+                           "create buffer" "insert" "delete" "replace"
+                           "navigate" "search" "close" "save"))
+        (complex-patterns '("fix all" "organize" "process each" "download"
+                           "batch" "multiple" "series" "workflow" "pipeline"
+                           "for each" "all.*and.*" "scan.*then.*")))
+    (cond
+     ;; Check for complex indicators
+     ((cl-some (lambda (pattern) 
+                 (string-match-p pattern (downcase command))) 
+               complex-patterns)
+      'complex)
+     ;; Check for simple indicators  
+     ((cl-some (lambda (pattern)
+                 (string-match-p pattern (downcase command)))
+               simple-patterns)
+      'simple)
+     ;; Default to simple for ambiguous cases
+     (t 'simple))))
+
 (defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code session-id work-log)
   "Generate system prompt for command execution with optional context.
 Uses previous command context if available. If RETRY-COUNT is provided,
@@ -1179,8 +1285,23 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
               "IMPORTANT: You are in SESSION MODE. Follow the session protocol for multi-step execution.\n\n"
             "IMPORTANT: You are in COMMAND MODE - INITIAL EXECUTION.\n\n")
           
+          "CRITICAL CONTEXT RULES:\n"
+          "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
+          "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
+          "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"
+          "- 'Edit', 'modify', 'change' means buffer operations, NOT external editors\n"
+          "- SIMPLE TASKS (≤2 elisp forms): Use eval_sexp directly - NO todo_analyze needed\n"
+          "- COMPLEX TASKS (multi-step workflows): Use todo_analyze to break down\n"
+          "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n\n"
+          
+          "TOOL SELECTION GUIDE:\n"
+          "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, etc.)\n"
+          "- shell_exec: ONLY when explicitly asking for shell/terminal operations\n"
+          "- buffer_create: For reports, lists, and formatted output display\n"
+          "- todo_analyze: ONLY for genuinely complex multi-step workflows\n\n"
+          
+          "EXECUTION RULES:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
-          "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
           "- CRITICAL: When user asks to 'show', 'list', 'display' or create any kind of report, you MUST use buffer_create tool to create a dedicated buffer\n"
           "- FOR REPORTS/LISTS: ALWAYS use buffer_create to make dedicated buffers with appropriate formatting\n"
           "- FOR FILE LISTS: Use format_file_list to format paths as markdown lists\n"  
