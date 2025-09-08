@@ -406,12 +406,16 @@ CALLBACK will be called with the final result string."
             
             ;; Handle session continuation or completion
             (cond
-             ;; Session is complete or no active session
-             ((or (not efrit-async--active-session) session-complete-p)
+             ;; Session is complete, no active session, or force completion
+             ((or (not efrit-async--active-session) 
+                  session-complete-p
+                  (and (boundp 'efrit-do--force-complete) efrit-do--force-complete))
               (when efrit-async--active-session
                 (efrit-async--complete-session 
                  (efrit-session-id efrit-async--active-session) 
-                 (or completion-message result-text)))
+                 (or completion-message result-text 
+                     (when (and (boundp 'efrit-do--force-complete) efrit-do--force-complete)
+                       "Session auto-completed after successful code execution"))))
               (when callback 
                 (funcall callback (or completion-message result-text))))
              

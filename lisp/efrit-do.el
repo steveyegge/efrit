@@ -135,6 +135,9 @@ Possible states:
 (defvar efrit-do--tool-call-count 0
   "Count consecutive calls to the same tool.")
 
+(defvar efrit-do--force-complete nil
+  "When t, forces session completion on next API response.")
+
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
     ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
@@ -246,7 +249,11 @@ Possible states:
                                       ("reason" . (("type" . "string")
                                                    ("description" . "Brief explanation for the suggestion")))))
                       ("required" . ["mode"]))))]
-  "Schema definition for all available tools in efrit-do mode.")
+                      "Schema definition for all available tools in efrit-do mode.")
+
+(defun efrit-do--get-current-tools-schema ()
+  "Return full tool schema for now."
+  efrit-do--tools-schema)
 
 ;;; Context system - delegates to efrit-context.el
 
@@ -598,6 +605,7 @@ This handles cases where JSON escaping has been applied multiple times."
         ;; Valid elisp - proceed with execution
         (condition-case eval-err
             (let ((eval-result (efrit-tools-eval-sexp input-str)))
+
               (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
           (error
            (format "\n[Error executing %s: %s]" 
@@ -883,9 +891,19 @@ Break this down into steps and use todo_add for each step]" command))
 
 (defun efrit-do--handle-todo-execute-next ()
   "Execute the next pending TODO by marking it in-progress and providing details."
-  (let ((next-todo (seq-find (lambda (todo)
-                              (eq (efrit-do-todo-item-status todo) 'todo))
-                            efrit-do--current-todos)))
+  ;; Track tool calls to prevent loops
+  (if (eq efrit-do--last-tool-called 'todo_get_instructions)
+      (cl-incf efrit-do--tool-call-count)
+    (setq efrit-do--tool-call-count 1))
+  (setq efrit-do--last-tool-called 'todo_get_instructions)
+  
+  ;; Force different behavior after 2 calls
+  (if (>= efrit-do--tool-call-count 2)
+      "\n[🚨 EXECUTION REQUIRED: You've called todo_get_instructions multiple times. Stop asking for instructions and START EXECUTING CODE with eval_sexp. The task is clear from previous instructions.]"
+    
+    (let ((next-todo (seq-find (lambda (todo)
+                                (eq (efrit-do-todo-item-status todo) 'todo))
+                              efrit-do--current-todos)))
     (if next-todo
         (let ((todo-id (efrit-do-todo-item-id next-todo))
               (todo-content (efrit-do-todo-item-content next-todo)))
@@ -897,17 +915,11 @@ Break this down into steps and use todo_add for each step]" command))
 
 \"%s\"
 
-IMPORTANT INSTRUCTIONS:
-- Focus ONLY on completing this exact task
-- Use eval_sexp or other appropriate tools to implement the solution
-- When the task is done, call: todo_update with id=\"%s\" and status=\"completed\"
-- Do NOT call todo_analyze or todo_status until this task is marked completed
-- If you need clarification, work on what you can understand from the task description
-
-CURRENT TASK STATUS: IN-PROGRESS
-NEXT STEP: Execute the task now using appropriate tools (eval_sexp, shell_exec, etc.)"
+🚨 MANDATORY: Call eval_sexp to execute Elisp code for this task.
+STOP calling todo_get_instructions. Execute code with eval_sexp immediately.
+When done, call todo_update with id=\"%s\" status=\"completed\"."
                  todo-id todo-content todo-content todo-id))
-      "\n[No pending TODOs to execute]")))
+      "\n[No pending TODOs to execute]"))))
 
 (defun efrit-do--handle-todo-complete-check ()
   "Check if all TODOs are completed."
