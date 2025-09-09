@@ -38,6 +38,16 @@ This can be:
                  (function :tag "Function returning API key"))
   :group 'efrit)
 
+(defcustom efrit-api-base-url "https://api.anthropic.com"
+  "Base URL for Anthropic API endpoints.
+This can be:
+- A string: Static base URL (default)
+- A function: Dynamic base URL (for enterprise/proxy setups)
+Useful for corporate proxies or alternative API endpoints."
+  :type '(choice (string :tag "Static base URL")
+                 (function :tag "Function returning base URL"))
+  :group 'efrit)
+
 (defcustom efrit-api-auth-source-host "api.anthropic.com"
   "Host to use for auth-source lookup of API key."
   :type 'string
@@ -159,8 +169,17 @@ Validates key format and throws error if not found."
       (efrit-common--validate-api-key key)
       key)))
 
-(defconst efrit-common-api-url "https://api.anthropic.com/v1/messages"
-  "Anthropic API endpoint for all efrit modules.")
+(defun efrit-common-get-base-url ()
+  "Get the configured base URL for API endpoints.
+Handles both static strings and dynamic functions."
+  (cond
+   ((stringp efrit-api-base-url) efrit-api-base-url)
+   ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
+   (t "https://api.anthropic.com")))
+
+(defun efrit-common-get-api-url ()
+  "Get the full API URL for messages endpoint."
+  (concat (efrit-common-get-base-url) "/v1/messages"))
 
 (defconst efrit-common-api-version "2023-06-01" 
   "Anthropic API version for all requests.")

@@ -114,7 +114,7 @@ Returns the parsed response data."
            ;; Suppress unused variable warnings
            (_ (list url-request-method url-request-extra-headers url-request-data))
            (response-buffer (url-retrieve-synchronously
-                            efrit-common-api-url nil t)))
+                            (efrit-common-get-api-url) nil t)))
       
       (unless response-buffer
         (error "Failed to get response from API"))
