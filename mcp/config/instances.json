@@ -1,0 +1,19 @@
+{
+  "instances": {
+    "default": {
+      "queue_dir": "~/.emacs.d/.efrit/queues",
+      "workspace_dir": "~/.emacs.d/.efrit/workspace",
+      "timeout": 30000,
+      "daemon_name": "efrit-default"
+    },
+    "development": {
+      "queue_dir": "~/.emacs.d/.efrit/queues-dev",
+      "workspace_dir": "~/.emacs.d/.efrit/workspace-dev", 
+      "timeout": 45000,
+      "daemon_name": "efrit-dev"
+    }
+  },
+  "default_instance": "default",
+  "max_concurrent_requests": 10,
+  "log_level": "info"
+}
