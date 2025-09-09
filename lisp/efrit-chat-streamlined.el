@@ -55,9 +55,12 @@
   :type 'float
   :group 'efrit)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
-  "URL for the Anthropic API endpoint."
-  :type 'string
+;; Use centralized API URL - legacy variable kept for compatibility
+(defcustom efrit-api-url nil
+  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
+When nil, uses the centralized configuration."
+  :type '(choice (const :tag "Use centralized config" nil)
+                 (string :tag "Legacy URL override"))
   :group 'efrit)
 
 (defcustom efrit-enable-tools t
@@ -210,7 +213,7 @@
              (if efrit-enable-tools "tools" "no tools")))
     
     ;; Send request
-    (url-retrieve efrit-api-url 'efrit-streamlined--handle-response nil t t)))
+    (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit-streamlined--handle-response nil t t)))
 
 ;;; Response Handler
 
