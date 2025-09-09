@@ -2,86 +2,32 @@
 
 An MCP (Model Context Protocol) server that enables Claude and other AI models to interact with Efrit instances through the file-based remote queue system.
 
-## Quick Start
+## Project Status
+
+**Phase 1 Complete** ✅
+- TypeScript project setup with strict configuration
+- Complete type definitions with Oracle security recommendations
+- EfritClient with file-based queue communication
+- Security features: path validation, atomic operations, request sanitization
+- Comprehensive error handling with structured error types
+- Unit test framework (core functionality verified)
+
+**Phase 2 In Progress** 🚧
+- MCP server implementation
+- Configuration system
+- Integration tests
+
+## Quick Start (Development)
 
 ```bash
-cd mcp
-npm install
-npm run build
-npm start
-```
+# Install dependencies
+make mcp-install
 
-## Usage with Claude
+# Build the server
+make mcp-build
 
-Add to your Claude MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "efrit": {
-      "command": "node",
-      "args": ["/path/to/efrit/mcp/dist/server.js"]
-    }
-  }
-}
-```
-
-## Available Tools
-
-### efrit_execute
-Execute commands, code, or chat with an Efrit instance.
-
-```javascript
-// Execute a natural language command
-efrit_execute({
-  type: "command",
-  content: "create a Python file with a hello world function",
-  return_context: true
-})
-
-// Evaluate Elisp code
-efrit_execute({
-  type: "eval", 
-  content: "(buffer-list)",
-  instance_id: "development"
-})
-
-// Chat with Efrit
-efrit_execute({
-  type: "chat",
-  content: "How can I optimize this Python code for performance?"
-})
-```
-
-### efrit_list_instances
-List all configured Efrit instances and their status.
-
-### efrit_get_queue_stats
-Get queue processing statistics for monitoring.
-
-### efrit_start_instance / efrit_stop_instance  
-Manage Efrit instance lifecycle.
-
-## Configuration
-
-Create `config/instances.json` to customize instance configuration:
-
-```json
-{
-  "instances": {
-    "development": {
-      "queue_dir": "/shared/efrit-dev/queues",
-      "daemon_name": "efrit-dev", 
-      "workspace_dir": "/shared/efrit-dev/workspace",
-      "timeout": 45
-    },
-    "production": {
-      "queue_dir": "/shared/efrit-prod/queues", 
-      "daemon_name": "efrit-prod",
-      "timeout": 60
-    }
-  }
-}
+# Run tests
+make mcp-test
 ```
 
 ## Architecture
@@ -92,21 +38,50 @@ The MCP server acts as a bridge between MCP clients and Efrit's file-based queue
 - **Response Flow**: Execution result → JSON file → Response polling → MCP response
 - **Multi-instance**: Support for multiple Efrit instances with load balancing
 
-## Deployment
+## Security Features
 
-### Local Development
-Use the default instance pointing to `~/.emacs.d/.efrit/queues`.
+- **Path Validation**: Prevents directory traversal attacks
+- **Request Sanitization**: Validates JSON structure and content size
+- **Atomic Operations**: Uses temp files and renames for consistency
+- **Proper Permissions**: Files created with secure permissions (0o600/0o700)
+- **Whitelisted Roots**: Queue directories must be in allowed paths
 
-### Kubernetes
-Mount shared storage (NFS/S3) and configure multiple instances with different queue directories.
+## Core Components
 
-### Docker
-```dockerfile
-FROM node:18-alpine
-COPY mcp/ /app
-WORKDIR /app
-RUN npm install && npm run build
-CMD ["npm", "start"]
+### EfritClient
+- Handles file-based queue communication
+- Atomic file operations with proper synchronization
+- Security validation and error handling
+- Queue statistics and health monitoring
+
+### Type System
+- Complete interfaces for requests/responses
+- Oracle-recommended versioning and namespacing
+- Structured error types with context
+- Configuration schemas
+
+## Testing
+
+```bash
+# Run simple tests (working subset)
+npm test -- efrit-client-simple
+
+# All tests (includes timeout scenarios)
+npm test
 ```
+
+The test suite includes:
+- Path validation and security checks
+- Request/response serialization
+- File system operations
+- Error handling scenarios
+- Queue statistics
+
+## Next Steps (Phase 2)
+
+- Complete MCP server implementation
+- Configuration system with instance management
+- Integration tests with real MCP clients
+- Production deployment support
 
 This enables seamless AI-to-Efrit communication where Claude can orchestrate complex development workflows across distributed Emacs instances.

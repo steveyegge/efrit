@@ -1,63 +1,131 @@
 /**
  * Efrit Queue System Client
  * Handles JSON file-based communication with Efrit instances
+ * Implements Oracle security recommendations: path validation, atomic operations, proper permissions
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
-import { EfritRequest, EfritResponse, InstanceConfig } from './types';
+import { randomUUID } from 'crypto';
+import { 
+  EfritRequest, 
+  EfritResponse, 
+  InstanceConfig, 
+  EfritError,
+  EFRIT_SCHEMA_VERSION,
+  DEFAULT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+  MAX_REQUEST_SIZE,
+  QUEUE_SUBDIRS
+} from './types';
 
+/**
+ * Client for communicating with Efrit instances via file-based queues
+ */
 export class EfritClient {
   private instanceConfig: InstanceConfig;
   private instanceId: string;
+  private allowedRoots: string[];
 
-  constructor(instanceId: string, config: InstanceConfig) {
+  constructor(instanceId: string, config: InstanceConfig, allowedRoots: string[] = []) {
     this.instanceId = instanceId;
     this.instanceConfig = config;
+    this.allowedRoots = allowedRoots.length > 0 ? allowedRoots : [os.homedir()];
   }
 
   /**
    * Generate unique request ID using crypto.randomUUID() to prevent collisions
    */
   private generateRequestId(): string {
-    return `efrit_${crypto.randomUUID()}`;
+    return `efrit_${randomUUID()}`;
   }
 
   /**
-   * Sanitize and expand tilde in file paths with proper regex
+   * Sanitize and expand tilde in file paths with security validation
+   * Oracle recommendation: prevent path traversal, validate against whitelist
    */
   private expandUser(filepath: string): string {
-    // Sanitize path to prevent path traversal
+    // Security validation: prevent path traversal
     if (filepath.includes('..') || filepath.includes('\0')) {
-      throw new Error('Invalid file path detected');
+      throw this.createError('INVALID_PATH', `Invalid file path detected: ${filepath}`);
     }
     
-    // Use regex for proper tilde expansion
-    return filepath.replace(/^~(?=$|[/\\])/, os.homedir());
+    // Expand tilde using regex
+    const expanded = filepath.replace(/^~(?=$|[/\\])/, os.homedir());
+    const resolved = path.resolve(expanded);
+    
+    // Validate against allowed roots (Oracle security recommendation)
+    const isAllowed = this.allowedRoots.some(root => {
+      const expandedRoot = root.replace(/^~(?=$|[/\\])/, os.homedir());
+      const resolvedRoot = path.resolve(expandedRoot);
+      return resolved.startsWith(resolvedRoot);
+    });
+    
+    if (!isAllowed) {
+      throw this.createError('PATH_NOT_ALLOWED', 
+        `Path ${resolved} is not within allowed roots: ${this.allowedRoots.join(', ')}`);
+    }
+    
+    return resolved;
   }
 
   /**
-   * Ensure queue directories exist
+   * Create structured error with context
+   */
+  private createError(code: string, message: string, details?: Record<string, unknown>): EfritError {
+    const error = new Error(message) as EfritError;
+    error.code = code;
+    error.instance_id = this.instanceId;
+    if (details) {
+      error.details = details;
+    }
+    return error;
+  }
+
+  /**
+   * Ensure queue directories exist with proper permissions (Oracle recommendation: 0o700)
    */
   private async ensureDirectories(): Promise<void> {
-    const queueDir = path.resolve(this.expandUser(this.instanceConfig.queue_dir));
-    const subdirs = ['requests', 'responses', 'processing', 'archive'];
+    const queueDir = this.expandUser(this.instanceConfig.queue_dir);
     
-    for (const subdir of subdirs) {
+    // Create main queue directory
+    await fs.mkdir(queueDir, { recursive: true, mode: 0o700 });
+    
+    // Create subdirectories
+    for (const subdir of QUEUE_SUBDIRS) {
       const dir = path.join(queueDir, subdir);
-      await fs.mkdir(dir, { recursive: true });
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     }
   }
 
   /**
-   * Write request file to queue using atomic write (tmp + rename)
+   * Validate request size and content (Oracle security recommendation)
+   */
+  private validateRequest(request: EfritRequest): void {
+    const requestJson = JSON.stringify(request);
+    const requestSize = Buffer.byteLength(requestJson, 'utf8');
+    
+    if (requestSize > MAX_REQUEST_SIZE) {
+      throw this.createError('REQUEST_TOO_LARGE', 
+        `Request size ${requestSize} bytes exceeds limit ${MAX_REQUEST_SIZE} bytes`);
+    }
+    
+    // Validate content doesn't contain null bytes (can cause issues in elisp)
+    if (request.content.includes('\0')) {
+      throw this.createError('INVALID_CONTENT', 'Request content cannot contain null bytes');
+    }
+  }
+
+  /**
+   * Write request file to queue using atomic write (tmp + rename) with fsync
+   * Oracle recommendation: atomic operations with proper synchronization
    */
   private async writeRequest(request: EfritRequest): Promise<string> {
     await this.ensureDirectories();
+    this.validateRequest(request);
     
-    const queueDir = path.resolve(this.expandUser(this.instanceConfig.queue_dir));
+    const queueDir = this.expandUser(this.instanceConfig.queue_dir);
     const requestsDir = path.join(queueDir, 'requests');
     const filename = `req_${request.id}.json`;
     const filepath = path.join(requestsDir, filename);
@@ -65,101 +133,210 @@ export class EfritClient {
     
     try {
       // Atomic write: write to temp file then rename
-      await fs.writeFile(tempPath, JSON.stringify(request, null, 2));
+      const requestJson = JSON.stringify(request, null, 2);
+      const fileHandle = await fs.open(tempPath, 'w', 0o600); // Oracle recommendation: 0o600 permissions
+      
+      try {
+        await fileHandle.writeFile(requestJson);
+        await fileHandle.sync(); // Oracle recommendation: fsync for NFS
+        await fileHandle.close();
+      } catch (error) {
+        await fileHandle.close();
+        throw error;
+      }
+      
       await fs.rename(tempPath, filepath);
       return filepath;
     } catch (error) {
       // Clean up temp file on error
       await fs.unlink(tempPath).catch(() => {});
+      throw this.createError('WRITE_FAILED', 
+        `Failed to write request file: ${error instanceof Error ? error.message : String(error)}`,
+        { filepath, tempPath });
+    }
+  }
+
+  /**
+   * Poll for response file with exponential backoff
+   * Oracle recommendation: configurable polling with performance optimization
+   */
+  private async pollForResponse(requestId: string, timeoutMs: number): Promise<EfritResponse> {
+    const queueDir = this.expandUser(this.instanceConfig.queue_dir);
+    const responsesDir = path.join(queueDir, 'responses');
+    const responseFile = path.join(responsesDir, `resp_${requestId}.json`);
+    
+    const startTime = Date.now();
+    let pollInterval = DEFAULT_POLL_INTERVAL;
+    const maxInterval = 2000; // Max 2 second intervals
+    
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const content = await fs.readFile(responseFile, 'utf-8');
+        let response: EfritResponse;
+        
+        try {
+          response = JSON.parse(content);
+        } catch (parseError) {
+          throw this.createError('INVALID_RESPONSE', 
+            `Invalid JSON in response file: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+            { responseFile, content: content.substring(0, 200) });
+        }
+        
+        // Validate response structure
+        if (!response.id || !response.version || !response.status) {
+          throw this.createError('MALFORMED_RESPONSE', 
+            'Response missing required fields (id, version, status)',
+            { response });
+        }
+        
+        // Clean up response file after successful read
+        await fs.unlink(responseFile).catch(() => {});
+        
+        return response;
+      } catch (error) {
+        // If file doesn't exist yet, continue polling
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          
+          // Exponential backoff (Oracle recommendation)
+          pollInterval = Math.min(pollInterval * 1.1, maxInterval);
+          continue;
+        }
+        
+        // Other errors are thrown immediately
+        throw error;
+      }
+    }
+    
+    throw this.createError('TIMEOUT', 
+      `Request timed out after ${timeoutMs}ms`,
+      { requestId, timeoutMs });
+  }
+
+  /**
+   * Execute a request against the Efrit instance
+   * Main public interface for the client
+   */
+  async execute(
+    type: EfritRequest['type'],
+    content: string,
+    options: {
+      timeout?: number;
+      return_context?: boolean;
+      max_response_size?: number;
+    } = {}
+  ): Promise<EfritResponse> {
+    const requestId = this.generateRequestId();
+    const timeout = (options.timeout ?? this.instanceConfig.timeout ?? DEFAULT_TIMEOUT) * 1000;
+    
+    const request: EfritRequest = {
+      id: requestId,
+      version: EFRIT_SCHEMA_VERSION,
+      type,
+      content,
+      instance_id: this.instanceId,
+      options: {
+        timeout: Math.floor(timeout / 1000),
+        return_context: options.return_context ?? false,
+        ...(options.max_response_size && { max_response_size: options.max_response_size })
+      },
+      timestamp: new Date().toISOString(),
+      metadata: {
+        client_id: 'efrit-mcp-server',
+        source: 'mcp'
+      }
+    };
+    
+    try {
+      await this.writeRequest(request);
+      const response = await this.pollForResponse(requestId, timeout);
+      
+      // Validate response ID matches request
+      if (response.id !== requestId) {
+        throw this.createError('ID_MISMATCH', 
+          `Response ID ${response.id} doesn't match request ID ${requestId}`);
+      }
+      
+      return response;
+    } catch (error) {
+      // Add request ID to error context
+      if (error instanceof Error && 'code' in error) {
+        (error as EfritError).request_id = requestId;
+      }
       throw error;
     }
   }
 
   /**
-   * Poll for response file
+   * Get queue statistics for this instance
    */
-  private async pollForResponse(requestId: string, timeoutMs: number): Promise<EfritResponse> {
-    const queueDir = path.resolve(this.expandUser(this.instanceConfig.queue_dir));
-    const responsesDir = path.join(queueDir, 'responses');
-    const responseFile = path.join(responsesDir, `resp_${requestId}.json`);
+  async getQueueStats(): Promise<{
+    pending: number;
+    processing: number;
+    responses: number;
+  }> {
+    const queueDir = this.expandUser(this.instanceConfig.queue_dir);
     
-    const startTime = Date.now();
-    const pollInterval = 500; // 500ms polling
-    
-    while (Date.now() - startTime < timeoutMs) {
-      try {
-        const content = await fs.readFile(responseFile, 'utf-8');
-        const response: EfritResponse = JSON.parse(content);
-        
-        // Clean up response file
-        await fs.unlink(responseFile).catch(() => {});
-        
-        return response;
-      } catch (error) {
-        // File doesn't exist yet, continue polling
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-      }
-    }
-    
-    throw new Error(`Request ${requestId} timed out after ${timeoutMs}ms`);
-  }
-
-  /**
-   * Execute a request and wait for response
-   */
-  async execute(
-    type: 'command' | 'eval' | 'chat',
-    content: string,
-    options?: { timeout?: number; return_context?: boolean }
-  ): Promise<EfritResponse> {
-    const requestId = this.generateRequestId();
-    const timeout = (options?.timeout || this.instanceConfig.timeout || 30) * 1000;
-    
-    const request: EfritRequest = {
-      id: requestId,
-      type,
-      content,
-      options
-    };
-
-    await this.writeRequest(request);
-    return await this.pollForResponse(requestId, timeout);
-  }
-
-  /**
-   * Check if instance is responsive
-   */
-  async ping(): Promise<boolean> {
     try {
-      const response = await this.execute('eval', '(+ 1 1)', { timeout: 5 });
-      return response.status === 'success' && response.result === '2';
+      const [requests, processing, responses] = await Promise.all([
+        fs.readdir(path.join(queueDir, 'requests')),
+        fs.readdir(path.join(queueDir, 'processing')),
+        fs.readdir(path.join(queueDir, 'responses'))
+      ]);
+      
+      return {
+        pending: requests.filter(f => f.endsWith('.json')).length,
+        processing: processing.filter(f => f.endsWith('.json')).length,
+        responses: responses.filter(f => f.endsWith('.json')).length
+      };
+    } catch (error) {
+      throw this.createError('STATS_FAILED',
+        `Failed to get queue statistics: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Check if instance queue directory is accessible
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      const queueDir = this.expandUser(this.instanceConfig.queue_dir);
+      await fs.access(queueDir, fs.constants.R_OK | fs.constants.W_OK);
+      return true;
     } catch {
       return false;
     }
   }
 
   /**
-   * Get queue statistics by checking directory contents
+   * Clean up old files from queue directories
+   * Oracle recommendation: prevent directory explosion
    */
-  async getQueueStats() {
+  async cleanup(maxAgeHours: number = 24): Promise<void> {
+    const queueDir = this.expandUser(this.instanceConfig.queue_dir);
+    const maxAge = Date.now() - (maxAgeHours * 60 * 60 * 1000);
+    
+    const archiveDir = path.join(queueDir, 'archive');
+    await fs.mkdir(archiveDir, { recursive: true, mode: 0o700 });
+    
+    // Clean up old response files
+    const responsesDir = path.join(queueDir, 'responses');
     try {
-      const queueDir = path.resolve(this.expandUser(this.instanceConfig.queue_dir));
-      
-      const [requests, processing, responses] = await Promise.all([
-        fs.readdir(path.join(queueDir, 'requests')).catch(() => []),
-        fs.readdir(path.join(queueDir, 'processing')).catch(() => []),
-        fs.readdir(path.join(queueDir, 'responses')).catch(() => [])
-      ]);
-
-      return {
-        pending_requests: requests.filter(f => f.endsWith('.json')).length,
-        currently_processing: processing.filter(f => f.endsWith('.json')).length,
-        pending_responses: responses.filter(f => f.endsWith('.json')).length
-      };
+      const responseFiles = await fs.readdir(responsesDir);
+      for (const file of responseFiles) {
+        if (!file.endsWith('.json')) continue;
+        
+        const filepath = path.join(responsesDir, file);
+        const stats = await fs.stat(filepath);
+        
+        if (stats.mtimeMs < maxAge) {
+          const archivePath = path.join(archiveDir, file);
+          await fs.rename(filepath, archivePath);
+        }
+      }
     } catch (error) {
-      throw new Error(`Failed to get queue stats: ${error}`);
+      // Log error but don't throw - cleanup is best effort
+      console.warn(`Cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
-
-

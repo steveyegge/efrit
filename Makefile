@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean
 
 # Default target
 all: compile
@@ -40,6 +40,13 @@ help:
 	@echo "  test-loop   - Test TODO loop detection (safe)"
 	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
 	@echo "  check       - Check syntax and compilation"
+	@echo ""
+	@echo "MCP Server:"
+	@echo "  mcp-install - Install MCP server dependencies"
+	@echo "  mcp-build   - Build MCP server"
+	@echo "  mcp-test    - Run MCP server tests"
+	@echo "  mcp-start   - Start MCP server"
+	@echo "  mcp-clean   - Clean MCP server artifacts"
 	@echo ""
 	@echo "Development:"
 	@echo "  lint        - Check code style and conventions"
@@ -136,8 +143,33 @@ debug:
 		--eval "(setq byte-compile-verbose t)" \
 		-f batch-byte-compile $(EL_FILES)
 
+# MCP Server targets
+mcp-install:
+	@echo "Installing MCP server dependencies..."
+	@cd mcp && npm install
+
+mcp-build: mcp-install
+	@echo "Building MCP server..."
+	@cd mcp && npm run build
+
+mcp-test: mcp-build
+	@echo "Running MCP server tests..."
+	@cd mcp && npm test
+
+mcp-start: mcp-build
+	@echo "Starting MCP server..."
+	@cd mcp && npm start
+
+mcp-clean:
+	@echo "Cleaning MCP server artifacts..."
+	@rm -rf mcp/node_modules mcp/dist mcp/coverage
+
+# Update existing targets to include MCP
+build: compile mcp-build
+test: test-simple mcp-test
+
 # Cleaning
-clean:
+clean: mcp-clean
 	@echo "Removing compiled files..."
 	@rm -f lisp/*.elc
 	@rm -f lisp/*.elc~
