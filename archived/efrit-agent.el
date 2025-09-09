@@ -24,6 +24,8 @@
 ;; Conditional requires
 (declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
+(declare-function efrit--build-headers "efrit-chat" (api-key))
+
 ;;; Customization
 
 (defgroup efrit-agent nil
@@ -314,27 +316,24 @@ Work step-by-step until the goal is achieved.")
               (funcall callback-fn session nil "No API key available. Check your .authinfo file."))
           
           (let* ((url-request-method "POST")
-                 (url-request-extra-headers
-                  `(("x-api-key" . ,api-key)
-                    ("anthropic-version" . "2023-06-01")
-                    ("content-type" . "application/json")))
+                 (url-request-extra-headers (efrit--build-headers api-key))
                  (request-data
                   `(("model" . ,efrit-agent-model)
                     ("max_tokens" . ,efrit-agent-max-tokens)
                     ("temperature" . 0.0)
                     ("messages" . [(("role" . "user")
-                                   ("content" . ,prompt))])
+                                    ("content" . ,prompt))])
                     ("system" . ,(efrit-agent--build-system-prompt))
                     ("tools" . [(("name" . "eval_sexp")
-                                ("description" . "Evaluate a Lisp expression and return the result")
-                                ("input_schema" . (("type" . "object")
-                                                  ("properties" . (("expr" . (("type" . "string")
-                                                                              ("description" . "The Elisp expression to evaluate")))))
-                                                  ("required" . ["expr"]))))
-                               (("name" . "get_context") 
-                                ("description" . "Get current Emacs context and environment")
-                                ("input_schema" . (("type" . "object")
-                                                  ("properties" . ()))))])))
+                                 ("description" . "Evaluate a Lisp expression and return the result")
+                                 ("input_schema" . (("type" . "object")
+                                                    ("properties" . (("expr" . (("type" . "string")
+                                                                                ("description" . "The Elisp expression to evaluate")))))
+                                                    ("required" . ["expr"]))))
+                                (("name" . "get_context") 
+                                 ("description" . "Get current Emacs context and environment")
+                                 ("input_schema" . (("type" . "object")
+                                                    ("properties" . ()))))])))
                  (url-request-data
                   (encode-coding-string (json-encode request-data) 'utf-8)))
             

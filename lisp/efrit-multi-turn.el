@@ -25,6 +25,7 @@
 
 ;; Forward declarations
 (declare-function efrit-log-debug "efrit-debug" (format-string &rest args))
+(declare-function efrit--build-headers "efrit-chat" (api-key))
 
 ;;; Configuration
 
@@ -173,19 +174,16 @@ REASON: [brief explanation]"
   "Send lightweight completion check request to Claude."
   (let* ((api-key (efrit-common-get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("content-type" . "application/json")))
+         (url-request-extra-headers (efrit--build-headers api-key))
          (request-data
-           `(("model" . ,efrit-multi-turn-completion-model)
-             ("max_tokens" . ,efrit-multi-turn-completion-max-tokens)
-             ("temperature" . 0.1)
-             ("messages" . [
+          `(("model" . ,efrit-multi-turn-completion-model)
+            ("max_tokens" . ,efrit-multi-turn-completion-max-tokens)
+            ("temperature" . 0.1)
+            ("messages" . [
                            (("role" . "user")
                             ("content" . ,prompt))])))
-          (url-request-data
-           (encode-coding-string (json-encode request-data) 'utf-8)))
+         (url-request-data
+          (encode-coding-string (json-encode request-data) 'utf-8)))
     
     ;; Send synchronous request for completion check
     (efrit-log-debug "Sending completion check to Claude...")
