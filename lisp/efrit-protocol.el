@@ -85,7 +85,7 @@ Returns the result of the tool execution or signals an error."
 Returns the parsed response data."
   (let* ((api-key (efrit-common-get-api-key))
          (model (or (bound-and-true-p efrit-model) 
-                   "claude-3-5-sonnet-20241022"))
+                   "claude-3-7-sonnet-20250219"))
          (max-tokens (or (bound-and-true-p efrit-max-tokens) 8192))
          (request-data `(("model" . ,model)
                         ("max_tokens" . ,max-tokens)

@@ -242,7 +242,7 @@ Transform Efrit from a user assistant into an **autonomous AI development platfo
 
 ```elisp
 ;; Standard Efrit settings
-(setq efrit-model "claude-3-5-sonnet-20241022")
+(setq efrit-model "claude-3-7-sonnet-20250219")
 (setq efrit-max-tokens 8192)
 
 ;; 🆕 Performance settings

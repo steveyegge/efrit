@@ -64,7 +64,7 @@ Returns \\='sync or \\='async based on Claude's analysis."
   (condition-case err
       (let* ((api-key (efrit-common-get-api-key))
              (prompt (format "Analyze this command and decide if it should run synchronously or asynchronously:\n\"%s\"\n\nUse the suggest_execution_mode tool to indicate your decision." command))
-             (request-data `(("model" . "claude-3-5-sonnet-20241022")
+             (request-data `(("model" . "claude-3-7-sonnet-20250219")
                            ("max_tokens" . 1000)
                            ("messages" . [,(efrit-unified--make-mode-request-message prompt)])
                            ("tools" . [,efrit-unified--mode-decision-tool])))

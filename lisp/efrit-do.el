@@ -86,7 +86,7 @@ This affects both `efrit-do-show-todos' and `efrit-async-show-todos'."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
+(defcustom efrit-model "claude-3-7-sonnet-20250219"
   "Claude model to use for efrit-do commands."
   :type 'string
   :group 'efrit-do)

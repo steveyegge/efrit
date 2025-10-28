@@ -33,9 +33,9 @@
   :group 'efrit
   :prefix "efrit-agent-")
 
-(defcustom efrit-agent-backend "claude-3.5-sonnet"
+(defcustom efrit-agent-backend "claude-3.7-sonnet"
   "Default model backend for agent mode."
-  :type '(choice (const "claude-3.5-sonnet")
+  :type '(choice (const "claude-3.7-sonnet")
                  (const "gpt-4") 
                  (const "local-llama")
                  (string :tag "Custom API endpoint"))
