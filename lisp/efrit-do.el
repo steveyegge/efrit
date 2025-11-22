@@ -326,9 +326,76 @@ EXAMPLES:
                        ("required" . ["pattern" "extension"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
+(defun efrit-do--get-tools-for-state ()
+  "Return tool schema filtered by current workflow state.
+
+This implements schema-based loop prevention by restricting which tools
+Claude can call based on the current workflow state:
+
+- initial: Allow planning tools (todo_analyze, todo_add) + always-available
+- todos-created/executing: Block planning, restrict query tools, promote execution
+- After todo_get_instructions called: Remove it from schema to force eval_sexp
+
+The goal is to prevent infinite loops of todo_status, todo_get_instructions
+without actual code execution."
+  (let* ((always-available-tools
+          ;; These tools are safe in any state
+          '("glob_files" "buffer_create" "format_file_list"
+            "format_todo_list" "display_in_buffer" "session_complete"
+            "suggest_execution_mode"))
+         (planning-tools
+          ;; For initial planning and analysis
+          '("todo_analyze" "todo_add"))
+         (execution-tools
+          ;; For actually doing work
+          '("eval_sexp" "shell_exec" "todo_update" "todo_complete_check"))
+         (query-tools
+          ;; Information tools - use sparingly
+          '("todo_status" "todo_next"))
+         (dangerous-tools
+          ;; Loop-prone tools - strict limits
+          '("todo_get_instructions" "todo_execute_next"))
+         (allowed-tool-names
+          (cond
+           ;; Initial state: Allow planning + always-available
+           ((eq efrit-do--workflow-state 'initial)
+            (append planning-tools always-available-tools query-tools dangerous-tools))
+
+           ;; After todo_get_instructions called: Block it to force execution
+           ((and (or (eq efrit-do--workflow-state 'todos-created)
+                     (eq efrit-do--workflow-state 'executing))
+                 (>= efrit-do--tool-call-count 1)
+                 (memq efrit-do--last-tool-called '(todo_get_instructions todo_execute_next)))
+            (efrit-log 'info "Schema filter: Blocking todo_get_instructions after %d calls, forcing eval_sexp"
+                      efrit-do--tool-call-count)
+            (append execution-tools query-tools always-available-tools))
+
+           ;; TODOs exist: Allow limited query + execution
+           ((or (eq efrit-do--workflow-state 'todos-created)
+                (eq efrit-do--workflow-state 'executing))
+            (append execution-tools query-tools dangerous-tools always-available-tools))
+
+           ;; Analyzed but no TODOs: Allow adding TODOs + execution
+           ((eq efrit-do--workflow-state 'analyzed)
+            (append planning-tools execution-tools query-tools always-available-tools))
+
+           ;; Default: Return everything (safety fallback)
+           (t
+            (efrit-log 'warn "Schema filter: Unknown state %s, returning all tools"
+                      efrit-do--workflow-state)
+            (mapcar (lambda (tool) (alist-get "name" tool nil nil #'string=))
+                   efrit-do--tools-schema)))))
+
+    ;; Filter the full schema to only include allowed tools
+    (seq-filter (lambda (tool)
+                  (member (alist-get "name" tool nil nil #'string=)
+                         allowed-tool-names))
+               efrit-do--tools-schema)))
+
 (defun efrit-do--get-current-tools-schema ()
-  "Return full tool schema for now."
-  efrit-do--tools-schema)
+  "Return tool schema for current workflow state.
+This is the main entry point for dynamic tool filtering."
+  (efrit-do--get-tools-for-state))
 
 ;;; Circuit Breaker Implementation
 
@@ -1558,7 +1625,7 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                 ("messages" . [(("role" . "user")
                                ("content" . ,command))])
                 ("system" . ,system-prompt)
-                ("tools" . ,efrit-do--tools-schema)))
+                ("tools" . ,(efrit-do--get-current-tools-schema))))
              (json-string (json-encode request-data))
              ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
               (escaped-json (efrit-common-escape-json-unicode json-string))

@@ -113,6 +113,49 @@ Efrit provides pure execution environment:
 "Raw result: %s. Available tools: %s" result tool-list
 ```
 
+## 🛡️ **LOOP PREVENTION: SCHEMA-BASED TOOL FILTERING**
+
+While efrit remains a pure executor, it must prevent infinite loops that waste tokens and hang sessions. The solution: **dynamically restrict available tools based on workflow state**.
+
+### Implementation
+
+`efrit-do--get-tools-for-state()` filters the tool schema before each API call:
+
+**Workflow States**:
+- `initial` - Planning phase: allow `todo_analyze`, `todo_add`, query tools
+- `todos-created` - Execution phase: prioritize `eval_sexp`, `shell_exec`, `todo_update`
+- After 1 `todo_get_instructions` call: **Block it from schema**, force execution tools
+
+**Tool Categories**:
+```elisp
+Planning tools:     todo_analyze, todo_add
+Execution tools:    eval_sexp, shell_exec, todo_update, todo_complete_check
+Query tools:        todo_status, todo_next (limited use)
+Dangerous tools:    todo_get_instructions, todo_execute_next (strict limits)
+Always available:   glob_files, buffer_create, session_complete, etc.
+```
+
+### Why This Preserves Pure Executor Principle
+
+This is **NOT** client-side intelligence because:
+- ✅ No semantic analysis of content
+- ✅ No pre-generated solutions
+- ✅ No task-specific logic
+- ✅ Only workflow state tracking (which TODO phase we're in)
+- ✅ Tool availability based on phase, not content understanding
+
+**Analogy**: Like a toolbox that only shows screwdrivers during the "screwing" phase and only shows hammers during the "hammering" phase. The human (Claude) still decides what to do; efrit just manages which tools are on the table.
+
+### Circuit Breaker (Complementary Defense)
+
+The circuit breaker (see `efrit-do-max-tool-calls-per-session`) provides hard limits:
+- Total tool calls per session (default: 30)
+- Same tool call repetitions (default: 3)
+
+When limits are exceeded, efrit forcibly terminates the session with an error.
+
+**Key Distinction**: Schema filtering is **gentle guidance** (removing problematic tools). Circuit breaker is **emergency shutdown** (hard limits).
+
 ## 🧪 **TESTING PHILOSOPHY**
 
 Integration tests must verify **Claude's abilities**, not efrit's shortcuts:
