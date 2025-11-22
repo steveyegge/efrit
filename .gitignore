@@ -34,3 +34,9 @@ lisp/*-context.el
 # Temporary files
 tmp/
 temp/
+
+# Node.js
+node_modules/
+mcp/node_modules/
+package-lock.json
+mcp/package-lock.json
