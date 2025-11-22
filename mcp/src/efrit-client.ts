@@ -8,17 +8,17 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { 
-  EfritRequest, 
-  EfritResponse, 
-  InstanceConfig, 
+import {
+  EfritRequest,
+  EfritResponse,
+  InstanceConfig,
   EfritError,
   EFRIT_SCHEMA_VERSION,
   DEFAULT_TIMEOUT,
   DEFAULT_POLL_INTERVAL,
   MAX_REQUEST_SIZE,
   QUEUE_SUBDIRS
-} from './types';
+} from './types.js';
 
 /**
  * Client for communicating with Efrit instances via file-based queues

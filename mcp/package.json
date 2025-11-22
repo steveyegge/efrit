@@ -1,6 +1,7 @@
 {
   "name": "efrit-mcp-server",
   "version": "1.0.0",
+  "type": "module",
   "description": "Model Context Protocol server for Efrit - enables AI models to interact with Efrit instances",
   "main": "dist/server.js",
   "scripts": {
@@ -26,13 +27,13 @@
   "author": "Efrit Project",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.22.0",
     "uuid": "^10.0.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
-    "@types/jest": "^29.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.0.0",

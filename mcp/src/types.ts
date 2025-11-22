@@ -209,18 +209,18 @@ export interface McpServerConfig {
 export interface EfritExecuteParams {
   /** Request type */
   type: EfritRequestType;
-  
+
   /** Request content */
   content: string;
-  
+
   /** Target instance ID */
-  instance_id?: string;
-  
+  instance_id?: string | undefined;
+
   /** Return context information */
-  return_context?: boolean;
-  
+  return_context?: boolean | undefined;
+
   /** Timeout override in seconds */
-  timeout?: number;
+  timeout?: number | undefined;
 }
 
 /**
@@ -228,7 +228,7 @@ export interface EfritExecuteParams {
  */
 export interface EfritListInstancesParams {
   /** Include queue statistics */
-  include_stats?: boolean;
+  include_stats?: boolean | undefined;
 }
 
 /**
@@ -236,7 +236,7 @@ export interface EfritListInstancesParams {
  */
 export interface EfritGetQueueStatsParams {
   /** Target instance ID */
-  instance_id?: string;
+  instance_id?: string | undefined;
 }
 
 /**
