@@ -74,6 +74,27 @@ This affects both `efrit-do-show-todos' and `efrit-async-show-todos'."
   :type 'boolean
   :group 'efrit-do)
 
+(defcustom efrit-do-max-tool-calls-per-session 30
+  "Maximum number of tool calls allowed in a single session.
+When this limit is reached, the circuit breaker trips and the session is terminated.
+This prevents infinite loops from burning through API tokens."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-max-same-tool-calls 3
+  "Maximum number of consecutive calls to the same tool.
+When this limit is reached, the circuit breaker warns and forces a different action.
+This prevents tight loops like repeated todo_status or todo_analyze calls."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-circuit-breaker-enabled t
+  "Whether circuit breaker protection is enabled.
+When non-nil, enforces hard limits on tool calls to prevent infinite loops.
+Recommended to keep enabled for safety."
+  :type 'boolean
+  :group 'efrit-do)
+
 ;; Context configuration moved to efrit-context.el
 
 (defcustom efrit-do-max-retries 3
@@ -140,6 +161,16 @@ Possible states:
 
 (defvar efrit-do--todo-awaiting-completion nil
   "TODO ID that executed code but hasn't been marked completed yet.")
+
+;;; Circuit Breaker State
+
+(defvar efrit-do--session-tool-count 0
+  "Total number of tool calls in the current session.
+Reset when a new session starts. Used by circuit breaker to prevent runaway loops.")
+
+(defvar efrit-do--circuit-breaker-tripped nil
+  "When non-nil, circuit breaker has tripped and session is terminated.
+Stores reason for tripping as a string.")
 
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
@@ -299,6 +330,126 @@ EXAMPLES:
   "Return full tool schema for now."
   efrit-do--tools-schema)
 
+;;; Circuit Breaker Implementation
+
+(defun efrit-do--circuit-breaker-reset ()
+  "Reset circuit breaker state for a new session."
+  (setq efrit-do--session-tool-count 0)
+  (setq efrit-do--circuit-breaker-tripped nil)
+  (setq efrit-do--last-tool-called nil)
+  (setq efrit-do--tool-call-count 0))
+
+(defun efrit-do--circuit-breaker-check-limits (tool-name)
+  "Check circuit breaker limits before executing TOOL-NAME.
+Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
+Uses efrit--safe-execute for error handling."
+  (if (not efrit-do-circuit-breaker-enabled)
+      (cons t nil) ; Circuit breaker disabled
+    (let ((result
+           (efrit--safe-execute
+            (lambda ()
+              (cond
+               ;; Already tripped - block all further calls
+               (efrit-do--circuit-breaker-tripped
+                (cons nil (format "🚨 CIRCUIT BREAKER TRIPPED: %s\n\nSession terminated. Start a new session to continue."
+                                efrit-do--circuit-breaker-tripped)))
+
+               ;; Check session-wide limit
+               ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                (setq efrit-do--circuit-breaker-tripped
+                      (format "Maximum tool calls per session exceeded (%d/%d)"
+                              efrit-do--session-tool-count
+                              efrit-do-max-tool-calls-per-session))
+                (cons nil (format "🚨 CIRCUIT BREAKER: Session limit reached (%d/%d tool calls)
+
+REASON: Too many tool calls indicate an infinite loop or runaway process.
+
+ACTIONS TAKEN:
+- Session terminated to prevent token burnout
+- All further tool calls blocked
+- Error logged to session tracker
+
+WHAT YOU CAN DO:
+1. Review the task complexity - may need to break into smaller tasks
+2. Check for logic errors in the command
+3. Start a new session: M-x efrit-do or M-x efrit-chat
+4. Consider increasing efrit-do-max-tool-calls-per-session if legitimate
+
+Current session tool history:
+- Total calls: %d
+- Last tool: %s
+- Same tool consecutive calls: %d"
+                                    efrit-do--session-tool-count
+                                    efrit-do-max-tool-calls-per-session
+                                    efrit-do--session-tool-count
+                                    (or efrit-do--last-tool-called "none")
+                                    efrit-do--tool-call-count)))
+
+               ;; Check same-tool limit
+               ((and (string= tool-name efrit-do--last-tool-called)
+                     (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
+                (let ((warning-msg
+                       (format "⚠️  CIRCUIT BREAKER WARNING: Tool '%s' called %d times consecutively
+
+LOOP DETECTED: Repeated calls to the same tool usually indicate a logic error.
+
+GUIDANCE:
+- If using '%s': You should take ACTION, not keep analyzing
+- If stuck: Try a different approach or call session_complete
+- Review the task and change your strategy
+
+This call will PROCEED but further calls to '%s' will be BLOCKED.
+Use a different tool for your next action."
+                               tool-name
+                               (1+ efrit-do--tool-call-count)
+                               tool-name
+                               tool-name)))
+                  ;; Allow this call but warn loudly
+                  (message "Circuit breaker warning: %s called %d times" tool-name (1+ efrit-do--tool-call-count))
+                  (cons t warning-msg)))
+
+               ;; All checks passed
+               (t (cons t nil))))
+            "circuit breaker check"
+            "Check efrit-do-circuit-breaker-enabled and tool call limits")))
+      (if (car result)
+          (cdr result) ; Return the check result
+        ;; Safe-execute caught an error - treat as breaker trip
+        (progn
+          (setq efrit-do--circuit-breaker-tripped (cdr result))
+          (cons nil (format "🚨 CIRCUIT BREAKER ERROR: %s" (cdr result))))))))
+
+(defun efrit-do--circuit-breaker-record-call (tool-name)
+  "Record a tool call for TOOL-NAME in circuit breaker tracking.
+Updates counters and session tracking. Uses efrit--safe-execute for safety."
+  (when efrit-do-circuit-breaker-enabled
+    (efrit--safe-execute
+     (lambda ()
+       ;; Update session-wide counter
+       (cl-incf efrit-do--session-tool-count)
+
+       ;; Update same-tool counter
+       (if (string= tool-name efrit-do--last-tool-called)
+           (cl-incf efrit-do--tool-call-count)
+         (setq efrit-do--tool-call-count 1))
+
+       ;; Update last tool
+       (setq efrit-do--last-tool-called tool-name)
+
+       ;; Track in session
+       (when (fboundp 'efrit-session-track-tool-used)
+         (efrit-session-track-tool-used tool-name))
+
+       ;; Log the call
+       (efrit-log 'debug "Circuit breaker: tool=%s count=%d/%d same=%d/%d"
+                  tool-name
+                  efrit-do--session-tool-count
+                  efrit-do-max-tool-calls-per-session
+                  efrit-do--tool-call-count
+                  efrit-do-max-same-tool-calls))
+     "recording tool call"
+     "Check circuit breaker state and session tracking")))
+
 ;;; Context system - delegates to efrit-context.el
 
 ;;; Session protocol instructions
@@ -317,14 +468,18 @@ EXAMPLES:
     "   - CRITICAL: Never call the same tool twice in a row!\n\n"
     
     "LOOP PREVENTION PROTOCOL:\n"
-    "1. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
+    "1. CIRCUIT BREAKER PROTECTION:\n"
+    "   - Hard limit: Maximum 30 tool calls per session\n"
+    "   - Soft limit: Same tool cannot be called more than 3 times consecutively\n"
+    "   - If you see circuit breaker warnings, CHANGE YOUR APPROACH immediately\n"
+    "   - Circuit breaker trips = session terminated, must start new session\n\n"
+    "2. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
     "   - Read the error message carefully\n"
     "   - Follow the IMMEDIATE ACTION REQUIRED instructions\n"
-    "   - Never repeat the tool that caused the error\n"
-    "2. If you're making no progress after 3 attempts:\n"
-    "   - Call session_complete with an explanation\n"
-    "3. Trust the error messages - they prevent infinite loops\n"
-    "4. Maximum session limit is 30 API calls - respect circuit breakers\n\n"
+    "   - Never repeat the tool that caused the error\n\n"
+    "3. If you're making no progress after 3 attempts:\n"
+    "   - Call session_complete with an explanation\n\n"
+    "4. Trust the error messages - they prevent infinite loops\n\n"
    
    "1. WORK LOG INTERPRETATION:\n"
    "   - The work log shows your previous steps: [[\"result1\", \"code1\"], [\"result2\", \"code2\"], ...]\n"
@@ -482,13 +637,13 @@ EXAMPLES:
     (concat "\n\nCURRENT TODOs:\n" (efrit-do--format-todos-for-display) "\n")))
 
 (defun efrit-do--clear-todos ()
-  "Clear all current TODOs."
+  "Clear all current TODOs and reset circuit breaker for new session."
   (setq efrit-do--current-todos nil)
   (setq efrit-do--todo-counter 0)
   (setq efrit-do--workflow-state 'initial)
-  (setq efrit-do--last-tool-called nil)
-  (setq efrit-do--tool-call-count 0)
-  (setq efrit-do--todo-awaiting-completion nil))
+  (setq efrit-do--todo-awaiting-completion nil)
+  ;; Reset circuit breaker for new session
+  (efrit-do--circuit-breaker-reset))
 
 ;;; Context persistence
 
@@ -1112,62 +1267,85 @@ This signals that a multi-step session is complete."
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
-Returns a formatted string with execution results or empty string on failure."
+Returns a formatted string with execution results or empty string on failure.
+Applies circuit breaker limits to prevent infinite loops."
   (let* ((tool-name (gethash "name" tool-item))
          (tool-input (gethash "input" tool-item))
          (input-str (cond
                      ((stringp tool-input) tool-input)
-                     ((hash-table-p tool-input) 
+                     ((hash-table-p tool-input)
                       (seq-some (lambda (key) (gethash key tool-input))
                                 '("expr" "expression" "code" "command")))
                      (t (format "%S" tool-input)))))
-    
+
     ;; Sanitize potentially over-escaped strings
     (when input-str
       (setq input-str (efrit-do--sanitize-elisp-string input-str)))
-    
-    (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)" 
+
+    (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)"
                tool-name tool-input input-str)
-    
-    ;; Dispatch to appropriate handler
-    (cond
-     ((and (string= tool-name "eval_sexp") input-str)
-      (efrit-do--handle-eval-sexp input-str))
-     ((and (string= tool-name "shell_exec") input-str)
-      (efrit-do--handle-shell-exec input-str))
-     ((string= tool-name "todo_add")
-      (efrit-do--handle-todo-add tool-input))
-     ((string= tool-name "todo_update")
-      (efrit-do--handle-todo-update tool-input input-str))
-     ((string= tool-name "todo_show")
-      (efrit-do--handle-todo-show))
-     ((string= tool-name "todo_analyze")
-      (efrit-do--handle-todo-analyze tool-input))
-     ((string= tool-name "todo_status")
-      (efrit-do--handle-todo-status))
-     ((string= tool-name "todo_next")
-     (efrit-do--handle-todo-next))
-     ((string= tool-name "todo_execute_next")
-     (efrit-do--handle-todo-execute-next))
-     ((string= tool-name "todo_get_instructions")
-       (efrit-do--handle-todo-execute-next))  ; Same handler, clearer name
-       ((string= tool-name "todo_complete_check")
-       (efrit-do--handle-todo-complete-check))
-     ((string= tool-name "buffer_create")
-      (efrit-do--handle-buffer-create tool-input input-str))
-     ((string= tool-name "format_file_list")
-      (efrit-do--handle-format-file-list input-str))
-     ((string= tool-name "format_todo_list")
-      (efrit-do--handle-format-todo-list tool-input))
-     ((string= tool-name "display_in_buffer")
-      (efrit-do--handle-display-in-buffer tool-input input-str))
-     ((string= tool-name "session_complete")
-     (efrit-do--handle-session-complete tool-input))
-     ((string= tool-name "glob_files")
-     (efrit-do--handle-glob-files tool-input))
-     (t 
-       (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-       (format "\n[Unknown tool: %s]" tool-name)))))
+
+    ;; CIRCUIT BREAKER: Check limits before executing
+    (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name)))
+      (if (not (car breaker-check))
+          ;; Circuit breaker blocked execution
+          (progn
+            (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
+            (when (fboundp 'efrit-session-track-error)
+              (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
+            (cdr breaker-check))
+
+        ;; Circuit breaker allows execution - record the call
+        (efrit-do--circuit-breaker-record-call tool-name)
+
+        ;; If there's a warning message, prepend it to the result
+        (let ((warning (cdr breaker-check))
+              (result
+               ;; Dispatch to appropriate handler
+               (cond
+                ((and (string= tool-name "eval_sexp") input-str)
+                 (efrit-do--handle-eval-sexp input-str))
+                ((and (string= tool-name "shell_exec") input-str)
+                 (efrit-do--handle-shell-exec input-str))
+                ((string= tool-name "todo_add")
+                 (efrit-do--handle-todo-add tool-input))
+                ((string= tool-name "todo_update")
+                 (efrit-do--handle-todo-update tool-input input-str))
+                ((string= tool-name "todo_show")
+                 (efrit-do--handle-todo-show))
+                ((string= tool-name "todo_analyze")
+                 (efrit-do--handle-todo-analyze tool-input))
+                ((string= tool-name "todo_status")
+                 (efrit-do--handle-todo-status))
+                ((string= tool-name "todo_next")
+                 (efrit-do--handle-todo-next))
+                ((string= tool-name "todo_execute_next")
+                 (efrit-do--handle-todo-execute-next))
+                ((string= tool-name "todo_get_instructions")
+                 (efrit-do--handle-todo-execute-next))  ; Same handler, clearer name
+                ((string= tool-name "todo_complete_check")
+                 (efrit-do--handle-todo-complete-check))
+                ((string= tool-name "buffer_create")
+                 (efrit-do--handle-buffer-create tool-input input-str))
+                ((string= tool-name "format_file_list")
+                 (efrit-do--handle-format-file-list input-str))
+                ((string= tool-name "format_todo_list")
+                 (efrit-do--handle-format-todo-list tool-input))
+                ((string= tool-name "display_in_buffer")
+                 (efrit-do--handle-display-in-buffer tool-input input-str))
+                ((string= tool-name "session_complete")
+                 (efrit-do--handle-session-complete tool-input))
+                ((string= tool-name "glob_files")
+                 (efrit-do--handle-glob-files tool-input))
+                (t
+                 (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+                 (format "\n[Unknown tool: %s]" tool-name)))))
+
+          ;; Prepend warning if present
+          (if warning
+              (concat "\n" warning "\n" result)
+            result))))))
+
 ;;; Command execution
 
 (defun efrit-do--command-examples ()
@@ -1513,17 +1691,20 @@ non-blocking execution with progress feedback. Results are displayed
 when the command completes."
   (interactive
    (list (read-string "Command (async): " nil 'efrit-do-history)))
-  
+
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)
-  
+
   ;; Track command execution
   (efrit-session-track-command command)
-  
+
+  ;; Reset circuit breaker for new command session
+  (efrit-do--circuit-breaker-reset)
+
   ;; Execute asynchronously
   (require 'efrit-async)
   (message "Executing asynchronously: %s..." command)
-  (efrit-async-execute-command 
+  (efrit-async-execute-command
    command
    (lambda (result)
      (let* ((error-info (efrit-do--extract-error-info result))
@@ -1532,7 +1713,7 @@ when the command completes."
        (setq efrit-do--last-result result)
        (efrit-do--capture-context command result)
        (efrit-do--display-result command result is-error)
-       
+
        ;; Show completion message
        (if is-error
            (message "Async command failed: %s" (cdr error-info))
@@ -1545,17 +1726,20 @@ The command is sent to Claude, which translates it into Elisp
 and executes it immediately. Results are displayed in a dedicated
 buffer if `efrit-do-show-results' is non-nil.
 
-If retry is enabled and errors occur, automatically retry by sending 
+If retry is enabled and errors occur, automatically retry by sending
 error details back to Claude for correction."
   (interactive
    (list (read-string "Command: " nil 'efrit-do-history)))
-  
+
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)
-  
+
   ;; Track command execution
   (efrit-session-track-command command)
-  
+
+  ;; Reset circuit breaker for new command session
+  (efrit-do--circuit-breaker-reset)
+
   ;; Execute with retry logic
   (message "Executing: %s..." command)
   (let* ((result-and-attempt (efrit-do--execute-with-retry command))
