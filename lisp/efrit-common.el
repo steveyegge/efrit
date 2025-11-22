@@ -15,6 +15,8 @@
 (require 'auth-source)
 ;; efrit-log will be required by modules that need it
 (declare-function efrit-log "efrit-log")
+(declare-function efrit-log-debug "efrit-log")
+(declare-function efrit-log-error "efrit-log")
 
 ;;; Core Group Definition
 
@@ -197,11 +199,98 @@ Validates key format and throws error if not found."
 (defun efrit-common-escape-json-unicode (json-string)
   "Escape unicode characters in JSON-STRING for HTTP transmission.
 This prevents multibyte encoding errors when sending to APIs."
-  (replace-regexp-in-string 
-   "[^\x00-\x7F]" 
+  (replace-regexp-in-string
+   "[^\x00-\x7F]"
    (lambda (char)
      (format "\\\\u%04X" (string-to-char char)))
    json-string))
+
+;;; Error Recovery
+
+(defun efrit--safe-execute (func &optional context recovery-hint)
+  "Execute FUNC with comprehensive error handling.
+
+CONTEXT is an optional string describing what operation is being performed,
+used in error messages and logging.
+
+RECOVERY-HINT is an optional string providing guidance on how to recover
+from errors, displayed to the user.
+
+Returns a cons cell (SUCCESS . RESULT):
+- If successful: (t . return-value-of-func)
+- If error: (nil . error-message-string)
+
+Example usage:
+  (let ((result (efrit--safe-execute
+                 (lambda () (some-risky-operation))
+                 \"loading configuration\"
+                 \"Check that ~/.efrit/config.el exists and is readable\")))
+    (if (car result)
+        (message \"Success: %s\" (cdr result))
+      (message \"Failed: %s\" (cdr result))))"
+  (require 'efrit-log)
+  (let ((ctx (or context "operation"))
+        (start-time (current-time)))
+    (condition-case err
+        (progn
+          (efrit-log-debug "Starting %s" ctx)
+          (let ((result (funcall func)))
+            (efrit-log-debug "Completed %s in %.2fs"
+                           ctx
+                           (float-time (time-subtract (current-time) start-time)))
+            (cons t result)))
+
+      ;; File errors
+      (file-error
+       (let* ((error-msg (efrit-common-safe-error-message err))
+              (msg (if recovery-hint
+                       (format "File error during %s: %s\nRecovery: %s" ctx error-msg recovery-hint)
+                     (format "File error during %s: %s" ctx error-msg))))
+         (efrit-log-error "%s" msg)
+         (when recovery-hint
+           (message "Error: File error during %s: %s\nRecovery: %s" ctx error-msg recovery-hint))
+         (cons nil (format "File error during %s: %s" ctx error-msg))))
+
+      ;; Buffer errors
+      (buffer-read-only
+       (let ((msg (format "Buffer read-only during %s" ctx)))
+         (efrit-log-error "%s" msg)
+         (when recovery-hint
+           (message "Error: %s\nRecovery: %s" msg recovery-hint))
+         (cons nil msg)))
+
+      ;; API/network errors
+      (error
+       (let* ((error-string (efrit-common-safe-error-message err))
+              (msg (cond
+                    ;; API key errors
+                    ((string-match-p "\\(api[- ]?key\\|authentication\\|401\\)"
+                                   (downcase error-string))
+                     (format "API authentication failed during %s: %s\nCheck your API key configuration (M-x efrit-config-api-key)"
+                            ctx error-string))
+
+                    ;; Network errors
+                    ((string-match-p "\\(network\\|connection\\|timeout\\|dns\\)"
+                                   (downcase error-string))
+                     (format "Network error during %s: %s\nCheck your internet connection"
+                            ctx error-string))
+
+                    ;; Rate limiting
+                    ((string-match-p "\\(rate\\|limit\\|429\\)"
+                                   (downcase error-string))
+                     (format "Rate limit exceeded during %s: %s\nWait a moment before retrying"
+                            ctx error-string))
+
+                    ;; Generic error
+                    (t
+                     (format "Error during %s: %s" ctx error-string))))
+              (log-msg (if recovery-hint
+                          (format "%s\nRecovery: %s" msg recovery-hint)
+                        msg)))
+         (efrit-log-error "%s" log-msg)
+         (when recovery-hint
+           (message "%s\nRecovery: %s" msg recovery-hint))
+         (cons nil msg))))))
 
 (provide 'efrit-common)
 
