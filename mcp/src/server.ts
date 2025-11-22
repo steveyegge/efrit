@@ -13,6 +13,8 @@ import { z } from "zod";
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import pino from 'pino';
+import pLimit from 'p-limit';
 import { EfritClient } from './efrit-client.js';
 import {
   McpServerConfig,
@@ -28,44 +30,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Logger utility
+ * Create pino logger with appropriate configuration
  */
-class Logger {
-  private level: 'debug' | 'info' | 'warn' | 'error';
-
-  constructor(level: 'debug' | 'info' | 'warn' | 'error' = 'info') {
-    this.level = level;
-  }
-
-  private levels = { debug: 0, info: 1, warn: 2, error: 3 };
-
-  private shouldLog(level: keyof typeof this.levels): boolean {
-    return this.levels[level] >= this.levels[this.level];
-  }
-
-  debug(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('debug')) {
-      console.error(`[DEBUG] ${message}`, ...args);
+function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info'): pino.Logger {
+  return pino({
+    level,
+    transport: {
+      target: 'pino-pretty',
+      options: {
+        colorize: true,
+        translateTime: 'HH:MM:ss',
+        ignore: 'pid,hostname'
+      }
     }
-  }
-
-  info(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('info')) {
-      console.error(`[INFO] ${message}`, ...args);
-    }
-  }
-
-  warn(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('warn')) {
-      console.error(`[WARN] ${message}`, ...args);
-    }
-  }
-
-  error(message: string, ...args: unknown[]): void {
-    if (this.shouldLog('error')) {
-      console.error(`[ERROR] ${message}`, ...args);
-    }
-  }
+  });
 }
 
 /**
@@ -74,11 +52,12 @@ class Logger {
 export class EfritMcpServer {
   private config!: McpServerConfig;
   private clients: Map<string, EfritClient> = new Map();
-  private logger: Logger;
+  private logger: pino.Logger;
   private server: McpServer;
+  private concurrencyLimit!: ReturnType<typeof pLimit>;
 
   constructor() {
-    this.logger = new Logger('info');
+    this.logger = createLogger('info');
     this.server = new McpServer({
       name: "efrit-mcp-server",
       version: "1.0.0"
@@ -178,24 +157,27 @@ export class EfritMcpServer {
       "efrit_execute",
       {
         title: "Execute Efrit Command",
-        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat).",
-        inputSchema: {
+        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat). AI-friendly: accepts both string and number formats for timeout, ignores extra fields.",
+        inputSchema: z.object({
           type: z.enum(['command', 'eval', 'chat']).describe('Type of execution: command, eval, or chat'),
           content: z.string().describe('Command, elisp code, or chat message to execute'),
           instance_id: z.string().optional().describe('Target Efrit instance ID (uses default if not specified)'),
-          return_context: z.boolean().optional().describe('Whether to return Emacs context (buffers, modes, etc.)'),
-          timeout: z.number().optional().describe('Timeout override in seconds')
-        }
+          return_context: z.coerce.boolean().optional().describe('Whether to return Emacs context (buffers, modes, etc.)'),
+          timeout: z.coerce.number().positive().finite().optional().describe('Timeout override in seconds (accepts number or string like "30")')
+        }).passthrough()  // AI-friendly: ignore extra fields Claude might send
       },
       async (params: EfritExecuteParams) => {
         try {
           this.logger.info(`Executing ${params.type} on instance ${params.instance_id || 'default'}`);
 
-          const client = this.getClient(params.instance_id);
-          const options: { timeout?: number; return_context?: boolean } = {};
-          if (params.timeout !== undefined) options.timeout = params.timeout;
-          if (params.return_context !== undefined) options.return_context = params.return_context;
-          const response = await client.execute(params.type, params.content, options);
+          // Use concurrency limiter to prevent overload
+          const response = await this.concurrencyLimit(async () => {
+            const client = this.getClient(params.instance_id);
+            const options: { timeout?: number; return_context?: boolean } = {};
+            if (params.timeout !== undefined) options.timeout = params.timeout;
+            if (params.return_context !== undefined) options.return_context = params.return_context;
+            return await client.execute(params.type, params.content, options);
+          });
 
           // Format response for MCP
           if (response.status === 'success') {
@@ -248,9 +230,9 @@ export class EfritMcpServer {
       {
         title: "List Efrit Instances",
         description: "List all configured Efrit instances with their status and optional queue statistics.",
-        inputSchema: {
-          include_stats: z.boolean().optional().describe('Include queue statistics for each instance')
-        }
+        inputSchema: z.object({
+          include_stats: z.coerce.boolean().optional().describe('Include queue statistics for each instance')
+        }).passthrough()  // AI-friendly: ignore extra fields
       },
       async (params: EfritListInstancesParams) => {
         try {
@@ -329,9 +311,9 @@ export class EfritMcpServer {
       {
         title: "Get Queue Statistics",
         description: "Get detailed queue statistics for a specific Efrit instance.",
-        inputSchema: {
+        inputSchema: z.object({
           instance_id: z.string().optional().describe('Target instance ID (uses default if not specified)')
-        }
+        }).passthrough()  // AI-friendly: ignore extra fields
       },
       async (params: EfritGetQueueStatsParams) => {
         try {
@@ -378,10 +360,11 @@ export class EfritMcpServer {
       this.logger.info('Loading configuration...');
       this.config = await this.loadConfig(configPath);
 
-      // Update logger level
+      // Update logger level and initialize concurrency limiter
       if (this.config.log_level) {
-        this.logger = new Logger(this.config.log_level);
+        this.logger = createLogger(this.config.log_level);
       }
+      this.concurrencyLimit = pLimit(this.config.max_concurrent_requests || 10);
 
       this.logger.info(`Configuration loaded: ${Object.keys(this.config.instances).length} instance(s) configured`);
 
