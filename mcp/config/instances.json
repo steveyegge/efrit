@@ -10,6 +10,7 @@
   "default_instance": "default",
   "max_concurrent_requests": 10,
   "log_level": "info",
+  "log_file": "~/.efrit/logs/mcp-server.log",
   "security": {
     "max_request_size": 1048576,
     "allowed_queue_roots": ["~/.emacs.d", "~/"]

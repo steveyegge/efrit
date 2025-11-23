@@ -11,6 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as fs from 'fs/promises';
+import { mkdirSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
@@ -31,16 +32,34 @@ const __dirname = path.dirname(__filename);
 
 /**
  * Create pino logger with appropriate configuration
+ * Logs to file to avoid polluting stdio transport used by MCP protocol
  */
-function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info'): pino.Logger {
+function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info', logFile?: string): pino.Logger {
+  // Default log file location if not specified
+  const defaultLogFile = path.join(process.env['HOME'] || '~', '.efrit', 'logs', 'mcp-server.log');
+  const targetLogFile = logFile || defaultLogFile;
+
+  // Ensure log directory exists
+  const logDir = path.dirname(targetLogFile);
+  try {
+    mkdirSync(logDir, { recursive: true });
+  } catch (error) {
+    // Fallback to stderr if we can't create log directory
+    // (This shouldn't happen in normal usage, but better than crashing)
+    console.error(`Warning: Could not create log directory ${logDir}, logging to stderr`);
+    return pino({ level });
+  }
+
   return pino({
     level,
     transport: {
       target: 'pino-pretty',
       options: {
-        colorize: true,
-        translateTime: 'HH:MM:ss',
-        ignore: 'pid,hostname'
+        destination: targetLogFile,
+        colorize: false,  // No colors in log files
+        translateTime: 'yyyy-mm-dd HH:MM:ss',
+        ignore: 'pid,hostname',
+        mkdir: true  // Create directory if needed
       }
     }
   });
@@ -360,10 +379,8 @@ export class EfritMcpServer {
       this.logger.info('Loading configuration...');
       this.config = await this.loadConfig(configPath);
 
-      // Update logger level and initialize concurrency limiter
-      if (this.config.log_level) {
-        this.logger = createLogger(this.config.log_level);
-      }
+      // Update logger with config values (level and file path) and initialize concurrency limiter
+      this.logger = createLogger(this.config.log_level || 'info', this.config.log_file);
       this.concurrencyLimit = pLimit(this.config.max_concurrent_requests || 10);
 
       this.logger.info(`Configuration loaded: ${Object.keys(this.config.instances).length} instance(s) configured`);

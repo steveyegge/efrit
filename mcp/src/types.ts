@@ -158,7 +158,10 @@ export interface McpServerConfig {
   
   /** Log level */
   log_level?: LogLevel;
-  
+
+  /** Log file path (defaults to ~/.efrit/logs/mcp-server.log if not specified) */
+  log_file?: string;
+
   /** Server port (if running HTTP endpoint for health checks) */
   port?: number;
   
