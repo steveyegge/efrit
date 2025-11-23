@@ -197,9 +197,9 @@ export class EfritClient {
         // If file doesn't exist yet, continue polling
         if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
           await new Promise(resolve => setTimeout(resolve, pollInterval));
-          
+
           // Exponential backoff (Oracle recommendation)
-          pollInterval = Math.min(pollInterval * 1.1, maxInterval);
+          pollInterval = Math.min(pollInterval * 2.0, maxInterval);
           continue;
         }
         
