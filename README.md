@@ -76,6 +76,38 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
+### Advanced Configuration
+
+**Enterprise/Proxy Setup** - Configure custom API endpoints:
+
+```elisp
+;; Static base URL
+(setq efrit-api-base-url "https://proxy.company.com/anthropic")
+
+;; Dynamic base URL (function)
+(setq efrit-api-base-url 
+  (lambda () 
+    (if (company-vpn-connected-p)
+        "https://internal-proxy.company.com/anthropic"
+      "https://api.anthropic.com")))
+
+;; Custom authentication
+(setq efrit-api-key 'COMPANY_ANTHROPIC_KEY)  ; Use env variable
+```
+
+**Alternative Authentication Methods**:
+
+```elisp
+;; Environment variable (recommended)
+(setq efrit-api-key 'ANTHROPIC_API_KEY)
+
+;; Custom function
+(setq efrit-api-key (lambda () (get-secret-from-vault "anthropic-key")))
+
+;; Direct string (NOT recommended - security risk)
+(setq efrit-api-key "sk-your-key-here")
+```
+
 ### Data Directory
 
 Efrit organizes all user data under a single configurable directory (default: `~/.emacs.d/.efrit/`):

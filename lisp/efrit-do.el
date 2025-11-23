@@ -20,6 +20,7 @@
 (declare-function efrit--setup-buffer "efrit-chat")
 (declare-function efrit--display-message "efrit-chat")
 (declare-function efrit--insert-prompt "efrit-chat")
+(declare-function efrit--build-headers "efrit-chat")
 
 ;; Declare external functions from efrit-async
 (declare-function efrit-async-execute-command "efrit-async")
@@ -123,9 +124,12 @@ Recommended to keep enabled for safety."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
-  "URL for the Anthropic API endpoint used by efrit-do."
-  :type 'string
+;; Use centralized API URL - legacy variable kept for compatibility
+(defcustom efrit-api-url nil
+  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
+When nil, uses the centralized configuration."
+  :type '(choice (const :tag "Use centralized config" nil)
+                 (string :tag "Legacy URL override"))
   :group 'efrit-do)
 
 ;;; Internal variables
@@ -1631,7 +1635,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
               (escaped-json (efrit-common-escape-json-unicode json-string))
               (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
-        (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
+        (if-let* ((api-url (or efrit-api-url (efrit-common-get-api-url)))
+                  (response-buffer (url-retrieve-synchronously api-url))
                   (response-text (efrit-do--extract-response-text response-buffer)))
             (efrit-do--process-api-response response-text)
           (error "Failed to get response from API")))

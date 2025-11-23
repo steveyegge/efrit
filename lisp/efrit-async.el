@@ -292,7 +292,7 @@ CALLBACK is called with the parsed response or error information."
              (start-time (float-time)))
         
         (url-retrieve
-         efrit-common-api-url
+         (efrit-common-get-api-url)
          (lambda (status)
            (let ((elapsed (- (float-time) start-time)))
              (efrit-performance-record-api-time elapsed)
