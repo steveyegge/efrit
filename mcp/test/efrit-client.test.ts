@@ -15,7 +15,6 @@ import {
   readRequestFile,
   assertFileExists,
   assertFileNotExists,
-  waitFor,
   waitForRequestFile
 } from './setup';
 

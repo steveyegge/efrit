@@ -22,14 +22,14 @@ describe('EfritClient - Simple Tests', () => {
   beforeEach(async () => {
     tempDir = await createTempDir();
     queueStructure = await createQueueStructure(tempDir);
-    
+
     config = {
       queue_dir: queueStructure.queueDir,
       workspace_dir: path.join(tempDir, 'workspace'),
-      timeout: 1, // Short timeout for tests
+      timeout: 10, // 10 second timeout to allow for test operations
       daemon_name: 'efrit-test'
     };
-    
+
     client = new EfritClient('test-instance', config, [tempDir]);
   });
 
@@ -54,7 +54,6 @@ describe('EfritClient - Simple Tests', () => {
   });
 
   test('should write request file correctly', async () => {
-    // Start execution (will timeout but that's okay)
     const executePromise = client.execute('command', 'test');
 
     // Wait for request file to be written
@@ -64,7 +63,7 @@ describe('EfritClient - Simple Tests', () => {
       'utf-8'
     );
     const request = JSON.parse(content);
-    
+
     expect(request).toMatchObject({
       id: requestId,
       version: EFRIT_SCHEMA_VERSION,
@@ -72,13 +71,19 @@ describe('EfritClient - Simple Tests', () => {
       content: 'test',
       instance_id: 'test-instance'
     });
-    
-    // Clean up the promise (it will timeout)
-    try {
-      await executePromise;
-    } catch (error) {
-      // Expected timeout
-    }
+
+    // Provide mock response to prevent timeout and request file deletion
+    await writeMockResponse(queueStructure.responsesDir, requestId, {
+      id: requestId,
+      version: EFRIT_SCHEMA_VERSION,
+      status: 'success',
+      result: 'test result',
+      timestamp: new Date().toISOString()
+    });
+
+    // Execute should complete successfully now
+    const response = await executePromise;
+    expect(response.status).toBe('success');
   });
 
   test('should handle response correctly when provided', async () => {
