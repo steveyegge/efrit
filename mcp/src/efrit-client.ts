@@ -247,18 +247,27 @@ export class EfritClient {
       }
     };
     
+    let requestFile: string | undefined;
     try {
-      await this.writeRequest(request);
+      requestFile = await this.writeRequest(request);
       const response = await this.pollForResponse(requestId, timeout);
-      
+
       // Validate response ID matches request
       if (response.id !== requestId) {
-        throw this.createError('ID_MISMATCH', 
+        throw this.createError('ID_MISMATCH',
           `Response ID ${response.id} doesn't match request ID ${requestId}`);
       }
-      
+
+      // Clean up request file after successful response
+      await fs.unlink(requestFile).catch(() => {});
+
       return response;
     } catch (error) {
+      // Clean up request file on error
+      if (requestFile) {
+        await fs.unlink(requestFile).catch(() => {});
+      }
+
       // Add request ID to error context
       if (error instanceof Error && 'code' in error) {
         (error as EfritError).request_id = requestId;
