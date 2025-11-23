@@ -137,6 +137,151 @@
 
 ;; Keep load clean: avoid runtime mutation of interactive forms or warnings here.
 
+;;; Development utilities
+
+(require 'cl-lib)  ; For cl-some
+
+(defun efrit-version ()
+  "Display Efrit version and perform health checks.
+Shows version, installation status, and basic connectivity."
+  (interactive)
+  (require 'efrit-config)
+  (require 'efrit-common)
+  (let* ((version "0.2.0")
+         (api-key (condition-case nil
+                      (efrit-common-get-api-key)
+                    (error nil)))
+         (has-api-key (not (null api-key)))
+         (lisp-dir (file-name-directory (locate-library "efrit")))
+         (test-dir (expand-file-name "../test" lisp-dir))
+         (has-tests (file-directory-p test-dir))
+         (mcp-dir (expand-file-name "../mcp" lisp-dir))
+         (has-mcp (file-directory-p mcp-dir)))
+    (with-current-buffer (get-buffer-create "*Efrit Version*")
+      (erase-buffer)
+      (insert "Efrit AI Coding Assistant\n")
+      (insert "==========================\n\n")
+      (insert (format "Version: %s\n" version))
+      (insert (format "Installation: %s\n\n" (or lisp-dir "unknown")))
+      (insert "Health Check:\n")
+      (insert (format "  [%s] Claude API key configured\n"
+                      (if has-api-key "✓" "✗")))
+      (insert (format "  [%s] Test suite available\n"
+                      (if has-tests "✓" "✗")))
+      (insert (format "  [%s] MCP server available\n"
+                      (if has-mcp "✓" "✗")))
+      (insert "\n")
+      (when (not has-api-key)
+        (insert "⚠ No API key found. Set ANTHROPIC_API_KEY or configure via efrit-config.\n"))
+      (insert "\nQuick Start:\n")
+      (insert "  M-x efrit-chat      - Start interactive chat\n")
+      (insert "  M-x efrit-do        - Execute natural language command\n")
+      (insert "  M-x efrit-run-tests - Run test suite\n")
+      (insert "  M-x efrit-doctor    - Validate installation\n")
+      (display-buffer (current-buffer)))))
+
+(defun efrit-run-tests ()
+  "Run the Efrit test suite interactively.
+Executes all ERT tests and displays results in a buffer."
+  (interactive)
+  (let* ((lisp-dir (file-name-directory (locate-library "efrit")))
+         (test-dir (expand-file-name "../test" lisp-dir))
+         (test-files (directory-files test-dir t "^test-.*\\.el$")))
+    (if (null test-files)
+        (message "No test files found in %s" test-dir)
+      (message "Loading %d test files..." (length test-files))
+      (dolist (test-file test-files)
+        (load test-file nil t))
+      (message "Running tests...")
+      (ert-run-tests-interactively t))))
+
+(defun efrit-doctor ()
+  "Validate Efrit installation and configuration.
+Performs comprehensive checks and suggests fixes for issues."
+  (interactive)
+  (require 'efrit-config)
+  (require 'efrit-common)
+  (let ((issues nil)
+        (warnings nil))
+    (with-current-buffer (get-buffer-create "*Efrit Doctor*")
+      (erase-buffer)
+      (insert "Efrit Installation Doctor\n")
+      (insert "=========================\n\n")
+
+      ;; Check API key
+      (insert "Checking API configuration...\n")
+      (let ((api-key (condition-case nil
+                         (efrit-common-get-api-key)
+                       (error nil))))
+        (if api-key
+            (insert "  ✓ Claude API key configured\n")
+          (insert "  ✗ No API key found\n")
+          (push "No Claude API key configured" issues)))
+
+      ;; Check required files
+      (insert "\nChecking installation files...\n")
+      (let ((required-modules '("efrit-config" "efrit-tools" "efrit-chat"
+                                "efrit-do" "efrit-remote-queue")))
+        (dolist (module required-modules)
+          (if (locate-library module)
+              (insert (format "  ✓ %s.el found\n" module))
+            (insert (format "  ✗ %s.el missing\n" module))
+            (push (format "Missing module: %s" module) issues))))
+
+      ;; Check test infrastructure
+      (insert "\nChecking test infrastructure...\n")
+      (let* ((lisp-dir (file-name-directory (locate-library "efrit")))
+             (test-dir (expand-file-name "../test" lisp-dir)))
+        (if (file-directory-p test-dir)
+            (let ((test-count (length (directory-files test-dir nil "^test-.*\\.el$"))))
+              (insert (format "  ✓ Test directory found (%d tests)\n" test-count)))
+          (insert "  ⚠ Test directory not found\n")
+          (push "Test directory not accessible" warnings)))
+
+      ;; Check MCP server
+      (insert "\nChecking MCP server...\n")
+      (let* ((lisp-dir (file-name-directory (locate-library "efrit")))
+             (mcp-dir (expand-file-name "../mcp" lisp-dir))
+             (mcp-package (expand-file-name "package.json" mcp-dir)))
+        (if (file-exists-p mcp-package)
+            (insert "  ✓ MCP server found\n")
+          (insert "  ⚠ MCP server not found\n")
+          (push "MCP server not installed" warnings)))
+
+      ;; Check Emacs version
+      (insert "\nChecking Emacs version...\n")
+      (if (version<= "28.1" emacs-version)
+          (insert (format "  ✓ Emacs %s (>= 28.1 required)\n" emacs-version))
+        (insert (format "  ✗ Emacs %s (28.1+ required)\n" emacs-version))
+        (push (format "Emacs version too old: %s" emacs-version) issues))
+
+      ;; Summary
+      (insert "\n")
+      (insert "=========================\n")
+      (if (and (null issues) (null warnings))
+          (insert "✓ All checks passed! Efrit is ready to use.\n")
+        (when issues
+          (insert (format "\n✗ Found %d critical issue(s):\n" (length issues)))
+          (dolist (issue issues)
+            (insert (format "  - %s\n" issue))))
+        (when warnings
+          (insert (format "\n⚠ Found %d warning(s):\n" (length warnings)))
+          (dolist (warning warnings)
+            (insert (format "  - %s\n" warning)))))
+
+      ;; Remediation
+      (when issues
+        (insert "\nRemediation:\n")
+        (when (member "No Claude API key configured" issues)
+          (insert "  - Set ANTHROPIC_API_KEY environment variable\n")
+          (insert "    or configure via (setq efrit-api-key \"sk-...\")\n"))
+        (when (cl-some (lambda (s) (string-match "Missing module" s)) issues)
+          (insert "  - Reinstall Efrit or check load-path\n"))
+        (when (cl-some (lambda (s) (string-match "Emacs version" s)) issues)
+          (insert "  - Upgrade to Emacs 28.1 or later\n")))
+
+      (display-buffer (current-buffer)))))
+
 ;; Initialize on load
 (provide 'efrit)
 ;;; efrit.el ends here

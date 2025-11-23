@@ -1,0 +1,122 @@
+name: Efrit CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on Emacs ${{ matrix.emacs_version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        emacs_version:
+          - '28.1'
+          - '28.2'
+          - '29.1'
+          - '29.4'
+          - 'snapshot'
+      fail-fast: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Emacs ${{ matrix.emacs_version }}
+      uses: purcell/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs_version }}
+
+    - name: Verify Emacs version
+      run: |
+        emacs --version
+        echo "Emacs installed successfully"
+
+    - name: Check syntax
+      run: make check
+
+    - name: Lint code style
+      run: make lint
+
+    - name: Compile Emacs Lisp files
+      run: make compile
+
+    - name: Run tests
+      run: make test-simple
+
+    - name: Archive compilation warnings
+      if: always()
+      run: |
+        echo "Compilation completed for Emacs ${{ matrix.emacs_version }}"
+        find lisp -name "*.elc" | wc -l | xargs -I {} echo "Compiled {} files"
+
+  mcp-test:
+    name: Test MCP Server
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: mcp/package-lock.json
+
+    - name: Install MCP dependencies
+      run: cd mcp && npm ci
+
+    - name: Build MCP server
+      run: cd mcp && npm run build
+
+    - name: Run MCP tests
+      run: cd mcp && npm test
+
+    - name: Check MCP artifacts
+      run: |
+        echo "MCP build artifacts:"
+        ls -lh mcp/dist/
+
+  integration-check:
+    name: Integration Check
+    runs-on: ubuntu-latest
+    needs: [test, mcp-test]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Emacs
+      uses: purcell/setup-emacs@master
+      with:
+        version: '29.4'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build everything
+      run: |
+        make compile
+        cd mcp && npm install && npm run build
+
+    - name: Verify installation
+      run: |
+        emacs --batch -L lisp \
+          --eval "(require 'efrit)" \
+          --eval "(message \"Efrit loaded successfully\")" \
+          --eval "(when (not (fboundp 'efrit-version)) (error \"efrit-version not found\"))" \
+          --eval "(when (not (fboundp 'efrit-run-tests)) (error \"efrit-run-tests not found\"))" \
+          --eval "(when (not (fboundp 'efrit-doctor)) (error \"efrit-doctor not found\"))"
+
+    - name: Quick smoke test
+      run: make quick-test
+
+    - name: Integration check passed
+      run: echo "All integration checks passed successfully"
