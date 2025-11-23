@@ -35,7 +35,13 @@
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
+(declare-function efrit-common-build-headers "efrit-common")
+(declare-function efrit-common-get-api-url "efrit-common")
 (declare-function efrit-do "efrit-do" (command))
+
+;; Declare variables from other modules
+(defvar efrit-api-backend)
+(defvar efrit-model-openrouter)
 
 ;;; Customization
 
@@ -243,11 +249,10 @@ Example: \='(\"anthropic-version\" \"anthropic-beta\")"
 ;;; Header customization
 
 (defun efrit--build-headers (api-key)
-  "Build HTTP headers for API requests, respecting customization options."
-  (let ((default-headers `(("x-api-key" . ,api-key)
-                          ("anthropic-version" . "2023-06-01")
-                          ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-                          ("content-type" . "application/json"))))
+  "Build HTTP headers for API requests, respecting customization options.
+Uses `efrit-common-build-headers' for backend-specific headers."
+  (require 'efrit-common)
+  (let ((default-headers (efrit-common-build-headers api-key)))
     ;; Remove excluded headers
     (when efrit-excluded-headers
       (setq default-headers
@@ -259,52 +264,83 @@ Example: \='(\"anthropic-version\" \"anthropic-beta\")"
 
 ;;; API functions
 
+(defun efrit--get-model ()
+  "Get the model name based on current backend."
+  (require 'efrit-common)
+  (if (eq efrit-api-backend 'openrouter)
+      (or (and (boundp 'efrit-model-openrouter) efrit-model-openrouter)
+          "anthropic/claude-sonnet-4")
+    efrit-model))
+
+(defconst efrit--tools-schema
+  '[(("name" . "eval_sexp")
+     ("description" . "Evaluate a Lisp expression and return the result.")
+     ("input_schema" . (("type" . "object")
+                        ("properties" . (("expr" . (("type" . "string")
+                                                    ("description" . "The Elisp expression to evaluate")))))
+                        ("required" . ["expr"]))))
+    (("name" . "get_context")
+     ("description" . "Get context information about the Emacs environment")
+     ("input_schema" . (("type" . "object")
+                        ("properties" . (("request" . (("type" . "string")
+                                                       ("description" . "Optional context request")))))
+                        ("required" . []))))
+    (("name" . "resolve_path")
+     ("description" . "Resolve a path from natural language description")
+     ("input_schema" . (("type" . "object")
+                        ("properties" . (("path_description" . (("type" . "string")
+                                                                ("description" . "Natural language path description")))))
+                        ("required" . ["path_description"]))))]
+  "Tools schema for efrit-chat.")
+
+(defun efrit--convert-tools-for-openrouter (tools)
+  "Convert Anthropic-style TOOLS to OpenRouter/OpenAI format."
+  (vconcat
+   (mapcar (lambda (tool)
+             `(("type" . "function")
+               ("function" . (("name" . ,(cdr (assoc "name" tool)))
+                             ("description" . ,(cdr (assoc "description" tool)))
+                             ("parameters" . ,(cdr (assoc "input_schema" tool)))))))
+           (append tools nil))))
+
+(defun efrit--build-request-data (model system-prompt messages)
+  "Build request data for MODEL with SYSTEM-PROMPT and MESSAGES."
+  (let ((formatted-messages
+         (vconcat
+          (mapcar (lambda (msg)
+                    `(("role" . ,(alist-get 'role msg))
+                      ("content" . ,(alist-get 'content msg))))
+                  messages))))
+    (if (eq efrit-api-backend 'openrouter)
+        ;; OpenRouter format (OpenAI-compatible)
+        `(("model" . ,model)
+          ("max_tokens" . ,efrit-max-tokens)
+          ("temperature" . ,efrit-temperature)
+          ("messages" . ,(vconcat
+                          (when system-prompt
+                            `[(("role" . "system")
+                               ("content" . ,system-prompt))])
+                          formatted-messages))
+          ,@(when efrit-enable-tools
+              `(("tools" . ,(efrit--convert-tools-for-openrouter efrit--tools-schema)))))
+      ;; Anthropic format (default)
+      `(("model" . ,model)
+        ("max_tokens" . ,efrit-max-tokens)
+        ("temperature" . ,efrit-temperature)
+        ,@(when system-prompt
+            `(("system" . ,system-prompt)))
+        ("messages" . ,formatted-messages)
+        ,@(when efrit-enable-tools
+            `(("tools" . ,efrit--tools-schema)))))))
+
 (defun efrit--send-api-request (messages)
-  "Send MESSAGES to the Claude API and handle the response."
+  "Send MESSAGES to the API and handle the response."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
-         (request-data
-         `(("model" . ,efrit-model)
-         ("max_tokens" . ,efrit-max-tokens)
-         ("temperature" . ,efrit-temperature)
-         ,@(when system-prompt
-         `(("system" . ,system-prompt)))
-         ("messages" . ,(vconcat
-         ;; Add the conversation history
-         (mapcar (lambda (msg)
-               `(("role" . ,(alist-get 'role msg))
-                     ("content" . ,(alist-get 'content msg))))
-                 messages)))
-             ,@(when efrit-enable-tools
-                 '(("tools" . [
-                                  ;; Primary tool: Elisp evaluation
-                                  (("name" . "eval_sexp")
-                                  ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("expr" . (("type" . "string")
-                                                                                  ("description" . "The Elisp expression to evaluate")))))
-                                                      ("required" . ["expr"]))))
-
-                                  ;; Context gathering
-                                  (("name" . "get_context")
-                                  ("description" . "Get comprehensive context information about the Emacs environment")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("request" . (("type" . "string")
-                                                                                     ("description" . "Optional context request")))))
-                                                      ("required" . []))))
-
-                                  ;; Path resolution (useful helper)
-                                  (("name" . "resolve_path")
-                                  ("description" . "Resolve a path from natural language description")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("path_description" . (("type" . "string")
-                                                                                             ("description" . "Natural language path description")))))
-                                                      ("required" . ["path_description"]))))
-
-                                  ])))
-                                  ))
+         (current-model (efrit--get-model))
+         (request-data (efrit--build-request-data current-model system-prompt messages))
          (url-request-data
           (encode-coding-string (json-encode request-data) 'utf-8)))
     ;; Send request
@@ -346,18 +382,53 @@ If there's an error, handle it and clean up the buffer."
 
 (defun efrit--parse-api-response ()
   "Parse JSON response from current buffer and return content.
-Returns the content hash-table from the API response, or nil if parsing fails."
+Returns the content hash-table from the API response, or nil if parsing fails.
+Supports both Anthropic and OpenRouter response formats."
   (goto-char (point-min))
   (when (search-forward-regexp "^$" nil t)
     (let* ((json-object-type 'hash-table)
            (json-array-type 'vector)
            (json-key-type 'string)
-           ;; Ensure proper UTF-8 decoding
            (coding-system-for-read 'utf-8)
            (raw-response (decode-coding-region (point) (point-max) 'utf-8 t))
-           (response (json-read-from-string raw-response))
-           (content (gethash "content" response)))
-      content)))
+           (response (json-read-from-string raw-response)))
+      ;; Handle OpenRouter format (has "choices" array)
+      (if (gethash "choices" response)
+          (efrit--parse-openrouter-response response)
+        ;; Anthropic format: content array directly
+        (gethash "content" response)))))
+
+(defun efrit--parse-openrouter-response (response)
+  "Parse OpenRouter/OpenAI format RESPONSE to Anthropic-style content."
+  (let* ((choices (gethash "choices" response))
+         (result-items (vector)))
+    (when (and choices (> (length choices) 0))
+      (let* ((choice (aref choices 0))
+             (message (gethash "message" choice))
+             (content (gethash "content" message))
+             (tool-calls (gethash "tool_calls" message)))
+        ;; Convert text content
+        (when content
+          (let ((text-item (make-hash-table :test 'equal)))
+            (puthash "type" "text" text-item)
+            (puthash "text" content text-item)
+            (setq result-items (vconcat result-items (vector text-item)))))
+        ;; Convert tool_calls
+        (when tool-calls
+          (dotimes (i (length tool-calls))
+            (let* ((tool-call (aref tool-calls i))
+                   (function (gethash "function" tool-call))
+                   (name (gethash "name" function))
+                   (arguments (gethash "arguments" function))
+                   (tool-item (make-hash-table :test 'equal))
+                   (parsed-input (condition-case nil
+                                     (json-read-from-string arguments)
+                                   (error (make-hash-table :test 'equal)))))
+              (puthash "type" "tool_use" tool-item)
+              (puthash "name" name tool-item)
+              (puthash "input" parsed-input tool-item)
+              (setq result-items (vconcat result-items (vector tool-item))))))))
+    result-items))
 
 (defun efrit--detect-incomplete-task (content message-text)
   "Detect if CONTENT represents an incomplete multi-step task.
@@ -698,7 +769,7 @@ Returns the processed message text with tool results."
   ;; Show welcome message
   (efrit--display-message
    (format "Efrit initialized. Enter your message below and press Enter to send.\nUse Shift+Enter for newlines. Using model: %s"
-           efrit-model)
+           (efrit--get-model))
    'assistant)
 
   ;; Insert prompt
@@ -748,7 +819,7 @@ Returns the processed message text with tool results."
   
   ;; Show welcome message
   (efrit--display-message
-   (format "Efrit Chat Ready - Using model: %s" efrit-model)
+   (format "Efrit Chat Ready - Using model: %s" (efrit--get-model))
    'assistant)
   
   (efrit--insert-prompt))
