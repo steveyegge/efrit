@@ -157,14 +157,14 @@ export class EfritMcpServer {
       "efrit_execute",
       {
         title: "Execute Efrit Command",
-        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat). AI-friendly: accepts both string and number formats for timeout, ignores extra fields.",
-        inputSchema: z.object({
+        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat). AI-friendly: accepts both string and number formats for timeout.",
+        inputSchema: {
           type: z.enum(['command', 'eval', 'chat']).describe('Type of execution: command, eval, or chat'),
           content: z.string().describe('Command, elisp code, or chat message to execute'),
           instance_id: z.string().optional().describe('Target Efrit instance ID (uses default if not specified)'),
           return_context: z.coerce.boolean().optional().describe('Whether to return Emacs context (buffers, modes, etc.)'),
           timeout: z.coerce.number().positive().finite().optional().describe('Timeout override in seconds (accepts number or string like "30")')
-        }).passthrough()  // AI-friendly: ignore extra fields Claude might send
+        }
       },
       async (params: EfritExecuteParams) => {
         try {
@@ -230,9 +230,9 @@ export class EfritMcpServer {
       {
         title: "List Efrit Instances",
         description: "List all configured Efrit instances with their status and optional queue statistics.",
-        inputSchema: z.object({
+        inputSchema: {
           include_stats: z.coerce.boolean().optional().describe('Include queue statistics for each instance')
-        }).passthrough()  // AI-friendly: ignore extra fields
+        }
       },
       async (params: EfritListInstancesParams) => {
         try {
@@ -311,9 +311,9 @@ export class EfritMcpServer {
       {
         title: "Get Queue Statistics",
         description: "Get detailed queue statistics for a specific Efrit instance.",
-        inputSchema: z.object({
+        inputSchema: {
           instance_id: z.string().optional().describe('Target instance ID (uses default if not specified)')
-        }).passthrough()  // AI-friendly: ignore extra fields
+        }
       },
       async (params: EfritGetQueueStatsParams) => {
         try {
