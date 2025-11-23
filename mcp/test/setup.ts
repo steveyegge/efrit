@@ -114,7 +114,8 @@ export async function assertFileNotExists(filepath: string): Promise<void> {
     await fs.access(filepath);
     throw new Error(`Expected file to not exist: ${filepath}`);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+    // Use duck-typing instead of instanceof for Jest/ESM compatibility
+    if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'ENOENT') {
       return; // File doesn't exist as expected
     }
     throw error;

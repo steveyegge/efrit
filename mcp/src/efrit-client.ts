@@ -224,14 +224,16 @@ export class EfritClient {
         return response;
       } catch (error) {
         // If file doesn't exist yet, continue polling
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        // Note: Use duck-typing instead of instanceof check because Jest/ESM
+        // environment can have multiple Error classes from different contexts
+        if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'ENOENT') {
           await new Promise(resolve => setTimeout(resolve, pollInterval));
 
           // Exponential backoff (Oracle recommendation)
           pollInterval = Math.min(pollInterval * 2.0, maxInterval);
           continue;
         }
-        
+
         // Other errors are thrown immediately
         throw error;
       }
