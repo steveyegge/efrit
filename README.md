@@ -76,6 +76,37 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 
 4. **Restart Emacs** and test with `M-x efrit-chat`
 
+### Use with use-package + straight.el
+
+Efrit is structured for lazy loading with `use-package`. Example setup using a local checkout and a custom data directory:
+
+```elisp
+(use-package efrit
+  :straight (:type git :host github :repo "steveyegge/efrit" :files ("lisp/*.el"))
+  :init
+  ;; Set data directory before loading to avoid side effects
+  (setq efrit-data-directory (expand-file-name "~/efrit-data"))
+  ;; Optional: disable auto-initialize to control when directories are created
+  ;; (setq efrit-auto-initialize nil)
+  :commands (efrit-chat efrit efrit-do efrit-agent-run
+             efrit-remote-queue-start efrit-remote-queue-status)
+  :config
+  ;; Bind a convenient prefix (optional)
+  (setq efrit-enable-global-keymap t)
+  (efrit-setup-keybindings))
+```
+
+Or, if you vendored Efrit locally:
+
+```elisp
+(add-to-list 'load-path (expand-file-name "~/repos/3p/efrit/lisp"))
+(setq efrit-data-directory (expand-file-name "~/efrit-data"))
+(require 'efrit)
+;; Optional keybindings
+;; (setq efrit-enable-global-keymap t)
+;; (efrit-setup-keybindings)
+```
+
 ### Advanced Configuration
 
 **Enterprise/Proxy Setup** - Configure custom API endpoints:
@@ -85,8 +116,8 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 (setq efrit-api-base-url "https://proxy.company.com/anthropic")
 
 ;; Dynamic base URL (function)
-(setq efrit-api-base-url 
-  (lambda () 
+(setq efrit-api-base-url
+  (lambda ()
     (if (company-vpn-connected-p)
         "https://internal-proxy.company.com/anthropic"
       "https://api.anthropic.com")))

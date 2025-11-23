@@ -42,67 +42,8 @@
 
 ;;; Code:
 
-;; Ensure the efrit directory is in load-path
-(eval-and-compile
-  (let ((efrit-dir (file-name-directory (or load-file-name buffer-file-name default-directory))))
-    (add-to-list 'load-path efrit-dir)
-    (message "Added to load-path: %s" efrit-dir)))
-
-;; Load the core implementation in dependency order
-(condition-case err
-    (progn
-      ;; Load dependencies first
-      (require 'json)
-      (require 'url)
-      (require 'auth-source)
-      
-      ;; Load core modules in dependency order (simplified for reliability)
-      (require 'efrit-config)     ; Configuration management - must be first
-      (require 'efrit-common)     ; Common utilities
-      (require 'efrit-log)        ; Logging system
-      (require 'efrit-tools)      ; Core tools
-      
-      ;; Load essential chat functionality
-      (condition-case err
-          (progn
-            (require 'efrit-multi-turn)
-            (require 'efrit-chat))
-        (error 
-         (message "Warning: Could not load chat modules: %s" (error-message-string err))))
-      
-      ;; Load command execution
-      (condition-case err
-          (require 'efrit-do)
-        (error 
-         (message "Warning: Could not load efrit-do: %s" (error-message-string err))))
-      
-      ;; Load dashboard and session tracking  
-      (condition-case err
-          (progn
-            (require 'efrit-session-tracker)
-            (require 'efrit-dashboard))
-        (error 
-         (message "Warning: Could not load dashboard modules: %s" (error-message-string err))))
-      
-      ;; Load optional advanced modules
-      (condition-case err
-          (progn
-            (require 'efrit-context)
-            (require 'efrit-chat-streamlined)
-            (require 'efrit-async)
-            (require 'efrit-unified)
-            (require 'efrit-remote-queue)
-            (require 'efrit-progress)
-            (require 'efrit-performance)
-            (require 'efrit-protocol))
-        (error 
-         (message "Warning: Some optional modules failed to load: %s" (error-message-string err))))
-      
-      (message "Efrit modules loaded successfully"))
-  (error 
-   (message "Error loading efrit modules: %s" (error-message-string err))
-   (message "Load-path: %s" load-path)
-   (message "Available features: %s" features)))
+;; Keep this file side-effect free for use-package/straight users.
+;; Do not modify load-path or eagerly require heavy subsystems here.
 
 ;; Tests are not loaded by default, but available when needed
 ;; (require 'efrit-tests)
@@ -113,7 +54,7 @@
 (defalias 'efrit-start 'efrit-chat
   "Start a new Efrit chat session (alias for efrit-chat).")
 
-;; Global keymap for Efrit
+;; Global keymap for Efrit (not bound by default)
 (defvar efrit-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
@@ -131,8 +72,19 @@
     map)
   "Keymap for Efrit commands.")
 
-;; Set up the global keybinding
-(global-set-key (kbd "C-c C-e") efrit-keymap)
+;; Optional global keybinding (off by default for use-package ergonomics)
+(defcustom efrit-enable-global-keymap nil
+  "If non-nil, bind `C-c C-e` to `efrit-keymap` at load time."
+  :type 'boolean
+  :group 'efrit)
+
+(defun efrit-setup-keybindings ()
+  "Bind the global Efrit key prefix `C-c C-e`."
+  (interactive)
+  (global-set-key (kbd "C-c C-e") efrit-keymap))
+
+(when efrit-enable-global-keymap
+  (efrit-setup-keybindings))
 
 ;; Initialize efrit
 (defun efrit-initialize ()
@@ -183,23 +135,7 @@
 ;;;###autoload
 (autoload 'efrit-async-cancel "efrit-async" "Cancel an async operation" t)
 
-;; Verify that key functions are available
-(unless (and (fboundp 'efrit-chat) (fboundp 'efrit-do))
-  (message "Warning: Some efrit functions may not be available. Check for errors above."))
-
-;; Explicitly make commands available when loading directly
-(when (and (fboundp 'efrit-do) (not (commandp 'efrit-do)))
-  (put 'efrit-do 'interactive-form '(interactive 
-                                     (list (read-string "Command: " nil 'efrit-do-history)))))
-
-(when (and (fboundp 'efrit-chat) (not (commandp 'efrit-chat)))
-  (put 'efrit-chat 'interactive-form '(interactive)))
-
-(when (and (fboundp 'efrit-do-to-chat) (not (commandp 'efrit-do-to-chat)))
-  (put 'efrit-do-to-chat 'interactive-form '(interactive "P")))
-
-(when (and (fboundp 'efrit-do-show-context) (not (commandp 'efrit-do-show-context)))
-  (put 'efrit-do-show-context 'interactive-form '(interactive)))
+;; Keep load clean: avoid runtime mutation of interactive forms or warnings here.
 
 ;; Initialize on load
 (provide 'efrit)
