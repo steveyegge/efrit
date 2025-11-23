@@ -91,6 +91,122 @@ bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
 3. **Create an issue if needed**: `bd create "Your task" -t task -p 2 --json`
 4. **Claim the issue**: `bd update <id> --status in_progress`
 
+### The Toolchest: Choosing the Right Approach
+
+As an AI agent working on Efrit, you have three primary ways to interact with the system. **Choose the right tool for the task:**
+
+#### 1. Direct File Access (Read/Edit/Write tools)
+**Use for:** Modifying source code, documentation, configuration files
+
+**When:**
+- Editing `.el` files in `lisp/`
+- Updating documentation (`.md` files)
+- Reading source code to understand implementation
+- Making any changes to the codebase itself
+
+**Example:**
+```
+Read lisp/efrit-do.el
+Edit lisp/efrit-do.el (modify specific function)
+Write test/new-test.el (create new file)
+```
+
+**Why:** Most direct, efficient for code changes, no indirection
+
+#### 2. Bash + Batch Emacs
+**Use for:** Compilation, unit tests, one-off elisp evaluation
+
+**When:**
+- Compiling elisp files (`make compile`)
+- Running ERT unit tests
+- Quick elisp evaluation to check behavior
+- Verifying code compiles without errors
+
+**Example:**
+```bash
+# Compile all elisp files
+make compile
+
+# Run specific test file
+emacs --batch -L lisp -l test/test-remote-queue-validation.el -f ert-run-tests-batch-and-exit
+
+# Quick elisp evaluation
+emacs --batch --eval "(progn (require 'json) (print (json-encode '((a . 1)))))"
+```
+
+**Why:** Fast, synchronous, familiar Unix pipeline model, good for CI/CD
+
+#### 3. Remote Queue System (AI-to-AI Communication)
+**Use for:** Integration testing, protocol validation, end-to-end testing
+
+**When:**
+- Testing changes to `efrit-remote-queue.el`
+- Validating request/response protocol (version, status, etc.)
+- Testing multi-turn interactions
+- Simulating real AI-to-AI communication scenarios
+- Verifying MCP integration works correctly
+
+**Example:**
+```bash
+# 1. Start Efrit daemon (if not already running)
+emacs --daemon=efrit-test --load lisp/dev/efrit-autonomous-startup.el
+
+# 2. Send a test request
+cat > ~/.emacs.d/.efrit/queues/requests/test_$(date +%s).json <<EOF
+{
+  "id": "test-validation-$(date +%s)",
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(+ 1 2)",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# 3. Wait briefly for processing
+sleep 0.5
+
+# 4. Check the response
+ls -ltr ~/.emacs.d/.efrit/queues/responses/ | tail -1
+cat ~/.emacs.d/.efrit/queues/responses/resp_test-*.json
+
+# 5. Verify response has correct structure (version, status, result, timestamp)
+```
+
+**Why:** Tests the complete request/response cycle, validates protocol compatibility, catches integration issues that unit tests miss
+
+**Queue directories:**
+- `~/.emacs.d/.efrit/queues/requests/` - Your JSON requests go here
+- `~/.emacs.d/.efrit/queues/processing/` - Currently being processed
+- `~/.emacs.d/.efrit/queues/responses/` - Completed responses appear here
+- `~/.emacs.d/.efrit/queues/archive/` - Historical data
+
+#### Decision Matrix
+
+| Task | Tool | Example |
+|------|------|---------|
+| Edit source code | Direct file access | `Edit lisp/efrit-do.el` |
+| Compile code | Bash | `make compile` |
+| Run unit tests | Bash + batch | `emacs --batch -l test/foo.el -f ert...` |
+| Test protocol changes | Remote queue | Send JSON to `queues/requests/`, read `queues/responses/` |
+| Validate request/response format | Remote queue | Check version/status fields in actual responses |
+| Test multi-turn interaction | Remote queue | Send multiple sequential requests |
+| Quick elisp check | Bash + batch | `emacs --batch --eval "(+ 1 2)"` |
+
+#### Recommended Workflow
+
+**When making changes to Efrit:**
+1. **Edit code** using direct file access (Read/Edit/Write)
+2. **Compile** using `make compile` (Bash)
+3. **Unit test** using `emacs --batch` (Bash)
+4. **Integration test** using remote queue (if protocol-related changes)
+5. **Commit** using git (Bash)
+
+**When you modify `efrit-remote-queue.el` or protocol-related code:**
+- ALWAYS validate with the remote queue system
+- This ensures request/response format is correct
+- Catches version compatibility issues, status enum problems, etc.
+- Unit tests alone won't catch protocol integration bugs
+
 ### Code Standards
 
 - **Emacs Lisp conventions**: Use `lexical-binding: t` in all files
@@ -98,21 +214,6 @@ bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
 - **Documentation**: Docstrings required for all functions
 - **NO client-side intelligence**: If you add pattern matching or decision logic, you've violated the architecture
 - **File locations**: All source code in `lisp/`, tests in `test/`, docs in `docs/`
-
-### Testing
-
-```bash
-# Compile all elisp files
-make compile
-
-# Run tests (when fixed - see mcp-fmw)
-make test
-
-# Run specific test file
-emacs --batch -L lisp -l test/test-file.el -f ert-run-tests-batch-and-exit
-```
-
-**IMPORTANT**: Test infrastructure is currently broken. See issue `mcp-fmw` for details.
 
 ### Common Tasks
 
@@ -150,6 +251,29 @@ bd create "Bug discovered" -t bug -p 1 --deps discovered-from:<parent-id> --json
 make compile  # Byte-compile elisp
 make test     # Run tests (when working)
 # File P0 issues if builds are broken
+```
+
+**Optional: Queue-based validation** (if you modified protocol-related code):
+```bash
+# If you changed efrit-remote-queue.el, MCP, or protocol code:
+# 1. Start daemon if needed
+emacs --daemon=efrit-test --load lisp/dev/efrit-autonomous-startup.el
+
+# 2. Send validation request
+cat > ~/.emacs.d/.efrit/queues/requests/final_check_$(date +%s).json <<EOF
+{
+  "id": "final-validation-$(date +%s)",
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(message \"Protocol validation OK\")",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# 3. Verify response structure is correct
+sleep 0.5
+cat ~/.emacs.d/.efrit/queues/responses/resp_final-*.json | jq '.'
+# Check: version, status, result, timestamp fields present and valid
 ```
 
 ### 3. Update Beads Issues
