@@ -85,6 +85,20 @@ If nil, uses the default location in the efrit data directory."
     (started-at . nil))
   "Statistics for queue operations.")
 
+;;; Protocol constants
+
+(defconst efrit-remote-queue-schema-version "1.0.0"
+  "Current schema version for request/response protocol.
+Must match EFRIT_SCHEMA_VERSION in mcp/src/types.ts.")
+
+(defconst efrit-remote-queue-valid-statuses '("success" "error" "timeout")
+  "Valid response status values.
+Must match EfritResponseStatus in mcp/src/types.ts.")
+
+(defconst efrit-remote-queue-valid-request-types '("command" "chat" "eval")
+  "Valid request type values.
+Must match EfritRequestType in mcp/src/types.ts.")
+
 ;;; Directory management
 
 (defun efrit-remote-queue--get-base-directory ()
@@ -196,29 +210,56 @@ If nil, uses the default location in the efrit data directory."
 
 ;;; Request processing
 
+(defun efrit-remote-queue--check-version-compatibility (version)
+  "Check if VERSION is compatible with current schema version.
+Currently enforces exact version match, but could be extended
+to support semantic versioning compatibility rules."
+  (string= version efrit-remote-queue-schema-version))
+
+(defun efrit-remote-queue--validate-status (status)
+  "Validate that STATUS is one of the allowed response status values.
+Returns STATUS if valid, signals an error otherwise."
+  (unless (member status efrit-remote-queue-valid-statuses)
+    (error "Invalid response status: %s (must be one of: %s)"
+           status
+           (mapconcat 'identity efrit-remote-queue-valid-statuses ", ")))
+  status)
+
 (defun efrit-remote-queue--validate-request (request)
   "Validate a REQUEST object. Return (valid-p . error-message)."
   (cond
    ((not (hash-table-p request))
     (cons nil "Request is not a valid JSON object"))
-   
+
    ((not (gethash "id" request))
     (cons nil "Request missing required 'id' field"))
-   
+
+   ((not (gethash "version" request))
+    (cons nil "Request missing required 'version' field"))
+
+   ((not (efrit-remote-queue--check-version-compatibility (gethash "version" request)))
+    (cons nil (format "Incompatible schema version: %s (expected %s)"
+                      (gethash "version" request)
+                      efrit-remote-queue-schema-version)))
+
    ((not (gethash "content" request))
     (cons nil "Request missing required 'content' field"))
-   
-   ((not (member (gethash "type" request) '("command" "chat" "eval")))
-    (cons nil "Request 'type' must be one of: command, chat, eval"))
-   
+
+   ((not (member (gethash "type" request) efrit-remote-queue-valid-request-types))
+    (cons nil (format "Request 'type' must be one of: %s"
+                      (mapconcat 'identity efrit-remote-queue-valid-request-types ", "))))
+
    (t (cons t nil))))
 
 (defun efrit-remote-queue--create-response (request-id status &optional result error execution-time context)
-  "Create a response hash table for REQUEST-ID."
+  "Create a response hash table for REQUEST-ID.
+STATUS must be one of the valid response status values.
+Includes schema version for protocol compatibility."
   (let ((response (make-hash-table :test 'equal)))
     (puthash "id" request-id response)
+    (puthash "version" efrit-remote-queue-schema-version response)
     (puthash "timestamp" (format-time-string "%Y-%m-%dT%H:%M:%SZ") response)
-    (puthash "status" status response)
+    (puthash "status" (efrit-remote-queue--validate-status status) response)
     (when result (puthash "result" result response))
     (when error (puthash "error" error response))
     (when execution-time (puthash "execution_time" execution-time response))
