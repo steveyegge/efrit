@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean
 
 # Default target
 all: compile
@@ -37,7 +37,16 @@ help:
 	@echo "Testing:"
 	@echo "  test        - Run all tests"
 	@echo "  test-simple - Run basic tests only"
+	@echo "  test-loop   - Test TODO loop detection (safe)"
+	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
 	@echo "  check       - Check syntax and compilation"
+	@echo ""
+	@echo "MCP Server:"
+	@echo "  mcp-install - Install MCP server dependencies"
+	@echo "  mcp-build   - Build MCP server"
+	@echo "  mcp-test    - Run MCP server tests"
+	@echo "  mcp-start   - Start MCP server"
+	@echo "  mcp-clean   - Clean MCP server artifacts"
 	@echo ""
 	@echo "Development:"
 	@echo "  lint        - Check code style and conventions"
@@ -49,16 +58,26 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/efrit-config.elc lisp/efrit-tools.elc $(ELC_FILES)
+compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
 
-# Dependency hierarchy: efrit-config first, then efrit-tools, then everything else
-lisp/efrit-tools.elc: lisp/efrit-config.elc
-lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc
-lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc
+# Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
+lisp/efrit-log.elc: lisp/efrit-config.elc
+lisp/efrit-common.elc: lisp/efrit-config.elc
+lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc
+lisp/efrit-debug.elc: lisp/efrit-log.elc
+lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc lisp/efrit-common.elc
+lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
 lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc
-lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-agent.elc: lisp/efrit-tools.elc
+lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-tools.elc
+lisp/efrit-protocol.elc: lisp/efrit-config.elc
+lisp/efrit-performance.elc: lisp/efrit-config.elc
+lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
+lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
+lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc lisp/efrit-session-tracker.elc
+lisp/efrit-agent.elc: lisp/efrit-tools.elc lisp/efrit-log.elc lisp/efrit-common.elc
+lisp/efrit-async.elc: lisp/efrit-common.elc lisp/efrit-context.elc lisp/efrit-protocol.elc lisp/efrit-performance.elc lisp/efrit-progress.elc
+lisp/efrit-session-tracker.elc: lisp/efrit-config.elc
+lisp/efrit-dashboard.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/efrit-command.elc: lisp/efrit-tools.elc
 lisp/efrit-autonomous-startup.elc: lisp/efrit-config.elc
 lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
@@ -66,7 +85,7 @@ lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
-		--eval "(add-to-list 'load-path \"./lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		-f batch-byte-compile $<
 
@@ -101,6 +120,20 @@ test-simple:
 	@echo "Running basic tests..."
 	@cd test && ./efrit-test-simple.sh
 
+test-loop: compile
+	@echo "Testing TODO loop detection (safe, no API calls)..."
+	@$(EMACS_BATCH) -L lisp -l test/test-todo-loop-debug.el
+	@echo "✅ TODO loop test completed"
+
+test-integration: compile
+	@echo "⚠️  WARNING: This will make REAL API calls and BURN TOKENS!"
+	@echo "⚠️  Make sure you have Claude API credits available."
+	@echo -n "Press Enter to continue or Ctrl+C to cancel: "
+	@read dummy
+	@echo "🚀 Running REAL integration test..."
+	@$(EMACS_BATCH) -L lisp -l test/test-real-integration.el
+	@echo "✅ Integration test completed"
+
 # Debug build (with extra information)
 debug:
 	@echo "Building with debug information..."
@@ -110,8 +143,33 @@ debug:
 		--eval "(setq byte-compile-verbose t)" \
 		-f batch-byte-compile $(EL_FILES)
 
+# MCP Server targets
+mcp-install:
+	@echo "Installing MCP server dependencies..."
+	@cd mcp && npm install
+
+mcp-build: mcp-install
+	@echo "Building MCP server..."
+	@cd mcp && npm run build
+
+mcp-test: mcp-build
+	@echo "Running MCP server tests..."
+	@cd mcp && npm test
+
+mcp-start: mcp-build
+	@echo "Starting MCP server..."
+	@cd mcp && npm start
+
+mcp-clean:
+	@echo "Cleaning MCP server artifacts..."
+	@rm -rf mcp/node_modules mcp/dist mcp/coverage
+
+# Update existing targets to include MCP
+build: compile mcp-build
+test: test-simple mcp-test
+
 # Cleaning
-clean:
+clean: mcp-clean
 	@echo "Removing compiled files..."
 	@rm -f lisp/*.elc
 	@rm -f lisp/*.elc~

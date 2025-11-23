@@ -45,11 +45,27 @@
 (require 'cl-lib)
 (require 'auth-source)
 
+;; Load efrit-log if it exists, otherwise use minimal logging
+(declare-function efrit-log "efrit-log")
+(condition-case nil
+    (require 'efrit-log)
+  (error 
+   (defun efrit-log (level format-string &rest args)
+     "Fallback logging function when efrit-log is not available."
+     (when (memq level '(warn error))
+       (message (apply #'format format-string args))))))
+
 ;; Declare functions from efrit-do.el to avoid warnings
 (declare-function efrit-do-todo-item-status "efrit-do")
 (declare-function efrit-do-todo-item-priority "efrit-do")
 (declare-function efrit-do-todo-item-content "efrit-do")
 (declare-function efrit-do-todo-item-id "efrit-do")
+
+;; Declare functions from efrit-common.el
+(declare-function efrit-common-get-api-key "efrit-common")
+(declare-function efrit-common-truncate-string "efrit-common")
+
+;; efrit-log is loaded above or defined as fallback
 
 ;;; Customization
 
@@ -60,34 +76,10 @@
 
 ;;; Logging System
 
-(defcustom efrit-log-level 'info
-  "Minimum level to actually emit log messages.
-Valid levels are: debug, info, warn, error."
-  :type '(choice (const :tag "Debug" debug)
-                 (const :tag "Info"  info)
-                 (const :tag "Warn"  warn)
-                 (const :tag "Error" error))
-  :group 'efrit-tools)
+;; Logging is now handled by efrit-log.el - use (efrit-log 'level ...) for logging
 
-(defvar efrit-log-levels '(debug info warn error)
-  "Ordered list of log levels from most to least verbose.")
 
-(defmacro efrit-log (level fmt &rest args)
-  "Log a formatted message at LEVEL.
-LEVEL is one of: debug info warn error."
-  (declare (indent 1))
-  `(when (>= (or (seq-position efrit-log-levels ,level) 3)
-             (or (seq-position efrit-log-levels efrit-log-level) 1))
-     (let ((msg (format ,fmt ,@args)))
-       (message "Efrit[%s] %s" (upcase (symbol-name ,level)) msg)
-       ;; Optional file logging if available
-       (condition-case nil
-           (when-let* ((log-file (and (fboundp 'efrit-config-log-file)
-                                    (efrit-config-log-file "efrit.log"))))
-             (with-temp-buffer
-               (insert (format-time-string "[%F %T] ") msg "\n")
-               (append-to-file (point-min) (point-max) log-file)))
-         (error nil)))))
+;; Security system removed - was causing more problems than it solved
 
 (defcustom efrit-tools-sexp-evaluation-enabled t
   "Whether to allow the assistant to evaluate Lisp expressions."
@@ -106,15 +98,19 @@ LEVEL is one of: debug info warn error."
 
 ;;; Utility functions
 
+(defun efrit-tools--elisp-results-or-empty (result)
+  "Return an empty string for nil or blank RESULT, otherwise format it."
+  (if (or (null result) 
+          (equal result "") 
+          (equal result "nil")
+          (and (stringp result) (string-empty-p (string-trim result))))
+      ""
+    (format "%S" result)))
+
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
-                                            :user "personal"
-                                            :require '(:secret))))
-         (secret (plist-get auth-info :secret)))
-    (if (functionp secret)
-        (funcall secret)
-      secret)))
+  (require 'efrit-common)
+  (efrit-common-get-api-key))
 
 ;;; Core Elisp Evaluation
 
@@ -129,28 +125,69 @@ LEVEL is one of: debug info warn error."
           (error "Trailing data after expression: %s" trailing))))
     sexp))
 
+(defun efrit-tools--parse-sexp-string (sexp-string)
+  "Parse SEXP-STRING into a Lisp expression. Returns the parsed sexp."
+  (with-temp-buffer
+    (insert sexp-string)
+    (goto-char (point-min))
+    (condition-case parse-err
+        (car (read-from-string sexp-string))
+      (error
+       (error "Invalid Lisp syntax: %s" (error-message-string parse-err))))))
+
+(defun efrit-tools--eval-with-context (sexp)
+  "Evaluate SEXP and return result data with context."
+  (let* ((result (eval sexp t))
+         (result-string (format "%S" result)))
+    ;; Truncate if result is too long
+    (when (and result-string 
+               (> (length result-string) efrit-tools-sexp-max-output-length))
+      (setq result-string
+            (concat (substring result-string 0 efrit-tools-sexp-max-output-length) "...")))
+    
+    (list :success t
+          :result result-string
+          :input (format "%S" sexp)
+          :context (condition-case _
+                      (efrit-tools-get-buffer-context)
+                    (error "Operation failed")))))
+
+(defun efrit-tools--handle-eval-error (err sexp-string)
+  "Handle evaluation error ERR for SEXP-STRING. Returns error data."
+  (efrit-log 'error (format "Eval error in %s: %s" sexp-string (error-message-string err)))
+  (list :success nil
+        :error (format "%s: %s" 
+                      (pcase (car err)
+                        (`void-function "Function not defined")
+                        (`wrong-number-of-arguments "Wrong number of arguments") 
+                        (`wrong-type-argument "Wrong type of argument")
+                        (`arith-error "Arithmetic error")
+                        (_ "Error"))
+                      (error-message-string err))
+        :input sexp-string))
+
+;;; Security Sandboxing Configuration
+
+;; Security system completely removed
+
+(defun efrit-tools--extract-function-calls (sexp)
+  "Extract all function calls from SEXP recursively."
+  (let ((functions '()))
+    (cond
+     ((and (listp sexp) (symbolp (car sexp)))
+      (push (car sexp) functions)
+      (dolist (arg (cdr sexp))
+        (setq functions (append functions (efrit-tools--extract-function-calls arg)))))
+     ((listp sexp)
+      (dolist (item sexp)
+        (setq functions (append functions (efrit-tools--extract-function-calls item))))))
+    functions))
+
+;; Security validation completely removed
+
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
-
-This is the primary function for executing Elisp code in the Emacs environment.
-It handles all aspects of evaluation including:
-
-1. Parsing the string into a valid Lisp expression
-2. Evaluating it with lexical binding
-3. Providing detailed error information if evaluation fails
-4. Formatting and truncating the result appropriately
-
-The function implements extensive error handling for various error types
-and ensures that evaluation failures won't crash the agent.
-
-If `efrit-tools-sexp-evaluation-enabled' is nil, evaluation will be rejected.
-Results longer than `efrit-tools-sexp-max-output-length' will be truncated.
-
-Arguments:
-  SEXP-STRING - String containing a valid Lisp expression to evaluate
-
-Return:
-  A string containing either the formatted result or an error message."
+Handles parsing, evaluation, error handling, and result formatting."
   ;; Check if evaluation is enabled
   (unless efrit-tools-sexp-evaluation-enabled
     (error "Lisp expression evaluation is disabled"))
@@ -159,91 +196,53 @@ Return:
   (when (or (not sexp-string) (string-empty-p (string-trim sexp-string)))
     (error "Cannot evaluate empty Lisp expression"))
   
+  ;; Security check removed - trust Claude to do the right thing
+  
   (efrit-log 'debug "Evaluating: %s" sexp-string)
   
-  (let ((result-data nil))
-    (condition-case err
-        (let* ((sexp-and-pos (with-temp-buffer
-                              (insert sexp-string)
-                              (goto-char (point-min))
-                              (condition-case parse-err
-                              (read-from-string sexp-string)
-                              (error
-                                 (error "Invalid Lisp syntax: %s" 
-                                       (error-message-string parse-err))))))
-               (sexp (car sexp-and-pos))
-               ;; Use lexical binding for evaluation
-               (result (eval sexp t))
-               (result-string (format "%S" result)))
-          
-          ;; Truncate if result is too long
-          (setq result-string
-                (if (and result-string 
-                         (> (length result-string) efrit-tools-sexp-max-output-length))
-                    (concat (substring result-string 0 efrit-tools-sexp-max-output-length) "...")
-                  result-string))
-          
-          ;; Build structured result data with context
-          (efrit-log 'debug "Eval success: %s"
-              (if (> (length result-string) 100)
-            (concat (substring result-string 0 100) "...")
-          result-string))
-          (setq result-data 
-          (list :success t
-          :result result-string
-                       :input sexp-string
-                       :context (condition-case _
-                                   (efrit-tools-get-buffer-context)
-                                 (error "Operation failed")))))
-      
-      ;; Error handling for various error types
-      (invalid-read-syntax
-       (efrit-log 'error "Eval syntax error in %s: %s" sexp-string (error-message-string err))
-       (setq result-data
-             (list :success nil
-                   :error (format "Invalid Lisp syntax: %s" (error-message-string err))
-                   :input sexp-string)))
-      
-      (void-function
-       (setq result-data
-             (list :success nil
-                   :error (format "Function not defined: %s" (error-message-string err))
-                   :input sexp-string)))
-      
-      (wrong-number-of-arguments
-       (setq result-data
-             (list :success nil
-                   :error (format "Wrong number of arguments: %s" (error-message-string err))
-                   :input sexp-string)))
-      
-      (wrong-type-argument
-      (setq result-data
-      (list :success nil
-      :error (format "Wrong type of argument: %s" (error-message-string err))
-      :input sexp-string)))
-      
-      (arith-error
-        (setq result-data
-              (list :success nil
-                    :error (format "Error: %s" (error-message-string err))
-                    :input sexp-string)))
-       
-       (error
-       (setq result-data
-             (list :success nil
-                   :error (format "Error: %s" (error-message-string err))
-                   :input sexp-string
-                   :context (condition-case _
-                              (efrit-tools-get-buffer-context)
-                            (error "Operation failed"))))))
+  (let ((result-data (condition-case err
+                         (efrit-tools--eval-with-context 
+                          (efrit-tools--parse-sexp-string sexp-string))
+                       (error (efrit-tools--handle-eval-error err sexp-string)))))
     
     ;; Return formatted result
     (if (plist-get result-data :success)
         (format "%s" (plist-get result-data :result))
-      (format "Error evaluating %s: %s" 
-              (substring (plist-get result-data :input) 0 
-                        (min (length (plist-get result-data :input)) 30))
-              (plist-get result-data :error)))))
+      (progn 
+        (require 'efrit-common)
+        (format "Error evaluating %s: %s" 
+                (efrit-common-truncate-string (plist-get result-data :input) 30)
+                (plist-get result-data :error))))))
+
+;;; Safe Text Manipulation Functions
+
+(defun efrit-tools-reverse-lines (text)
+  "Safely reverse the order of lines in TEXT.
+Returns the text with lines in reverse order."
+  (when text
+    (let ((lines (split-string text "\n" t)))
+      (mapconcat 'identity (reverse lines) "\n"))))
+
+(defun efrit-tools-reverse-words (text)
+  "Safely reverse the order of words in TEXT.
+Returns the text with words in reverse order."
+  (when text
+    (let ((words (split-string text "\\s-+" t)))
+      (mapconcat 'identity (reverse words) " "))))
+
+(defun efrit-tools-reverse-chars (text)
+  "Safely reverse the characters in TEXT.
+Returns the text with characters in reverse order."
+  (when text
+    (concat (reverse (string-to-list text)))))
+
+(defun efrit-tools-create-buffer-with-content (buffer-name content)
+  "Safely create a buffer with BUFFER-NAME and insert CONTENT.
+Returns the buffer name if successful."
+  (with-current-buffer (get-buffer-create buffer-name)
+    (erase-buffer)
+    (insert content)
+    buffer-name))
 
 ;;; Context Gathering
 
@@ -465,12 +464,6 @@ to better understand the environment and generate appropriate Elisp code."
     (error
      (json-encode (list :error (format "Context gathering failed: %s" (error-message-string err)))))))
 
-;;; File Path Resolution - REMOVED
-;; Path resolution is now handled by Claude via elisp commands
-;; Claude can use (find-file), (directory-files), etc. directly
-
-
-
 ;;; Tool Extraction
 
 (defun efrit-tools-extract-tools-from-response (text)
@@ -509,7 +502,14 @@ Arguments:
                    (call-start (match-beginning 0))
                    (call-end (match-end 0))
                    (result (condition-case eval-err
-                               (efrit-tools-eval-sexp elisp-code)
+                               (progn
+                                 ;; Show elisp eval in progress if available
+                                 (when (fboundp 'efrit-progress-show-elisp-eval)
+                                   (require 'efrit-progress))
+                                 (let ((eval-result (efrit-tools-eval-sexp elisp-code)))
+                                   (when (fboundp 'efrit-progress-show-elisp-eval)
+                                     (efrit-progress-show-elisp-eval elisp-code eval-result))
+                                   eval-result))
                              (error
                               (format "Error in Elisp evaluation: %s" 
                                      (error-message-string eval-err))))))
@@ -520,7 +520,7 @@ Arguments:
               ;; Replace the Elisp call with its result in the text
               (setq processed-text
                     (concat (substring processed-text 0 call-start)
-                            (format "[Result: %s]" result)
+                            (efrit-tools--elisp-results-or-empty result)
                             (substring processed-text call-end))))))
       
       ;; Handle extraction errors
@@ -633,10 +633,11 @@ MODE can be a symbol like \\='markdown-mode, \\='org-mode, \\='text-mode, etc."
         (goto-char (point-min))
         (setq buffer-read-only t)))
     
-    ;; Display the buffer
-    (display-buffer buffer '(display-buffer-reuse-window
-                            display-buffer-pop-up-window
-                            (window-height . 0.5)))
+    ;; Display the buffer - use more aggressive display to ensure it shows
+    (pop-to-buffer buffer '(display-buffer-reuse-window
+                           display-buffer-pop-up-window
+                           display-buffer-below-selected
+                           (window-height . 0.5)))
     (format "Buffer '%s' created with %d characters" name (length content))))
 
 (defun efrit-tools-format-file-list (content)

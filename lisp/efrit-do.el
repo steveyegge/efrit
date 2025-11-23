@@ -20,9 +20,16 @@
 (declare-function efrit--setup-buffer "efrit-chat")
 (declare-function efrit--display-message "efrit-chat")
 (declare-function efrit--insert-prompt "efrit-chat")
+(declare-function efrit--build-headers "efrit-chat")
+
+;; Declare external functions from efrit-async
+(declare-function efrit-async-execute-command "efrit-async")
 
 (require 'efrit-tools)
 (require 'efrit-config)
+(require 'efrit-common)
+(require 'efrit-context)
+(require 'efrit-session-tracker)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -52,6 +59,12 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'boolean
   :group 'efrit-do)
 
+(defcustom efrit-do-auto-shrink-todo-buffers t
+  "When non-nil, TODO display buffers automatically shrink to fit content.
+This affects both `efrit-do-show-todos' and `efrit-async-show-todos'."
+  :type 'boolean
+  :group 'efrit-do)
+
 (defcustom efrit-do-history-max 50
   "Maximum number of commands to keep in history."
   :type 'integer
@@ -62,17 +75,28 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-do-context-size 10
-  "Size of the context ring."
+(defcustom efrit-do-max-tool-calls-per-session 30
+  "Maximum number of tool calls allowed in a single session.
+When this limit is reached, the circuit breaker trips and the session is terminated.
+This prevents infinite loops from burning through API tokens."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-do-context-file nil
-  "File to persist context data.
-If nil, uses the default location in the efrit data directory."
-  :type '(choice (const :tag "Default location" nil)
-                 (file :tag "Custom file"))
+(defcustom efrit-do-max-same-tool-calls 3
+  "Maximum number of consecutive calls to the same tool.
+When this limit is reached, the circuit breaker warns and forces a different action.
+This prevents tight loops like repeated todo_status or todo_analyze calls."
+  :type 'integer
   :group 'efrit-do)
+
+(defcustom efrit-do-circuit-breaker-enabled t
+  "Whether circuit breaker protection is enabled.
+When non-nil, enforces hard limits on tool calls to prevent infinite loops.
+Recommended to keep enabled for safety."
+  :type 'boolean
+  :group 'efrit-do)
+
+;; Context configuration moved to efrit-context.el
 
 (defcustom efrit-do-max-retries 3
   "Maximum number of retry attempts when commands fail."
@@ -89,14 +113,23 @@ If nil, uses the default location in the efrit data directory."
   :type 'string
   :group 'efrit-do)
 
+(defcustom efrit-api-channel nil
+  "API channel to use. Can be \\='ai-efrit or nil for default."
+  :type '(choice (const :tag "Default" nil)
+                 (const :tag "AI-Efrit" "ai-efrit"))
+  :group 'efrit-do)
+
 (defcustom efrit-max-tokens 8192
   "Maximum number of tokens in the response for efrit-do."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
-  "URL for the Anthropic API endpoint used by efrit-do."
-  :type 'string
+;; Use centralized API URL - legacy variable kept for compatibility
+(defcustom efrit-api-url nil
+  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
+When nil, uses the centralized configuration."
+  :type '(choice (const :tag "Use centralized config" nil)
+                 (string :tag "Legacy URL override"))
   :group 'efrit-do)
 
 ;;; Internal variables
@@ -113,71 +146,489 @@ If nil, uses the default location in the efrit data directory."
 (defvar efrit-do--todo-counter 0
   "Counter for generating unique TODO IDs.")
 
-;;; Context system
+(defvar efrit-do--workflow-state 'initial
+  "Current state in the TODO workflow.
+Possible states:
+  - initial: No analysis done yet
+  - analyzed: Analysis complete, ready for TODO creation
+  - todos-created: TODOs exist, ready for execution
+  - executing: Working through TODOs")
 
-(cl-defstruct (efrit-do-context-item
-            (:constructor efrit-do-context-item-create)
-            (:type vector))
-  "Context item structure."
-  timestamp
-  command
-  result
-  buffer
-  directory
-  window-config
-  metadata)
+(defvar efrit-do--last-tool-called nil
+  "Track the last tool that was called.")
 
-(defvar efrit-do--context-ring nil
-  "Ring buffer for context items.")
+(defvar efrit-do--tool-call-count 0
+  "Count consecutive calls to the same tool.")
 
-(defvar efrit-do--context-hooks nil
-  "Hooks run when context is captured.")
+(defvar efrit-do--force-complete nil
+  "When t, forces session completion on next API response.")
+
+(defvar efrit-do--todo-awaiting-completion nil
+  "TODO ID that executed code but hasn't been marked completed yet.")
+
+;;; Circuit Breaker State
+
+(defvar efrit-do--session-tool-count 0
+  "Total number of tool calls in the current session.
+Reset when a new session starts. Used by circuit breaker to prevent runaway loops.")
+
+(defvar efrit-do--circuit-breaker-tripped nil
+  "When non-nil, circuit breaker has tripped and session is terminated.
+Stores reason for tripping as a string.")
+
+(defconst efrit-do--tools-schema
+  [(("name" . "eval_sexp")
+  ("description" . "PRIMARY TOOL: Execute Elisp code directly. Use for simple tasks like opening files, buffer operations, single commands. For complex multi-step tasks, use todo_analyze first.
+
+EXAMPLES:
+- Open files: (find-file \"/path/to/file.txt\")
+- Open all images: (dolist (f (directory-files-recursively \"~/Pictures\" \"\\\\.\\\\(?:png\\\\|jpe?g\\\\)$\")) (find-file f))
+- Create buffer: (switch-to-buffer (get-buffer-create \"*My Buffer*\"))
+- Edit text: (with-current-buffer \"file.txt\" (goto-char (point-min)) (insert \"Hello\"))
+- Navigate: (goto-line 50) or (goto-char (point-max))
+- Search: (re-search-forward \"pattern\" nil t)")
+  ("input_schema" . (("type" . "object")
+  ("properties" . (("expr" . (("type" . "string")
+  ("description" . "The Elisp expression to evaluate")))))
+  ("required" . ["expr"]))))
+   (("name" . "shell_exec")
+   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools.
+
+EXAMPLES:
+- File system info: \"ls -la ~/Documents\"
+- Process management: \"ps aux | grep emacs\"
+- System commands: \"git status\" or \"make build\"
+- External tools: \"curl -s https://api.example.com\"
+
+DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("command" . (("type" . "string")
+                                                      ("description" . "The shell command to execute")))))
+                       ("required" . ["command"]))))
+   (("name" . "todo_add")
+    ("description" . "Add a new TODO item to track progress.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("content" . (("type" . "string")
+                                                     ("description" . "The TODO item description")))
+                                      ("priority" . (("type" . "string")
+                                                    ("enum" . ["low" "medium" "high"])
+                                                    ("description" . "Priority level")))))
+                      ("required" . ["content"]))))
+   (("name" . "todo_update")
+    ("description" . "Update the status of a TODO item.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("id" . (("type" . "string")
+                                                ("description" . "The TODO item ID")))
+                                      ("status" . (("type" . "string")
+                                                  ("enum" . ["todo" "in-progress" "completed"])
+                                                  ("description" . "New status")))))
+                      ("required" . ["id" "status"]))))
+   (("name" . "todo_show")
+    ("description" . "Show all current TODO items.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+    (("name" . "buffer_create")
+     ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("name" . (("type" . "string")
+                                                   ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
+                                       ("content" . (("type" . "string")
+                                                     ("description" . "Buffer content")))
+                                       ("mode" . (("type" . "string")
+                                                 ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
+                       ("required" . ["name" "content"]))))
+    (("name" . "format_file_list")
+     ("description" . "Format content as a markdown file list with bullet points.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("content" . (("type" . "string")
+                                                      ("description" . "Raw content to format as file list")))))
+                       ("required" . ["content"]))))
+    (("name" . "format_todo_list")
+     ("description" . "Format TODO list with optional sorting.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("sort_by" . (("type" . "string")
+                                                      ("enum" . ["status" "priority"])
+                                                      ("description" . "Optional sorting criteria")))))
+                       ("required" . []))))
+    (("name" . "display_in_buffer")
+     ("description" . "Display content in a specific buffer.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("buffer_name" . (("type" . "string")
+                                                          ("description" . "Buffer name")))
+                                       ("content" . (("type" . "string")
+                                                     ("description" . "Content to display")))
+                                       ("window_height" . (("type" . "number")
+                                                          ("description" . "Optional window height")))))
+                       ("required" . ["buffer_name" "content"]))))
+   (("name" . "session_complete")
+    ("description" . "Mark the current session as complete with a final result message.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("message" . (("type" . "string")
+                                                     ("description" . "Completion message summarizing what was accomplished")))))
+                      ("required" . ["message"]))))
+   (("name" . "todo_analyze")
+   ("description" . "COMPLEX TASKS ONLY: Break down multi-step workflows into TODO items. Use eval_sexp for simple single-action tasks like opening files.
+
+USE WHEN:
+- Multiple dependent steps (e.g., \"fix all warnings in buffer\" requires: scan warnings, create fix for each, apply fixes)
+- Conditional logic (e.g., \"organize files by type\" requires: check each file, categorize, move to appropriate folders)
+- Async operations (e.g., \"download and process multiple files\")
+
+DO NOT USE for simple tasks:
+- Opening files: Use eval_sexp directly
+- Single buffer operations: Use eval_sexp directly  
+- Basic navigation/editing: Use eval_sexp directly")
+   ("input_schema" . (("type" . "object")
+   ("properties" . (("command" . (("type" . "string")
+   ("description" . "The command to analyze")))
+   ("context" . (("type" . "string")
+   ("description" . "Additional context about the current state")))))
+   ("required" . ["command"]))))
+   (("name" . "todo_status")
+    ("description" . "Get summary of TODO list: total, pending, in-progress, completed.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+   (("name" . "todo_next")
+    ("description" . "Get the next pending TODO item to work on.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+   (("name" . "todo_execute_next")
+   ("description" . "Execute the next pending TODO by marking it in-progress and providing clear task instructions.")
+   ("input_schema" . (("type" . "object")
+   ("properties" . ()))))
+   (("name" . "todo_get_instructions")
+     ("description" . "Get execution instructions for the next pending TODO. Marks the TODO as in-progress and returns detailed guidance for completing the task. This is an INFORMATION tool - it provides instructions but does NOT execute code.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . ()))))
+    (("name" . "todo_complete_check")
+    ("description" . "Check if all TODOs are completed. Returns true if all done, false if work remains.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+   (("name" . "suggest_execution_mode")
+   ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
+   ("input_schema" . (("type" . "object")
+   ("properties" . (("mode" . (("type" . "string")
+   ("enum" . ["sync" "async"])
+   ("description" . "Suggested execution mode")))
+   ("reason" . (("type" . "string")
+   ("description" . "Brief explanation for the suggestion")))))
+   ("required" . ["mode"]))))
+    (("name" . "glob_files")
+     ("description" . "Get list of files matching a pattern. INFORMATIONAL ONLY - does not open files. Use results with eval_sexp to perform actions.
+
+EXAMPLES:
+- Find images: pattern=\"~/Pictures\" extension=\"png,jpg,jpeg\"  
+- Find code files: pattern=\"~/project/src\" extension=\"py,js,ts\"
+- Find all files: pattern=\"~/Documents\" extension=\"*\"")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("pattern" . (("type" . "string")
+                                                      ("description" . "Directory path to search (supports ~ expansion)")))
+                                       ("extension" . (("type" . "string")
+                                                      ("description" . "File extensions to match (comma-separated, or * for all)")))
+                                       ("recursive" . (("type" . "boolean")
+                                                      ("description" . "Whether to search subdirectories (default: true)")))))
+                       ("required" . ["pattern" "extension"]))))]
+                      "Schema definition for all available tools in efrit-do mode.")
+
+(defun efrit-do--get-tools-for-state ()
+  "Return tool schema filtered by current workflow state.
+
+This implements schema-based loop prevention by restricting which tools
+Claude can call based on the current workflow state:
+
+- initial: Allow planning tools (todo_analyze, todo_add) + always-available
+- todos-created/executing: Block planning, restrict query tools, promote execution
+- After todo_get_instructions called: Remove it from schema to force eval_sexp
+
+The goal is to prevent infinite loops of todo_status, todo_get_instructions
+without actual code execution."
+  (let* ((always-available-tools
+          ;; These tools are safe in any state
+          '("glob_files" "buffer_create" "format_file_list"
+            "format_todo_list" "display_in_buffer" "session_complete"
+            "suggest_execution_mode"))
+         (planning-tools
+          ;; For initial planning and analysis
+          '("todo_analyze" "todo_add"))
+         (execution-tools
+          ;; For actually doing work
+          '("eval_sexp" "shell_exec" "todo_update" "todo_complete_check"))
+         (query-tools
+          ;; Information tools - use sparingly
+          '("todo_status" "todo_next"))
+         (dangerous-tools
+          ;; Loop-prone tools - strict limits
+          '("todo_get_instructions" "todo_execute_next"))
+         (allowed-tool-names
+          (cond
+           ;; Initial state: Allow planning + always-available
+           ((eq efrit-do--workflow-state 'initial)
+            (append planning-tools always-available-tools query-tools dangerous-tools))
+
+           ;; After todo_get_instructions called: Block it to force execution
+           ((and (or (eq efrit-do--workflow-state 'todos-created)
+                     (eq efrit-do--workflow-state 'executing))
+                 (>= efrit-do--tool-call-count 1)
+                 (memq efrit-do--last-tool-called '(todo_get_instructions todo_execute_next)))
+            (efrit-log 'info "Schema filter: Blocking todo_get_instructions after %d calls, forcing eval_sexp"
+                      efrit-do--tool-call-count)
+            (append execution-tools query-tools always-available-tools))
+
+           ;; TODOs exist: Allow limited query + execution
+           ((or (eq efrit-do--workflow-state 'todos-created)
+                (eq efrit-do--workflow-state 'executing))
+            (append execution-tools query-tools dangerous-tools always-available-tools))
+
+           ;; Analyzed but no TODOs: Allow adding TODOs + execution
+           ((eq efrit-do--workflow-state 'analyzed)
+            (append planning-tools execution-tools query-tools always-available-tools))
+
+           ;; Default: Return everything (safety fallback)
+           (t
+            (efrit-log 'warn "Schema filter: Unknown state %s, returning all tools"
+                      efrit-do--workflow-state)
+            (mapcar (lambda (tool) (alist-get "name" tool nil nil #'string=))
+                   efrit-do--tools-schema)))))
+
+    ;; Filter the full schema to only include allowed tools
+    (seq-filter (lambda (tool)
+                  (member (alist-get "name" tool nil nil #'string=)
+                         allowed-tool-names))
+               efrit-do--tools-schema)))
+
+(defun efrit-do--get-current-tools-schema ()
+  "Return tool schema for current workflow state.
+This is the main entry point for dynamic tool filtering."
+  (efrit-do--get-tools-for-state))
+
+;;; Circuit Breaker Implementation
+
+(defun efrit-do--circuit-breaker-reset ()
+  "Reset circuit breaker state for a new session."
+  (setq efrit-do--session-tool-count 0)
+  (setq efrit-do--circuit-breaker-tripped nil)
+  (setq efrit-do--last-tool-called nil)
+  (setq efrit-do--tool-call-count 0))
+
+(defun efrit-do--circuit-breaker-check-limits (tool-name)
+  "Check circuit breaker limits before executing TOOL-NAME.
+Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
+Uses efrit--safe-execute for error handling."
+  (if (not efrit-do-circuit-breaker-enabled)
+      (cons t nil) ; Circuit breaker disabled
+    (let ((result
+           (efrit--safe-execute
+            (lambda ()
+              (cond
+               ;; Already tripped - block all further calls
+               (efrit-do--circuit-breaker-tripped
+                (cons nil (format "🚨 CIRCUIT BREAKER TRIPPED: %s\n\nSession terminated. Start a new session to continue."
+                                efrit-do--circuit-breaker-tripped)))
+
+               ;; Check session-wide limit
+               ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                (setq efrit-do--circuit-breaker-tripped
+                      (format "Maximum tool calls per session exceeded (%d/%d)"
+                              efrit-do--session-tool-count
+                              efrit-do-max-tool-calls-per-session))
+                (cons nil (format "🚨 CIRCUIT BREAKER: Session limit reached (%d/%d tool calls)
+
+REASON: Too many tool calls indicate an infinite loop or runaway process.
+
+ACTIONS TAKEN:
+- Session terminated to prevent token burnout
+- All further tool calls blocked
+- Error logged to session tracker
+
+WHAT YOU CAN DO:
+1. Review the task complexity - may need to break into smaller tasks
+2. Check for logic errors in the command
+3. Start a new session: M-x efrit-do or M-x efrit-chat
+4. Consider increasing efrit-do-max-tool-calls-per-session if legitimate
+
+Current session tool history:
+- Total calls: %d
+- Last tool: %s
+- Same tool consecutive calls: %d"
+                                    efrit-do--session-tool-count
+                                    efrit-do-max-tool-calls-per-session
+                                    efrit-do--session-tool-count
+                                    (or efrit-do--last-tool-called "none")
+                                    efrit-do--tool-call-count)))
+
+               ;; Check same-tool limit
+               ((and (string= tool-name efrit-do--last-tool-called)
+                     (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
+                (let ((warning-msg
+                       (format "⚠️  CIRCUIT BREAKER WARNING: Tool '%s' called %d times consecutively
+
+LOOP DETECTED: Repeated calls to the same tool usually indicate a logic error.
+
+GUIDANCE:
+- If using '%s': You should take ACTION, not keep analyzing
+- If stuck: Try a different approach or call session_complete
+- Review the task and change your strategy
+
+This call will PROCEED but further calls to '%s' will be BLOCKED.
+Use a different tool for your next action."
+                               tool-name
+                               (1+ efrit-do--tool-call-count)
+                               tool-name
+                               tool-name)))
+                  ;; Allow this call but warn loudly
+                  (message "Circuit breaker warning: %s called %d times" tool-name (1+ efrit-do--tool-call-count))
+                  (cons t warning-msg)))
+
+               ;; All checks passed
+               (t (cons t nil))))
+            "circuit breaker check"
+            "Check efrit-do-circuit-breaker-enabled and tool call limits")))
+      (if (car result)
+          (cdr result) ; Return the check result
+        ;; Safe-execute caught an error - treat as breaker trip
+        (progn
+          (setq efrit-do--circuit-breaker-tripped (cdr result))
+          (cons nil (format "🚨 CIRCUIT BREAKER ERROR: %s" (cdr result))))))))
+
+(defun efrit-do--circuit-breaker-record-call (tool-name)
+  "Record a tool call for TOOL-NAME in circuit breaker tracking.
+Updates counters and session tracking. Uses efrit--safe-execute for safety."
+  (when efrit-do-circuit-breaker-enabled
+    (efrit--safe-execute
+     (lambda ()
+       ;; Update session-wide counter
+       (cl-incf efrit-do--session-tool-count)
+
+       ;; Update same-tool counter
+       (if (string= tool-name efrit-do--last-tool-called)
+           (cl-incf efrit-do--tool-call-count)
+         (setq efrit-do--tool-call-count 1))
+
+       ;; Update last tool
+       (setq efrit-do--last-tool-called tool-name)
+
+       ;; Track in session
+       (when (fboundp 'efrit-session-track-tool-used)
+         (efrit-session-track-tool-used tool-name))
+
+       ;; Log the call
+       (efrit-log 'debug "Circuit breaker: tool=%s count=%d/%d same=%d/%d"
+                  tool-name
+                  efrit-do--session-tool-count
+                  efrit-do-max-tool-calls-per-session
+                  efrit-do--tool-call-count
+                  efrit-do-max-same-tool-calls))
+     "recording tool call"
+     "Check circuit breaker state and session tracking")))
+
+;;; Context system - delegates to efrit-context.el
+
+;;; Session protocol instructions
+
+(defun efrit-do--session-protocol-instructions ()
+  "Return detailed instructions for Claude about the session protocol."
+  (concat
+   "SESSION PROTOCOL:\n"
+   "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
+   
+   "0. CHOOSE YOUR APPROACH:\n"
+   "   - SIMPLE tasks (open files, single commands): Use eval_sexp directly\n"  
+   "   - COMPLEX tasks (multi-step workflows): Use todo_analyze to break down\n"
+   "   - For CONTINUING sessions: The system will provide work log context\n"
+   "   - NEVER call todo_status first on a new task - it will fail!\n"
+    "   - CRITICAL: Never call the same tool twice in a row!\n\n"
+    
+    "LOOP PREVENTION PROTOCOL:\n"
+    "1. CIRCUIT BREAKER PROTECTION:\n"
+    "   - Hard limit: Maximum 30 tool calls per session\n"
+    "   - Soft limit: Same tool cannot be called more than 3 times consecutively\n"
+    "   - If you see circuit breaker warnings, CHANGE YOUR APPROACH immediately\n"
+    "   - Circuit breaker trips = session terminated, must start new session\n\n"
+    "2. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
+    "   - Read the error message carefully\n"
+    "   - Follow the IMMEDIATE ACTION REQUIRED instructions\n"
+    "   - Never repeat the tool that caused the error\n\n"
+    "3. If you're making no progress after 3 attempts:\n"
+    "   - Call session_complete with an explanation\n\n"
+    "4. Trust the error messages - they prevent infinite loops\n\n"
+   
+   "1. WORK LOG INTERPRETATION:\n"
+   "   - The work log shows your previous steps: [[\"result1\", \"code1\"], [\"result2\", \"code2\"], ...]\n"
+   "   - Each entry contains [result, code] from a previous tool execution\n"
+   "   - Use this to understand what you've already done and what remains\n\n"
+   
+   "2. TODO-BASED WORKFLOW (IMPORTANT - PREVENTS LOOPS!):\n"
+   "   - ALWAYS check todo_status at the start of each continuation\n"
+   "   - Use todo_complete_check to see if all work is done\n"
+   "   - If all TODOs completed, use session_complete immediately\n"
+   "   - Otherwise: mark current TODO complete, get next with todo_next\n"
+   "   - This prevents infinite loops by tracking progress!\n\n"
+   
+   "3. CONTINUATION DECISION:\n"
+   "   - First check TODOs - if all complete, session is done\n"
+   "   - Analyze the work log and original command to determine next steps\n"
+   "   - If the task is incomplete, execute the next logical step\n"
+   "   - If the task is complete, use the session_complete tool with final result\n\n"
+   
+   "4. TWO-PHASE EXECUTION MODEL:\n"
+   "   Phase 1 - Context Gathering (if needed):\n"
+   "   - Use eval_sexp to gather information about Emacs state\n"
+   "   - Examples: (buffer-list), (point), (buffer-substring-no-properties ...)\n"
+   "   - Results help you make informed decisions\n\n"
+   "   Phase 2 - Action Execution:\n"
+   "   - Based on Phase 1 results (if any) and work log, execute the action\n"
+   "   - Examples: create buffers, modify text, run commands\n"
+   "   - Each execution adds to the work log for next continuation\n\n"
+   
+   "5. TODO-DRIVEN EXAMPLE:\n"
+   "   Command: 'fix all warnings in buffer'\n"
+   "   Initial: todo_analyze, then todo_add for each warning found\n"
+   "   Loop: todo_status → todo_get_instructions → eval_sexp/shell_exec → todo_update\n"
+   "   End: todo_complete_check → session_complete\n\n"
+   
+   "6. IMPORTANT RULES:\n"
+   "   - ALWAYS use TODOs for multi-step tasks to prevent loops\n"
+   "   - PREFER todo_get_instructions over todo_execute_next (clearer intent)\n"
+   "   - todo_get_instructions provides instructions but does NOT execute - you must use eval_sexp/shell_exec\n"
+   "   - Execute ONE meaningful action per continuation\n"
+   "   - Check TODO completion before continuing session\n"
+   "   - Use session_complete when all TODOs are done\n"
+   "   - Keep responses minimal - focus on execution\n"
+   "   - The work log provides your memory across steps\n\n"
+   
+   "7. ANTI-LOOP PROTECTIONS:\n"
+   "   - DO NOT alternate between todo_status and todo_analyze\n"
+   "   - DO NOT call todo_analyze multiple times without creating TODOs\n"
+   "   - After todo_status shows pending TODOs: call todo_get_instructions (preferred) or todo_execute_next\n"
+     "   - After todo_get_instructions: DO the actual work with eval_sexp/shell_exec, then todo_update to mark complete\n"
+     "   - Focus on EXECUTION not endless analysis\n"))
 
 ;;; Context ring management
 
 (defun efrit-do--ensure-context-ring ()
-  "Ensure the context ring is initialized."
-  (unless efrit-do--context-ring
-    (setq efrit-do--context-ring (make-ring efrit-do-context-size))))
+  "Ensure the context system is initialized."
+  (efrit-context-init))
 
 (defun efrit-do--capture-context (command result)
   "Capture current context after executing COMMAND with RESULT."
   (efrit-do--ensure-context-ring)
-  (let ((item (efrit-do-context-item-create
-               :timestamp (current-time)
-               :command command
-               :result result
-               :buffer (buffer-name)
-               :directory default-directory
-               :window-config (current-window-configuration)
-               :metadata (list :point (point)
-                              :mark (mark)
-                              :major-mode major-mode))))
-    (ring-insert efrit-do--context-ring item)
-    (run-hook-with-args 'efrit-do--context-hooks item)))
+  (let ((metadata (list :point (point)
+                       :mark (mark)
+                       :major-mode major-mode)))
+    (efrit-context-ring-add command result metadata)))
 
 (defun efrit-do--get-context-items (&optional n)
   "Get N most recent context items (default all)."
   (efrit-do--ensure-context-ring)
-  (let ((ring efrit-do--context-ring)
-        (count (or n (ring-length efrit-do--context-ring)))
-        items)
-    (dotimes (i (min count (ring-length ring)))
-      (push (ring-ref ring i) items))
-    items))
+  (efrit-context-ring-get-recent n))
 
 (defun efrit-do--context-to-string (item)
   "Convert context ITEM to string representation."
-  (format "[%s] %s -> %s (in %s)"
-          (format-time-string "%H:%M:%S" (efrit-do-context-item-timestamp item))
-          (efrit-do-context-item-command item)
-          (truncate-string-to-width (or (efrit-do-context-item-result item) "") 50 nil nil t)
-          (efrit-do-context-item-buffer item)))
+  (efrit-context-item-to-string item))
 
 (defun efrit-do--clear-context ()
   "Clear the context ring."
-  (when efrit-do--context-ring
-    (setq efrit-do--context-ring (make-ring efrit-do-context-size))))
+  (efrit-context-ring-clear))
 
 ;;; TODO Management
 
@@ -229,6 +680,12 @@ If nil, uses the default location in the efrit data directory."
     (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
     todo))
 
+(defun efrit-do--find-todo (id)
+  "Find TODO item by ID."
+  (seq-find (lambda (item) 
+              (string= (efrit-do-todo-item-id item) id))
+           efrit-do--current-todos))
+
 (defun efrit-do--format-todos-for-display ()
   "Format current TODOs for user display in raw order."
   (if (null efrit-do--current-todos)
@@ -251,56 +708,23 @@ If nil, uses the default location in the efrit data directory."
     (concat "\n\nCURRENT TODOs:\n" (efrit-do--format-todos-for-display) "\n")))
 
 (defun efrit-do--clear-todos ()
-  "Clear all current TODOs."
+  "Clear all current TODOs and reset circuit breaker for new session."
   (setq efrit-do--current-todos nil)
-  (setq efrit-do--todo-counter 0))
+  (setq efrit-do--todo-counter 0)
+  (setq efrit-do--workflow-state 'initial)
+  (setq efrit-do--todo-awaiting-completion nil)
+  ;; Reset circuit breaker for new session
+  (efrit-do--circuit-breaker-reset))
 
 ;;; Context persistence
 
 (defun efrit-do--save-context ()
   "Save context ring to file."
-  (when efrit-do--context-ring
-    (let ((file (or efrit-do-context-file 
-                   (efrit-config-context-file "efrit-do-context.el")))
-          (items (mapcar (lambda (item)
-                          ;; Create a copy without window-config for serialization
-                          (efrit-do-context-item-create
-                           :timestamp (efrit-do-context-item-timestamp item)
-                           :command (efrit-do-context-item-command item)
-                           :result (efrit-do-context-item-result item)
-                           :buffer (efrit-do-context-item-buffer item)
-                           :directory (efrit-do-context-item-directory item)
-                           :window-config nil  ; Skip window config
-                           :metadata (efrit-do-context-item-metadata item)))
-                        (efrit-do--get-context-items))))
-      ;; Ensure directory exists
-      (make-directory (file-name-directory file) t)
-      (condition-case err
-          (with-temp-file file
-            (insert ";;; Efrit-do context data\n")
-            (insert (format ";; Saved: %s\n" (current-time-string)))
-            (insert (format "(setq efrit-do--saved-context-data\n'%S)\n" items)))
-        (error
-         (when efrit-do-debug
-           (message "Error saving context: %s" (error-message-string err))))))))
+  (efrit-context-ring-persist))
 
 (defun efrit-do--load-context ()
   "Load context ring from file."
-  (let ((file (or efrit-do-context-file 
-                 (efrit-config-context-file "efrit-do-context.el"))))
-    (when (file-readable-p file)
-      (condition-case err
-          (progn
-            (load-file file)
-            (efrit-do--ensure-context-ring)
-            (when (boundp 'efrit-do--saved-context-data)
-              (dolist (item (reverse efrit-do--saved-context-data))
-                (when (vectorp item)
-                  (ring-insert efrit-do--context-ring item)))
-              (makunbound 'efrit-do--saved-context-data)))
-        (error
-         (when efrit-do-debug
-           (message "Error loading context: %s" (error-message-string err))))))))
+  (efrit-context-ring-restore))
 
 ;;; Helper functions for improved error handling
 
@@ -350,9 +774,9 @@ Returns a string with current Emacs state, buffer info, and recent history."
       (push "RECENT COMMANDS:" context-parts)
       (dolist (item recent-context)
         (push (format "  %s -> %s" 
-                      (efrit-do-context-item-command item)
+                      (efrit-context-item-command item)
                       (truncate-string-to-width 
-                       (or (efrit-do-context-item-result item) "no result") 
+                       (or (efrit-context-item-result item) "no result") 
                        60 nil nil t))
               context-parts)))
     
@@ -453,7 +877,20 @@ This handles cases where JSON escaping has been applied multiple times."
         ;; Valid elisp - proceed with execution
         (condition-case eval-err
             (let ((eval-result (efrit-tools-eval-sexp input-str)))
-              (format "\n[Executed: %s]\n[Result: %s]" input-str eval-result))
+              ;; Check if there's a TODO in-progress that needs completion
+              (let ((in-progress-todo (seq-find (lambda (todo)
+                                                (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                              efrit-do--current-todos)))
+                (when in-progress-todo
+                  (setq efrit-do--todo-awaiting-completion (efrit-do-todo-item-id in-progress-todo))))
+              
+              (format "\n[Executed: %s]\n[Result: %s]%s" 
+                      input-str 
+                      eval-result
+                      (if efrit-do--todo-awaiting-completion
+                          (format "\n⚠️ NEXT REQUIRED: Call todo_update with id=\"%s\" status=\"completed\""
+                                  efrit-do--todo-awaiting-completion)
+                        "")))
           (error
            (format "\n[Error executing %s: %s]" 
                    input-str (error-message-string eval-err))))
@@ -461,23 +898,115 @@ This handles cases where JSON escaping has been applied multiple times."
       (format "\n[Syntax Error in %s: %s]" 
               input-str (cdr validation)))))
 
+(defcustom efrit-do-shell-security-enabled t
+  "When non-nil, enforce security restrictions on shell commands.
+Recommended to keep enabled for safety."
+  :type 'boolean
+  :group 'efrit)
+
+(defvar efrit-do-allowed-shell-commands
+  '("ls" "pwd" "date" "whoami" "uname" "df" "ps" "top"
+    "cat" "head" "tail" "wc" "grep" "find" "which"
+    "echo" "printf" "basename" "dirname" "realpath"
+    "git" "make" "emacs" "python" "node" "npm"
+    "curl" "wget")
+  "List of shell commands considered safe for AI execution.")
+
+(defvar efrit-do-forbidden-shell-patterns
+  '("\\brm\\b" "rmdir" "mkdir" "touch" "\\bmv\\b" "\\bcp\\b"
+    "chmod" "chown" "sudo" "su" "passwd"
+    "kill" "killall" "pkill" "shutdown" "reboot"
+    "\\bdd\\b" "fdisk" "mkfs" "mount" "umount"
+    "export" "unset" "source" "\\berl\\b"
+    "[^a-zA-Z0-9_]>[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]>>[^a-zA-Z0-9_]" 
+    "[^a-zA-Z0-9_]<[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]|[^a-zA-Z0-9_]"
+    "[^a-zA-Z0-9_]&[^a-zA-Z0-9_]" "&&" "||" "[^a-zA-Z0-9_];[^a-zA-Z0-9_]"
+    "\\$(" "`" "\\${")
+  "Patterns that are forbidden in shell commands.")
+
+(defun efrit-do--validate-shell-command (command)
+  "Validate that COMMAND is safe for execution.
+Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
+  (cl-block validate-shell
+    (if (not efrit-do-shell-security-enabled)
+        (cons t nil) ; Security disabled, allow all
+      
+      (let ((command-clean (string-trim command)))
+        
+        ;; Check for empty command
+        (when (string-empty-p command-clean)
+          (cl-return-from validate-shell 
+            (cons nil "Empty shell command not allowed")))
+        
+        ;; Extract the main command (first word)
+        (let ((main-command (car (split-string command-clean))))
+          
+          ;; Check if main command is in allowed list
+          (unless (member main-command efrit-do-allowed-shell-commands)
+            (cl-return-from validate-shell
+              (cons nil (format "Shell command '%s' not in allowed whitelist" main-command))))
+          
+          ;; Check for forbidden patterns
+          (dolist (pattern efrit-do-forbidden-shell-patterns)
+            (when (string-match-p pattern command-clean)
+              (cl-return-from validate-shell
+                (cons nil (format "Shell command contains forbidden pattern: %s" pattern)))))
+          
+          ;; Additional safety checks
+          (when (> (length command-clean) 200)
+            (cl-return-from validate-shell
+              (cons nil "Shell command too long (>200 chars)")))
+          
+          ;; Command appears safe
+          (cons t nil))))))
+
 (defun efrit-do--handle-shell-exec (input-str)
-  "Handle shell command execution."
-  (condition-case shell-err
-      (let ((shell-result (shell-command-to-string input-str)))
-        (format "\n[Executed: %s]\n[Result: %s]" input-str shell-result))
-    (error
-     (format "\n[Error executing shell command %s: %s]" 
-             input-str (error-message-string shell-err)))))
+  "Handle shell command execution with security validation."
+  (let ((validation (efrit-do--validate-shell-command input-str)))
+    (if (car validation)
+        ;; Command is safe, execute it
+        (condition-case shell-err
+            (let* ((start-time (current-time))
+                   (shell-result (with-timeout (10) ; 10 second timeout
+                                   (shell-command-to-string input-str)))
+                   (end-time (current-time))
+                   (duration (float-time (time-subtract end-time start-time))))
+              (format "\n[🔧 Executed: %s]\n[⏱️ Duration: %.2fs]\n[📤 Result: %s]" 
+                      input-str duration 
+                      (if (> (length shell-result) 1000)
+                          (concat (substring shell-result 0 1000) "\n... (output truncated)")
+                        shell-result)))
+          (timeout (format "\n[❌ Shell command timed out after 10 seconds: %s]" input-str))
+          (error (format "\n[❌ Error executing shell command '%s': %s]" 
+                         input-str (error-message-string shell-err))))
+      ;; Command failed validation
+      (format "\n[🚫 SECURITY: Shell command blocked - %s]\n[Command: %s]" 
+              (cdr validation) input-str))))
 
 (defun efrit-do--handle-todo-add (tool-input)
   "Handle TODO item addition."
+  ;; Reset tool tracking when adding TODOs (valid transition)
+  (unless (eq efrit-do--last-tool-called 'todo_add)
+    (setq efrit-do--tool-call-count 0))
+  (setq efrit-do--last-tool-called 'todo_add)
+  
   (let* ((content (if (hash-table-p tool-input)
                      (gethash "content" tool-input)
                    tool-input))
          (priority (when (hash-table-p tool-input)
                     (intern (or (gethash "priority" tool-input) "medium"))))
          (todo (efrit-do--add-todo content priority)))
+    ;; Track TODO creation
+    (efrit-session-track-todo-created content)
+    ;; Update workflow state
+    (setq efrit-do--workflow-state 'todos-created)
+    ;; Update progress display
+    (when (fboundp 'efrit-progress-show-todos)
+      (efrit-progress-show-todos))
+    ;; Update TODO buffer if visible
+    (let ((todo-buffer (get-buffer "*efrit-do-todos*")))
+      (when (and todo-buffer (get-buffer-window todo-buffer))
+        (efrit-do-show-todos)))
     (format "\n[Added TODO: %s (%s)]" content (efrit-do-todo-item-id todo))))
 
 (defun efrit-do--handle-todo-update (tool-input input-str)
@@ -488,12 +1017,224 @@ This handles cases where JSON escaping has been applied multiple times."
          (status (when (hash-table-p tool-input)
                   (intern (gethash "status" tool-input)))))
     (if (efrit-do--update-todo-status id status)
-        (format "\n[Updated TODO %s to %s]" id status)
+        (progn
+          ;; Clear awaiting completion when TODO is updated
+          (when (string= id efrit-do--todo-awaiting-completion)
+            (setq efrit-do--todo-awaiting-completion nil))
+          
+          ;; Track TODO completion
+          (when (eq status 'completed)
+            (let ((todo-item (efrit-do--find-todo id)))
+              (when todo-item
+                (efrit-session-track-todo-completed (efrit-do-todo-item-content todo-item)))))
+          ;; Update progress display
+          (when (fboundp 'efrit-progress-update-todo)
+            (efrit-progress-update-todo id status))
+          (when (fboundp 'efrit-progress-show-todos)
+            (efrit-progress-show-todos))
+          ;; Update TODO buffers if visible
+          (dolist (buffer-name '("*efrit-do-todos*" "*Efrit Session TODOs*"))
+            (let ((buffer (get-buffer buffer-name)))
+              (when (and buffer (get-buffer-window buffer))
+                (if (string= buffer-name "*efrit-do-todos*")
+                    (efrit-do-show-todos)
+                  (when (fboundp 'efrit-async-show-todos)
+                    (efrit-async-show-todos))))))
+          (format "\n[Updated TODO %s to %s]" id status))
       (format "\n[Error: TODO %s not found]" id))))
 
 (defun efrit-do--handle-todo-show ()
   "Handle TODO list display."
   (format "\n[Current TODOs:]\n%s" (efrit-do--format-todos-for-display)))
+
+(defun efrit-do--handle-todo-analyze (tool-input)
+  "Handle TODO analysis for a command."
+  ;; Track tool calls
+  (if (eq efrit-do--last-tool-called 'todo_analyze)
+      (cl-incf efrit-do--tool-call-count)
+    (setq efrit-do--tool-call-count 1))
+  (setq efrit-do--last-tool-called 'todo_analyze)
+  
+  ;; Hard stop after 2 calls - return guidance instead of error
+  (if (> efrit-do--tool-call-count 2)
+  (format "🚨 CRITICAL LOOP: todo_analyze called %d times!
+
+🎯 IMMEDIATE NEXT ACTION:
+- For opening images: Call eval_sexp with: (find-file \"~/Documents/image1.png\")
+- For fixing warnings: Call eval_sexp with: (with-current-buffer \"*Warnings*\" (buffer-string))
+- For general tasks: Call eval_sexp with elisp code to examine the situation
+
+DO NOT call todo_analyze again!"
+              efrit-do--tool-call-count)
+    ;; Continue with normal processing
+    (let ((command (if (hash-table-p tool-input)
+                       (gethash "command" tool-input)
+                     tool-input)))
+      ;; Check workflow state
+      (cond
+     ;; Already analyzed - don't allow re-analysis
+     ((eq efrit-do--workflow-state 'analyzed)
+      "\n[ERROR: Already analyzed! You MUST now:\n1. Call eval_sexp to examine the warnings\n2. Call todo_add for each warning\nDO NOT call todo_analyze again!]")
+     
+     ;; Already have TODOs - absolutely forbidden
+     ((or efrit-do--current-todos (eq efrit-do--workflow-state 'todos-created))
+      (format "\n[ERROR: Analysis forbidden - %d TODOs already exist!\nCall todo_status to see them or todo_next to work on them.]" 
+              (length efrit-do--current-todos)))
+     
+     ;; Valid initial analysis
+     (t
+      (setq efrit-do--workflow-state 'analyzed)
+      ;; Provide specific guidance based on command type
+      (cond
+       ((string-match-p "\\(fix\\|resolve\\).*\\(warning\\|error\\)" command)
+       ;; Actually analyze warnings and create TODOs automatically
+         (condition-case err
+             (progn
+               ;; Try to get warnings from the buffer
+               (let ((warnings-content 
+                      (if (get-buffer "*Warnings*")
+                          (with-current-buffer "*Warnings*"
+                            (buffer-string))
+                        "No *Warnings* buffer found")))
+                 ;; Parse warnings and create TODOs
+                 (let ((todo-count 0))
+                   (when (and warnings-content (not (string= warnings-content "No *Warnings* buffer found")))
+                     ;; Split into lines and create a TODO for each warning
+                     (dolist (line (split-string warnings-content "\n" t))
+                       (when (string-match-p "Warning\\|Error" line)
+                         (efrit-do--add-todo (format "Fix: %s" (string-trim line)) 'medium)
+                         (cl-incf todo-count))))
+                   ;; Add verification TODO
+                   (when (> todo-count 0)
+                     (efrit-do--add-todo "Verify all warnings are resolved" 'low)
+                     (cl-incf todo-count))
+                   ;; Update workflow state
+                   (setq efrit-do--workflow-state 'todos-created)
+                   ;; Return success message
+                   (format "\n[Analysis Complete: Created %d TODOs for '%s'
+✓ Automatically created TODO items for each warning
+✓ Added verification TODO
+NEXT ACTION: Call todo_get_instructions to start working on the first TODO]" 
+                          todo-count command))))
+           (error 
+            ;; Fallback to manual instructions if auto-analysis fails
+            (format "\n[Auto-analysis failed: %s
+FALLBACK - Manual steps required:
+1. Use eval_sexp with: (with-current-buffer \"*Warnings*\" (buffer-string))
+2. Create TODOs manually with todo_add for each warning
+3. Then call todo_get_instructions to start working]" (error-message-string err)))))
+       
+       ((string-match-p "\\(create\\|make\\|build\\)" command)
+        (format "\n[Analysis: Creation task - '%s'
+Break this down into steps and use todo_add for each step]" command))
+       
+       (t
+        (format "\n[Analysis: '%s'
+1. Break this into discrete steps
+2. Use todo_add to create a TODO for each step
+3. Work through the list systematically]" command))))))))
+
+(defun efrit-do--handle-todo-status ()
+  "Return TODO list status summary."
+  ;; Track tool calls
+  (if (eq efrit-do--last-tool-called 'todo_status)
+      (cl-incf efrit-do--tool-call-count)
+    (setq efrit-do--tool-call-count 1))
+  (setq efrit-do--last-tool-called 'todo_status)
+  
+  ;; Prevent loops with completion guidance after 2 calls
+  (if (>= efrit-do--tool-call-count 2)
+      (let ((total (length efrit-do--current-todos))
+            (completed (seq-count (lambda (todo)
+                                   (eq (efrit-do-todo-item-status todo) 'completed))
+                                 efrit-do--current-todos)))
+        (if (= total completed)
+            "\n[🎉 TASK COMPLETE: All TODOs finished! Stop calling todo_status. Your work is done.]"
+          (format "\n[🚨 LOOP PREVENTION: You've called todo_status %d times! 
+TODOs remain: %d total, %d completed. 
+REQUIRED ACTION: Call todo_get_instructions (if TODOs pending) or eval_sexp (to execute code).
+STOP calling todo_status repeatedly!]" 
+                  efrit-do--tool-call-count total completed)))
+    ;; Continue with normal processing
+    (let ((total (length efrit-do--current-todos))
+        (pending (seq-count (lambda (todo) 
+                             (eq (efrit-do-todo-item-status todo) 'todo))
+                           efrit-do--current-todos))
+        (in-progress (seq-count (lambda (todo)
+                                 (eq (efrit-do-todo-item-status todo) 'in-progress))
+                               efrit-do--current-todos))
+        (completed (seq-count (lambda (todo)
+                               (eq (efrit-do-todo-item-status todo) 'completed))
+                             efrit-do--current-todos)))
+    (cond
+     ;; No TODOs and wrong state
+     ((and (= total 0) (not (eq efrit-do--workflow-state 'initial)))
+      "\n[ERROR: No TODOs but workflow already started!\nCall todo_add to create TODOs based on your analysis.]")
+     
+     ;; No TODOs - must analyze first
+     ((= total 0)
+      "\n[TODO Status: EMPTY\nNEXT ACTION: Call todo_analyze with your command.\nDO NOT call todo_status again!]")
+     
+     ;; Have TODOs
+     (t 
+      (setq efrit-do--workflow-state 'todos-created)
+      (format "\n[TODO Status: %d total, %d pending, %d in-progress, %d completed\nNEXT ACTION: Call todo_get_instructions to start working on the next TODO.]"
+              total pending in-progress completed))))))
+
+(defun efrit-do--handle-todo-next ()
+  "Get next pending TODO."
+  (let ((next-todo (seq-find (lambda (todo)
+                              (eq (efrit-do-todo-item-status todo) 'todo))
+                            efrit-do--current-todos)))
+    (if next-todo
+        (format "\n[Next TODO: %s (ID: %s)]" 
+                (efrit-do-todo-item-content next-todo)
+                (efrit-do-todo-item-id next-todo))
+      "\n[No pending TODOs]")))
+
+(defun efrit-do--handle-todo-execute-next ()
+  "Execute the next pending TODO by marking it in-progress and providing details."
+  ;; Track tool calls to prevent loops
+  (if (eq efrit-do--last-tool-called 'todo_get_instructions)
+      (cl-incf efrit-do--tool-call-count)
+    (setq efrit-do--tool-call-count 1))
+  (setq efrit-do--last-tool-called 'todo_get_instructions)
+  
+  ;; Force different behavior after 2 calls
+  (if (>= efrit-do--tool-call-count 2)
+      "\n[🚨 EXECUTION REQUIRED: You've called todo_get_instructions multiple times. Stop asking for instructions and START EXECUTING CODE with eval_sexp. The task is clear from previous instructions.]"
+    
+    (let ((next-todo (seq-find (lambda (todo)
+                                (eq (efrit-do-todo-item-status todo) 'todo))
+                              efrit-do--current-todos)))
+    (if next-todo
+        (let ((todo-id (efrit-do-todo-item-id next-todo))
+              (todo-content (efrit-do-todo-item-content next-todo)))
+          ;; Mark as in-progress
+          (efrit-do--update-todo-status todo-id 'in-progress)
+          ;; Return directive to execute the task
+          (format "\n[EXECUTING TODO %s: %s]
+🎯 TASK STARTED - You must now complete this specific task:
+
+\"%s\"
+
+🚨 MANDATORY WORKFLOW:
+1. Call eval_sexp to execute Elisp code for this task
+2. IMMEDIATELY call todo_update with id=\"%s\" status=\"completed\"
+3. STOP calling todo_get_instructions
+
+⚠️ CRITICAL: You MUST call todo_update after each eval_sexp success or the system will loop!"
+                  todo-id todo-content todo-content todo-id))
+      "\n[No pending TODOs to execute]"))))
+
+(defun efrit-do--handle-todo-complete-check ()
+  "Check if all TODOs are completed."
+  (let ((incomplete (seq-find (lambda (todo)
+                               (not (eq (efrit-do-todo-item-status todo) 'completed)))
+                             efrit-do--current-todos)))
+    (if incomplete
+        "\n[TODOs incomplete - work remains]"
+      "\n[All TODOs completed!]")))
 
 (defun efrit-do--handle-buffer-create (tool-input input-str)
   "Handle buffer creation."
@@ -531,6 +1272,13 @@ This handles cases where JSON escaping has been applied multiple times."
       (error
        (format "\n[Error formatting TODO list: %s]" (error-message-string err))))))
 
+(defun efrit-do--handle-session-complete (tool-input)
+  "Handle session_complete tool with TOOL-INPUT hash table.
+This signals that a multi-step session is complete."
+  (let ((message (gethash "message" tool-input)))
+    ;; Return a special marker that the async handler can detect
+    (format "\n[SESSION-COMPLETE: %s]" (or message "Task completed"))))
+
 (defun efrit-do--handle-display-in-buffer (tool-input input-str)
   "Handle display in buffer."
   (let* ((buffer-name (if (hash-table-p tool-input)
@@ -545,65 +1293,225 @@ This handles cases where JSON escaping has been applied multiple times."
         (let ((result (efrit-tools-display-in-buffer buffer-name content height)))
           (format "\n[%s]" result))
       (error
-       (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+      (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
+
+(defun efrit-do--handle-glob-files (tool-input)
+  "Handle glob_files tool to list files matching pattern."
+  (let* ((pattern (if (hash-table-p tool-input)
+                     (gethash "pattern" tool-input)
+                   "~/"))
+         (extension (if (hash-table-p tool-input)
+                       (gethash "extension" tool-input)
+                     "*"))
+         (recursive (if (hash-table-p tool-input)
+                       (gethash "recursive" tool-input)
+                     t)))
+    (condition-case err
+        (let* ((expanded-pattern (expand-file-name pattern))
+               (extensions (if (string= extension "*")
+                              '("")
+                            (split-string extension ",")))
+               (all-files '()))
+          (dolist (ext extensions)
+            (let* ((ext-clean (string-trim ext))
+                   (search-pattern (if recursive
+                                      (format "%s/**/*.%s" expanded-pattern ext-clean)
+                                    (format "%s/*.%s" expanded-pattern ext-clean)))
+                   (files (if (string= ext-clean "")
+                             (if recursive
+                                 (directory-files-recursively expanded-pattern ".*")
+                               (directory-files expanded-pattern t "^[^.]"))
+                           (file-expand-wildcards search-pattern))))
+              (setq all-files (append all-files files))))
+          (let ((file-count (length all-files))
+                (preview (if (> (length all-files) 10)
+                            (append (seq-take all-files 8) 
+                                   (list (format "... and %d more files" (- (length all-files) 8))))
+                          all-files)))
+            (format "\n[Found %d files in %s:\n%s]"
+                    file-count
+                    pattern
+                    (mapconcat #'identity preview "\n"))))
+      (error
+       (format "\n[Error finding files: %s]" (error-message-string err))))))
 
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
-Returns a formatted string with execution results or empty string on failure."
+Returns a formatted string with execution results or empty string on failure.
+Applies circuit breaker limits to prevent infinite loops."
   (let* ((tool-name (gethash "name" tool-item))
          (tool-input (gethash "input" tool-item))
          (input-str (cond
                      ((stringp tool-input) tool-input)
-                     ((hash-table-p tool-input) 
+                     ((hash-table-p tool-input)
                       (seq-some (lambda (key) (gethash key tool-input))
                                 '("expr" "expression" "code" "command")))
                      (t (format "%S" tool-input)))))
-    
+
     ;; Sanitize potentially over-escaped strings
     (when input-str
       (setq input-str (efrit-do--sanitize-elisp-string input-str)))
-    
-    (when efrit-do-debug
-      (message "Tool use: %s with input: %S (extracted: %S)" 
-               tool-name tool-input input-str))
-    
-    ;; Dispatch to appropriate handler
-    (cond
-     ((and (string= tool-name "eval_sexp") input-str)
-      (efrit-do--handle-eval-sexp input-str))
-     ((and (string= tool-name "shell_exec") input-str)
-      (efrit-do--handle-shell-exec input-str))
-     ((string= tool-name "todo_add")
-      (efrit-do--handle-todo-add tool-input))
-     ((string= tool-name "todo_update")
-      (efrit-do--handle-todo-update tool-input input-str))
-     ((string= tool-name "todo_show")
-      (efrit-do--handle-todo-show))
-     ((string= tool-name "buffer_create")
-      (efrit-do--handle-buffer-create tool-input input-str))
-     ((string= tool-name "format_file_list")
-      (efrit-do--handle-format-file-list input-str))
-     ((string= tool-name "format_todo_list")
-      (efrit-do--handle-format-todo-list tool-input))
-     ((string= tool-name "display_in_buffer")
-      (efrit-do--handle-display-in-buffer tool-input input-str))
-     (t 
-      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-      (format "\n[Unknown tool: %s]" tool-name)))))
+
+    (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)"
+               tool-name tool-input input-str)
+
+    ;; CIRCUIT BREAKER: Check limits before executing
+    (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name)))
+      (if (not (car breaker-check))
+          ;; Circuit breaker blocked execution
+          (progn
+            (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
+            (when (fboundp 'efrit-session-track-error)
+              (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
+            (cdr breaker-check))
+
+        ;; Circuit breaker allows execution - record the call
+        (efrit-do--circuit-breaker-record-call tool-name)
+
+        ;; If there's a warning message, prepend it to the result
+        (let ((warning (cdr breaker-check))
+              (result
+               ;; Dispatch to appropriate handler
+               (cond
+                ((and (string= tool-name "eval_sexp") input-str)
+                 (efrit-do--handle-eval-sexp input-str))
+                ((and (string= tool-name "shell_exec") input-str)
+                 (efrit-do--handle-shell-exec input-str))
+                ((string= tool-name "todo_add")
+                 (efrit-do--handle-todo-add tool-input))
+                ((string= tool-name "todo_update")
+                 (efrit-do--handle-todo-update tool-input input-str))
+                ((string= tool-name "todo_show")
+                 (efrit-do--handle-todo-show))
+                ((string= tool-name "todo_analyze")
+                 (efrit-do--handle-todo-analyze tool-input))
+                ((string= tool-name "todo_status")
+                 (efrit-do--handle-todo-status))
+                ((string= tool-name "todo_next")
+                 (efrit-do--handle-todo-next))
+                ((string= tool-name "todo_execute_next")
+                 (efrit-do--handle-todo-execute-next))
+                ((string= tool-name "todo_get_instructions")
+                 (efrit-do--handle-todo-execute-next))  ; Same handler, clearer name
+                ((string= tool-name "todo_complete_check")
+                 (efrit-do--handle-todo-complete-check))
+                ((string= tool-name "buffer_create")
+                 (efrit-do--handle-buffer-create tool-input input-str))
+                ((string= tool-name "format_file_list")
+                 (efrit-do--handle-format-file-list input-str))
+                ((string= tool-name "format_todo_list")
+                 (efrit-do--handle-format-todo-list tool-input))
+                ((string= tool-name "display_in_buffer")
+                 (efrit-do--handle-display-in-buffer tool-input input-str))
+                ((string= tool-name "session_complete")
+                 (efrit-do--handle-session-complete tool-input))
+                ((string= tool-name "glob_files")
+                 (efrit-do--handle-glob-files tool-input))
+                (t
+                 (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+                 (format "\n[Unknown tool: %s]" tool-name)))))
+
+          ;; Prepend warning if present
+          (if warning
+              (concat "\n" warning "\n" result)
+            result))))))
+
 ;;; Command execution
 
-(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code)
+(defun efrit-do--command-examples ()
+  "Return examples section for command system prompt."
+  (concat
+   "Examples:\n\n"
+   
+   "User: show me untracked files in ~/.emacs.d/\n"
+   "Assistant: I'll find untracked files and create a report.\n"
+   "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
+   "Tool call: format_file_list with content: \"[shell output]\"\n"
+   "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
+   
+   "User: open dired to my downloads folder\n"
+   "Assistant: I'll open dired for your downloads folder.\n"
+   "Tool call: eval_sexp with expr: \"(dired (expand-file-name \\\"~/Downloads/\\\"))\"\n\n"
+   
+   "User: split window and show scratch buffer\n"
+   "Assistant: I'll split the window and show the scratch buffer.\n"
+   "Tool call: eval_sexp with expr: \"(progn (split-window-horizontally) (other-window 1) (switch-to-buffer \\\"*scratch*\\\"))\"\n\n"
+   
+   "User: save all buffers\n"
+   "Assistant: I'll save all modified buffers.\n"
+   "Tool call: eval_sexp with expr: \"(save-some-buffers t)\"\n\n"
+   
+   "User: wrap the text to 2500 columns\n"
+   "Assistant: I'll wrap the text to 2500 columns.\n"
+   "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
+   
+   "User: fix warnings in *Warnings* buffer\n"
+   "Assistant: I'll fix the warnings systematically.\n"
+   "Tool call: todo_analyze with command: \"fix warnings in *Warnings* buffer\"\n"
+   "[Response: Analysis with steps...]\n"
+   "Tool call: eval_sexp with expr: \"(with-current-buffer \\\"*Warnings*\\\" (buffer-string))\"\n"
+   "[Response: Warning text...]\n"
+   "Tool call: todo_add with content: \"Fix lexical-binding in file1.el\"\n"
+   "Tool call: todo_add with content: \"Fix lexical-binding in file2.el\"\n"
+   "Tool call: todo_add with content: \"Verify all warnings fixed\"\n"
+   "[Then work through TODOs...]\n\n"))
+
+(defun efrit-do--command-formatting-tools ()
+  "Return formatting tools documentation for command system prompt."
+  (concat
+   "FORMATTING AND DISPLAY TOOLS:\n"
+   "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
+   "- format_file_list: Format raw text as markdown file lists with bullet points\n"
+   "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
+   "- display_in_buffer: Display content in specific buffers with custom window height\n\n"))
+
+(defun efrit-do--command-common-tasks ()
+  "Return common tasks section for command system prompt."
+  (concat
+   "Common tasks:\n"
+   "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
+   "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
+   "- Window operations: (split-window-horizontally), (other-window 1)\n"
+   "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
+   "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
+   "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
+
+(defun efrit-do--classify-task-complexity (command)
+  "Classify COMMAND as simple or complex based on content analysis.
+Returns \\='simple for single-action tasks, \\='complex for multi-step workflows."
+  (let ((simple-patterns '("open" "find" "goto" "show" "display" "list" 
+                           "create buffer" "insert" "delete" "replace"
+                           "navigate" "search" "close" "save"))
+        (complex-patterns '("fix all" "organize" "process each" "download"
+                           "batch" "multiple" "series" "workflow" "pipeline"
+                           "for each" "all.*and.*" "scan.*then.*")))
+    (cond
+     ;; Check for complex indicators
+     ((cl-some (lambda (pattern) 
+                 (string-match-p pattern (downcase command))) 
+               complex-patterns)
+      'complex)
+     ;; Check for simple indicators  
+     ((cl-some (lambda (pattern)
+                 (string-match-p pattern (downcase command)))
+               simple-patterns)
+      'simple)
+     ;; Default to simple for ambiguous cases
+     (t 'simple))))
+
+(defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code session-id work-log)
   "Generate system prompt for command execution with optional context.
 Uses previous command context if available. If RETRY-COUNT is provided,
-include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
+include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE.
+If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
   (let ((context-info (when efrit-do--last-result
                         (let ((recent-items (efrit-do--get-context-items 1)))
                           (when recent-items
                             (let ((item (car recent-items)))
                               (format "\n\nPREVIOUS CONTEXT:\nLast command: %s\nLast result: %s\n\n"
-                                      (efrit-do-context-item-command item)
-                                      (efrit-do-context-item-result item)))))))
+                                      (efrit-context-item-command item)
+                                      (efrit-context-item-result item)))))))
         (retry-info (when retry-count
                       (let ((rich-context (condition-case err
                                               (efrit-do--build-error-context)
@@ -614,16 +1522,43 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
                                 retry-count efrit-do-max-retries 
                                 (or previous-code "Unknown") 
                                 (or error-msg "Unknown error")
-                                rich-context)))))
+                                rich-context))))
+        (session-info (when session-id
+                       (format "\n\nSESSION MODE ACTIVE:\nSession ID: %s\nWork Log: %s\n\n%s\n\n"
+                              session-id
+                              (or work-log "[]")
+                              (efrit-do--session-protocol-instructions)))))
     (concat "You are Efrit, an AI assistant that executes natural language commands in Emacs.\n\n"
           
-          "IMPORTANT: You are in COMMAND MODE. This means:\n"
+          (if session-id
+              "IMPORTANT: You are in SESSION MODE. Follow the session protocol for multi-step execution.\n\n"
+            "IMPORTANT: You are in COMMAND MODE - INITIAL EXECUTION.\n\n")
+          
+          "CRITICAL CONTEXT RULES:\n"
+          "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
+          "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
+          "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"
+          "- 'Edit', 'modify', 'change' means buffer operations, NOT external editors\n"
+          "- SIMPLE TASKS (≤2 elisp forms): Use eval_sexp directly - NO todo_analyze needed\n"
+          "- COMPLEX TASKS (multi-step workflows): Use todo_analyze to break down\n"
+          "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n\n"
+          
+          "TOOL SELECTION GUIDE:\n"
+          "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, etc.)\n"
+          "- shell_exec: ONLY when explicitly asking for shell/terminal operations\n"
+          "- buffer_create: For reports, lists, and formatted output display\n"
+          "- todo_analyze: ONLY for genuinely complex multi-step workflows\n\n"
+          
+          "EXECUTION RULES:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
-          "- Use the eval_sexp tool for Emacs operations and shell_exec tool for shell commands\n"
-          "- FOR REPORTS/LISTS: Use buffer_create to make dedicated buffers with appropriate formatting\n"
+          "- CRITICAL: When user asks to 'show', 'list', 'display' or create any kind of report, you MUST use buffer_create tool to create a dedicated buffer\n"
+          "- FOR REPORTS/LISTS: ALWAYS use buffer_create to make dedicated buffers with appropriate formatting\n"
           "- FOR FILE LISTS: Use format_file_list to format paths as markdown lists\n"  
-          "- USE TODO MANAGEMENT: For complex tasks, break them into smaller TODO items using todo_add, todo_update, and todo_show\n"
-          "- TRACK PROGRESS: Mark TODOs as 'in-progress' when starting work, 'completed' when done\n"
+          "- USE TODO MANAGEMENT: For ANY multi-step task, ALWAYS create TODOs first\n"
+          "- TODO WORKFLOW: 1) Call todo_analyze ONCE, 2) IMMEDIATELY follow its instructions to scan/add TODOs\n"
+          "- CRITICAL: After todo_analyze, take ACTION - don't analyze again!\n"
+          "- TRACK PROGRESS: Mark TODOs 'in-progress' when starting, 'completed' when done\n"
+          "- PREVENT LOOPS: In sessions, ALWAYS check todo_complete_check before continuing\n"
           "- DO NOT explain what you're doing unless asked\n"
           "- DO NOT ask for clarification - make reasonable assumptions\n"
           "- ONLY use documented Emacs functions - NEVER invent function names\n"
@@ -638,43 +1573,11 @@ include retry-specific instructions with ERROR-MSG and PREVIOUS-CODE."
           "- Only operate on current paragraph/region if explicitly specified\n"
           "- For buffer-wide operations, prefer whole-buffer functions\n\n"
           
-          "Common tasks:\n"
-          "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
-          "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
-          "- Window operations: (split-window-horizontally), (other-window 1)\n"
-          "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
-          "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
-          "- Case changes: (upcase-region (point-min) (point-max))\n\n"
+          (efrit-do--command-common-tasks)
+          (efrit-do--command-formatting-tools)
+          (efrit-do--command-examples)
           
-          "FORMATTING AND DISPLAY TOOLS:\n"
-          "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
-          "- format_file_list: Format raw text as markdown file lists with bullet points\n"
-          "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
-          "- display_in_buffer: Display content in specific buffers with custom window height\n\n"
-          
-          "Examples:\n\n"
-          
-          "User: show me untracked files in ~/.emacs.d/\n"
-          "Assistant: I'll find untracked files and create a report.\n"
-          "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
-          "Tool call: format_file_list with content: \"[shell output]\"\n"
-          "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
-          
-          "User: open dired to my downloads folder\n"
-          "Assistant: I'll open dired for your downloads folder.\n"
-          "Tool call: eval_sexp with expr: \"(dired (expand-file-name \\\"~/Downloads/\\\"))\"\n\n"
-          
-          "User: split window and show scratch buffer\n"
-          "Assistant: I'll split the window and show the scratch buffer.\n"
-          "Tool call: eval_sexp with expr: \"(progn (split-window-horizontally) (other-window 1) (switch-to-buffer \\\"*scratch*\\\"))\"\n\n"
-          
-          "User: save all buffers\n"
-          "Assistant: I'll save all modified buffers.\n"
-          "Tool call: eval_sexp with expr: \"(save-some-buffers t)\"\n\n"
-          
-          "User: wrap the text to 2500 columns\n"
-          "Assistant: I'll wrap the text to 2500 columns.\n"
-          "Tool call: eval_sexp with expr: \"(let ((fill-column 2500)) (fill-region (point-min) (point-max)))\"\n\n"
+          session-info
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
@@ -715,12 +1618,9 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
 Uses improved error handling. If RETRY-COUNT is provided, this is a retry 
 attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
-      (let* ((api-key (efrit--get-api-key))
+      (let* ((api-key (efrit-common-get-api-key))
              (url-request-method "POST")
-             (url-request-extra-headers
-              `(("x-api-key" . ,api-key)
-                ("anthropic-version" . "2023-06-01")
-                ("content-type" . "application/json")))
+             (url-request-extra-headers (efrit--build-headers api-key))
              (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
              (request-data
               `(("model" . ,efrit-model)
@@ -729,77 +1629,14 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                 ("messages" . [(("role" . "user")
                                ("content" . ,command))])
                 ("system" . ,system-prompt)
-                ("tools" . [(("name" . "eval_sexp")
-                            ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("expr" . (("type" . "string")
-                                                                          ("description" . "The Elisp expression to evaluate")))))
-                                              ("required" . ["expr"]))))
-                           (("name" . "shell_exec")
-                            ("description" . "Execute a shell command and return the result.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("command" . (("type" . "string")
-                                                                             ("description" . "The shell command to execute")))))
-                                              ("required" . ["command"]))))
-                           (("name" . "todo_add")
-                            ("description" . "Add a new TODO item to track progress.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("content" . (("type" . "string")
-                                                                             ("description" . "The TODO item description")))
-                                                              ("priority" . (("type" . "string")
-                                                                            ("enum" . ["low" "medium" "high"])
-                                                                            ("description" . "Priority level")))))
-                                              ("required" . ["content"]))))
-                           (("name" . "todo_update")
-                            ("description" . "Update the status of a TODO item.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . (("id" . (("type" . "string")
-                                                                        ("description" . "The TODO item ID")))
-                                                              ("status" . (("type" . "string")
-                                                                          ("enum" . ["todo" "in-progress" "completed"])
-                                                                          ("description" . "New status")))))
-                                              ("required" . ["id" "status"]))))
-                           (("name" . "todo_show")
-                            ("description" . "Show all current TODO items.")
-                            ("input_schema" . (("type" . "object")
-                                              ("properties" . ()))))
-                            (("name" . "buffer_create")
-                             ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("name" . (("type" . "string")
-                                                                           ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
-                                                               ("content" . (("type" . "string")
-                                                                             ("description" . "Buffer content")))
-                                                               ("mode" . (("type" . "string")
-                                                                         ("description" . "Optional major mode (e.g. 'markdown-mode', 'org-mode')")))))
-                                               ("required" . ["name" "content"]))))
-                            (("name" . "format_file_list")
-                             ("description" . "Format content as a markdown file list with bullet points.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("content" . (("type" . "string")
-                                                                              ("description" . "Raw content to format as file list")))))
-                                               ("required" . ["content"]))))
-                            (("name" . "format_todo_list")
-                             ("description" . "Format TODO list with optional sorting.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("sort_by" . (("type" . "string")
-                                                                              ("enum" . ["status" "priority"])
-                                                                              ("description" . "Optional sorting criteria")))))
-                                               ("required" . []))))
-                            (("name" . "display_in_buffer")
-                             ("description" . "Display content in a specific buffer.")
-                             ("input_schema" . (("type" . "object")
-                                               ("properties" . (("buffer_name" . (("type" . "string")
-                                                                                  ("description" . "Buffer name")))
-                                                               ("content" . (("type" . "string")
-                                                                             ("description" . "Content to display")))
-                                                               ("window_height" . (("type" . "number")
-                                                                                   ("description" . "Optional window height")))))
-                                               ("required" . ["buffer_name" "content"]))))])))
-             (url-request-data
-              (encode-coding-string (json-encode request-data) 'utf-8)))
+                ("tools" . ,(efrit-do--get-current-tools-schema))))
+             (json-string (json-encode request-data))
+             ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+              (escaped-json (efrit-common-escape-json-unicode json-string))
+              (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
-        (if-let* ((response-buffer (url-retrieve-synchronously efrit-api-url))
+        (if-let* ((api-url (or efrit-api-url (efrit-common-get-api-url)))
+                  (response-buffer (url-retrieve-synchronously api-url))
                   (response-text (efrit-do--extract-response-text response-buffer)))
             (efrit-do--process-api-response response-text)
           (error "Failed to get response from API")))
@@ -815,9 +1652,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
              (response (json-read-from-string response-text))
              (message-text ""))
         
-        (when efrit-do-debug
-          (message "Raw API Response: %s" response-text)
-          (message "Parsed response: %S" response))
+        (efrit-log 'debug "Raw API Response: %s" response-text)
+        (efrit-log 'debug "Parsed response: %S" response)
         
         ;; Check for API errors first
         (if-let* ((error-obj (gethash "error" response)))
@@ -850,23 +1686,9 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
     (error
      (format "JSON parsing error: %s" (error-message-string json-err)))))
 
-;;;###autoload
-(defun efrit-do (command)
-  "Execute natural language COMMAND in Emacs.
-The command is sent to Claude, which translates it into Elisp
-and executes it immediately. Results are displayed in a dedicated
-buffer if `efrit-do-show-results' is non-nil.
-
-If retry is enabled and errors occur, automatically retry by sending 
-error details back to Claude for correction."
-  (interactive
-   (list (read-string "Command: " nil 'efrit-do-history)))
-  
-  ;; Add to history
-  (add-to-history 'efrit-do-history command efrit-do-history-max)
-  
-  ;; Execute with retry logic
-  (message "Executing: %s..." command)
+(defun efrit-do--execute-with-retry (command)
+  "Execute COMMAND with retry logic if enabled.
+Returns the final result after all retry attempts."
   (let ((attempt 0)
         (max-attempts (if efrit-do-retry-on-errors (1+ efrit-do-max-retries) 1))
         result error-info last-error last-code final-result)
@@ -892,8 +1714,7 @@ error details back to Claude for correction."
                       (progn
                         (setq last-error (cdr error-info))
                         (setq last-code (efrit-do--extract-executed-code result))
-                        (when efrit-do-debug
-                          (message "Error detected: %s. Will retry..." last-error)))
+                        (efrit-log 'debug "Error detected: %s. Will retry..." last-error))
                     ;; Success or no more retries
                     (setq final-result result)))
               ;; No result - treat as error
@@ -908,28 +1729,95 @@ error details back to Claude for correction."
                (setq last-error error-msg)
              (setq final-result error-msg))))))
     
-    ;; Process final result
-    (if final-result
-        (let* ((error-info (efrit-do--extract-error-info final-result))
-               (is-error (car error-info)))
-          (setq efrit-do--last-result final-result)
-          (efrit-do--capture-context command final-result)
-          (efrit-do--display-result command final-result is-error)
-          
-          (if is-error
-              (progn
-                (message "Command failed after %d attempt%s" 
-                        attempt (if (> attempt 1) "s" ""))
-                (user-error "%s" (cdr error-info)))
-            (message "Command executed successfully%s" 
-                    (if (> attempt 1) 
-                        (format " (after %d attempts)" attempt) 
-                        ""))))
-      ;; Should never reach here, but handle just in case
-      (let ((fallback-error "Failed to execute command"))
-        (setq efrit-do--last-result fallback-error)
-        (efrit-do--display-result command fallback-error t)
-        (user-error "%s" fallback-error)))))
+    (cons final-result attempt)))
+
+(defun efrit-do--process-result (command result attempt)
+  "Process the final RESULT from executing COMMAND after ATTEMPT attempts."
+  (if result
+      (let* ((error-info (efrit-do--extract-error-info result))
+             (is-error (car error-info)))
+        (setq efrit-do--last-result result)
+        (efrit-do--capture-context command result)
+        (efrit-do--display-result command result is-error)
+        
+        (if is-error
+            (progn
+              (message "Command failed after %d attempt%s" 
+                      attempt (if (> attempt 1) "s" ""))
+              (user-error "%s" (cdr error-info)))
+          (message "Command executed successfully%s" 
+                  (if (> attempt 1) 
+                      (format " (after %d attempts)" attempt) 
+                      ""))))
+    ;; Should never reach here, but handle just in case
+    (let ((fallback-error "Failed to execute command"))
+      (setq efrit-do--last-result fallback-error)
+      (efrit-do--display-result command fallback-error t)
+      (user-error "%s" fallback-error))))
+
+;;;###autoload
+(defun efrit-do-async (command)
+  "Execute natural language COMMAND in Emacs asynchronously.
+The command is sent to Claude using async infrastructure, providing
+non-blocking execution with progress feedback. Results are displayed
+when the command completes."
+  (interactive
+   (list (read-string "Command (async): " nil 'efrit-do-history)))
+
+  ;; Add to history
+  (add-to-history 'efrit-do-history command efrit-do-history-max)
+
+  ;; Track command execution
+  (efrit-session-track-command command)
+
+  ;; Reset circuit breaker for new command session
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Execute asynchronously
+  (require 'efrit-async)
+  (message "Executing asynchronously: %s..." command)
+  (efrit-async-execute-command
+   command
+   (lambda (result)
+     (let* ((error-info (efrit-do--extract-error-info result))
+            (is-error (car error-info)))
+       ;; Store result and update context
+       (setq efrit-do--last-result result)
+       (efrit-do--capture-context command result)
+       (efrit-do--display-result command result is-error)
+
+       ;; Show completion message
+       (if is-error
+           (message "Async command failed: %s" (cdr error-info))
+         (message "Async command completed successfully"))))))
+
+;;;###autoload
+(defun efrit-do (command)
+  "Execute natural language COMMAND in Emacs.
+The command is sent to Claude, which translates it into Elisp
+and executes it immediately. Results are displayed in a dedicated
+buffer if `efrit-do-show-results' is non-nil.
+
+If retry is enabled and errors occur, automatically retry by sending
+error details back to Claude for correction."
+  (interactive
+   (list (read-string "Command: " nil 'efrit-do-history)))
+
+  ;; Add to history
+  (add-to-history 'efrit-do-history command efrit-do-history-max)
+
+  ;; Track command execution
+  (efrit-session-track-command command)
+
+  ;; Reset circuit breaker for new command session
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Execute with retry logic
+  (message "Executing: %s..." command)
+  (let* ((result-and-attempt (efrit-do--execute-with-retry command))
+         (final-result (car result-and-attempt))
+         (attempt (cdr result-and-attempt)))
+    (efrit-do--process-result command final-result attempt)))
 
 ;;;###autoload
 (defun efrit-do-repeat ()
@@ -984,12 +1872,49 @@ error details back to Claude for correction."
 
 ;;;###autoload
 (defun efrit-do-show-todos ()
-  "Show current TODO items."
+  "Show current TODO items in a shrink-to-fit buffer."
   (interactive)
-  (with-output-to-temp-buffer "*efrit-do-todos*"
-    (princ "Current efrit-do TODOs:\n\n")
-    (princ (efrit-do--format-todos-for-display))
-    (princ "\n\nUse efrit-do-clear-todos to clear all TODOs.")))
+  (let ((buffer (get-buffer-create "*efrit-do-todos*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Current efrit-do TODOs\n")
+        (insert "=====================\n\n")
+        
+        (if (null efrit-do--current-todos)
+            (insert "No current TODOs.\n")
+          ;; Show statistics
+          (let ((total (length efrit-do--current-todos))
+                (completed (seq-count (lambda (todo)
+                                       (eq (efrit-do-todo-item-status todo) 'completed))
+                                     efrit-do--current-todos))
+                (in-progress (seq-count (lambda (todo)
+                                         (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                       efrit-do--current-todos)))
+            (insert (format "Total: %d | Completed: %d | In Progress: %d | Pending: %d\n\n"
+                           total completed in-progress (- total completed in-progress))))
+          
+          ;; Show TODO list
+          (insert (efrit-do--format-todos-for-display)))
+        
+        (insert "\n\nCommands:\n")
+        (insert "  M-x efrit-do-clear-todos - Clear all TODOs\n")
+        (insert "  M-x efrit-progress-show  - Show progress buffer\n")
+        
+        (goto-char (point-min))
+        (special-mode)))
+    
+    ;; Display buffer with optional shrink-to-fit
+    (let ((window (display-buffer buffer
+                                 (if efrit-do-auto-shrink-todo-buffers
+                                     '((display-buffer-reuse-window
+                                        display-buffer-below-selected)
+                                       (window-height . fit-window-to-buffer)
+                                       (window-parameters . ((no-delete-other-windows . t))))
+                                   '(display-buffer-reuse-window
+                                     display-buffer-below-selected)))))
+      (when (and window efrit-do-auto-shrink-todo-buffers)
+        (fit-window-to-buffer window nil nil 15 nil)))))
 
 ;;;###autoload
 (defun efrit-do-clear-todos ()
@@ -1000,7 +1925,8 @@ error details back to Claude for correction."
 
 ;;;###autoload
 (defun efrit-do-clear-all ()
-  "Clear all efrit-do state: history, context, results buffer, TODOs, and conversations."
+  "Clear all efrit-do state.
+This includes: history, context, results buffer, TODOs, and conversations."
   (interactive)
   (setq efrit-do-history nil)
   (efrit-do--clear-context)
@@ -1063,9 +1989,9 @@ Include last N commands (default 5)."
           
           ;; Convert each context item to conversation
           (dolist (item items) ; Show oldest first (items already in oldest-first order)
-            (let ((command (efrit-do-context-item-command item))
-                  (result (efrit-do-context-item-result item))
-                  (timestamp (efrit-do-context-item-timestamp item)))
+            (let ((command (efrit-context-item-command item))
+                  (result (efrit-context-item-result item))
+                  (timestamp (efrit-context-item-timestamp item)))
               
               ;; Display user command
               (efrit--display-message 
@@ -1082,8 +2008,8 @@ Include last N commands (default 5)."
           ;; Build history in correct order for efrit-chat (newest first)
           ;; Process items in reverse order so newest ends up first
           (dolist (item items)
-            (let ((command (efrit-do-context-item-command item))
-                  (result (efrit-do-context-item-result item)))
+            (let ((command (efrit-context-item-command item))
+                  (result (efrit-context-item-result item)))
               (push `((role . "assistant") (content . ,result)) efrit--message-history)
               (push `((role . "user") (content . ,command)) efrit--message-history)))
           

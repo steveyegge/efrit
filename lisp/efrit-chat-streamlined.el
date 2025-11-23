@@ -25,6 +25,8 @@
 (declare-function efrit-tools-system-prompt "efrit-tools")
 (declare-function efrit-tools-get-context "efrit-tools")
 (declare-function efrit--get-api-key "efrit-tools")
+(declare-function efrit--build-headers "efrit-chat" (api-key))
+(declare-function efrit-common-get-api-url "efrit-common")
 
 ;; Declare external variables from efrit-chat
 (defvar efrit-model)
@@ -40,10 +42,9 @@
   :group 'tools
   :prefix "efrit-")
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
-  "Claude model to use for conversations."
-  :type 'string
-  :group 'efrit)
+;; Use centralized model configuration
+(require 'efrit-config)
+(defvaralias 'efrit-model 'efrit-default-model)
 
 (defcustom efrit-max-tokens 8192
   "Maximum number of tokens in the response."
@@ -55,9 +56,12 @@
   :type 'float
   :group 'efrit)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
-  "URL for the Anthropic API endpoint."
-  :type 'string
+;; Use centralized API URL - legacy variable kept for compatibility
+(defcustom efrit-api-url nil
+  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
+When nil, uses the centralized configuration."
+  :type '(choice (const :tag "Use centralized config" nil)
+                 (string :tag "Legacy URL override"))
   :group 'efrit)
 
 (defcustom efrit-enable-tools t
@@ -80,8 +84,8 @@
   :type 'integer
   :group 'efrit)
 
-(defcustom efrit-max-turns 10
-  "Maximum number of turns in a conversation to prevent infinite loops."
+(defcustom efrit-max-turns 2
+  "Maximum number of turns in a conversation for streamlined interface."
   :type 'integer
   :group 'efrit)
 
@@ -166,45 +170,41 @@
   ;; Use enhanced system prompt
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-            ("content-type" . "application/json")))
+         (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (efrit-streamlined--system-prompt))
          (cleaned-messages (mapcar (lambda (msg)
-                                   `(("role" . ,(alist-get 'role msg))
-                                   ("content" . ,(substring-no-properties (alist-get 'content msg)))))
-                               messages))
+                                     `(("role" . ,(alist-get 'role msg))
+                                       ("content" . ,(substring-no-properties (alist-get 'content msg)))))
+                                   messages))
          (request-data
-         `(("model" . ,efrit-model)
-         ("max_tokens" . ,efrit-max-tokens)
-         ("temperature" . ,efrit-temperature)
-         ("system" . ,system-prompt)
-         ("messages" . ,(vconcat cleaned-messages))
-         ,@(when efrit-enable-tools
-         '(("tools" . [
-         (("name" . "eval_sexp")
-         ("description" . "Evaluate Elisp expression")
-         ("input_schema" . (("type" . "object")
-         ("properties" . (("expr" . (("type" . "string")
-         ("description" . "Elisp expression")))))
-         ("required" . ["expr"]))))
-         (("name" . "get_context")
-         ("description" . "Get Emacs environment context")
-         ("input_schema" . (("type" . "object")
-         ("properties" . (("request" . (("type" . "string")
-         ("description" . "Context request")))))
-         ("required" . []))))
-         ])))
-         ))
+          `(("model" . ,efrit-model)
+            ("max_tokens" . ,efrit-max-tokens)
+            ("temperature" . ,efrit-temperature)
+            ("system" . ,system-prompt)
+            ("messages" . ,(vconcat cleaned-messages))
+            ,@(when efrit-enable-tools
+                '(("tools" . [
+                              (("name" . "eval_sexp")
+                               ("description" . "Evaluate Elisp expression")
+                               ("input_schema" . (("type" . "object")
+                                                  ("properties" . (("expr" . (("type" . "string")
+                                                                              ("description" . "Elisp expression")))))
+                                                  ("required" . ["expr"]))))
+                              (("name" . "get_context")
+                               ("description" . "Get Emacs environment context")
+                               ("input_schema" . (("type" . "object")
+                                                  ("properties" . (("request" . (("type" . "string")
+                                                                                 ("description" . "Context request")))))
+                                                  ("required" . []))))
+                              ])))
+            ))
          (json-string (json-encode request-data))
          ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
          (escaped-json (replace-regexp-in-string 
-                       "[^\x00-\x7F]" 
-                       (lambda (char)
-                         (format "\\\\u%04X" (string-to-char char)))
-                       json-string))
+                        "[^\x00-\x7F]" 
+                        (lambda (char)
+                          (format "\\\\u%04X" (string-to-char char)))
+                        json-string))
          (url-request-data (encode-coding-string escaped-json 'utf-8)))
     
     ;; Log request details to work buffer
@@ -214,7 +214,7 @@
              (if efrit-enable-tools "tools" "no tools")))
     
     ;; Send request
-    (url-retrieve efrit-api-url 'efrit-streamlined--handle-response nil t t)))
+    (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit-streamlined--handle-response nil t t)))
 
 ;;; Response Handler
 
@@ -420,7 +420,7 @@
 
 (defun efrit-streamlined--display-response (content)
   "Display CONTENT in chat buffer (Claude has decided appropriate length)."
-  (let* ((buffer-name (or (and (boundp 'efrit-buffer-name) efrit-buffer-name) "*efrit*"))
+  (let* ((buffer-name (or (and (boundp 'efrit-buffer-name) efrit-buffer-name) "*efrit-chat*"))
          (chat-buffer (get-buffer-create buffer-name)))
     (with-current-buffer chat-buffer
       ;; Ensure we're in chat mode
@@ -434,7 +434,7 @@
 
 ;;; Chat Mode Setup
 
-(defvar efrit-buffer-name "*efrit*"
+(defvar efrit-buffer-name "*efrit-chat*"
   "Name of the Efrit chat buffer.")
 
 (define-derived-mode efrit-chat-mode fundamental-mode "Efrit-Chat"
@@ -450,6 +450,10 @@
     (insert "========================\n\n")))
 
 ;;; Public Interface
+
+
+
+
 
 (defun efrit-streamlined-send (message)
   "Send MESSAGE using streamlined chat experience."

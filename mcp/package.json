@@ -1,0 +1,52 @@
+{
+  "name": "efrit-mcp-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Model Context Protocol server for Efrit - enables AI models to interact with Efrit instances",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch & nodemon dist/server.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write src/**/*.ts test/**/*.ts",
+    "clean": "rm -rf dist coverage"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "efrit",
+    "emacs",
+    "ai",
+    "claude"
+  ],
+  "author": "Efrit Project",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "p-limit": "^7.2.0",
+    "pino": "^10.1.0",
+    "pino-pretty": "^13.1.2",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "nodemon": "^3.0.0",
+    "prettier": "^3.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

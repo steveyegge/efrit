@@ -44,6 +44,25 @@ Thank you for your interest in contributing to Efrit! This guide will help you g
    ./efrit-test-simple.sh
    ```
 
+## Architecture Overview
+
+### Session-Based Design
+Efrit uses a session-based architecture where Claude controls the execution flow:
+- **Sync Execution**: `efrit-do` for immediate, blocking commands
+- **Async Execution**: `efrit-async` for non-blocking, queued commands
+- **Unified Interface**: `efrit-unified` lets Claude decide execution mode
+
+### Module Organization
+- **efrit-protocol.el**: Shared protocols to avoid circular dependencies
+- **efrit-context.el**: Context capture and work log management
+- **efrit-performance.el**: Caching, memory management, statistics
+- **efrit-tools.el**: Core tool implementations
+- Keep functions under 100 lines for better ripgrep chunking
+- Files can be longer than 200 lines (normal in Elisp)
+
+### Zero Client-Side Intelligence
+A foundational principle: Claude makes all decisions. Never add client-side heuristics or guessing.
+
 ## Code Standards
 
 ### Emacs Lisp Conventions
@@ -57,6 +76,8 @@ Thank you for your interest in contributing to Efrit! This guide will help you g
 - **Package prefix**: Use `efrit-` for all public functions and variables
 - **Docstrings**: Required for all functions and variables
 - **Line length**: Keep under 100 characters when possible
+- **Function length**: Keep individual functions under 100 lines for better readability and ripgrep chunking
+- **File length**: No restrictions - long files are normal in Elisp
 
 ### Code Quality
 

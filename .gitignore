@@ -24,6 +24,9 @@ dist/
 # Efrit specific - data directory (user state)
 .efrit/
 
+# Generated context/state files (should be in data directory)
+lisp/*-context.el
+
 # IDE files
 .vscode/
 .idea/
@@ -31,3 +34,9 @@ dist/
 # Temporary files
 tmp/
 temp/
+
+# Node.js
+node_modules/
+mcp/node_modules/
+package-lock.json
+mcp/package-lock.json

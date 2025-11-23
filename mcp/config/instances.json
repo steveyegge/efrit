@@ -1,0 +1,17 @@
+{
+  "instances": {
+    "default": {
+      "queue_dir": "~/.emacs.d/.efrit/queues/default",
+      "timeout": 30,
+      "daemon_name": "efrit-daemon",
+      "max_concurrent": 5
+    }
+  },
+  "default_instance": "default",
+  "max_concurrent_requests": 10,
+  "log_level": "info",
+  "security": {
+    "max_request_size": 1048576,
+    "allowed_queue_roots": ["~/.emacs.d", "~/"]
+  }
+}

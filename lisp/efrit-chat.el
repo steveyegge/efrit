@@ -32,7 +32,10 @@
 (require 'auth-source)
 (require 'efrit-tools)
 (require 'efrit-multi-turn)
-(require 'efrit-debug)
+
+;; Declare functions from other modules to avoid warnings
+(declare-function efrit-common-get-api-key "efrit-common")
+(declare-function efrit-do "efrit-do" (command))
 
 ;;; Customization
 
@@ -41,15 +44,14 @@
   :group 'tools
   :prefix "efrit-")
 
-(defcustom efrit-buffer-name "*efrit*"
+(defcustom efrit-buffer-name "*efrit-chat*"
   "Name of the Efrit conversation buffer."
   :type 'string
   :group 'efrit)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
-  "Claude model to use for conversations."
-  :type 'string
-  :group 'efrit)
+;; Use centralized model configuration  
+(require 'efrit-config)
+(defvaralias 'efrit-model 'efrit-default-model)
 
 (defcustom efrit-max-tokens 8192
   "Maximum number of tokens in the response.
@@ -63,9 +65,12 @@ or 4096 without. This setting uses the higher limit."
   :type 'float
   :group 'efrit)
 
-(defcustom efrit-api-url "https://api.anthropic.com/v1/messages"
-  "URL for the Anthropic API endpoint."
-  :type 'string
+;; Use centralized API URL - legacy variable kept for compatibility
+(defcustom efrit-api-url nil
+  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
+When nil, uses the centralized configuration."
+  :type '(choice (const :tag "Use centralized config" nil)
+                 (string :tag "Legacy URL override"))
   :group 'efrit)
 
 (defcustom efrit-enable-tools t
@@ -81,6 +86,20 @@ or 4096 without. This setting uses the higher limit."
 (defcustom efrit-retry-on-errors t
   "Whether to automatically retry failed tool executions in chat mode."
   :type 'boolean
+  :group 'efrit)
+
+(defcustom efrit-custom-headers nil
+  "Alist of custom headers to add to API requests.
+Each element should be a cons cell of (HEADER-NAME . HEADER-VALUE).
+Example: \='((\"authorization\" . \"Bearer your-token\")
+           (\"custom-header\" . \"custom-value\"))"
+  :type '(alist :key-type string :value-type string)
+  :group 'efrit)
+
+(defcustom efrit-excluded-headers nil
+  "List of default header names to exclude from API requests.
+Example: \='(\"anthropic-version\" \"anthropic-beta\")"
+  :type '(repeat string)
   :group 'efrit)
 
 ;;; Internal variables
@@ -99,6 +118,17 @@ or 4096 without. This setting uses the higher limit."
 
 (defvar-local efrit--current-conversation nil
   "Current multi-turn conversation state, if active.")
+
+;;; Helper Functions
+
+(defun efrit--sanitize-chat-text (text)
+  "Remove technical artifacts from TEXT for clean chat display."
+  (let ((cleaned text))
+    ;; Remove any remaining [Result: ...] tags
+    (setq cleaned (replace-regexp-in-string "\\[Result:[^]]*\\]" "" cleaned))
+    ;; Remove empty lines and excessive whitespace
+    (setq cleaned (replace-regexp-in-string "\n\n+" "\n\n" cleaned))
+    (string-trim cleaned)))
 
 ;;; Faces
 
@@ -126,21 +156,10 @@ or 4096 without. This setting uses the higher limit."
 
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (let* ((auth-info (car (auth-source-search :host "api.anthropic.com"
-                                            :user "personal"
-                                            :require '(:secret))))
-         (secret (plist-get auth-info :secret)))
-    (if (functionp secret)
-        (funcall secret)
-      secret)))
+  (require 'efrit-common)
+  (efrit-common-get-api-key))
 
-(defun efrit--log-debug (format-string &rest args)
-  "Log debug message with FORMAT-STRING and ARGS."
-  (let ((debug-buffer (get-buffer-create "*efrit-debug*")))
-    (with-current-buffer debug-buffer
-      (goto-char (point-max))
-      (insert (apply #'format (concat "[%s] " format-string "\n")
-                     (cons (format-time-string "%H:%M:%S") args))))))
+
 
 ;;; Buffer management
 
@@ -168,8 +187,8 @@ or 4096 without. This setting uses the higher limit."
       ;; Go to end of buffer
       (goto-char (point-max))
       
-      ;; Add spacing before input area
-      (unless (bobp) (insert "\n\n"))
+      ;; Add spacing before input area (single newline since message already has one)
+      (unless (bobp) (insert "\n"))
       
       ;; Set the marker for beginning of input area
       (set-marker efrit--input-marker (point))
@@ -206,14 +225,14 @@ or 4096 without. This setting uses the higher limit."
             (goto-char (marker-position efrit--input-marker))
           (goto-char (point-max))))
       
-      ;; Add spacing before message
-      (unless (bobp) (insert "\n\n"))
+      ;; Add spacing before message (single newline to separate from previous content)
+      (unless (bobp) (insert "\n"))
       
       ;; Insert the message with appropriate prefix
       (let ((start (point)))
-        (insert prefix message)
+        (insert prefix message "\n")  ; Add newline after message
         (when face
-          (add-text-properties start (point) `(face ,face))))
+          (add-text-properties start (- (point) 1) `(face ,face))))  ; Don't apply face to newline
       
       ;; Update conversation marker to end of this message
       (set-marker efrit--conversation-marker (point))
@@ -221,17 +240,30 @@ or 4096 without. This setting uses the higher limit."
       ;; Ensure buffer is editable
       (setq buffer-read-only nil))))
 
+;;; Header customization
+
+(defun efrit--build-headers (api-key)
+  "Build HTTP headers for API requests, respecting customization options."
+  (let ((default-headers `(("x-api-key" . ,api-key)
+                          ("anthropic-version" . "2023-06-01")
+                          ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
+                          ("content-type" . "application/json"))))
+    ;; Remove excluded headers
+    (when efrit-excluded-headers
+      (setq default-headers
+            (cl-remove-if (lambda (header)
+                           (member (car header) efrit-excluded-headers))
+                         default-headers)))
+    ;; Add custom headers (custom headers override defaults)
+    (append efrit-custom-headers default-headers)))
+
 ;;; API functions
 
 (defun efrit--send-api-request (messages)
   "Send MESSAGES to the Claude API and handle the response."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers
-          `(("x-api-key" . ,api-key)
-            ("anthropic-version" . "2023-06-01")
-            ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-            ("content-type" . "application/json")))
+         (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
          (request-data
          `(("model" . ,efrit-model)
@@ -276,7 +308,7 @@ or 4096 without. This setting uses the higher limit."
          (url-request-data
           (encode-coding-string (json-encode request-data) 'utf-8)))
     ;; Send request
-    (url-retrieve efrit-api-url 'efrit--handle-api-response nil t t)))
+    (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit--handle-api-response nil t t)))
 
 (defun efrit--process-http-status (status)
   "Process HTTP status and return non-nil if there's an error.
@@ -320,18 +352,46 @@ Returns the content hash-table from the API response, or nil if parsing fails."
     (let* ((json-object-type 'hash-table)
            (json-array-type 'vector)
            (json-key-type 'string)
-           (raw-response (buffer-substring-no-properties (point) (point-max)))
+           ;; Ensure proper UTF-8 decoding
+           (coding-system-for-read 'utf-8)
+           (raw-response (decode-coding-region (point) (point-max) 'utf-8 t))
            (response (json-read-from-string raw-response))
            (content (gethash "content" response)))
-      
-
-      
       content)))
+
+(defun efrit--detect-incomplete-task (content message-text)
+  "Detect if CONTENT represents an incomplete multi-step task.
+Returns non-nil if the task appears incomplete and needs delegation."
+  (when (and content message-text)
+    (let ((tool-count 0)
+          (mentions-multiple-items nil))
+      
+      ;; Count tool calls
+      (dotimes (i (length content))
+        (let* ((item (aref content i))
+               (type (gethash "type" item)))
+          (when (string= type "tool_use")
+            (cl-incf tool-count))))
+      
+      ;; Check if text mentions creating multiple items
+      (when (or (string-match-p "\\(three\\|multiple\\|several\\) \\(buffers?\\|poems?\\|files?\\)" message-text)
+                (string-match-p "create.*and.*and" message-text)
+                (string-match-p "I'll create.*separate" message-text))
+        (setq mentions-multiple-items t))
+      
+      ;; Delegate if:
+      ;; 1. Text mentions multiple items but only 1 or 0 tools were called
+      ;; 2. Text says "Let me" or "I'll" with words suggesting multiple steps
+      (or (and mentions-multiple-items (< tool-count 2))
+          (and (string-match-p "\\(Let me\\|I'll\\|I will\\).*\\(create\\|write\\|start\\).*\\(multiple\\|several\\|three\\|buffers\\)" message-text)
+               (< tool-count 2))))))
 
 (defun efrit--extract-content-and-tools (content)
   "Extract text content and execute tool calls from CONTENT array.
 Returns the processed message text with tool results."
-  (let ((message-text ""))
+  (let ((message-text "")
+        (should-delegate nil))
+    (efrit-log-debug "Processing content with %d items" (length content))
     (when content
       (dotimes (i (length content))
         (let* ((item (aref content i))
@@ -356,10 +416,10 @@ Returns the processed message text with tool results."
                                  ;; Handle eval_sexp tool call
                                  ((string= tool-name "eval_sexp")
                                  (let ((expr (gethash "expr" input)))
-                                 (efrit-debug-log "Executing elisp: %s" expr)
+                                 (efrit-log-debug "Executing elisp: %s" expr)
                                  (if expr
                                    (let ((result (efrit-tools-eval-sexp expr)))
-                                           (efrit-debug-log "Elisp result: %s" result)
+                                           (efrit-log-debug "Elisp result: %s" result)
                                            result)
                                        "Error: No expression provided")))
                                  ;; Handle get_context tool call
@@ -374,24 +434,35 @@ Returns the processed message text with tool results."
                                                    (efrit--safe-error-message tool-err)
                                                  "Unknown error"))))))
 
-                (setq message-text (concat message-text
-                                          (format "\n[Result: %s]" result)))))))))
+                ;; In chat mode, don't display tool results inline
+                ;; Only show them if they're buffer objects or errors
+                (when (or (string-match-p "^#<buffer" result)
+                          (string-match-p "^Error:" result))
+                  (setq message-text (concat message-text "\n" result))))))))
+      
+      ;; Check if we should delegate to efrit-do
+      (when (efrit--detect-incomplete-task content message-text)
+        (efrit-log-debug "Detected incomplete task - will delegate")
+        (setq should-delegate t)))
 
-    message-text))
+    ;; Return both the message text and delegation flag
+    (cons message-text should-delegate)))
 
 (defun efrit--update-ui-with-response (message-text)
   "Update the UI with MESSAGE-TEXT response."
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
-      ;; Remove "thinking" indicator
+      ;; Remove "thinking" indicator (but only if it's actually at the end)
       (when efrit--response-in-progress
         (save-excursion
           (goto-char (point-max))
           (when (search-backward "System: Thinking..." nil t)
             (let ((start (match-beginning 0)))
-              (when (search-forward "Thinking..." nil t)
-                (delete-region start (point)))))))
+              ;; Only delete if this is at the very end of the buffer to avoid deleting user content
+              (when (and (search-forward "Thinking..." nil t)
+                        (= (point) (point-max)))
+                (delete-region start (point-max)))))))
 
       ;; Clear progress flag
       (setq-local efrit--response-in-progress nil)
@@ -401,7 +472,7 @@ Returns the processed message text with tool results."
         (if efrit-enable-tools
             ;; Tools already executed in efrit--extract-content-and-tools, just display the result
             (condition-case-unless-debug process-err
-                (let ((highlighted-text message-text))
+                (let ((highlighted-text (efrit--sanitize-chat-text message-text)))
                   ;; Display the message with tool results
                   (efrit--display-message highlighted-text 'assistant)
 
@@ -433,28 +504,8 @@ Returns the processed message text with tool results."
                    (content . ,message-text))
                   efrit--message-history))))
 
-      ;; Check if we should continue the conversation automatically
-      (when efrit--current-conversation
-        (efrit-debug-log "Checking continuation for conversation: %s (turn %d)" 
-                         (efrit-conversation-id efrit--current-conversation)
-                         (efrit-conversation-current-turn efrit--current-conversation)))
-      (if (and efrit--current-conversation
-               (efrit--should-continue-conversation-p efrit--current-conversation message-text))
-          (progn
-            ;; Continue the conversation
-            (efrit-debug-log "Continuing conversation - advancing to turn %d" 
-                             (1+ (efrit-conversation-current-turn efrit--current-conversation)))
-            (efrit--advance-conversation-turn efrit--current-conversation)
-            (efrit--add-to-conversation-history efrit--current-conversation nil message-text)
-            (let ((continuation-prompt (efrit--generate-continuation-prompt efrit--current-conversation)))
-              (efrit--display-message continuation-prompt 'user)
-              (push `((role . "user") (content . ,continuation-prompt)) efrit--message-history)
-              (setq-local efrit--response-in-progress t)
-              (efrit--display-message "Thinking..." 'system)
-              (efrit--send-api-request (reverse efrit--message-history))))
-        ;; Insert prompt for next user input
-        (efrit-debug-log "Conversation ended - not continuing")
-        (efrit--insert-prompt)))))
+      ;; Don't auto-continue in chat mode - insert prompt for next user input
+      (efrit--insert-prompt))))
 
 (defun efrit--handle-parse-error ()
   "Handle parsing errors by displaying error message and resetting UI."
@@ -489,8 +540,18 @@ Returns the processed message text with tool results."
     (condition-case _api-err
         (let ((content (efrit--parse-api-response)))
           (if content
-              (let ((message-text (efrit--extract-content-and-tools content)))
-                (efrit--update-ui-with-response message-text))
+              ;; Execute tool processing in the chat buffer context
+              (with-current-buffer (efrit--setup-buffer)
+                (let* ((result (efrit--extract-content-and-tools content))
+                       (message-text (car result))
+                       (should-delegate (cdr result)))
+                  (if should-delegate
+                      ;; Delegate to efrit-do for multi-step completion
+                      (progn
+                        (efrit-log-debug "Delegating to efrit-do")
+                        (efrit--delegate-to-do))
+                    ;; Normal response handling
+                    (efrit--update-ui-with-response message-text))))
             ;; Handle case where content is nil
             (efrit--handle-parse-error)))
       ;; Handle any errors during parsing
@@ -498,27 +559,66 @@ Returns the processed message text with tool results."
     ;; Note: Let url-retrieve handle its own buffer cleanup
     ;; Manual cleanup here causes format-message(nil) errors
     ))
+(defun efrit--delegate-to-do ()
+  "Delegate current request to efrit-do for multi-step completion."
+  (let ((original-request (when efrit--message-history
+                            (let ((first-msg (car (last efrit--message-history))))
+                              (when (eq (alist-get 'role first-msg) 'user)
+                                (alist-get 'content first-msg))))))
+    (when original-request
+      ;; Update chat UI to indicate delegation
+      (with-current-buffer (efrit--setup-buffer)
+        (setq buffer-read-only nil)
+        (let ((inhibit-read-only t))
+          ;; Remove "thinking" indicator
+          (when efrit--response-in-progress
+            (save-excursion
+              (goto-char (point-max))
+              (when (search-backward "System: Thinking..." nil t)
+                (let ((start (match-beginning 0)))
+                  (when (search-forward "Thinking..." nil t)
+                    (delete-region start (point)))))))
+          
+          ;; Clear in-progress flag
+          (setq-local efrit--response-in-progress nil)
+          
+          ;; Show delegation message
+          (efrit--display-message 
+           "[Delegating to efrit-do for multi-step task completion...]" 
+           'system)
+          
+          ;; Insert prompt and let user know
+          (efrit--insert-prompt)
+          
+          ;; Execute via efrit-do asynchronously
+          (run-at-time 0.1 nil
+                       (lambda ()
+                         (require 'efrit-do)
+                         (message "Executing via efrit-do: %s" original-request)
+                         (efrit-do original-request))))))))
+
 ;;; User Interface Commands
 
 ;;;###autoload
 (defun efrit-send-message (message)
   "Send MESSAGE to the Claude API."
   (interactive "sMessage: ")
-  (efrit-debug-section "SEND MESSAGE")
-  (efrit-debug-log "User message: %s" message)
+  (efrit-log-section "SEND MESSAGE")
+  (efrit-log-debug "User message: %s" message)
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
-      ;; Display the user message
-      (efrit--display-message message 'user)
+      ;; Display the user message only if not already displayed
+      ;; (efrit-send-buffer-message already formats it properly)
+      (unless (save-excursion
+                (goto-char (point-max))
+                (forward-line -1)
+                (and (looking-at "You: ")
+                     (string-match-p (regexp-quote message) (thing-at-point 'line))))
+        (efrit--display-message message 'user))
 
-      ;; Start multi-turn conversation if this looks like a multi-step request
-      (unless efrit--current-conversation
-        (setq-local efrit--current-conversation
-                    (efrit--start-multi-turn-if-needed message (current-buffer)))
-        (when efrit--current-conversation
-          (efrit-debug-log "Started multi-turn conversation: %s" 
-                           (efrit-conversation-id efrit--current-conversation))))
+      ;; Don't use multi-turn in chat mode - users control the conversation
+      (setq-local efrit--current-conversation nil)
 
       ;; Set in-progress flag
       (setq-local efrit--response-in-progress t)
@@ -549,9 +649,13 @@ Returns the processed message text with tool results."
                           (replace-regexp-in-string "^>\\s-*" "" raw-input))))
             (if (string-empty-p message)
                 (message "No input to send")
-              ;; Delete the input area
+              ;; Replace the input area with properly formatted user message  
               (delete-region efrit--input-marker (point-max))
-              ;; Send the message
+              (goto-char efrit--input-marker)
+              (insert (format "You: %s\n" message))
+              ;; Update conversation marker to track conversation end
+              (set-marker efrit--conversation-marker (point))
+              ;; Send message (will add assistant response after user message)
               (efrit-send-message message)))
         ;; Debug: marker not set up properly
         (progn
@@ -568,9 +672,9 @@ Returns the processed message text with tool results."
     (setq buffer-read-only nil)
     (insert "\n")))
 
-;;;###autoload
-(defun efrit-chat ()
-  "Start a new Efrit chat session."
+;;;###autoload  
+(defun efrit-chat-debug ()
+  "Start efrit chat with full debugging (shows all technical details)."
   (interactive)
   ;; Switch to the buffer
   (switch-to-buffer (efrit--setup-buffer))
@@ -620,6 +724,36 @@ Returns the processed message text with tool results."
   (setq-local efrit--response-in-progress nil)
   ;; Enable line wrapping
   (visual-line-mode 1))
+
+;;; Main Chat Interface
+
+;;;###autoload
+(defun efrit-chat ()
+  "Start efrit chat session - interactive buffer like ChatGPT."
+  (interactive)
+  ;; Use the original chat interface but with clean display
+  (switch-to-buffer (efrit--setup-buffer))
+  (setq buffer-read-only nil)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (setq-local efrit--message-history nil)
+    (setq-local efrit--response-in-progress nil)
+    (setq-local efrit--conversation-marker nil)
+    (setq-local efrit--input-marker nil)
+    (setq-local efrit--current-conversation nil))
+  
+  ;; Initialize conversation marker
+  (setq-local efrit--conversation-marker (make-marker))
+  (set-marker efrit--conversation-marker (point-min))
+  
+  ;; Show welcome message
+  (efrit--display-message
+   (format "Efrit Chat Ready - Using model: %s" efrit-model)
+   'assistant)
+  
+  (efrit--insert-prompt))
+
+
 
 (provide 'efrit-chat)
 
