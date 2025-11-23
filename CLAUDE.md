@@ -1,278 +1,249 @@
-# Instructions for AI Agents Working on Efrit
+# Village Workspace Instructions
 
-> **For humans**: This file contains instructions for AI coding assistants. See [README.md](README.md) for user documentation.
+## Your Current Context
 
-## Project Overview
+**Workspace**: Run `git branch --show-current` to see your workspace name
+**Project**: efrit
+**Model**: Multi-agent village with worktree isolation
 
-**Efrit** is an AI-powered Emacs coding assistant built on the **Zero Client-Side Intelligence** principle: Efrit is a pure executor that delegates ALL cognitive computation to Claude.
+## Critical: This is a Village Workspace
 
-## 🎯 Core Architectural Principle
+You are working in an **isolated workspace** on a **long-lived branch**. This is NOT the single-repo model.
 
-**ZERO CLIENT-SIDE INTELLIGENCE**: Efrit must NEVER contain:
-- Pattern recognition or parsing logic
-- Decision-making heuristics
-- Pre-written solutions or templates
-- Task-specific logic
-- Flow control decisions
+### What This Means
 
-Efrit's ONLY job: execute what Claude tells it to do. See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+- **Your workspace**: Isolated copy of the codebase on your own branch
+- **Other agents**: Working in parallel in their own isolated workspaces
+- **No file conflicts**: You cannot have filesystem conflicts with other agents
+- **Integration**: Happens through git merge/PR, not real-time file sharing
 
-## Issue Tracking with Beads
+**Read**: `~/ai/village/WORKFLOW_MODEL.md` for detailed explanation and examples
 
-**CRITICAL**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+## Beads Workflow (Issue Tracking)
 
-### Quick Start
+This project uses **Beads** for issue tracking. Special village configuration:
+
+### Required: No-Daemon Mode
 
 ```bash
-# The .beads/ directory is already initialized
-bd ready --json                                    # Find unblocked work
-bd create "Issue title" -t bug|feature|task -p 0-4 --json
-bd update <id> --status in_progress --json
-bd close <id> --reason "Done" --json
-bd sync                                            # CRITICAL at end of session
+# CRITICAL: Always set this in your environment
+export BEADS_NO_DAEMON=1
 ```
 
-### Issue Types
+**Why**: Git worktrees + beads daemon = incompatible. Daemon commits to wrong branch.
 
-- `bug` - Something broken that needs fixing
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature composed of multiple issues
-- `chore` - Maintenance work (dependencies, tooling)
+### Daily Workflow
 
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (nice-to-have features, minor bugs)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
-
-### Workflow
-
-1. **Check for ready work**: `bd ready --json`
-2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** File issues with dependencies:
-   ```bash
-   bd create "Found bug in async" -p 1 --deps discovered-from:<parent-id> --json
-   ```
-5. **Complete**: `bd close <id> --reason "Implemented" --json`
-6. **CRITICAL - End of session**: `bd sync` (force immediate export/commit/push)
-
-## Current Project State
-
-### What Works
-- ✅ Core architecture and module loading
-- ✅ API communication with Claude
-- ✅ Basic chat interface (efrit-chat)
-- ✅ Remote queue system for AI-to-AI communication
-- ✅ Session tracking and context management
-
-### What's Broken (Known Issues)
-- ❌ Test infrastructure incomplete (see mcp-fmw)
-- ❌ MCP server only 50% complete (see mcp-b0f)
-- ❌ Async workflow may have issues (see mcp-6gr)
-- ❌ Tool selection loops (todo_get_instructions) - see mcp-bt0
-- ❌ Documentation scattered across multiple files
-
-### Active Work
-Check current ready work with:
+**Start of session**:
 ```bash
-bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
+# Get latest shared beads state from main
+git pull origin main
+
+# Check available work
+bd ready
+
+# View all issues
+bd list
 ```
 
-## Development Guidelines
-
-### Before Making Changes
-
-1. **Read the architecture**: [ARCHITECTURE.md](ARCHITECTURE.md) - understand Pure Executor principle
-2. **Check for existing issues**: `bd list --json | grep -i "your topic"`
-3. **Create an issue if needed**: `bd create "Your task" -t task -p 2 --json`
-4. **Claim the issue**: `bd update <id> --status in_progress`
-
-### Code Standards
-
-- **Emacs Lisp conventions**: Use `lexical-binding: t` in all files
-- **Naming**: Use `efrit-` prefix for all public functions
-- **Documentation**: Docstrings required for all functions
-- **NO client-side intelligence**: If you add pattern matching or decision logic, you've violated the architecture
-- **File locations**: All source code in `lisp/`, tests in `test/`, docs in `docs/`
-
-### Testing
-
+**During work**:
 ```bash
-# Compile all elisp files
-make compile
+# Create issues
+bd create "Implement feature X" -t feature -p 1
 
-# Run tests (when fixed - see mcp-fmw)
-make test
+# Update status
+bd update bd-123 --status in_progress
 
-# Run specific test file
-emacs --batch -L lisp -l test/test-file.el -f ert-run-tests-batch-and-exit
+# View issue details
+bd show bd-123
 ```
 
-**IMPORTANT**: Test infrastructure is currently broken. See issue `mcp-fmw` for details.
-
-### Common Tasks
-
-**Adding a new tool**:
-1. Add function to `lisp/efrit-tools.el`
-2. Update tool schema in `efrit-do--get-tools-schema`
-3. Add tests
-4. Document in tool list
-
-**Fixing a bug**:
-1. File issue: `bd create "Bug: description" -t bug -p 1 --json`
-2. Add test that reproduces the bug
-3. Fix the bug
-4. Verify test passes
-5. Close issue: `bd close <id> --reason "Fixed" --json`
-
-**Adding documentation**:
-1. Prefer editing existing docs over creating new files
-2. Keep README.md user-focused
-3. Keep ARCHITECTURE.md for design principles
-4. Use `docs/` for detailed guides
-
-## Landing the Plane (End of Session)
-
-When ending a session, you MUST complete ALL these steps:
-
-### 1. File Issues for Remaining Work
+**End of session**:
 ```bash
-bd create "Follow-up task" -t task -p 2 --json
-bd create "Bug discovered" -t bug -p 1 --deps discovered-from:<parent-id> --json
-```
-
-### 2. Run Quality Gates (only if code changes were made)
-```bash
-make compile  # Byte-compile elisp
-make test     # Run tests (when working)
-# File P0 issues if builds are broken
-```
-
-### 3. Update Beads Issues
-```bash
-bd close mcp-42 mcp-43 --reason "Completed" --json
-bd update mcp-44 --status in_progress --json  # If partially done
-```
-
-### 4. PUSH TO REMOTE - MANDATORY
-```bash
-# Pull first to catch remote changes
-git pull --rebase
-
-# If conflicts in .beads/beads.jsonl:
-#   Option A: git checkout --theirs .beads/beads.jsonl && bd import
-#   Option B: Manually merge, then bd import
-
-# Sync the database (exports to JSONL, commits)
+# Sync beads to your branch
 bd sync
 
-# MANDATORY: Push everything to remote
-# THE SESSION IS NOT COMPLETE UNTIL THIS SUCCEEDS
-git push
-
-# MANDATORY: Verify push succeeded
-git status  # MUST show "up to date with origin/main"
+# Push your branch
+git push origin $(git branch --show-current)
 ```
 
-**CRITICAL RULES:**
-- ❌ NEVER stop before `git push` completes successfully
-- ❌ NEVER say "ready to push when you are!" - YOU must push
-- ✅ If `git push` fails, resolve and retry until it succeeds
-- ✅ The session has NOT ended until `git push` shows success
+**Integration**:
+- Create PR from your branch to main
+- After merge, other workspaces run `git pull origin main` to get your beads updates
+- Merge conflicts are rare (intelligent field-level merge driver handles them)
 
-### 5. Clean Up Git State
+### Shared Visibility
+
+All workspaces share the same beads database (`.beads/beads.jsonl` in git):
+- You see issues created by other workspaces (after they merge to main)
+- Your issues are visible to others (after you merge to main)
+- Coordination happens through shared issue visibility + agent mail
+
+## Agent Mail (Inter-Agent Communication)
+
+Use agent mail for message-based delegation and coordination.
+
+### Check Your Identity
+
 ```bash
-git stash clear
-git remote prune origin
+# See your agent name and project
+cat .agent-identity 2>/dev/null || echo "Not configured"
 ```
 
-### 6. Verify Clean State
+### Common Patterns
+
+**Delegate work**:
+```
+"Hey BlueDog, can you add tests for the auth module? Thread: bd-123"
+```
+
+**Coordinate integration**:
+```
+"I'm merging a breaking API change to main - you'll need to update your branch"
+```
+
+**Signal major refactoring** (optional file reservation):
+```
+bd reserve "src/auth/**" --reason "Major refactoring in progress in my branch"
+```
+
+**Read**: `~/ai/village/QUICKSTART.md` for agent mail examples
+
+## Git Workflow
+
+### Your Branch Model
+
+- **Your workspace**: Always on your dedicated branch (run `git branch --show-current`)
+- **Your commits**: Go to your branch
+- **Integration**: Via PR/merge to main
+- **Sync from others**: `git pull origin main`
+
+### Typical Workflow
+
 ```bash
-git status  # Should show "nothing to commit, working tree clean"
-bd stats    # Verify issue tracker state
+# 1. Start with latest from main
+git pull origin main
+
+# 2. Make changes
+# ... edit files ...
+git add .
+git commit -m "Implement feature X"
+
+# 3. Sync beads
+bd sync
+
+# 4. Push your branch
+git push origin $(git branch --show-current)
+
+# 5. Create PR: your-branch → main
+# 6. After merge, other workspaces: git pull origin main
 ```
 
-### 7. Choose Follow-Up Issue
+### Viewing Other Workspaces' Work
+
 ```bash
-bd ready --json
-bd show <next-id> --json
+# See what's in another workspace's branch
+git fetch origin
+git show origin/BlueDog:path/to/file.go
 
-# Provide user with:
-# "Continue work on <id>: [issue title]. [Context: what's done, what's next]"
+# Or check out their branch temporarily
+git checkout BlueDog
+# ... review ...
+git checkout $(git rev-parse --abbrev-ref @{-1})  # Back to your branch
 ```
 
-## Important Rules
+## Coordination Strategy
 
-### ✅ DO:
-- Use bd for ALL task tracking
-- Always use `--json` flag for programmatic use
-- Link discovered work with `discovered-from` dependencies
-- Check `bd ready` before asking "what next?"
-- Run `bd sync` at end of session
-- Respect the Pure Executor principle
-- Read existing code before proposing changes
-- Keep changes minimal and focused
+### Primary: Message-Based Delegation
 
-### ❌ DO NOT:
-- Create markdown TODO lists
-- Use external issue trackers
-- Add client-side intelligence (pattern matching, decision logic)
-- Create files without reading existing code first
-- Make changes beyond what was requested
-- Stop session before pushing to remote
-- Clutter repo root with planning documents
+Use agent mail to delegate work, not file reservations:
 
-## Project Structure
+✅ **DO**: "BlueDog, can you handle X in your branch?"
+❌ **DON'T**: "Let me reserve all files before working"
 
-```
-efrit/
-├── lisp/                  # All Emacs Lisp source code
-│   ├── efrit.el          # Main entry point
-│   ├── efrit-chat.el     # Chat interface
-│   ├── efrit-do.el       # Command execution
-│   ├── efrit-tools.el    # Tool implementations
-│   └── ...               # Other modules
-├── test/                  # Test files
-├── docs/                  # Documentation
-├── mcp/                   # MCP server (TypeScript/Node)
-├── plans/                 # Planning documents (archive old ones)
-├── .beads/                # Issue tracker database
-├── ARCHITECTURE.md        # Core design principles
-├── README.md              # User documentation
-└── CLAUDE.md              # This file (agent instructions)
+### Secondary: Shared Beads Visibility
+
+Check beads to see what's being worked on:
+
+```bash
+bd list --status in_progress    # What's actively being worked on
+bd ready                        # What's available to work on
+bd show bd-123                  # Details about specific issue
 ```
 
-## Key Files to Know
+### Optional: File Reservations
 
-- **ARCHITECTURE.md** - Pure Executor principle (READ THIS FIRST)
-- **README.md** - User-facing documentation
-- **CONTRIBUTING.md** - Contribution guidelines
-- **lisp/efrit-do.el** - Main command execution (~1783 lines)
-- **lisp/efrit-tools.el** - Tool implementations
-- **.beads/beads.jsonl** - Issue tracker source of truth (versioned in git)
+File reservations are **advisory signals only** in the village model:
 
-## Getting Help
+```bash
+# Signal major work in progress (optional)
+bd reserve "src/core/**" --reason "Refactoring type system in my branch"
 
-- **Check existing issues**: `bd list --json`
-- **Check documentation**: README.md, ARCHITECTURE.md, docs/
-- **File unclear issues**: `bd create "Need clarification on X" -t task -p 2 --json`
+# Check reservations (to avoid duplicate effort)
+bd reservations
+```
 
-## Success Metrics
+**Remember**: Reservations don't prevent conflicts (impossible in separate workspaces). They're just broadcasts to avoid duplicate work.
 
-You're doing well when:
-- All work tracked in Beads (no markdown TODOs)
-- No client-side intelligence added
-- Changes are minimal and focused
-- Tests pass (once test infrastructure is fixed)
-- All work pushed to remote at end of session
-- Issues linked with proper dependencies
+## Quick Reference
 
----
+### Essential Commands
 
-**Remember**: Efrit is a Pure Executor. Claude does the thinking, Efrit does the executing. If you find yourself adding "smart" logic to Efrit, stop and rethink.
+```bash
+# Beads (issue tracking)
+bd ready                        # Show available work
+bd create "Title" -t type -p n  # Create issue
+bd update <id> --status <s>     # Update status
+bd show <id>                    # View details
+bd sync                         # Sync to git
 
-Happy coding! 🔗
+# Git (version control)
+git pull origin main            # Get latest shared state
+git push origin $(git branch)   # Push your work
+git status                      # Check working tree
+
+# Agent mail (check mail interface for details)
+# Send messages via mail interface
+# Check inbox via mail interface
+```
+
+### Environment Variables
+
+```bash
+export BEADS_NO_DAEMON=1        # Required for worktrees
+export BD_ACTOR="YourName"      # Optional: set your name in beads audit trail
+```
+
+## Help & Documentation
+
+- **Village model**: `~/ai/village/WORKFLOW_MODEL.md`
+- **Village quickstart**: `~/ai/village/QUICKSTART.md`
+- **Beads architecture**: `~/ai/village/BEADS_VILLAGE_ARCHITECTURE.md`
+- **Agent mail**: `~/ai/village/QUICKSTART.md` (agent mail section)
+
+## Common Mistakes to Avoid
+
+❌ Running beads without `BEADS_NO_DAEMON=1` (commits to wrong branch)
+❌ Thinking you need to reserve files before editing (you're in isolated workspace!)
+❌ Forgetting to pull from main before starting (miss other agents' work)
+❌ Not running `bd sync` before pushing (beads changes not committed)
+❌ Trying to use beads-mcp server (requires daemon, incompatible with worktrees)
+
+## Quick Checklist
+
+**At start of session**:
+- [ ] `export BEADS_NO_DAEMON=1` (or add to shell config permanently)
+- [ ] `git pull origin main`
+- [ ] `bd ready` (see available work)
+
+**During work**:
+- [ ] Use beads to track issues (`bd create`, `bd update`)
+- [ ] Commit code changes to git regularly
+- [ ] Use agent mail to coordinate with other workspaces
+
+**At end of session**:
+- [ ] `bd sync` (commit beads changes)
+- [ ] `git push origin $(git branch --show-current)` (push your branch)
+- [ ] Consider creating PR if work is ready to integrate
+
+**Remember**: You're in an isolated workspace. Work independently, coordinate through messages and shared beads visibility, integrate through git PR workflow.
