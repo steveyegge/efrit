@@ -64,8 +64,7 @@ compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efr
 lisp/efrit-log.elc: lisp/efrit-config.elc
 lisp/efrit-common.elc: lisp/efrit-config.elc
 lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc
-lisp/efrit-debug.elc: lisp/efrit-log.elc
-lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc lisp/efrit-common.elc
+lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-multi-turn.elc lisp/efrit-config.elc
 lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
 lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
 lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-tools.elc
@@ -74,12 +73,10 @@ lisp/efrit-performance.elc: lisp/efrit-config.elc
 lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
 lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc lisp/efrit-session-tracker.elc
-lisp/efrit-agent.elc: lisp/efrit-tools.elc lisp/efrit-log.elc lisp/efrit-common.elc
 lisp/efrit-async.elc: lisp/efrit-common.elc lisp/efrit-context.elc lisp/efrit-protocol.elc lisp/efrit-performance.elc lisp/efrit-progress.elc
 lisp/efrit-session-tracker.elc: lisp/efrit-config.elc
 lisp/efrit-dashboard.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
-lisp/efrit-command.elc: lisp/efrit-tools.elc
-lisp/efrit-autonomous-startup.elc: lisp/efrit-config.elc
+lisp/efrit-unified.elc: lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-do.elc lisp/efrit-async.elc
 lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
 
 lisp/%.elc: lisp/%.el
@@ -87,6 +84,7 @@ lisp/%.elc: lisp/%.el
 	@$(EMACS_BATCH) \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
 # Check syntax without full compilation dependencies
