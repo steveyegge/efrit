@@ -5,6 +5,7 @@
 import * as path from 'path';
 import { EfritClient } from '../src/efrit-client';
 import { InstanceConfig, EFRIT_SCHEMA_VERSION } from '../src/types';
+import * as setup from './setup';
 import {
   createTempDir,
   cleanupTempDir,
@@ -55,19 +56,11 @@ describe('EfritClient - Simple Tests', () => {
   test('should write request file correctly', async () => {
     // Start execution (will timeout but that's okay)
     const executePromise = client.execute('command', 'test');
-    
-    // Wait a bit for file to be written
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Check request file exists
-    const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-    const requestFiles = files.filter((f: string) => f.startsWith('req_') && f.endsWith('.json'));
-    expect(requestFiles.length).toBeGreaterThan(0);
-    
-    // Read and validate request
-    const requestId = requestFiles[0].replace('req_', '').replace('.json', '');
+
+    // Wait for request file to be written
+    const requestId = await setup.waitForRequestFile(queueStructure.requestsDir);
     const content = await require('fs/promises').readFile(
-      path.join(queueStructure.requestsDir, requestFiles[0]), 
+      path.join(queueStructure.requestsDir, `req_${requestId}.json`),
       'utf-8'
     );
     const request = JSON.parse(content);
@@ -90,13 +83,9 @@ describe('EfritClient - Simple Tests', () => {
 
   test('should handle response correctly when provided', async () => {
     const executePromise = client.execute('eval', '(+ 1 1)');
-    
-    // Wait for request file
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Get request ID
-    const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-    const requestId = files[0].replace('req_', '').replace('.json', '');
+
+    // Wait for request file and get request ID
+    const requestId = await setup.waitForRequestFile(queueStructure.requestsDir);
     
     // Create response immediately
     await writeMockResponse(queueStructure.responsesDir, requestId, {

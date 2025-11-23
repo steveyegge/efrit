@@ -15,7 +15,8 @@ import {
   readRequestFile,
   assertFileExists,
   assertFileNotExists,
-  waitFor
+  waitFor,
+  waitForRequestFile
 } from './setup';
 
 describe('EfritClient', () => {
@@ -198,18 +199,12 @@ describe('EfritClient', () => {
     test('should successfully poll and return response', async () => {
       // Create delayed response
       const responsePromise = client.execute('command', 'test');
-      
+
       // Wait for request file to be written
-      await waitFor(async () => {
-        const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-        return files.some((f: string) => f.startsWith('req_'));
-      });
-      
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-      const requestId = files[0].replace('req_', '').replace('.json', '');
-      
+      const requestId = await waitForRequestFile(queueStructure.requestsDir);
+
       // Create response with delay
-      createDelayedResponse(queueStructure.responsesDir, requestId, {
+      await createDelayedResponse(queueStructure.responsesDir, requestId, {
         id: requestId,
         version: EFRIT_SCHEMA_VERSION,
         status: 'success',
@@ -240,13 +235,7 @@ describe('EfritClient', () => {
       const responsePromise = client.execute('command', 'test');
       
       // Wait for request
-      await waitFor(async () => {
-        const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-        return files.length > 0;
-      });
-      
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-      const requestId = files[0].replace('req_', '').replace('.json', '');
+      const requestId = await waitForRequestFile(queueStructure.requestsDir);
       
       // Create response
       const responseFile = await writeMockResponse(queueStructure.responsesDir, requestId, {
@@ -267,13 +256,7 @@ describe('EfritClient', () => {
     test('should handle malformed JSON in response', async () => {
       const responsePromise = client.execute('command', 'test');
       
-      await waitFor(async () => {
-        const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-        return files.length > 0;
-      });
-      
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-      const requestId = files[0].replace('req_', '').replace('.json', '');
+      const requestId = await waitForRequestFile(queueStructure.requestsDir);
       
       // Write malformed JSON
       const responseFile = path.join(queueStructure.responsesDir, `resp_${requestId}.json`);
@@ -285,13 +268,7 @@ describe('EfritClient', () => {
     test('should validate response ID matches request', async () => {
       const responsePromise = client.execute('command', 'test');
       
-      await waitFor(async () => {
-        const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-        return files.length > 0;
-      });
-      
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-      const requestId = files[0].replace('req_', '').replace('.json', '');
+      const requestId = await waitForRequestFile(queueStructure.requestsDir);
       
       // Create response with wrong ID
       await writeMockResponse(queueStructure.responsesDir, requestId, {
