@@ -230,27 +230,59 @@ This demonstrates efrit's ability to handle complex, multi-part requests through
 
 ### 🆕 Agent Communication (AI → Efrit)
 
-AI agents write JSON requests to the queue directory:
+AI agents write JSON requests to the queue directory. Three request types are supported:
 
+#### Request Types
+
+**1. `eval` - Evaluate Elisp expressions**
 ```json
 {
   "id": "req_001",
-  "type": "eval", 
-  "content": "(+ 40 2)"
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(+ 40 2)",
+  "timestamp": "2025-11-23T20:00:00Z"
 }
 ```
 
-Efrit processes and responds with JSON results:
+**2. `command` - Execute natural language commands via efrit-do**
+```json
+{
+  "id": "req_002",
+  "version": "1.0.0",
+  "type": "command",
+  "content": "create a new buffer called test.txt",
+  "timestamp": "2025-11-23T20:00:00Z"
+}
+```
+
+**3. `chat` - Send messages to Claude via streamlined chat**
+```json
+{
+  "id": "req_003",
+  "version": "1.0.0",
+  "type": "chat",
+  "content": "What is the capital of France?",
+  "timestamp": "2025-11-23T20:00:00Z"
+}
+```
+
+#### Response Format
+
+Efrit processes requests and responds with JSON results:
 
 ```json
 {
   "id": "req_001",
+  "version": "1.0.0",
   "status": "success",
-  "result": "42"
+  "result": "42",
+  "timestamp": "2025-11-23T20:00:01Z",
+  "execution_time": 0.002
 }
 ```
 
-See [`QUEUE_USAGE_EXAMPLE.md`](QUEUE_USAGE_EXAMPLE.md) for detailed integration examples.
+Response status values: `success`, `error`, `timeout`
 
 ### Examples
 
