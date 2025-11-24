@@ -7,7 +7,7 @@ PACKAGE_NAME = efrit
 VERSION = 0.3.0
 
 # Source files
-EL_FILES = $(wildcard lisp/*.el)
+EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el)
 ELC_FILES = $(EL_FILES:.el=.elc)
 
 # Test files
@@ -58,31 +58,51 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
+compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
-lisp/efrit-log.elc: lisp/efrit-config.elc
-lisp/efrit-common.elc: lisp/efrit-config.elc
-lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc
-lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-multi-turn.elc lisp/efrit-config.elc
-lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
-lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-tools.elc
-lisp/efrit-protocol.elc: lisp/efrit-config.elc
-lisp/efrit-performance.elc: lisp/efrit-config.elc
-lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
-lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc lisp/efrit-session-tracker.elc
-lisp/efrit-async.elc: lisp/efrit-common.elc lisp/efrit-context.elc lisp/efrit-protocol.elc lisp/efrit-performance.elc lisp/efrit-progress.elc
-lisp/efrit-session-tracker.elc: lisp/efrit-config.elc
-lisp/efrit-dashboard.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
-lisp/efrit-unified.elc: lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-do.elc lisp/efrit-async.elc
-lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
+lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
+lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
+lisp/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+# Core module dependencies
+lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc lisp/efrit-multi-turn.elc
+lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+lisp/core/efrit-common.elc: lisp/core/efrit-log.elc
+# Support module dependencies
+lisp/support/efrit-ui.elc: lisp/core/efrit-common.elc lisp/core/efrit-log.elc
+# Root module dependencies
+lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
+lisp/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+lisp/efrit.elc: lisp/core/efrit-config.elc lisp/efrit-tools.elc
 
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/core/%.elc: lisp/core/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/support/%.elc: lisp/support/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -169,8 +189,8 @@ test: test-simple mcp-test
 # Cleaning
 clean: mcp-clean
 	@echo "Removing compiled files..."
-	@rm -f lisp/*.elc
-	@rm -f lisp/*.elc~
+	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc
+	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~
 
 distclean: clean
 	@echo "Removing all generated files..."

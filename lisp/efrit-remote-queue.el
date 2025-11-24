@@ -356,9 +356,9 @@ Includes schema version for protocol compatibility."
   "Execute a chat-type request with CONTENT."
   (condition-case err
       (progn
-        ;; Load efrit-chat-streamlined if not already loaded
+        ;; Load efrit-chat if not already loaded
         (unless (fboundp 'efrit-streamlined-send)
-          (require 'efrit-chat-streamlined))
+          (require 'efrit-chat))
         
         ;; Execute the chat request
         ;; Note: This is a simplified version - real implementation would need

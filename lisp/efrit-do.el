@@ -29,7 +29,6 @@
 (require 'efrit-config)
 (require 'efrit-common)
 (require 'efrit-session)
-(require 'efrit-session-tracker)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
