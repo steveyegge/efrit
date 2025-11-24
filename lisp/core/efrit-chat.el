@@ -175,6 +175,16 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
     (setq cleaned (replace-regexp-in-string "\n\n+" "\n\n" cleaned))
     (string-trim cleaned)))
 
+(defun efrit--build-tool-result (tool-id result)
+  "Build a tool_result content block for TOOL-ID with RESULT.
+Returns an alist in the format required by the Anthropic API:
+  ((type . \"tool_result\")
+   (tool_use_id . TOOL-ID)
+   (content . RESULT-STRING))"
+  `((type . "tool_result")
+    (tool_use_id . ,tool-id)
+    (content . ,(format "%s" result))))
+
 ;;; Faces
 
 (defface efrit-user-face
