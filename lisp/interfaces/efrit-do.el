@@ -104,6 +104,21 @@ being performed."
   :type 'boolean
   :group 'efrit-do)
 
+(defcustom efrit-do-max-buffer-lines 1000
+  "Maximum number of lines to keep in the results buffer.
+When the buffer exceeds this limit, older results are automatically
+truncated to keep only the most recent results as specified by
+`efrit-do-keep-results'.  Set to 0 to disable automatic truncation."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-keep-results 10
+  "Number of recent command results to keep when truncating the buffer.
+When the results buffer exceeds `efrit-do-max-buffer-lines', it is
+truncated to keep this many recent results."
+  :type 'integer
+  :group 'efrit-do)
+
 ;; Context configuration moved to efrit-context.el
 
 (defcustom efrit-do-max-retries 3
@@ -1571,7 +1586,33 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
     (insert result)
     (buffer-string)))
 
+(defun efrit-do--truncate-results-buffer ()
+  "Truncate results buffer to keep only recent results within size limits.
+Keeps the last `efrit-do-keep-results' command results when the buffer
+exceeds `efrit-do-max-buffer-lines' lines."
+  (when (and (> efrit-do-max-buffer-lines 0)
+             (> (count-lines (point-min) (point-max)) efrit-do-max-buffer-lines))
+    (save-excursion
+      (goto-char (point-min))
+      ;; Find boundaries of results by looking for "Command: " markers
+      (let ((result-positions nil))
+        ;; Collect positions of all result boundaries
+        (while (re-search-forward "^Command: " nil t)
+          (push (line-beginning-position) result-positions))
+        (setq result-positions (nreverse result-positions))
 
+        ;; Keep only the last N results
+        (when (> (length result-positions) efrit-do-keep-results)
+          (let* ((delete-up-to (nth (- (length result-positions)
+                                      efrit-do-keep-results)
+                                   result-positions))
+                 (inhibit-read-only t))
+            (delete-region (point-min) delete-up-to)
+            (goto-char (point-min))
+            (insert (format "[... %d older result%s truncated ...]\n\n"
+                           (- (length result-positions) efrit-do-keep-results)
+                           (if (> (- (length result-positions) efrit-do-keep-results) 1)
+                               "s" "")))))))))
 
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.
@@ -1584,10 +1625,12 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
         (goto-char (point-max))
         (unless (bobp)
           (insert "\n\n"))
-        (insert (efrit-do--format-result command result)))
+        (insert (efrit-do--format-result command result))
+        ;; Auto-truncate if buffer is too large
+        (efrit-do--truncate-results-buffer))
       ;; Only display buffer if not in errors-only mode, or if this is an error
       (when (or (not efrit-do-show-errors-only) error-p)
-        (display-buffer (current-buffer) 
+        (display-buffer (current-buffer)
                         '(display-buffer-reuse-window
                           display-buffer-below-selected
                           (window-height . 10)))))))
@@ -1837,6 +1880,22 @@ error details back to Claude for correction."
             (erase-buffer)))
         (message "Results buffer cleared"))
     (message "No results buffer to clear")))
+
+;;;###autoload
+(defun efrit-do-truncate-old-results ()
+  "Truncate old results, keeping only recent ones.
+Keeps the last `efrit-do-keep-results' command results in the buffer."
+  (interactive)
+  (if-let* ((buffer (get-buffer efrit-do-buffer-name)))
+      (with-current-buffer buffer
+        (let ((before-lines (count-lines (point-min) (point-max))))
+          (efrit-do--truncate-results-buffer)
+          (let ((after-lines (count-lines (point-min) (point-max))))
+            (if (< after-lines before-lines)
+                (message "Truncated results buffer (%d lines -> %d lines)"
+                        before-lines after-lines)
+              (message "Results buffer already within limits")))))
+    (message "No results buffer to truncate")))
 
 ;;; Context system user commands
 
