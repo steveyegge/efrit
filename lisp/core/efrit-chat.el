@@ -502,8 +502,10 @@ parsing response text. Currently disabled - always returns nil."
 
 (defun efrit--extract-content-and-tools (content)
   "Extract text content and execute tool calls from CONTENT array.
-Returns the processed message text with tool results."
+Returns (list message-text tool-results should-delegate) where tool-results
+is a list of tool_result blocks for sending back to Claude."
   (let ((message-text "")
+        (tool-results '())
         (should-delegate nil))
     (efrit-log-debug "Processing content with %d items" (length content))
     (when content
@@ -525,7 +527,7 @@ Returns the processed message text with tool results."
                    (tool-id (gethash "id" item))  ; Captured for use in tool_result messages (ef-5af)
                    (input (gethash "input" item)))
 
-              ;; Execute tool call and add result to message text
+              ;; Execute tool call
               (let ((result (condition-case tool-err
                                 (cond
                                  ;; Handle eval_sexp tool call
@@ -549,6 +551,9 @@ Returns the processed message text with tool results."
                                                    (efrit--safe-error-message tool-err)
                                                  "Unknown error"))))))
 
+                ;; Collect ALL tool results for sending back to Claude
+                (push (efrit--build-tool-result tool-id result) tool-results)
+
                 ;; In chat mode, don't display tool results inline
                 ;; Only show errors (buffer objects and nil results are suppressed)
                 (when (string-match-p "^Error:" result)
@@ -559,8 +564,8 @@ Returns the processed message text with tool results."
         (efrit-log-debug "Detected incomplete task - will delegate")
         (setq should-delegate t)))
 
-    ;; Return both the message text and delegation flag
-    (cons message-text should-delegate)))
+    ;; Return message text, tool results, and delegation flag
+    (list message-text (nreverse tool-results) should-delegate)))
 
 (defun efrit--update-ui-with-response (message-text)
   "Update the UI with MESSAGE-TEXT response."
@@ -666,8 +671,11 @@ Returns the processed message text with tool results."
               ;; Execute tool processing in the chat buffer context
               (with-current-buffer (efrit--setup-buffer)
                 (let* ((result (efrit--extract-content-and-tools content))
-                       (message-text (car result))
-                       (should-delegate (cdr result)))
+                       (message-text (nth 0 result))
+                       (tool-results (nth 1 result))
+                       (should-delegate (nth 2 result)))
+                  ;; TODO(ef-3go): When tool-results exist, send them back to Claude
+                  ;; before displaying final response to user
                   (if should-delegate
                       ;; Delegate to efrit-do for multi-step completion
                       (progn
