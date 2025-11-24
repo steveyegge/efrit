@@ -103,6 +103,7 @@ This is non-negotiable. The user has spent significant time in the past finding 
 - ✅ Starting Emacs daemon and testing via remote queue
 - ✅ Running `make compile` and checking for errors (for compilation issues only)
 - ✅ Executing the actual command/function and showing output
+- ✅ **FOR EFRIT SPECIFICALLY**: Real API calls with actual token usage (see below)
 
 **UNACCEPTABLE - these do NOT count as verification:**
 - ❌ "The code looks correct"
@@ -110,6 +111,7 @@ This is non-negotiable. The user has spent significant time in the past finding 
 - ❌ "The function is now available" (without actually calling it)
 - ❌ Reading the code and assuming it works
 - ❌ Compilation success alone (unless the issue was a compilation error)
+- ❌ **Mock tests or integration harnesses that don't use the real product**
 
 **When reporting to user:**
 - Include actual command output showing the verification
@@ -120,6 +122,47 @@ This is non-negotiable. The user has spent significant time in the past finding 
 - State clearly: "I cannot verify this works because [reason]"
 - Explain what manual verification steps the user should take
 - DO NOT claim something works if you haven't verified it
+
+### EFRIT-SPECIFIC: Token-Burning Validation
+
+**🔥 CRITICAL FOR EFRIT TESTING 🔥**
+
+**Efrit is a Claude-powered tool, and you ARE Claude. Both you and efrit burn tokens.**
+
+**Therefore: There is NO REASON to avoid token-burning tests.**
+
+When testing efrit-chat, efrit-do, or any feature that uses the Claude API:
+
+**REQUIRED:**
+- ✅ Make REAL API calls using `emacs --script` with actual efrit-chat/efrit-do commands
+- ✅ Burn tokens to verify the actual user experience
+- ✅ Test the complete request/response cycle with real API responses
+- ✅ Verify what the user actually sees in the buffer
+
+**FORBIDDEN:**
+- ❌ Mock API responses or use test harnesses
+- ❌ "Integration tests" that don't use the real product
+- ❌ Simulating what "should" happen without seeing it happen
+
+**Example of proper efrit-chat verification:**
+```bash
+cat > /tmp/test.el << 'EOF'
+(require 'efrit-chat)
+(efrit-chat)
+(efrit-send-message "your test request")
+;; Wait for response, check buffer contents
+EOF
+
+emacs --script /tmp/test.el
+```
+
+**Why this matters:**
+- You're already burning tokens to respond to the user
+- Efrit burns tokens to do its work
+- The marginal cost of verification is minimal
+- The cost of shipping broken code is HIGH (user's time wasted debugging)
+
+**Don't be shy about using the API for testing. Burn those tokens. Verify that shit works.**
 
 ### Before Making Changes
 
