@@ -142,7 +142,7 @@
       (insert "Configuration:\n\n")
       (insert "  Set ANTHROPIC_API_KEY environment variable, or:\n")
       (insert "  (setq efrit-api-key 'ANTHROPIC_API_KEY)  ; env var\n")
-      (insert "  (setq efrit-default-model \"claude-3-5-sonnet-20241022\")\n\n")
+      (insert "  (setq efrit-default-model \"claude-sonnet-4-5-20250929\")\n\n")
 
       (insert "For more information, see README.md and ARCHITECTURE.md\n")
       (goto-char (point-min))
