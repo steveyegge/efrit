@@ -267,27 +267,27 @@ export interface EfritStopInstanceParams {
 export interface QueueStats {
   /** Instance ID */
   instance_id: string;
-  
+
   /** Number of pending requests */
   pending_requests: number;
-  
+
   /** Number of requests being processed */
   processing_requests: number;
-  
-  /** Number of completed requests in last hour */
-  completed_last_hour: number;
-  
-  /** Number of failed requests in last hour */
-  failed_last_hour: number;
-  
-  /** Average processing time in seconds */
-  avg_processing_time: number;
-  
+
+  /** Number of completed requests in last hour (null if not implemented) */
+  completed_last_hour: number | null;
+
+  /** Number of failed requests in last hour (null if not implemented) */
+  failed_last_hour: number | null;
+
+  /** Average processing time in seconds (null if not implemented) */
+  avg_processing_time: number | null;
+
   /** Queue health status */
   health: 'healthy' | 'degraded' | 'failed';
-  
-  /** Last activity timestamp */
-  last_activity: string;
+
+  /** Last activity timestamp (null if not implemented) */
+  last_activity: string | null;
 }
 
 /**

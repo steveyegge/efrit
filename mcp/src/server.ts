@@ -268,22 +268,22 @@ export class EfritMcpServer {
                 instance_id: instanceId,
                 pending_requests: stats.pending,
                 processing_requests: stats.processing,
-                completed_last_hour: 0, // Not implemented yet
-                failed_last_hour: 0, // Not implemented yet
-                avg_processing_time: 0, // Not implemented yet
+                completed_last_hour: null, // Not implemented - requires historical tracking
+                failed_last_hour: null, // Not implemented - requires historical tracking
+                avg_processing_time: null, // Not implemented - requires historical tracking
                 health: stats.pending + stats.processing > 100 ? 'degraded' : 'healthy',
-                last_activity: new Date().toISOString()
+                last_activity: null // Not implemented - requires tracking last queue activity
               };
             } else {
               queueStats = {
                 instance_id: instanceId,
                 pending_requests: 0,
                 processing_requests: 0,
-                completed_last_hour: 0,
-                failed_last_hour: 0,
-                avg_processing_time: 0,
+                completed_last_hour: null,
+                failed_last_hour: null,
+                avg_processing_time: null,
                 health: 'healthy',
-                last_activity: new Date().toISOString()
+                last_activity: null
               };
             }
 
