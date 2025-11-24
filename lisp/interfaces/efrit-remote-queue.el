@@ -169,16 +169,25 @@ Must match EfritRequestType in mcp/src/types.ts.")
          (message "Error moving file to processing: %s" (error-message-string err)))
        nil))))
 
+(defun efrit-remote-queue--move-to-archive (file-path)
+  "Move a processed file from processing to archive directory."
+  (condition-case err
+      (when (file-exists-p file-path)
+        (let* ((filename (file-name-nondirectory file-path))
+               (archive-path (expand-file-name filename (efrit-remote-queue--get-directory "archive"))))
+          (rename-file file-path archive-path t)
+          (when efrit-remote-queue-debug
+            (message "Archived processed file: %s" filename))))
+    (error
+     (when efrit-remote-queue-debug
+       (message "Error archiving file %s: %s" file-path (error-message-string err))))))
+
 (defun efrit-remote-queue--cleanup-processed-file (file-path &optional delay)
-  "Clean up a processed file after optional DELAY seconds."
+  "Clean up a processed file after optional DELAY seconds.
+Moves file to archive directory instead of deleting."
   (if delay
       (run-at-time delay nil #'efrit-remote-queue--cleanup-processed-file file-path)
-    (condition-case err
-        (when (file-exists-p file-path)
-          (delete-file file-path))
-      (error
-       (when efrit-remote-queue-debug
-         (message "Error cleaning up file %s: %s" file-path (error-message-string err)))))))
+    (efrit-remote-queue--move-to-archive file-path)))
 
 (defun efrit-remote-queue--startup-cleanup ()
   "Clean up any stale files from previous sessions on startup."
