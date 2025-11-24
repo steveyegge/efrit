@@ -49,20 +49,14 @@ Levels in order: debug, info, warn, error, none"
       (alist-get efrit-log-echo-level efrit-log--level-values 4)))
 
 (defun efrit-log (level format-string &rest args)
-  "Log message with LEVEL, FORMAT-STRING and ARGS.
-Optional SUBSYSTEM can be provided as last argument if it's a string."
+  "Log message with LEVEL, FORMAT-STRING and ARGS."
   (when (efrit-log--level-enabled-p level)
-    (let* ((subsystem (when (and args (stringp (car (last args))))
-                       (prog1 (car (last args))
-                         (setq args (butlast args)))))
-           (message (if args 
+    (let* ((message (if args
                        (apply #'format format-string args)
                      format-string))
            (timestamp (format-time-string "%H:%M:%S"))
            (level-str (upcase (symbol-name level)))
-           (prefix (if subsystem
-                      (format "[%s] %s/%s: " timestamp level-str subsystem)
-                    (format "[%s] %s: " timestamp level-str))))
+           (prefix (format "[%s] %s: " timestamp level-str)))
       
       ;; Write to log buffer
       (with-current-buffer (get-buffer-create efrit-log-buffer)
@@ -77,7 +71,9 @@ Optional SUBSYSTEM can be provided as last argument if it's a string."
       
       ;; Echo to message area if needed
       (when (efrit-log--level-echo-p level)
-        (message "%s%s" prefix message)))))
+        ;; Escape % characters in message to prevent format string errors
+        (let ((safe-message (replace-regexp-in-string "%" "%%" message)))
+          (message "%s%s" prefix safe-message))))))
 
 ;;; Convenience functions
 

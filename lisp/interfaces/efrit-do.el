@@ -462,14 +462,13 @@ Uses efrit--safe-execute for error handling."
                ;; Check same-tool limit
                ((and (string= tool-name efrit-do--last-tool-called)
                      (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
-                (let ((warning-msg
-                       (format "Warning: Tool '%s' called %d times consecutively (limit: %d)"
-                               tool-name
-                               (1+ efrit-do--tool-call-count)
-                               efrit-do-max-same-tool-calls)))
-                  ;; Log warning but don't show to user
-                  (efrit-log 'warn "Circuit breaker: %s" warning-msg)
-                  (cons t warning-msg)))
+                (setq efrit-do--circuit-breaker-tripped
+                      (format "Same tool '%s' called %d times consecutively (limit: %d)"
+                              tool-name
+                              (1+ efrit-do--tool-call-count)
+                              efrit-do-max-same-tool-calls))
+                (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
+                (cons nil efrit-do--circuit-breaker-tripped))
 
                ;; All checks passed
                (t (cons t nil))))
@@ -1328,7 +1327,10 @@ This signals that a multi-step session is complete."
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
 Returns a formatted string with execution results or empty string on failure.
 Applies circuit breaker limits to prevent infinite loops."
-  (let* ((tool-name (gethash "name" tool-item))
+  ;; Validate tool-item is not nil
+  (if (null tool-item)
+      "\n[Error: Tool input cannot be nil]"
+    (let* ((tool-name (gethash "name" tool-item))
          (tool-input (gethash "input" tool-item))
          (input-str (cond
                      ((stringp tool-input) tool-input)
@@ -1366,10 +1368,14 @@ Applies circuit breaker limits to prevent infinite loops."
               (result
                ;; Dispatch to appropriate handler
                (cond
-                ((and (string= tool-name "eval_sexp") input-str)
-                 (efrit-do--handle-eval-sexp input-str))
-                ((and (string= tool-name "shell_exec") input-str)
-                 (efrit-do--handle-shell-exec input-str))
+                ((string= tool-name "eval_sexp")
+                 (if input-str
+                     (efrit-do--handle-eval-sexp input-str)
+                   "\n[Error: eval_sexp requires 'code' parameter]"))
+                ((string= tool-name "shell_exec")
+                 (if input-str
+                     (efrit-do--handle-shell-exec input-str)
+                   "\n[Error: shell_exec requires 'command' parameter]"))
                 ((string= tool-name "todo_add")
                  (efrit-do--handle-todo-add tool-input))
                 ((string= tool-name "todo_update")
@@ -1407,7 +1413,7 @@ Applies circuit breaker limits to prevent infinite loops."
           ;; Prepend warning if present
           (if warning
               (concat "\n" warning "\n" result)
-            result))))))
+            result)))))))
 
 ;;; Command execution
 
