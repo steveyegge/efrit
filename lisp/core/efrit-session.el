@@ -414,6 +414,30 @@ Returns t if added successfully, nil if queue is full."
   "Return the number of queued sessions."
   (length efrit-session--queue))
 
+;;;###autoload
+(defun efrit-show-queue ()
+  "Display the current command queue for efrit-do-async."
+  (interactive)
+  (if (zerop (efrit-session-queue-length))
+      (message "Efrit queue is empty")
+    (with-current-buffer (get-buffer-create "*efrit-queue*")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Efrit Command Queue\n")
+        (insert "===================\n\n")
+        (if (efrit-session-active)
+            (insert (format "Currently executing: %s\n\n"
+                           (efrit-session-command (efrit-session-active))))
+          (insert "No command currently executing\n\n"))
+        (insert (format "Queued commands: %d\n\n" (efrit-session-queue-length)))
+        (let ((pos 1))
+          (dolist (command efrit-session--queue)
+            (insert (format "%d. %s\n" pos command))
+            (setq pos (1+ pos))))
+        (goto-char (point-min))
+        (view-mode))
+      (display-buffer (current-buffer)))))
+
 ;;; Session Cleanup (Multi-step Execution)
 
 (defun efrit-session-cleanup-old (&optional max-age-hours)
@@ -562,15 +586,35 @@ Removes completed/cancelled sessions from registry."
 ;;; Persistence
 
 (defun efrit-session-save ()
-  "Save current session state to disk."
+  "Save current active session state to disk (multi-step execution).
+Also saves legacy session tracking data for compatibility."
+  ;; Save new-style session struct (multi-step execution)
+  (when-let* ((session (efrit-session-active)))
+    (let* ((sessions-dir (expand-file-name "sessions" efrit-data-directory))
+           (session-file (expand-file-name
+                         (concat (efrit-session-id session) ".json")
+                         sessions-dir))
+           (session-data `((id . ,(efrit-session-id session))
+                          (command . ,(efrit-session-command session))
+                          (status . ,(efrit-session-status session))
+                          (start-time . ,(format-time-string "%Y-%m-%dT%H:%M:%S"
+                                                            (efrit-session-start-time session)))
+                          (continuation-count . ,(efrit-session-continuation-count session))
+                          (buffer . ,(when (efrit-session-buffer session)
+                                      (buffer-name (efrit-session-buffer session))))
+                          (last-error . ,(efrit-session-last-error session)))))
+      (make-directory sessions-dir t)
+      (with-temp-file session-file
+        (insert (json-encode session-data)))))
+
+  ;; Also save legacy session tracking (for compatibility)
   (when (and efrit-session-id efrit-session-tracking-enabled)
     (let* ((sessions-dir (expand-file-name "sessions" efrit-data-directory))
-           (session-file (expand-file-name (concat efrit-session-id ".json") sessions-dir))
+           (session-file (expand-file-name (concat efrit-session-id "-legacy.json") sessions-dir))
            (session-data (efrit-session-get-summary)))
       (make-directory sessions-dir t)
       (with-temp-file session-file
-        (insert (json-encode session-data)))
-      (efrit-session-log (format "Session saved to %s" session-file) 'debug))))
+        (insert (json-encode session-data))))))
 
 (defun efrit-session-save-final ()
   "Save final session state with completion marker."
@@ -988,6 +1032,62 @@ Otherwise clears all context."
 
 ;; Note: Session tracking will auto-start on first command execution
 ;; via efrit-session-ensure-active, not on module load
+
+;;; Session Inspection
+
+;;;###autoload
+(defun efrit-show-session ()
+  "Display information about the active efrit session."
+  (interactive)
+  (let ((session (efrit-session-active)))
+    (if (not session)
+        (message "No active efrit session")
+      (with-current-buffer (get-buffer-create "*efrit-session*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert "Efrit Session Information\n")
+          (insert "=========================\n\n")
+          (insert (format "Session ID: %s\n" (efrit-session-id session)))
+          (insert (format "Status: %s\n" (efrit-session-status session)))
+          (insert (format "Command: %s\n" (efrit-session-command session)))
+          (insert (format "Start Time: %s\n"
+                         (format-time-string "%Y-%m-%d %H:%M:%S"
+                                           (efrit-session-start-time session))))
+          (insert (format "Elapsed: %.1f seconds\n"
+                         (float-time (time-since (efrit-session-start-time session)))))
+          (insert (format "Continuations: %d\n" (or (efrit-session-continuation-count session) 0)))
+          (insert (format "Buffer: %s\n" (or (efrit-session-buffer session) "N/A")))
+          (when (efrit-session-last-error session)
+            (insert (format "\nLast Error: %s\n" (efrit-session-last-error session))))
+
+          ;; Progress metrics
+          (insert "\nProgress Metrics:\n")
+          (insert (format "  Buffer modifications: %d\n"
+                         (or (efrit-session-buffer-modifications session) 0)))
+          (insert (format "  TODO status changes: %d\n"
+                         (or (efrit-session-todo-status-changes session) 0)))
+          (insert (format "  Buffers created: %d\n"
+                         (or (efrit-session-buffers-created session) 0)))
+          (insert (format "  Files modified: %d\n"
+                         (or (efrit-session-files-modified session) 0)))
+          (insert (format "  Execution outputs: %d\n"
+                         (or (efrit-session-execution-outputs session) 0)))
+
+          ;; Tool history
+          (when-let* ((history (efrit-session-tool-history session)))
+            (insert (format "\nTool History (%d calls):\n" (length history)))
+            (dolist (entry (reverse (seq-take (reverse history) 10)))
+              (insert (format "  - %s at %s\n"
+                             (car entry)
+                             (format-time-string "%H:%M:%S" (nth 1 entry))))))
+
+          ;; Work log summary
+          (when-let* ((work-log (efrit-session-work-log session)))
+            (insert (format "\nWork Log Entries: %d\n" (length work-log))))
+
+          (goto-char (point-min))
+          (view-mode))
+        (display-buffer (current-buffer))))))
 
 (provide 'efrit-session)
 

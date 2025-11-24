@@ -131,10 +131,8 @@ truncated to keep this many recent results."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
-  "Claude model to use for efrit-do commands."
-  :type 'string
-  :group 'efrit-do)
+;; Use centralized model configuration from efrit-config
+(defvar efrit-model)  ;; Forward declaration for efrit-chat's alias
 
 (defcustom efrit-api-channel nil
   "API channel to use. Can be \\='ai-efrit or nil for default."
@@ -1618,6 +1616,9 @@ exceeds `efrit-do-max-buffer-lines' lines."
   "Display COMMAND and RESULT in the results buffer.
 If ERROR-P is non-nil, this indicates an error result.
 When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
+  (when error-p
+    (require 'efrit-log)
+    (efrit-log-error "[efrit-do] Command failed: %s\nResult: %s" command result))
   (when efrit-do-show-results
     ;; Always use standard results buffer - no smart detection
     (with-current-buffer (get-buffer-create efrit-do-buffer-name)
@@ -1645,7 +1646,7 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
              (url-request-extra-headers (efrit--build-headers api-key))
              (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
              (request-data
-              `(("model" . ,efrit-model)
+              `(("model" . ,efrit-default-model)
                 ("max_tokens" . ,efrit-max-tokens)
                 ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")
@@ -1996,11 +1997,7 @@ This includes: history, context, results buffer, TODOs, and conversations."
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer))))
-  
-  ;; Clear multi-turn conversations if available
-  (when (boundp 'efrit--multi-turn-conversations)
-    (clrhash efrit--multi-turn-conversations))
-  
+
   (message "All efrit-do state cleared"))
 
 ;;;###autoload

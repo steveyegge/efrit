@@ -63,6 +63,13 @@ If nil, uses the default location in the efrit data directory."
   :type 'boolean
   :group 'efrit-remote-queue)
 
+(defcustom efrit-remote-queue-auto-start nil
+  "Whether to automatically start the remote queue when Emacs loads.
+When non-nil, the queue system will be started automatically during
+module initialization. When nil (default), manual start is required."
+  :type 'boolean
+  :group 'efrit-remote-queue)
+
 ;;; Internal variables
 
 (defvar efrit-remote-queue--watcher nil
@@ -555,6 +562,11 @@ This is the main entry point for external AI systems to communicate with Efrit."
             (delete-file file)))))
     
     (message "Queue reset complete")))
+
+;;; Auto-start
+
+(when efrit-remote-queue-auto-start
+  (efrit-remote-queue-start))
 
 (provide 'efrit-remote-queue)
 ;;; efrit-remote-queue.el ends here

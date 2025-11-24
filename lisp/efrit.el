@@ -104,7 +104,50 @@
   (interactive)
   (message "Efrit initialized and ready to use"))
 
+;;;###autoload
+(defun efrit-help ()
+  "Display help information about Efrit modes and commands."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*efrit-help*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert "Efrit - AI Coding Assistant for Emacs\n")
+      (insert "======================================\n\n")
 
+      (insert "Main Commands:\n\n")
+      (insert "  M-x efrit-chat         - Interactive multi-turn chat mode\n")
+      (insert "                           Use for back-and-forth conversations\n\n")
+      (insert "  M-x efrit-do           - Execute single command synchronously\n")
+      (insert "                           Blocks until complete, shows result\n\n")
+      (insert "  M-x efrit-do-async     - Execute command asynchronously\n")
+      (insert "                           Non-blocking, queues multiple commands\n\n")
+
+      (insert "Utility Commands:\n\n")
+      (insert "  M-x efrit-doctor       - Check configuration and health\n")
+      (insert "  M-x efrit-show-session - View active session details\n")
+      (insert "  M-x efrit-show-queue   - View async command queue\n")
+      (insert "  M-x efrit-show-errors  - View all errors and warnings\n")
+      (insert "  M-x efrit-log-show     - View full debug log\n\n")
+
+      (insert "Optional Global Keymap:\n\n")
+      (insert "  Set `efrit-enable-global-keymap` to t, or run:\n")
+      (insert "  M-x efrit-setup-keybindings\n\n")
+      (insert "  Then use C-c C-e prefix:\n")
+      (insert "    C-c C-e c  - efrit-chat\n")
+      (insert "    C-c C-e d  - efrit-do\n")
+      (insert "    C-c C-e D  - efrit-do-async\n")
+      (insert "    C-c C-e q  - Start remote queue\n")
+      (insert "    C-c C-e Q  - Queue status\n\n")
+
+      (insert "Configuration:\n\n")
+      (insert "  Set ANTHROPIC_API_KEY environment variable, or:\n")
+      (insert "  (setq efrit-api-key 'ANTHROPIC_API_KEY)  ; env var\n")
+      (insert "  (setq efrit-default-model \"claude-3-5-sonnet-20241022\")\n\n")
+
+      (insert "For more information, see README.md and ARCHITECTURE.md\n")
+      (goto-char (point-min))
+      (view-mode))
+    (display-buffer (current-buffer))))
 
 ;; For package system (lazy loading)
 ;;;###autoload

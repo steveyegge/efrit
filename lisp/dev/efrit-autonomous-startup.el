@@ -108,6 +108,8 @@
     (make-directory responses-dir t)))
 
 ;; Start the remote queue system
+;; Note: We call it directly here instead of relying on auto-start
+;; to ensure it's running before any AI agent communication
 (message "Efrit Autonomous: Starting remote queue system...")
 (efrit-remote-queue-start)
 

@@ -115,6 +115,38 @@ Optional SUBSYSTEM can be provided as last argument if it's a string."
     (erase-buffer)
     (efrit-log-info "Log buffer cleared")))
 
+;;;###autoload
+(defun efrit-show-errors ()
+  "Show only error and warning messages from the log in a dedicated buffer."
+  (interactive)
+  (let ((errors '())
+        (log-buffer (get-buffer efrit-log-buffer)))
+    (if (not log-buffer)
+        (message "No efrit log buffer exists yet")
+      (with-current-buffer log-buffer
+        (save-excursion
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((line (buffer-substring-no-properties
+                        (line-beginning-position)
+                        (line-end-position))))
+              (when (string-match-p "\\[\\(ERROR\\|WARN\\)\\]" line)
+                (push line errors)))
+            (forward-line 1))))
+      (if (null errors)
+          (message "No errors or warnings in log")
+        (with-current-buffer (get-buffer-create "*efrit-errors*")
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert "Efrit Errors and Warnings\n")
+            (insert "=========================\n\n")
+            (dolist (error (reverse errors))
+              (insert error "\n"))
+            (insert (format "\n[Total: %d errors/warnings]\n" (length errors)))
+            (goto-char (point-min))
+            (view-mode))
+          (display-buffer (current-buffer)))))))
+
 (provide 'efrit-log)
 
 ;;; efrit-log.el ends here

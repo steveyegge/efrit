@@ -23,7 +23,6 @@
 (require 'cl-lib)
 (require 'auth-source)
 (require 'efrit-tools)
-(require 'efrit-multi-turn)
 (require 'efrit-session)
 
 ;; Declare functions from other modules to avoid warnings
@@ -59,6 +58,12 @@ or 4096 without. This setting uses the higher limit."
 (defcustom efrit-temperature 0.1
   "Temperature setting for response generation (0.0-1.0)."
   :type 'float
+  :group 'efrit)
+
+(defcustom efrit-show-timestamps nil
+  "Whether to show timestamps in chat messages.
+When non-nil, each message will be prefixed with a timestamp."
+  :type 'boolean
   :group 'efrit)
 
 ;; Use centralized API URL - legacy variable kept for compatibility
@@ -136,6 +141,9 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
 
 (defvar-local efrit--current-conversation nil
   "Current multi-turn conversation state, if active.")
+
+(defvar-local efrit--last-user-message nil
+  "Last message sent by the user, for retry purposes.")
 
 ;;; Internal variables - Streamlined Mode
 
@@ -251,7 +259,9 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
                   ((eq role 'user) "You: ")
                   ((eq role 'assistant) "Assistant: ")
                   ((eq role 'system) "System: ")
-                  (t ""))))
+                  (t "")))
+          (timestamp (when efrit-show-timestamps
+                      (format-time-string "[%H:%M:%S] "))))
       ;; All messages go to the conversation area (before input area)
       (if (and efrit--conversation-marker (marker-position efrit--conversation-marker))
           (goto-char (marker-position efrit--conversation-marker))
@@ -263,8 +273,9 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
       ;; Add spacing before message (single newline to separate from previous content)
       (unless (bobp) (insert "\n"))
 
-      ;; Insert the message with appropriate prefix
+      ;; Insert the message with appropriate prefix and optional timestamp
       (let ((start (point)))
+        (when timestamp (insert timestamp))
         (insert prefix message "\n")  ; Add newline after message
         (when face
           (add-text-properties start (- (point) 1) `(face ,face))))  ; Don't apply face to newline
@@ -423,6 +434,8 @@ If there's an error, handle it and clean up the buffer."
 
 (defun efrit--handle-http-error (error-details)
   "Handle HTTP error with ERROR-DETAILS."
+  (require 'efrit-log)
+  (efrit-log-error "[efrit-chat] API Error: %s" error-details)
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
@@ -438,9 +451,9 @@ If there's an error, handle it and clean up the buffer."
       ;; Clear in-progress flag
       (setq-local efrit--response-in-progress nil)
 
-      ;; Display error
+      ;; Display error with retry hint
       (efrit--display-message
-       (format "API Error: %s" error-details) 'system)
+       (format "API Error: %s\n(Use M-x efrit-retry-last-message to retry, or M-x efrit-show-errors for all errors)" error-details) 'system)
 
       ;; Insert prompt for next message
       (efrit--insert-prompt))))
@@ -975,6 +988,9 @@ Returns the processed message text with tool results."
       ;; Don't use multi-turn in chat mode - users control the conversation
       (setq-local efrit--current-conversation nil)
 
+      ;; Store message for retry on error
+      (setq-local efrit--last-user-message message)
+
       ;; Add message to history (at beginning, as we're using push)
       (push `((role . "user")
              (content . ,message))
@@ -1032,6 +1048,18 @@ Returns the processed message text with tool results."
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (insert "\n")))
+
+;;;###autoload
+(defun efrit-retry-last-message ()
+  "Retry the last user message that was sent.
+Useful when the previous API call failed."
+  (interactive)
+  (with-current-buffer (efrit--setup-buffer)
+    (if efrit--last-user-message
+        (progn
+          (message "Retrying: %s" efrit--last-user-message)
+          (efrit-send-message efrit--last-user-message))
+      (message "No previous message to retry"))))
 
 ;;;###autoload
 (defun efrit-chat-debug ()

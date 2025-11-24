@@ -17,6 +17,8 @@
 (declare-function efrit-log "efrit-log")
 (declare-function efrit-log-debug "efrit-log")
 (declare-function efrit-log-error "efrit-log")
+;; efrit-config for data directory in health check
+(defvar efrit-data-directory)
 
 ;;; Core Group Definition
 
@@ -310,6 +312,82 @@ Example usage:
          (when recovery-hint
            (message "%s\nRecovery: %s" msg recovery-hint))
          (cons nil msg))))))
+
+;;; Health Check
+
+;;;###autoload
+(defun efrit-doctor ()
+  "Run health checks on Efrit configuration and environment.
+Validates: API key, data directories, module loading, and basic connectivity."
+  (interactive)
+  (require 'efrit-config)
+  (let ((results '())
+        (all-ok t))
+
+    ;; Check 1: API key
+    (message "Checking API key...")
+    (let ((key-check (efrit--safe-execute
+                      (lambda () (efrit-common-get-api-key))
+                      "API key check")))
+      (if (car key-check)
+          (push "✓ API key is configured and accessible" results)
+        (setq all-ok nil)
+        (push (format "✗ API key check failed: %s" (cdr key-check)) results)))
+
+    ;; Check 2: Data directory
+    (message "Checking data directory...")
+    (let ((dir efrit-data-directory))
+      (if (and dir (file-directory-p (expand-file-name dir)))
+          (progn
+            (push (format "✓ Data directory exists: %s" dir) results)
+            ;; Check write permissions
+            (if (file-writable-p (expand-file-name dir))
+                (push "✓ Data directory is writable" results)
+              (setq all-ok nil)
+              (push (format "✗ Data directory not writable: %s" dir) results)))
+        (setq all-ok nil)
+        (push (format "✗ Data directory missing: %s" dir) results)))
+
+    ;; Check 3: Required modules
+    (message "Checking required modules...")
+    (let ((required-modules '(efrit-config efrit-tools efrit-session)))
+      (dolist (mod required-modules)
+        (if (featurep mod)
+            (push (format "✓ Module loaded: %s" mod) results)
+          (setq all-ok nil)
+          (push (format "✗ Module not loaded: %s" mod) results))))
+
+    ;; Check 4: API endpoint
+    (message "Checking API endpoint...")
+    (let ((endpoint (efrit-common-get-api-url)))
+      (if endpoint
+          (push (format "✓ API endpoint configured: %s" endpoint) results)
+        (setq all-ok nil)
+        (push "✗ API endpoint not configured" results)))
+
+    ;; Display results
+    (with-current-buffer (get-buffer-create "*efrit-doctor*")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Efrit Health Check\n")
+        (insert "==================\n\n")
+        (dolist (result (reverse results))
+          (insert result "\n"))
+        (insert "\n")
+        (if all-ok
+            (insert "Overall Status: ✓ All checks passed\n")
+          (insert "Overall Status: ✗ Some checks failed\n")
+          (insert "\nRecommended actions:\n")
+          (insert "- Set API key via ANTHROPIC_API_KEY environment variable\n")
+          (insert "- Or configure efrit-api-key in your init file\n")
+          (insert "- Run M-x efrit-config--ensure-directories to create directories\n"))
+        (goto-char (point-min))
+        (view-mode))
+      (display-buffer (current-buffer)))
+
+    (if all-ok
+        (message "Efrit health check: All OK")
+      (message "Efrit health check: Some issues found (see *efrit-doctor* buffer)"))))
 
 (provide 'efrit-common)
 

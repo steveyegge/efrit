@@ -168,6 +168,24 @@ Integration tests must verify **Claude's abilities**, not efrit's shortcuts:
 
 Previous versions of efrit contained hard-coded lexical-binding logic, warning parsers, and pre-generated elisp solutions. **All such code has been purged** to restore architectural purity.
 
+### Multi-Turn Conversation System (Removed)
+
+**Archived**: 2025-11-23
+
+The `efrit-multi-turn.el` module (~320 lines) provided automatic conversation continuation by asking Claude whether tasks were complete. This violated the Pure Executor principle in several ways:
+
+1. **Client-side decision-making**: Efrit decided when to continue conversations
+2. **Pattern-based heuristics**: Simple logic for determining task completion
+3. **Workflow control**: Managing turn limits and termination conditions
+
+**Why it was removed**:
+- Conversation control belongs to Claude, not the client
+- In `efrit-chat`, users manually control multi-turn interactions
+- In `efrit-do`, Claude can request continuation via tool calls if needed
+- The module was unused (disabled in chat mode, never initialized elsewhere)
+
+**Modern approach**: Claude manages its own workflow via the executor's tool schema. If Claude needs multiple turns, it explicitly requests them via tool calls rather than client-side heuristics deciding for it.
+
 ## ⚖️ **ENFORCEMENT**
 
 Any PR introducing client-side intelligence must be rejected. Code reviews should specifically check for:
