@@ -29,6 +29,7 @@
 (require 'efrit-config)
 (require 'efrit-common)
 (require 'efrit-session)
+(require 'efrit-chat)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
