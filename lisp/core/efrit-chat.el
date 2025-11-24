@@ -533,9 +533,8 @@ Returns the processed message text with tool results."
                                                  "Unknown error"))))))
 
                 ;; In chat mode, don't display tool results inline
-                ;; Only show them if they're buffer objects or errors
-                (when (or (string-match-p "^#<buffer" result)
-                          (string-match-p "^Error:" result))
+                ;; Only show errors (buffer objects and nil results are suppressed)
+                (when (string-match-p "^Error:" result)
                   (setq message-text (concat message-text "\n" result))))))))
 
       ;; Check if we should delegate to efrit-do
