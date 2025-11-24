@@ -84,6 +84,43 @@ bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
 
 ## Development Guidelines
 
+### MANDATORY VERIFICATION RULE
+
+**🚨 CRITICAL - READ THIS FIRST 🚨**
+
+**YOU MUST VERIFY ALL CHANGES BEFORE REPORTING COMPLETION TO THE USER.**
+
+This is non-negotiable. The user has spent significant time in the past finding bugs that you claimed were fixed but weren't actually tested. This wastes the user's time and is unacceptable.
+
+**What "verification" means:**
+1. **For code changes**: Run the actual code in Emacs (batch mode or daemon) and verify it executes without errors
+2. **For API-related changes**: Make actual API calls or simulate the full request/response cycle
+3. **For bug fixes**: Reproduce the original error, apply your fix, verify the error is gone
+4. **For new features**: Execute the feature end-to-end and confirm it works
+
+**Acceptable verification methods:**
+- ✅ `emacs --batch` with actual execution of the changed code
+- ✅ Starting Emacs daemon and testing via remote queue
+- ✅ Running `make compile` and checking for errors (for compilation issues only)
+- ✅ Executing the actual command/function and showing output
+
+**UNACCEPTABLE - these do NOT count as verification:**
+- ❌ "The code looks correct"
+- ❌ "This should work"
+- ❌ "The function is now available" (without actually calling it)
+- ❌ Reading the code and assuming it works
+- ❌ Compilation success alone (unless the issue was a compilation error)
+
+**When reporting to user:**
+- Include actual command output showing the verification
+- Show before/after behavior if fixing a bug
+- Demonstrate the feature working, don't just claim it does
+
+**If you cannot verify:**
+- State clearly: "I cannot verify this works because [reason]"
+- Explain what manual verification steps the user should take
+- DO NOT claim something works if you haven't verified it
+
 ### Before Making Changes
 
 1. **Read the architecture**: [ARCHITECTURE.md](ARCHITECTURE.md) - understand Pure Executor principle
