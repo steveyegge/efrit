@@ -86,14 +86,14 @@ When nil, uses the centralized configuration."
 (defcustom efrit-custom-headers nil
   "Alist of custom headers to add to API requests.
 Each element should be a cons cell of (HEADER-NAME . HEADER-VALUE).
-Example: '((\"authorization\" . \"Bearer your-token\")
-           (\"custom-header\" . \"custom-value\"))"
+Example: \\='((\"authorization\" . \"Bearer your-token\")
+             (\"custom-header\" . \"custom-value\"))"
   :type '(alist :key-type string :value-type string)
   :group 'efrit)
 
 (defcustom efrit-excluded-headers nil
   "List of default header names to exclude from API requests.
-Example: '(\"anthropic-version\" \"anthropic-beta\")"
+Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
   :type '(repeat string)
   :group 'efrit)
 
@@ -147,7 +147,7 @@ Example: '(\"anthropic-version\" \"anthropic-beta\")"
 ;;; Helper Functions
 
 (defun efrit--safe-error-message (err)
-  "Safely get error message from ERR, returning 'Unknown error' if nil."
+  "Safely get error message from ERR, returning \\='Unknown error\\=' if nil."
   (cond
    ((null err) "Unknown error (nil)")
    ((stringp err) err)

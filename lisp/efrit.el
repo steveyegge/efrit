@@ -132,6 +132,9 @@
 
 (require 'cl-lib)  ; For cl-some
 
+;; Forward declarations for lazily-loaded functions
+(declare-function efrit-common-get-api-key "efrit-common")
+
 (defun efrit-version ()
   "Display Efrit version and perform health checks.
 Shows version, installation status, and basic connectivity."
