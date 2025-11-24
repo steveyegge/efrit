@@ -160,7 +160,10 @@ Optionally calls CALLBACK with error message."
     (efrit-executor--clear-mode-line)
 
     (when callback
-      (funcall callback (format "Error: %s" message)))))
+      (funcall callback (format "Error: %s" message)))
+
+    ;; Process next queued command if any
+    (efrit-executor--process-queue)))
 
 ;;; Response Processing
 
@@ -260,7 +263,7 @@ Returns the tool result string."
     (when (and session
                (> (length (efrit-session-work-log session))
                   efrit-executor-max-tool-calls))
-      (error "🚨 SESSION SAFETY LIMIT: Over %d tool calls - session terminated"
+      (error "SESSION SAFETY LIMIT: Over %d tool calls - session terminated"
              efrit-executor-max-tool-calls))
 
     ;; Show progress
@@ -302,7 +305,7 @@ Calls CALLBACK with the final result."
     (if (>= continuation-count efrit-executor-max-continuations)
         (progn
           (efrit-executor--handle-error
-           (format "🚨 SESSION LIMIT: Maximum continuations (%d) reached"
+           (format "SESSION LIMIT: Maximum continuations (%d) reached"
                    efrit-executor-max-continuations)
            callback)
           nil)  ; Return early

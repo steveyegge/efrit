@@ -981,9 +981,6 @@ Returns the processed message text with tool results."
       ;; Don't use multi-turn in chat mode - users control the conversation
       (setq-local efrit--current-conversation nil)
 
-      ;; Set in-progress flag
-      (setq-local efrit--response-in-progress t)
-
       ;; Add message to history (at beginning, as we're using push)
       (push `((role . "user")
              (content . ,message))
@@ -992,8 +989,14 @@ Returns the processed message text with tool results."
       ;; Show thinking indicator
       (efrit--display-message "Thinking..." 'system)
 
-      ;; Send the API request with reversed message history
-      (efrit--send-api-request (reverse efrit--message-history)))))
+      ;; Set in-progress flag and ensure it's cleared on any exit path
+      (setq-local efrit--response-in-progress t)
+      (unwind-protect
+          ;; Send the API request with reversed message history
+          (efrit--send-api-request (reverse efrit--message-history))
+        ;; Always clear the in-progress flag, even on error/quit
+        (when (buffer-live-p (current-buffer))
+          (setq-local efrit--response-in-progress nil))))))
 
 ;;;###autoload
 (defun efrit-send-buffer-message ()
@@ -1105,6 +1108,33 @@ Returns the processed message text with tool results."
    'assistant)
 
   (efrit--insert-prompt))
+
+;;;###autoload
+(defun efrit-chat-clear ()
+  "Clear the conversation history and start fresh in the current chat buffer."
+  (interactive)
+  (if (not (eq major-mode 'efrit-mode))
+      (user-error "Not in an Efrit chat buffer")
+    (when (or (not efrit--message-history)
+              (yes-or-no-p "Clear conversation history and start fresh? "))
+      (setq buffer-read-only nil)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (setq-local efrit--message-history nil)
+        (setq-local efrit--response-in-progress nil)
+        (setq-local efrit--conversation-marker nil)
+        (setq-local efrit--input-marker nil)
+        (setq-local efrit--current-conversation nil))
+
+      (setq-local efrit--conversation-marker (make-marker))
+      (set-marker efrit--conversation-marker (point-min))
+
+      (efrit--display-message
+       (format "Conversation cleared - Using model: %s" efrit-model)
+       'assistant)
+
+      (efrit--insert-prompt)
+      (message "Efrit chat conversation cleared"))))
 
 (provide 'efrit-chat)
 

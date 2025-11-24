@@ -96,6 +96,53 @@
   :type 'boolean
   :group 'efrit-tools)
 
+(defcustom efrit-tools-max-eval-per-session 100
+  "Maximum number of eval_sexp calls allowed per session.
+Set to 0 to disable rate limiting."
+  :type 'integer
+  :group 'efrit-tools)
+
+(defcustom efrit-tools-max-total-calls-per-session 500
+  "Maximum total number of tool calls allowed per session.
+Set to 0 to disable rate limiting."
+  :type 'integer
+  :group 'efrit-tools)
+
+;;; Rate Limiting State
+
+(defvar efrit-tools--eval-count 0
+  "Count of eval_sexp calls in current session.")
+
+(defvar efrit-tools--total-call-count 0
+  "Count of all tool calls in current session.")
+
+(defun efrit-tools--reset-rate-limits ()
+  "Reset rate limiting counters. Called at session start."
+  (setq efrit-tools--eval-count 0
+        efrit-tools--total-call-count 0))
+
+(defun efrit-tools--check-rate-limit (tool-name)
+  "Check if TOOL-NAME can be called without exceeding rate limits.
+Signals an error if rate limit would be exceeded."
+  (when (> efrit-tools-max-total-calls-per-session 0)
+    (when (>= efrit-tools--total-call-count efrit-tools-max-total-calls-per-session)
+      (error "Tool call rate limit exceeded: %d calls per session (limit: %d)"
+             efrit-tools--total-call-count
+             efrit-tools-max-total-calls-per-session)))
+
+  (when (and (string= tool-name "eval_sexp")
+             (> efrit-tools-max-eval-per-session 0))
+    (when (>= efrit-tools--eval-count efrit-tools-max-eval-per-session)
+      (error "eval_sexp rate limit exceeded: %d calls per session (limit: %d)"
+             efrit-tools--eval-count
+             efrit-tools-max-eval-per-session))))
+
+(defun efrit-tools--increment-rate-limit (tool-name)
+  "Increment rate limit counters for TOOL-NAME."
+  (setq efrit-tools--total-call-count (1+ efrit-tools--total-call-count))
+  (when (string= tool-name "eval_sexp")
+    (setq efrit-tools--eval-count (1+ efrit-tools--eval-count))))
+
 ;;; Utility functions
 
 (defun efrit-tools--elisp-results-or-empty (result)
@@ -188,29 +235,35 @@
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
 Handles parsing, evaluation, error handling, and result formatting."
+  ;; Check rate limits first
+  (efrit-tools--check-rate-limit "eval_sexp")
+
   ;; Check if evaluation is enabled
   (unless efrit-tools-sexp-evaluation-enabled
     (error "Lisp expression evaluation is disabled"))
-  
+
   ;; Validate input
   (when (or (not sexp-string) (string-empty-p (string-trim sexp-string)))
     (error "Cannot evaluate empty Lisp expression"))
-  
+
   ;; Security check removed - trust Claude to do the right thing
-  
+
   (efrit-log 'debug "Evaluating: %s" sexp-string)
-  
+
+  ;; Increment rate limit counter
+  (efrit-tools--increment-rate-limit "eval_sexp")
+
   (let ((result-data (condition-case err
-                         (efrit-tools--eval-with-context 
+                         (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
-    
+
     ;; Return formatted result
     (if (plist-get result-data :success)
         (format "%s" (plist-get result-data :result))
-      (progn 
+      (progn
         (require 'efrit-common)
-        (format "Error evaluating %s: %s" 
+        (format "Error evaluating %s: %s"
                 (efrit-common-truncate-string (plist-get result-data :input) 30)
                 (plist-get result-data :error))))))
 
@@ -435,6 +488,10 @@ Return:
   "Gather comprehensive context about the Emacs environment.
 Returns detailed information as a JSON string that can be used by the LLM
 to better understand the environment and generate appropriate Elisp code."
+  ;; Check and increment rate limits
+  (efrit-tools--check-rate-limit "get_context")
+  (efrit-tools--increment-rate-limit "get_context")
+
   (condition-case err
       (let ((context-data
              (list :buffer (efrit-tools-get-buffer-context)

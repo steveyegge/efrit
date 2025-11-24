@@ -1635,7 +1635,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
               (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
         (if-let* ((api-url (or efrit-api-url (efrit-common-get-api-url)))
-                  (response-buffer (url-retrieve-synchronously api-url))
+                  (response-buffer (with-local-quit
+                                     (url-retrieve-synchronously api-url)))
                   (response-text (efrit-do--extract-response-text response-buffer)))
             (efrit-do--process-api-response response-text)
           (error "Failed to get response from API")))
