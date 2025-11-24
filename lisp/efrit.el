@@ -42,6 +42,13 @@
 
 ;;; Code:
 
+;; Add subdirectories to load-path for modular organization
+(let ((lisp-dir (file-name-directory (or load-file-name buffer-file-name))))
+  (dolist (subdir '("core" "interfaces" "support" "dev"))
+    (let ((full-path (expand-file-name subdir lisp-dir)))
+      (when (file-directory-p full-path)
+        (add-to-list 'load-path full-path)))))
+
 ;; Keep this file side-effect free for use-package/straight users.
 ;; Do not modify load-path or eagerly require heavy subsystems here.
 
@@ -53,6 +60,15 @@
 ;; Make external API accessible with clear naming
 (defalias 'efrit-start 'efrit-chat
   "Start a new Efrit chat session (alias for efrit-chat).")
+
+;; Define efrit-mode-map early so it's always available
+(defvar efrit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'efrit-send-buffer-message)
+    (define-key map (kbd "S-<return>") 'efrit-insert-newline)
+    (define-key map (kbd "C-c C-c") 'efrit-send-buffer-message)
+    map)
+  "Keymap for Efrit mode.")
 
 ;; Global keymap for Efrit (not bound by default)
 (defvar efrit-keymap

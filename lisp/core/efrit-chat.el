@@ -1068,13 +1068,8 @@ Returns the processed message text with tool results."
 
 ;;; Mode definition
 
-(defvar efrit-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") 'efrit-send-buffer-message)
-    (define-key map (kbd "S-<return>") 'efrit-insert-newline)
-    (define-key map (kbd "C-c C-c") 'efrit-send-buffer-message)
-    map)
-  "Keymap for Efrit mode.")
+;; efrit-mode-map is defined in efrit.el to be always available
+(defvar efrit-mode-map)
 
 (define-derived-mode efrit-mode text-mode "Efrit"
   "Major mode for interacting with the Efrit conversational assistant."

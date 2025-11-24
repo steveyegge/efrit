@@ -452,7 +452,9 @@ Removes completed/cancelled sessions from registry."
           (files-modified . ())
           (tools-used . ())))
   (efrit-session-log "Session started" 'info)
-  (message "Efrit session started: %s" efrit-session-id))
+  ;; Only show message in interactive sessions, not during compilation
+  (unless noninteractive
+    (message "Efrit session started: %s" efrit-session-id)))
 
 (defun efrit-session-end ()
   "End the current Efrit metrics tracking session."
@@ -460,7 +462,9 @@ Removes completed/cancelled sessions from registry."
   (when efrit-session-id
     (efrit-session-save-final)
     (efrit-session-log "Session ended" 'info)
-    (message "Efrit session ended: %s" efrit-session-id)
+    ;; Only show message in interactive sessions, not during compilation
+    (unless noninteractive
+      (message "Efrit session ended: %s" efrit-session-id))
     (setq efrit-session-id nil)
     (setq efrit-session-start-time nil)))
 
@@ -795,9 +799,8 @@ Removes completed/cancelled sessions from registry."
 (efrit-session-setup-hooks)
 (efrit-session-start-auto-save)
 
-;; Auto-start metrics session if tracking is enabled
-(when efrit-session-tracking-enabled
-  (efrit-session-ensure-active))
+;; Note: Session tracking will auto-start on first command execution
+;; via efrit-session-ensure-active, not on module load
 
 (provide 'efrit-session)
 

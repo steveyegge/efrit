@@ -24,9 +24,6 @@
 (declare-function efrit-do "efrit-do")
 (declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
-;; Variable declarations
-(defvar efrit-do-show-results)
-
 ;;; Customization
 
 (defgroup efrit-remote-queue nil
@@ -334,9 +331,12 @@ Includes schema version for protocol compatibility."
   (if (fboundp 'efrit-do)
       (condition-case err
           ;; Capture the result by temporarily redirecting efrit-do output
-          (let ((original-show-results efrit-do-show-results)
+          (let ((original-show-results (and (boundp 'efrit-do-show-results)
+                                            efrit-do-show-results))
                 result-captured)
-            (setq efrit-do-show-results nil) ; Don't show UI during remote execution
+            ;; Don't show UI during remote execution
+            (when (boundp 'efrit-do-show-results)
+              (setq efrit-do-show-results nil))
             (unwind-protect
                 (progn
                   ;; Execute the command and capture output
@@ -347,7 +347,9 @@ Includes schema version for protocol compatibility."
                   (if (string-empty-p result-captured)
                       "Command executed successfully"
                     result-captured))
-              (setq efrit-do-show-results original-show-results)))
+              ;; Restore original value if variable exists
+              (when (boundp 'efrit-do-show-results)
+                (setq efrit-do-show-results original-show-results))))
         (error
          (format "Command execution failed: %s" (error-message-string err))))
     (error "efrit-do not available")))
