@@ -409,11 +409,11 @@ This is a blocking call that waits for Claude's response."
     ;; Synchronous API call
     (condition-case err
         (let* ((api-key (efrit-common-get-api-key))
-               (json-data (efrit-common-escape-json-unicode
-                          (json-encode request-data)))
+               (json-string (json-encode request-data))
+               (escaped-json (efrit-common-escape-json-unicode json-string))
                (url-request-method "POST")
                (url-request-extra-headers (efrit-common-build-headers api-key))
-               (url-request-data json-data)
+               (url-request-data (encode-coding-string escaped-json 'utf-8))
                (response-buffer (url-retrieve-synchronously
                                 (efrit-common-get-api-url) nil t 30)))
 
