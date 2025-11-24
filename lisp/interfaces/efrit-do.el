@@ -76,15 +76,16 @@ This affects the TODO display buffer."
 
 (defcustom efrit-do-max-tool-calls-per-session 30
   "Maximum number of tool calls allowed in a single session.
-When this limit is reached, the circuit breaker trips and the session is terminated.
-This prevents infinite loops from burning through API tokens."
+When this limit is reached, the circuit breaker trips and the session is
+terminated.  This prevents infinite loops from burning through API tokens."
   :type 'integer
   :group 'efrit-do)
 
 (defcustom efrit-do-max-same-tool-calls 3
   "Maximum number of consecutive calls to the same tool.
-When this limit is reached, the circuit breaker warns and forces a different action.
-This prevents tight loops like repeated todo_status or todo_analyze calls."
+When this limit is reached, the circuit breaker warns and forces a
+different action.  This prevents tight loops like repeated todo_status
+or todo_analyze calls."
   :type 'integer
   :group 'efrit-do)
 
@@ -169,7 +170,8 @@ Possible states:
 
 (defvar efrit-do--session-tool-count 0
   "Total number of tool calls in the current session.
-Reset when a new session starts. Used by circuit breaker to prevent runaway loops.")
+Reset when a new session starts.  Used by circuit breaker to prevent
+runaway loops.")
 
 (defvar efrit-do--circuit-breaker-tripped nil
   "When non-nil, circuit breaker has tripped and session is terminated.
@@ -332,12 +334,14 @@ EXAMPLES:
 (defun efrit-do--get-tools-for-state ()
   "Return tool schema filtered by current workflow state.
 
-This implements schema-based loop prevention by restricting which tools
-Claude can call based on the current workflow state:
+This implements schema-based loop prevention by restricting which tools Claude
+can call based on the current workflow state:
 
 - initial: Allow planning tools (todo_analyze, todo_add) + always-available
-- todos-created/executing: Block planning, restrict query tools, promote execution
-- After todo_get_instructions called: Remove it from schema to force eval_sexp
+- todos-created/executing: Block planning, restrict query tools, promote
+  execution
+- After todo_get_instructions called: Remove it from schema to force
+  eval_sexp
 
 The goal is to prevent infinite loops of todo_status, todo_get_instructions
 without actual code execution."
