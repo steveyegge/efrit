@@ -43,14 +43,16 @@
 ;;; Code:
 
 ;; Add subdirectories to load-path for modular organization
+;; This is done at load time to ensure subdirectories are accessible
+;; for both package.el and manual installations without additional configuration.
 (let ((lisp-dir (file-name-directory (or load-file-name buffer-file-name))))
   (dolist (subdir '("core" "interfaces" "support" "dev"))
     (let ((full-path (expand-file-name subdir lisp-dir)))
       (when (file-directory-p full-path)
         (add-to-list 'load-path full-path)))))
 
-;; Keep this file side-effect free for use-package/straight users.
-;; Do not modify load-path or eagerly require heavy subsystems here.
+;; Keep load clean: avoid eagerly requiring heavy subsystems.
+;; Load path setup above is necessary for subdirectory access.
 
 ;; Tests are not loaded by default, but available when needed
 ;; (require 'efrit-tests)
