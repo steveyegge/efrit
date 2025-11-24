@@ -7,7 +7,7 @@ PACKAGE_NAME = efrit
 VERSION = 0.3.0
 
 # Source files
-EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el)
+EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el)
 ELC_FILES = $(EL_FILES:.el=.elc)
 
 # Test files
@@ -65,15 +65,16 @@ lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
 lisp/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Core module dependencies
-lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc lisp/efrit-multi-turn.elc
+lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc lisp/interfaces/efrit-multi-turn.elc
 lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-log.elc
 # Support module dependencies
 lisp/support/efrit-ui.elc: lisp/core/efrit-common.elc lisp/core/efrit-log.elc
+# Interface module dependencies
+lisp/interfaces/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-do.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
 # Root module dependencies
-lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
-lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
-lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
 lisp/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 lisp/efrit.elc: lisp/core/efrit-config.elc lisp/efrit-tools.elc
 
@@ -83,6 +84,7 @@ lisp/%.elc: lisp/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -93,6 +95,7 @@ lisp/core/%.elc: lisp/core/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -103,6 +106,18 @@ lisp/support/%.elc: lisp/support/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/interfaces/%.elc: lisp/interfaces/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -189,8 +204,8 @@ test: test-simple mcp-test
 # Cleaning
 clean: mcp-clean
 	@echo "Removing compiled files..."
-	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc
-	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~
+	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc lisp/interfaces/*.elc
+	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~ lisp/interfaces/*.elc~
 
 distclean: clean
 	@echo "Removing all generated files..."

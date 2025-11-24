@@ -68,6 +68,7 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
    (add-to-list 'load-path "/path/to/efrit/lisp")
    (add-to-list 'load-path "/path/to/efrit/lisp/core")
    (add-to-list 'load-path "/path/to/efrit/lisp/support")
+   (add-to-list 'load-path "/path/to/efrit/lisp/interfaces")
    (require 'efrit)
    ```
 
@@ -85,7 +86,7 @@ Efrit is structured for lazy loading with `use-package`. Example setup using a l
 ```elisp
 (use-package efrit
   :straight (:type git :host github :repo "steveyegge/efrit"
-             :files ("lisp/*.el" "lisp/core/*.el" "lisp/support/*.el"))
+             :files ("lisp/*.el" "lisp/core/*.el" "lisp/support/*.el" "lisp/interfaces/*.el"))
   :init
   ;; Set data directory before loading to avoid side effects
   (setq efrit-data-directory (expand-file-name "~/efrit-data"))
