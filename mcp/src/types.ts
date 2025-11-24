@@ -3,6 +3,8 @@
  * Incorporates Oracle recommendations: versioning, security, namespacing
  */
 
+import packageJson from '../package.json' with { type: 'json' };
+
 /**
  * Request types supported by Efrit
  */
@@ -321,20 +323,9 @@ export interface EfritError extends Error {
 /**
  * Constants
  */
-export const EFRIT_SCHEMA_VERSION = '1.0.0';
+export const EFRIT_SCHEMA_VERSION = packageJson.version;
 export const DEFAULT_TIMEOUT = 30;
 export const DEFAULT_POLL_INTERVAL = 250;
 export const MAX_REQUEST_SIZE = 1024 * 1024; // 1MB
 export const MAX_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB
 export const QUEUE_SUBDIRS = ['requests', 'processing', 'responses', 'archive'] as const;
-
-/**
- * MCP tool names (namespaced per Oracle recommendation)
- */
-export const MCP_TOOLS = {
-  EXECUTE: 'mcp/efrit_execute',
-  LIST_INSTANCES: 'mcp/efrit_list_instances', 
-  GET_QUEUE_STATS: 'mcp/efrit_get_queue_stats',
-  START_INSTANCE: 'mcp/efrit_start_instance',
-  STOP_INSTANCE: 'mcp/efrit_stop_instance'
-} as const;

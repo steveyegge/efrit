@@ -26,6 +26,7 @@ import {
   QueueStats,
   EfritError
 } from './types.js';
+import packageJson from '../package.json' with { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,7 +80,7 @@ export class EfritMcpServer {
     this.logger = createLogger('info');
     this.server = new McpServer({
       name: "efrit-mcp-server",
-      version: "1.0.0"
+      version: packageJson.version
     });
   }
 
@@ -424,6 +425,39 @@ export class EfritMcpServer {
     this.logger.info('Shutdown complete');
     process.exit(0);
   }
+
+  /**
+   * Reload configuration and reinitialize clients
+   */
+  async reload(): Promise<void> {
+    this.logger.info('Reloading Efrit MCP Server configuration...');
+
+    try {
+      // Clean up existing clients
+      for (const [instanceId, client] of this.clients.entries()) {
+        try {
+          await client.cleanup();
+          this.logger.debug(`Cleaned up client for instance: ${instanceId}`);
+        } catch (error) {
+          this.logger.warn(`Failed to cleanup instance ${instanceId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      this.clients.clear();
+
+      // Reload configuration
+      this.config = await this.loadConfig();
+      this.logger.info('Configuration reloaded successfully');
+
+      // Reinitialize clients
+      await this.initializeClients();
+      this.logger.info('Clients reinitialized successfully');
+
+      this.logger.info('Reload complete');
+    } catch (error) {
+      this.logger.error(`Failed to reload configuration: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn('Continuing with previous configuration');
+    }
+  }
 }
 
 /**
@@ -435,6 +469,9 @@ async function main() {
   // Handle graceful shutdown
   process.on('SIGINT', () => server.shutdown());
   process.on('SIGTERM', () => server.shutdown());
+
+  // Handle configuration reload
+  process.on('SIGHUP', () => server.reload());
 
   // Start the server
   await server.start();
