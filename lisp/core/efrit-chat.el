@@ -512,6 +512,7 @@ Returns the processed message text with tool results."
           ;; Handle tool calls
           (when (string= type "tool_use")
             (let* ((tool-name (gethash "name" item))
+                   (tool-id (gethash "id" item))  ; Captured for use in tool_result messages (ef-5af)
                    (input (gethash "input" item)))
 
               ;; Execute tool call and add result to message text
