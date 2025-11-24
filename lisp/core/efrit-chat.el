@@ -977,6 +977,10 @@ Returns the processed message text with tool results."
   (with-current-buffer (efrit--setup-buffer)
     (setq buffer-read-only nil)
     (let ((inhibit-read-only t))
+      ;; Check if a response is already in progress
+      (when efrit--response-in-progress
+        (user-error "Please wait for the current response to complete"))
+
       ;; Display the user message only if not already displayed
       (unless (save-excursion
                 (goto-char (point-max))
@@ -1003,14 +1007,19 @@ Returns the processed message text with tool results."
       ;; Show thinking indicator
       (efrit--display-message "Thinking..." 'system)
 
-      ;; Set in-progress flag and ensure it's cleared on any exit path
+      ;; Set in-progress flag - will be cleared by response handler
       (setq-local efrit--response-in-progress t)
-      (unwind-protect
-          ;; Send the API request with reversed message history
+
+      ;; Send the API request (async - flag cleared by response handler)
+      (condition-case err
           (efrit--send-api-request (reverse efrit--message-history))
-        ;; Always clear the in-progress flag, even on error/quit
-        (when (buffer-live-p (current-buffer))
-          (setq-local efrit--response-in-progress nil))))))
+        (error
+         ;; If url-retrieve fails immediately, clear flag and show error
+         (setq-local efrit--response-in-progress nil)
+         (efrit--display-message
+          (format "Failed to send request: %s" (error-message-string err))
+          'system)
+         (efrit--insert-prompt))))))
 
 ;;;###autoload
 (defun efrit-send-buffer-message ()
