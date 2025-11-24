@@ -505,7 +505,7 @@ Arguments:
                                (progn
                                  ;; Show elisp eval in progress if available
                                  (when (fboundp 'efrit-progress-show-elisp-eval)
-                                   (require 'efrit-progress))
+                                   (require 'efrit-ui))
                                  (let ((eval-result (efrit-tools-eval-sexp elisp-code)))
                                    (when (fboundp 'efrit-progress-show-elisp-eval)
                                      (efrit-progress-show-elisp-eval elisp-code eval-result))
