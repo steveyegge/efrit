@@ -164,16 +164,7 @@ export interface McpServerConfig {
 
   /** Server port (if running HTTP endpoint for health checks) */
   port?: number;
-  
-  /** Rate limiting configuration */
-  rate_limit?: {
-    /** Requests per minute per client */
-    requests_per_minute: number;
-    
-    /** Burst allowance */
-    burst_size: number;
-  };
-  
+
   /** Security configuration */
   security?: {
     /** Maximum request size in bytes */
