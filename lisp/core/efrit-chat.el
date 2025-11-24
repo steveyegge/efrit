@@ -756,8 +756,11 @@ is a list of tool_result blocks for sending back to Claude."
          (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (efrit-streamlined--system-prompt))
          (cleaned-messages (mapcar (lambda (msg)
-                                     `(("role" . ,(alist-get 'role msg))
-                                       ("content" . ,(substring-no-properties (alist-get 'content msg)))))
+                                     (let ((content (alist-get 'content msg)))
+                                       `(("role" . ,(alist-get 'role msg))
+                                         ("content" . ,(if (stringp content)
+                                                           (substring-no-properties content)
+                                                         content)))))
                                    messages))
          (request-data
           `(("model" . ,efrit-model)
@@ -876,7 +879,7 @@ is a list of tool_result blocks for sending back to Claude."
                   (progn
                     (setq efrit-streamlined--turn-count (1+ efrit-streamlined--turn-count))
                     (efrit-streamlined--log-to-work "Continuing conversation with tool results")
-                    (efrit-streamlined--continue-with-results tool-results text-content))
+                    (efrit-streamlined--continue-with-results tool-results content-array))
 
                 ;; Final response - display it
                 (progn
@@ -884,20 +887,29 @@ is a list of tool_result blocks for sending back to Claude."
                   (when has-text-content
                     (efrit-streamlined--display-response text-content)))))))))))
 
-(defun efrit-streamlined--continue-with-results (tool-results text-content)
+(defun efrit-streamlined--continue-with-results (tool-results assistant-content)
   "Continue conversation with TOOL-RESULTS from executed tools.
-TOOL-RESULTS should be a list of tool_result blocks built with efrit--build-tool-result."
+TOOL-RESULTS should be a list of tool_result blocks built with efrit--build-tool-result.
+ASSISTANT-CONTENT is the original content array from the assistant's response (with tool_use blocks)."
   (let ((updated-messages efrit-streamlined--current-messages))
 
-    ;; Add assistant's text with tool_use if any (Claude's original response)
-    ;; Note: In streamlined mode, the full content with tool_use was already added
-    ;; So we just need to add the tool results as a user message
+    ;; CRITICAL: Add messages in correct chronological order!
+    ;; Messages list should be: [user, assistant-with-tool_use, user-with-tool_result]
+    ;; The API requires tool_result to immediately follow a message with tool_use
 
-    ;; Build user message with tool_result blocks
+    ;; First: Add assistant's response WITH tool_use blocks
+    (when assistant-content
+      (setq updated-messages
+            (append updated-messages
+                    (list `((role . "assistant")
+                            (content . ,assistant-content))))))
+
+    ;; Second: Add user message with tool_result blocks
     (when (and tool-results (> (length tool-results) 0))
-      (push `((role . "user")
-              (content . ,(vconcat tool-results)))
-            updated-messages))
+      (setq updated-messages
+            (append updated-messages
+                    (list `((role . "user")
+                            (content . ,(vconcat tool-results)))))))
 
     ;; Continue conversation with results
     (when (> (length tool-results) 0)

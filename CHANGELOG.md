@@ -2,7 +2,12 @@
 
 All notable changes to Efrit will be documented in this file.
 
-## [0.3.0] - 2025-01-06
+## [0.3.0] - 2025-11-24
+
+### Milestone: First Working End-to-End Since Modernization
+
+This release marks a major milestone: the first fully working end-to-end chat experience
+since the modernization effort began. Multi-turn tool use conversations now work correctly.
 
 ### Added
 - **Session-Based Architecture**: Complete implementation of multi-step operations with Claude-controlled flow
@@ -22,6 +27,10 @@ All notable changes to Efrit will be documented in this file.
 - Updated model from claude-sonnet-4 to claude-3-5-sonnet-20241022
 
 ### Fixed
+- **Critical**: Multi-turn tool use conversations now properly send tool_result blocks
+  - Fixed `efrit-streamlined--send-request` to handle non-string content (tool_result vectors)
+  - Fixed `efrit-streamlined--continue-with-results` message ordering (was using push, now uses append)
+  - Assistant messages with tool_use blocks now properly precede user messages with tool_result
 - **Critical**: Syntax error in efrit-async.el preventing module from loading
 - **Critical**: Wrong API key selection for ai-efrit channel
 - Buffer memory leaks in chat interface
