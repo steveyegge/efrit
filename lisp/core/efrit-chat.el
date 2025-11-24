@@ -674,15 +674,29 @@ is a list of tool_result blocks for sending back to Claude."
                        (message-text (nth 0 result))
                        (tool-results (nth 1 result))
                        (should-delegate (nth 2 result)))
-                  ;; TODO(ef-3go): When tool-results exist, send them back to Claude
-                  ;; before displaying final response to user
-                  (if should-delegate
-                      ;; Delegate to efrit-do for multi-step completion
-                      (progn
-                        (efrit-log-debug "Delegating to efrit-do")
-                        (efrit--delegate-to-do))
-                    ;; Normal response handling
-                    (efrit--update-ui-with-response message-text))))
+                  (cond
+                   ;; If we have tool results, send them back to Claude
+                   ((and tool-results (> (length tool-results) 0))
+                    (efrit-log-debug "Tool results collected: %d, sending back to Claude" (length tool-results))
+                    ;; Add assistant's message with tool_use to history
+                    (push `((role . "assistant")
+                            (content . ,content))
+                          efrit--message-history)
+                    ;; Build user message with tool_result blocks
+                    (push `((role . "user")
+                            (content . ,(vconcat tool-results)))
+                          efrit--message-history)
+                    ;; Continue conversation - response will come back to this handler
+                    (efrit--send-api-request (reverse efrit--message-history)))
+
+                   ;; Delegate to efrit-do for multi-step completion
+                   (should-delegate
+                    (efrit-log-debug "Delegating to efrit-do")
+                    (efrit--delegate-to-do))
+
+                   ;; Normal response handling (no tools, just text)
+                   (t
+                    (efrit--update-ui-with-response message-text)))))
             ;; Handle case where content is nil
             (efrit--handle-parse-error)))
       ;; Handle any errors during parsing
