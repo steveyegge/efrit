@@ -96,6 +96,14 @@ Recommended to keep enabled for safety."
   :type 'boolean
   :group 'efrit-do)
 
+(defcustom efrit-do-show-tool-execution t
+  "Whether to show feedback when tools are executed.
+When non-nil, displays messages like \\='Executing tool eval_sexp...\\=' during
+command execution.  This provides visibility into what operations are
+being performed."
+  :type 'boolean
+  :group 'efrit-do)
+
 ;; Context configuration moved to efrit-context.el
 
 (defcustom efrit-do-max-retries 3
@@ -1323,6 +1331,10 @@ Applies circuit breaker limits to prevent infinite loops."
     (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)"
                tool-name tool-input input-str)
 
+    ;; Show user-visible feedback for tool execution if enabled
+    (when efrit-do-show-tool-execution
+      (message "Efrit: Executing tool '%s'..." tool-name))
+
     ;; CIRCUIT BREAKER: Check limits before executing
     (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name)))
       (if (not (car breaker-check))
@@ -1699,6 +1711,15 @@ Returns the final result after all retry attempts."
     
     (cons final-result attempt)))
 
+(defun efrit-do--start-progress-timer (start-time _command)
+  "Start a timer to show progress feedback during command execution.
+START-TIME is when the command started.
+_COMMAND is a short description (currently unused)."
+  (run-at-time 1 1
+               (lambda ()
+                 (let ((elapsed (float-time (time-since start-time))))
+                   (message "Efrit: Executing (%.1fs)..." elapsed)))))
+
 (defun efrit-do--process-result (command result attempt)
   "Process the final RESULT from executing COMMAND after ATTEMPT attempts."
   (if result
@@ -1707,15 +1728,15 @@ Returns the final result after all retry attempts."
         (setq efrit-do--last-result result)
         (efrit-do--capture-context command result)
         (efrit-do--display-result command result is-error)
-        
+
         (if is-error
             (progn
-              (message "Command failed after %d attempt%s" 
+              (message "Command failed after %d attempt%s"
                       attempt (if (> attempt 1) "s" ""))
               (user-error "%s" (cdr error-info)))
-          (message "Command executed successfully%s" 
-                  (if (> attempt 1) 
-                      (format " (after %d attempts)" attempt) 
+          (message "Command executed successfully%s"
+                  (if (> attempt 1)
+                      (format " (after %d attempts)" attempt)
                       ""))))
     ;; Should never reach here, but handle just in case
     (let ((fallback-error "Failed to execute command"))
@@ -1766,6 +1787,9 @@ The command is sent to Claude, which translates it into Elisp
 and executes it immediately. Results are displayed in a dedicated
 buffer if `efrit-do-show-results' is non-nil.
 
+Progress feedback shows elapsed time and tool executions.
+Use \\[keyboard-quit] (C-g) to cancel execution during API calls.
+
 If retry is enabled and errors occur, automatically retry by sending
 error details back to Claude for correction."
   (interactive
@@ -1780,12 +1804,19 @@ error details back to Claude for correction."
   ;; Reset circuit breaker for new command session
   (efrit-do--circuit-breaker-reset)
 
-  ;; Execute with retry logic
-  (message "Executing: %s..." command)
-  (let* ((result-and-attempt (efrit-do--execute-with-retry command))
-         (final-result (car result-and-attempt))
-         (attempt (cdr result-and-attempt)))
-    (efrit-do--process-result command final-result attempt)))
+  ;; Execute with retry logic and progress feedback
+  (let* ((start-time (current-time))
+         (progress-timer (efrit-do--start-progress-timer start-time command)))
+    (unwind-protect
+        (progn
+          (message "Executing: %s..." command)
+          (let* ((result-and-attempt (efrit-do--execute-with-retry command))
+                 (final-result (car result-and-attempt))
+                 (attempt (cdr result-and-attempt)))
+            (efrit-do--process-result command final-result attempt)))
+      ;; Always cancel the timer when done
+      (when progress-timer
+        (cancel-timer progress-timer)))))
 
 ;;;###autoload
 (defun efrit-do-repeat ()
