@@ -22,13 +22,13 @@
 (declare-function efrit--insert-prompt "efrit-chat")
 (declare-function efrit--build-headers "efrit-chat")
 
-;; Declare external functions from efrit-async
-(declare-function efrit-async-execute-command "efrit-async")
+;; Declare external functions from efrit-executor
+(declare-function efrit-execute-async "efrit-executor")
 
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
-(require 'efrit-context)
+(require 'efrit-session)
 (require 'efrit-session-tracker)
 (require 'cl-lib)
 (require 'seq)
@@ -61,7 +61,7 @@ When nil, show buffer for all results (controlled by `efrit-do-show-results')."
 
 (defcustom efrit-do-auto-shrink-todo-buffers t
   "When non-nil, TODO display buffers automatically shrink to fit content.
-This affects both `efrit-do-show-todos' and `efrit-async-show-todos'."
+This affects the TODO display buffer."
   :type 'boolean
   :group 'efrit-do)
 
@@ -1032,14 +1032,10 @@ Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
             (efrit-progress-update-todo id status))
           (when (fboundp 'efrit-progress-show-todos)
             (efrit-progress-show-todos))
-          ;; Update TODO buffers if visible
-          (dolist (buffer-name '("*efrit-do-todos*" "*Efrit Session TODOs*"))
-            (let ((buffer (get-buffer buffer-name)))
-              (when (and buffer (get-buffer-window buffer))
-                (if (string= buffer-name "*efrit-do-todos*")
-                    (efrit-do-show-todos)
-                  (when (fboundp 'efrit-async-show-todos)
-                    (efrit-async-show-todos))))))
+          ;; Update TODO buffer if visible
+          (let ((buffer (get-buffer "*efrit-do-todos*")))
+            (when (and buffer (get-buffer-window buffer))
+              (efrit-do-show-todos)))
           (format "\n[Updated TODO %s to %s]" id status))
       (format "\n[Error: TODO %s not found]" id))))
 
@@ -1774,9 +1770,9 @@ when the command completes."
   (efrit-do--circuit-breaker-reset)
 
   ;; Execute asynchronously
-  (require 'efrit-async)
+  (require 'efrit-executor)
   (message "Executing asynchronously: %s..." command)
-  (efrit-async-execute-command
+  (efrit-execute-async
    command
    (lambda (result)
      (let* ((error-info (efrit-do--extract-error-info result))

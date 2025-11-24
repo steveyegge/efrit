@@ -7,7 +7,7 @@
 
 (require 'ert)
 (require 'efrit-loop-detection)
-(require 'efrit-protocol)
+(require 'efrit-session)
 
 (defun test-real-loops--make-session (status continuation-count tool-history)
   "Create a test session with given parameters."

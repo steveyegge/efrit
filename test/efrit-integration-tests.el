@@ -19,9 +19,8 @@
 (require 'ert)
 (require 'efrit)
 (require 'efrit-do)
-(require 'efrit-async)
-(require 'efrit-unified)
-(require 'efrit-context)
+(require 'efrit-executor)
+(require 'efrit-session)
 
 ;;; Test Configuration
 
@@ -44,10 +43,9 @@
 
 (defun efrit-test--with-clean-state (body)
   "Execute BODY with clean efrit state."
-  (let ((efrit-async--active-session nil)
-        (efrit-async--session-queue nil))
-    (efrit-context-ring-clear)
-    (funcall body)))
+  (efrit-session-set-active nil)
+  (efrit-session-queue-clear)
+  (funcall body))
 
 ;;; Basic Session Flow Tests
 
