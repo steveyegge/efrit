@@ -425,61 +425,29 @@ Uses efrit--safe-execute for error handling."
               (cond
                ;; Already tripped - block all further calls
                (efrit-do--circuit-breaker-tripped
-                (cons nil (format "🚨 CIRCUIT BREAKER TRIPPED: %s\n\nSession terminated. Start a new session to continue."
+                (cons nil (format "Circuit breaker active: %s"
                                 efrit-do--circuit-breaker-tripped)))
 
                ;; Check session-wide limit
                ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
                 (setq efrit-do--circuit-breaker-tripped
-                      (format "Maximum tool calls per session exceeded (%d/%d)"
+                      (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
                               efrit-do--session-tool-count
-                              efrit-do-max-tool-calls-per-session))
-                (cons nil (format "🚨 CIRCUIT BREAKER: Session limit reached (%d/%d tool calls)
-
-REASON: Too many tool calls indicate an infinite loop or runaway process.
-
-ACTIONS TAKEN:
-- Session terminated to prevent token burnout
-- All further tool calls blocked
-- Error logged to session tracker
-
-WHAT YOU CAN DO:
-1. Review the task complexity - may need to break into smaller tasks
-2. Check for logic errors in the command
-3. Start a new session: M-x efrit-do or M-x efrit-chat
-4. Consider increasing efrit-do-max-tool-calls-per-session if legitimate
-
-Current session tool history:
-- Total calls: %d
-- Last tool: %s
-- Same tool consecutive calls: %d"
-                                    efrit-do--session-tool-count
-                                    efrit-do-max-tool-calls-per-session
-                                    efrit-do--session-tool-count
-                                    (or efrit-do--last-tool-called "none")
-                                    efrit-do--tool-call-count)))
+                              efrit-do-max-tool-calls-per-session
+                              (or efrit-do--last-tool-called "none")
+                              efrit-do--tool-call-count))
+                (cons nil efrit-do--circuit-breaker-tripped))
 
                ;; Check same-tool limit
                ((and (string= tool-name efrit-do--last-tool-called)
                      (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
                 (let ((warning-msg
-                       (format "⚠️  CIRCUIT BREAKER WARNING: Tool '%s' called %d times consecutively
-
-LOOP DETECTED: Repeated calls to the same tool usually indicate a logic error.
-
-GUIDANCE:
-- If using '%s': You should take ACTION, not keep analyzing
-- If stuck: Try a different approach or call session_complete
-- Review the task and change your strategy
-
-This call will PROCEED but further calls to '%s' will be BLOCKED.
-Use a different tool for your next action."
+                       (format "Warning: Tool '%s' called %d times consecutively (limit: %d)"
                                tool-name
                                (1+ efrit-do--tool-call-count)
-                               tool-name
-                               tool-name)))
-                  ;; Allow this call but warn loudly
-                  (message "Circuit breaker warning: %s called %d times" tool-name (1+ efrit-do--tool-call-count))
+                               efrit-do-max-same-tool-calls)))
+                  ;; Log warning but don't show to user
+                  (efrit-log 'warn "Circuit breaker: %s" warning-msg)
                   (cons t warning-msg)))
 
                ;; All checks passed
@@ -491,7 +459,7 @@ Use a different tool for your next action."
         ;; Safe-execute caught an error - treat as breaker trip
         (progn
           (setq efrit-do--circuit-breaker-tripped (cdr result))
-          (cons nil (format "🚨 CIRCUIT BREAKER ERROR: %s" (cdr result))))))))
+          (cons nil (format "Circuit breaker error: %s" (cdr result))))))))
 
 (defun efrit-do--circuit-breaker-record-call (tool-name)
   "Record a tool call for TOOL-NAME in circuit breaker tracking.

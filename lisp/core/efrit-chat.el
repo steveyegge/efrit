@@ -24,6 +24,7 @@
 (require 'auth-source)
 (require 'efrit-tools)
 (require 'efrit-multi-turn)
+(require 'efrit-session)
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -579,7 +580,10 @@ Returns the processed message text with tool results."
                   ;; Add to conversation history
                   (push `((role . "assistant")
                          (content . ,message-text))
-                        efrit--message-history))
+                        efrit--message-history)
+                  ;; Also add to unified context
+                  (require 'efrit-session)
+                  (efrit-unified-context-add-message 'assistant message-text 'chat))
               (error
                ;; Fallback to displaying the raw message if processing fails
                (message "Error processing response: %s"
@@ -593,7 +597,10 @@ Returns the processed message text with tool results."
                ;; Add original message to history
                (push `((role . "assistant")
                       (content . ,message-text))
-                     efrit--message-history)))
+                     efrit--message-history)
+               ;; Also add to unified context
+               (require 'efrit-session)
+               (efrit-unified-context-add-message 'assistant message-text 'chat)))
 
           ;; Just display the text directly if tools are disabled
           (progn
@@ -602,7 +609,10 @@ Returns the processed message text with tool results."
             ;; Add to conversation history
             (push `((role . "assistant")
                    (content . ,message-text))
-                  efrit--message-history))))
+                  efrit--message-history)
+            ;; Also add to unified context
+            (require 'efrit-session)
+            (efrit-unified-context-add-message 'assistant message-text 'chat))))
 
       ;; Don't auto-continue in chat mode - insert prompt for next user input
       (efrit--insert-prompt))))
@@ -985,6 +995,10 @@ Returns the processed message text with tool results."
       (push `((role . "user")
              (content . ,message))
             efrit--message-history)
+
+      ;; Also add to unified context
+      (require 'efrit-session)
+      (efrit-unified-context-add-message 'user message 'chat)
 
       ;; Show thinking indicator
       (efrit--display-message "Thinking..." 'system)

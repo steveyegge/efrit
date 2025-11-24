@@ -72,8 +72,23 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
    (require 'efrit)
    ```
 
-3. **Configure your API key** in `~/.authinfo`:
+3. **Configure your API key** (choose one method):
+
+   **Option A: Encrypted authinfo (most secure, recommended)**:
    ```
+   # Create ~/.authinfo.gpg (GPG-encrypted)
+   machine api.anthropic.com login personal password YOUR_API_KEY_HERE
+   ```
+   Save with GPG encryption. Emacs will prompt for passphrase on first use.
+
+   **Option B: Environment variable**:
+   ```bash
+   export ANTHROPIC_API_KEY="sk-your-key-here"
+   ```
+
+   **Option C: Plain authinfo (less secure)**:
+   ```
+   # Create ~/.authinfo (unencrypted)
    machine api.anthropic.com login personal password YOUR_API_KEY_HERE
    ```
 
@@ -136,12 +151,31 @@ Or, if you vendored Efrit locally:
 ;; Environment variable (recommended)
 (setq efrit-api-key 'ANTHROPIC_API_KEY)
 
-;; Custom function
+;; Custom function (e.g., for platform keychain integration)
 (setq efrit-api-key (lambda () (get-secret-from-vault "anthropic-key")))
 
 ;; Direct string (NOT recommended - security risk)
 (setq efrit-api-key "sk-your-key-here")
 ```
+
+**Platform-Specific Secure Storage**:
+
+Efrit's `auth-source` integration automatically supports platform-specific secure storage:
+
+- **macOS**: Use `~/.authinfo.gpg` (GPG-encrypted) or macOS Keychain via `auth-source-macos-keychain`
+- **Linux**: Use `~/.authinfo.gpg` (GPG-encrypted) or Secret Service API via `auth-source-secrets`
+- **Windows**: Use `~/.authinfo.gpg` (GPG-encrypted) with GPG for Windows
+
+**GPG Setup Example**:
+```bash
+# Create encrypted authinfo
+gpg --gen-key  # Generate GPG key if needed
+echo "machine api.anthropic.com login personal password sk-your-key" > ~/.authinfo
+gpg -c ~/.authinfo  # Encrypts to ~/.authinfo.gpg
+rm ~/.authinfo  # Remove plaintext version
+```
+
+Emacs will automatically detect and use `~/.authinfo.gpg` when available.
 
 ### Data Directory
 

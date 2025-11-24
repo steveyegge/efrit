@@ -226,6 +226,13 @@ Records RESULT from executing ELISP, with optional TODO-SNAPSHOT."
               (seq-take (efrit-session-work-log session)
                        efrit-session-max-work-log-entries)))
 
+      ;; Also add to unified context (tool call and result)
+      (efrit-unified-context-add-message 'user elisp 'async
+                                        `((session . ,(efrit-session-id session))))
+      (when result
+        (efrit-unified-context-add-message 'assistant result 'async
+                                          `((session . ,(efrit-session-id session)))))
+
       (efrit-log 'debug "Session %s: work log entry %d added"
                  (efrit-session-id session)
                  (length (efrit-session-work-log session))))))
@@ -466,7 +473,10 @@ Removes completed/cancelled sessions from registry."
     (unless noninteractive
       (message "Efrit session ended: %s" efrit-session-id))
     (setq efrit-session-id nil)
-    (setq efrit-session-start-time nil)))
+    (setq efrit-session-start-time nil))
+  ;; Always persist unified context and context ring on session end
+  (efrit-unified-context-persist)
+  (efrit-context-ring-persist))
 
 (defun efrit-session-track-command (command)
   "Track execution of COMMAND."
@@ -679,6 +689,129 @@ Removes completed/cancelled sessions from registry."
                                    (efrit-common-truncate-string cmd 70))))))
     (switch-to-buffer buffer)))
 
+;;; Unified Context System
+;; This provides a single source of truth for context across all modes
+
+(defvar efrit-unified-context--message-history nil
+  "Global message history shared across all modes.
+Each entry is an alist with keys: role, content, timestamp, mode, metadata.")
+
+(defvar efrit-unified-context--max-history 100
+  "Maximum number of messages to retain in unified history.")
+
+(defun efrit-unified-context-add-message (role content &optional mode metadata)
+  "Add a message to unified context history.
+ROLE is \\='user or \\='assistant.
+CONTENT is the message text.
+MODE is the originating mode (\\='chat, \\='do, \\='async, etc.).
+METADATA is optional additional data (alist)."
+  (let ((entry `((role . ,role)
+                (content . ,content)
+                (timestamp . ,(current-time))
+                (mode . ,(or mode 'unknown))
+                (metadata . ,metadata))))
+    (push entry efrit-unified-context--message-history)
+    ;; Trim to max length
+    (when (> (length efrit-unified-context--message-history)
+             efrit-unified-context--max-history)
+      (setq efrit-unified-context--message-history
+            (seq-take efrit-unified-context--message-history
+                     efrit-unified-context--max-history)))
+    entry))
+
+(defun efrit-unified-context-get-messages (&optional n mode-filter)
+  "Get N most recent messages from unified history.
+If MODE-FILTER is provided, only return messages from that mode.
+Returns messages in chronological order (oldest first)."
+  (let* ((count (or n (length efrit-unified-context--message-history)))
+         (filtered (if mode-filter
+                      (seq-filter (lambda (msg)
+                                   (eq (alist-get 'mode msg) mode-filter))
+                                 efrit-unified-context--message-history)
+                    efrit-unified-context--message-history))
+         (recent (seq-take filtered count)))
+    (nreverse recent)))
+
+(defun efrit-unified-context-get-for-api (n &optional include-metadata)
+  "Get N recent messages formatted for Claude API.
+Returns a vector suitable for the \\='messages field.
+If INCLUDE-METADATA is nil, strips metadata fields."
+  (let ((messages (efrit-unified-context-get-messages n)))
+    (vconcat
+     (mapcar (lambda (msg)
+              (if include-metadata
+                  `(("role" . ,(symbol-name (alist-get 'role msg)))
+                   ("content" . ,(alist-get 'content msg))
+                   ("metadata" . ,(alist-get 'metadata msg)))
+                `(("role" . ,(symbol-name (alist-get 'role msg)))
+                 ("content" . ,(alist-get 'content msg)))))
+            messages))))
+
+(defun efrit-unified-context-format-for-system-prompt (&optional n)
+  "Format N recent messages as a string for system prompt inclusion.
+Returns a compressed summary suitable for system prompt context."
+  (let ((messages (efrit-unified-context-get-messages (or n 5))))
+    (if (null messages)
+        ""
+      (concat
+       "\n\nRECENT CONTEXT:\n"
+       (mapconcat
+        (lambda (msg)
+          (let ((role (alist-get 'role msg))
+                (content (alist-get 'content msg))
+                (mode (alist-get 'mode msg))
+                (timestamp (alist-get 'timestamp msg)))
+            (format "[%s|%s] %s: %s"
+                    (format-time-string "%H:%M:%S" timestamp)
+                    mode
+                    (capitalize (symbol-name role))
+                    (efrit-common-truncate-string content 150))))
+        messages
+        "\n")))))
+
+(defun efrit-unified-context-clear (&optional mode-filter)
+  "Clear unified context history.
+If MODE-FILTER is provided, only clear messages from that mode."
+  (if mode-filter
+      (setq efrit-unified-context--message-history
+            (seq-remove (lambda (msg)
+                         (eq (alist-get 'mode msg) mode-filter))
+                       efrit-unified-context--message-history))
+    (setq efrit-unified-context--message-history nil)))
+
+(defun efrit-unified-context-persist ()
+  "Persist unified context to file."
+  (when efrit-unified-context--message-history
+    (let ((file (efrit-config-context-file "efrit-unified-context.el")))
+      (with-temp-file file
+        (insert ";; Efrit unified context data\n")
+        (insert ";; Saved: " (current-time-string) "\n\n")
+        (prin1 efrit-unified-context--message-history (current-buffer)))
+      (efrit-log 'debug "Persisted %d messages to unified context"
+                 (length efrit-unified-context--message-history)))))
+
+(defun efrit-unified-context-restore ()
+  "Restore unified context from file."
+  (let ((file (efrit-config-context-file "efrit-unified-context.el")))
+    (when (file-exists-p file)
+      (condition-case err
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (search-forward "\n\n" nil t)
+            (let ((messages (read (current-buffer))))
+              (setq efrit-unified-context--message-history messages)
+              (efrit-log 'debug "Restored %d messages from unified context"
+                        (length messages))))
+        (error
+         (efrit-log 'warn "Failed to restore unified context: %s"
+                   (efrit-common-safe-error-message err)))))))
+
+(defun efrit-unified-context-init ()
+  "Initialize unified context system."
+  (efrit-unified-context-restore)
+  (efrit-log 'debug "Unified context system initialized"))
+
 ;;; Context Ring (Backward Compatibility)
 
 (cl-defstruct (efrit-context-item
@@ -717,6 +850,10 @@ Removes completed/cancelled sessions from registry."
                :metadata metadata)))
     (ring-insert efrit-context--ring item)
     (run-hook-with-args 'efrit-context--hooks item)
+    ;; Also add to unified context
+    (efrit-unified-context-add-message 'user command 'do metadata)
+    (when result
+      (efrit-unified-context-add-message 'assistant result 'do metadata))
     item))
 
 (defun efrit-context-ring-get-recent (&optional n)
@@ -777,9 +914,59 @@ Removes completed/cancelled sessions from registry."
 
 (defun efrit-context-init ()
   "Initialize context system."
+  (efrit-unified-context-init)
   (efrit-context-ring-init)
   (efrit-context-ring-restore)
   (efrit-log 'debug "Context system initialized"))
+
+;;; User Commands for Unified Context
+
+;;;###autoload
+(defun efrit-show-context (&optional n)
+  "Show N most recent messages from unified context (default 10).
+Displays context shared across all Efrit modes."
+  (interactive "p")
+  (let ((count (or n 10))
+        (messages (efrit-unified-context-get-messages (or n 10))))
+    (if (null messages)
+        (message "No context history available")
+      (with-output-to-temp-buffer "*Efrit Unified Context*"
+        (princ (format "Efrit Unified Context (%d most recent messages):\n\n"
+                      (length messages)))
+        (dolist (msg messages)
+          (let ((timestamp (alist-get 'timestamp msg))
+                (mode (alist-get 'mode msg))
+                (role (alist-get 'role msg))
+                (content (alist-get 'content msg)))
+            (princ (format "[%s | %s] %s:\n%s\n\n"
+                          (format-time-string "%Y-%m-%d %H:%M:%S" timestamp)
+                          (upcase (symbol-name mode))
+                          (capitalize (symbol-name role))
+                          (efrit-common-truncate-string content 500)))))))))
+
+;;;###autoload
+(defun efrit-clear-context (&optional mode-filter)
+  "Clear unified context history.
+With prefix arg, prompt for which mode to clear (chat, do, async).
+Otherwise clears all context."
+  (interactive
+   (list (when current-prefix-arg
+          (intern (completing-read "Clear context for mode: "
+                                  '("chat" "do" "async" "all")
+                                  nil t)))))
+  (if (and mode-filter (not (eq mode-filter 'all)))
+      (progn
+        (efrit-unified-context-clear mode-filter)
+        (message "Cleared %s context" mode-filter))
+    (efrit-unified-context-clear)
+    (message "Cleared all unified context")))
+
+;;;###autoload
+(defun efrit-save-context ()
+  "Save unified context to disk."
+  (interactive)
+  (efrit-unified-context-persist)
+  (message "Context saved"))
 
 ;;; Hooks for Integration
 
