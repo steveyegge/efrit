@@ -460,32 +460,16 @@ Returns the content hash-table from the API response, or nil if parsing fails."
            (content (gethash "content" response)))
       content)))
 
-(defun efrit--detect-incomplete-task (content message-text)
+(defun efrit--detect-incomplete-task (_content _message-text)
   "Detect if CONTENT represents an incomplete multi-step task.
-Returns non-nil if the task appears incomplete and needs delegation."
-  (when (and content message-text)
-    (let ((tool-count 0)
-          (mentions-multiple-items nil))
+Returns non-nil if the task appears incomplete and needs delegation.
 
-      ;; Count tool calls
-      (dotimes (i (length content))
-        (let* ((item (aref content i))
-               (type (gethash "type" item)))
-          (when (string= type "tool_use")
-            (cl-incf tool-count))))
-
-      ;; Check if text mentions creating multiple items
-      (when (or (string-match-p "\\(three\\|multiple\\|several\\) \\(buffers?\\|poems?\\|files?\\)" message-text)
-                (string-match-p "create.*and.*and" message-text)
-                (string-match-p "I'll create.*separate" message-text))
-        (setq mentions-multiple-items t))
-
-      ;; Delegate if:
-      ;; 1. Text mentions multiple items but only 1 or 0 tools were called
-      ;; 2. Text says "Let me" or "I'll" with words suggesting multiple steps
-      (or (and mentions-multiple-items (< tool-count 2))
-          (and (string-match-p "\\(Let me\\|I'll\\|I will\\).*\\(create\\|write\\|start\\).*\\(multiple\\|several\\|three\\|buffers\\)" message-text)
-               (< tool-count 2))))))
+DEPRECATED: This function violated the Pure Executor principle by using
+pattern matching to make decisions. Multi-turn completion should be
+handled by asking Claude explicitly via efrit-multi-turn.el, not by
+parsing response text. Currently disabled - always returns nil."
+  ;; Always return nil - let Claude make decisions explicitly
+  nil)
 
 (defun efrit--extract-content-and-tools (content)
   "Extract text content and execute tool calls from CONTENT array.
