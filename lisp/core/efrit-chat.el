@@ -417,8 +417,14 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
 
                                   ])))
                                   ))
-         (url-request-data
-          (encode-coding-string (json-encode request-data) 'utf-8)))
+         (json-string (json-encode request-data))
+         ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+         (escaped-json (replace-regexp-in-string
+                        "[^\x00-\x7F]"
+                        (lambda (char)
+                          (format "\\\\u%04X" (string-to-char char)))
+                        json-string))
+         (url-request-data (encode-coding-string escaped-json 'utf-8)))
     ;; Send request
     (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit--handle-api-response nil t t)))
 
