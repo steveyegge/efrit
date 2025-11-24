@@ -59,16 +59,10 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
     (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
-    ;; (define-key map (kbd "e") 'efrit)       ; removed - efrit-command no longer exists  
-    ;; (define-key map (kbd "a") 'efrit-agent-run) ; removed
-    ;; (define-key map (kbd "o") 'efrit-show-output) ; removed
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (sync)
     (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
-    (define-key map (kbd "u") 'efrit-unified-do) ; 'u' for unified (Claude decides)
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
-    (define-key map (kbd "A") 'efrit-async-status) ; 'A' for async status
-    (define-key map (kbd "S") 'efrit-unified-status) ; 'S' for unified status
     map)
   "Keymap for Efrit commands.")
 
@@ -98,24 +92,14 @@
 ;;;###autoload
 (autoload 'efrit-chat "efrit-chat" "Start a new Efrit chat session" t)
 
-;; efrit-command no longer exists - removed autoloads
-
-;; efrit-agent no longer exists - removed autoload
+;;;###autoload
+(autoload 'efrit-streamlined-send "efrit-chat" "Send message via streamlined chat" t)
 
 ;;;###autoload
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
 
 ;;;###autoload
 (autoload 'efrit-do-async "efrit-do" "Execute natural language command in Emacs asynchronously" t)
-
-;;;###autoload
-(autoload 'efrit-unified-do "efrit-unified" "Execute command with Claude-determined mode" t)
-
-;;;###autoload
-(autoload 'efrit-unified-status "efrit-unified" "Show Efrit execution status" t)
-
-;;;###autoload
-(autoload 'efrit-streamlined-send "efrit-chat-streamlined" "Send message via streamlined chat" t)
 
 ;;;###autoload
 (autoload 'efrit-remote-queue-start "efrit-remote-queue" "Start the remote queue system" t)
@@ -125,15 +109,6 @@
 
 ;;;###autoload
 (autoload 'efrit-remote-queue-status "efrit-remote-queue" "Show remote queue status" t)
-
-;;;###autoload
-(autoload 'efrit-async-status "efrit-async" "Show status of async operations" t)
-
-;;;###autoload
-(autoload 'efrit-async-show-log "efrit-async" "Show work log for a session" t)
-
-;;;###autoload
-(autoload 'efrit-async-cancel "efrit-async" "Cancel an async operation" t)
 
 ;; Keep load clean: avoid runtime mutation of interactive forms or warnings here.
 

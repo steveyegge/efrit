@@ -63,6 +63,9 @@
 
 ;; Add Efrit source to load path
 (add-to-list 'load-path efrit-source-dir)
+(add-to-list 'load-path (expand-file-name "core" efrit-source-dir))
+(add-to-list 'load-path (expand-file-name "interfaces" efrit-source-dir))
+(add-to-list 'load-path (expand-file-name "support" efrit-source-dir))
 
 ;; Configure autonomous queue system BEFORE loading modules
 (defvar efrit-autonomous-queue-dir nil
@@ -88,11 +91,9 @@
       (message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
       (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
-      ;; efrit-command no longer exists
       (require 'efrit-do)
       (require 'efrit-chat)
       (require 'efrit-remote-queue)
-      ;; efrit-agent no longer exists
       (require 'efrit)
       (message "Efrit modules loaded successfully"))
   (error 
