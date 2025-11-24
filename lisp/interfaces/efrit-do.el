@@ -82,11 +82,26 @@ terminated.  This prevents infinite loops from burning through API tokens."
   :type 'integer
   :group 'efrit-do)
 
-(defcustom efrit-do-max-same-tool-calls 3
+(defcustom efrit-do-max-same-tool-calls 15
   "Maximum number of consecutive calls to the same tool.
-When this limit is reached, the circuit breaker warns and forces a
-different action.  This prevents tight loops like repeated todo_status
-or todo_analyze calls."
+When this limit is reached, the circuit breaker trips and terminates the session.
+Set higher (15) to allow legitimate multi-step coding tasks that require
+many eval_sexp calls in sequence (e.g., writing multiple functions)."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-max-identical-tool-calls 3
+  "Maximum number of consecutive identical tool calls (same tool + same input).
+This catches true infinite loops where the same operation is repeated.
+Lower than `efrit-do-max-same-tool-calls' since identical calls are more
+likely to indicate a loop than varied calls to the same tool."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-same-tool-warning-threshold 10
+  "Issue a warning after this many consecutive calls to the same tool.
+The warning is sent to Claude before the hard limit at `efrit-do-max-same-tool-calls'
+to give it a chance to change approach."
   :type 'integer
   :group 'efrit-do)
 
@@ -181,6 +196,12 @@ Possible states:
 
 (defvar efrit-do--tool-call-count 0
   "Count consecutive calls to the same tool.")
+
+(defvar efrit-do--last-tool-input nil
+  "Track the last tool input hash for detecting identical calls.")
+
+(defvar efrit-do--identical-call-count 0
+  "Count consecutive identical tool calls (same tool + same input).")
 
 (defvar efrit-do--force-complete nil
   "When t, forces session completion on next API response.")
@@ -433,48 +454,79 @@ This is the main entry point for dynamic tool filtering."
   (setq efrit-do--session-tool-count 0)
   (setq efrit-do--circuit-breaker-tripped nil)
   (setq efrit-do--last-tool-called nil)
-  (setq efrit-do--tool-call-count 0))
+  (setq efrit-do--tool-call-count 0)
+  (setq efrit-do--last-tool-input nil)
+  (setq efrit-do--identical-call-count 0))
 
-(defun efrit-do--circuit-breaker-check-limits (tool-name)
-  "Check circuit breaker limits before executing TOOL-NAME.
+(defun efrit-do--hash-tool-input (tool-input)
+  "Create a hash string for TOOL-INPUT to detect identical calls."
+  (secure-hash 'md5 (format "%S" tool-input)))
+
+(defun efrit-do--circuit-breaker-check-limits (tool-name &optional tool-input)
+  "Check circuit breaker limits before executing TOOL-NAME with TOOL-INPUT.
 Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
+MESSAGE may contain a warning even when ALLOWED-P is t.
 Uses efrit--safe-execute for error handling."
   (if (not efrit-do-circuit-breaker-enabled)
       (cons t nil) ; Circuit breaker disabled
-    (let ((result
-           (efrit--safe-execute
-            (lambda ()
-              (cond
-               ;; Already tripped - block all further calls
-               (efrit-do--circuit-breaker-tripped
-                (cons nil (format "Circuit breaker active: %s"
-                                efrit-do--circuit-breaker-tripped)))
+    (let* ((input-hash (when tool-input (efrit-do--hash-tool-input tool-input)))
+           (is-same-tool (string= tool-name efrit-do--last-tool-called))
+           (is-identical-call (and is-same-tool
+                                   input-hash
+                                   (equal input-hash efrit-do--last-tool-input)))
+           (result
+            (efrit--safe-execute
+             (lambda ()
+               (cond
+                ;; Already tripped - block all further calls
+                (efrit-do--circuit-breaker-tripped
+                 (cons nil (format "Circuit breaker active: %s"
+                                   efrit-do--circuit-breaker-tripped)))
 
-               ;; Check session-wide limit
-               ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
-                (setq efrit-do--circuit-breaker-tripped
-                      (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
-                              efrit-do--session-tool-count
-                              efrit-do-max-tool-calls-per-session
-                              (or efrit-do--last-tool-called "none")
-                              efrit-do--tool-call-count))
-                (cons nil efrit-do--circuit-breaker-tripped))
+                ;; Check session-wide limit
+                ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                 (setq efrit-do--circuit-breaker-tripped
+                       (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
+                               efrit-do--session-tool-count
+                               efrit-do-max-tool-calls-per-session
+                               (or efrit-do--last-tool-called "none")
+                               efrit-do--tool-call-count))
+                 (cons nil efrit-do--circuit-breaker-tripped))
 
-               ;; Check same-tool limit
-               ((and (string= tool-name efrit-do--last-tool-called)
-                     (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
-                (setq efrit-do--circuit-breaker-tripped
-                      (format "Same tool '%s' called %d times consecutively (limit: %d)"
-                              tool-name
-                              (1+ efrit-do--tool-call-count)
-                              efrit-do-max-same-tool-calls))
-                (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
-                (cons nil efrit-do--circuit-breaker-tripped))
+                ;; Check identical call limit (same tool + same input) - this catches true loops
+                ((and is-identical-call
+                      (>= efrit-do--identical-call-count efrit-do-max-identical-tool-calls))
+                 (setq efrit-do--circuit-breaker-tripped
+                       (format "Identical tool call detected: '%s' called %d times with same input (limit: %d). This appears to be an infinite loop."
+                               tool-name
+                               (1+ efrit-do--identical-call-count)
+                               efrit-do-max-identical-tool-calls))
+                 (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
+                 (cons nil efrit-do--circuit-breaker-tripped))
 
-               ;; All checks passed
-               (t (cons t nil))))
-            "circuit breaker check"
-            "Check efrit-do-circuit-breaker-enabled and tool call limits")))
+                ;; Check same-tool hard limit
+                ((and is-same-tool
+                      (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
+                 (setq efrit-do--circuit-breaker-tripped
+                       (format "Same tool '%s' called %d times consecutively (limit: %d)"
+                               tool-name
+                               (1+ efrit-do--tool-call-count)
+                               efrit-do-max-same-tool-calls))
+                 (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
+                 (cons nil efrit-do--circuit-breaker-tripped))
+
+                ;; Check same-tool warning threshold - allow but warn
+                ((and is-same-tool
+                      (>= efrit-do--tool-call-count efrit-do-same-tool-warning-threshold))
+                 (cons t (format "[WARNING: '%s' called %d times consecutively. Consider varying your approach. Hard limit at %d calls.]"
+                                 tool-name
+                                 (1+ efrit-do--tool-call-count)
+                                 efrit-do-max-same-tool-calls)))
+
+                ;; All checks passed
+                (t (cons t nil))))
+             "circuit breaker check"
+             "Check efrit-do-circuit-breaker-enabled and tool call limits")))
       (if (car result)
           (cdr result) ; Return the check result
         ;; Safe-execute caught an error - treat as breaker trip
@@ -482,34 +534,45 @@ Uses efrit--safe-execute for error handling."
           (setq efrit-do--circuit-breaker-tripped (cdr result))
           (cons nil (format "Circuit breaker error: %s" (cdr result))))))))
 
-(defun efrit-do--circuit-breaker-record-call (tool-name)
-  "Record a tool call for TOOL-NAME in circuit breaker tracking.
+(defun efrit-do--circuit-breaker-record-call (tool-name &optional tool-input)
+  "Record a tool call for TOOL-NAME with TOOL-INPUT in circuit breaker tracking.
 Updates counters and session tracking. Uses efrit--safe-execute for safety."
   (when efrit-do-circuit-breaker-enabled
     (efrit--safe-execute
      (lambda ()
-       ;; Update session-wide counter
-       (cl-incf efrit-do--session-tool-count)
+       (let ((input-hash (when tool-input (efrit-do--hash-tool-input tool-input))))
+         ;; Update session-wide counter
+         (cl-incf efrit-do--session-tool-count)
 
-       ;; Update same-tool counter
-       (if (string= tool-name efrit-do--last-tool-called)
-           (cl-incf efrit-do--tool-call-count)
-         (setq efrit-do--tool-call-count 1))
+         ;; Update same-tool counter
+         (if (string= tool-name efrit-do--last-tool-called)
+             (cl-incf efrit-do--tool-call-count)
+           (setq efrit-do--tool-call-count 1))
 
-       ;; Update last tool
-       (setq efrit-do--last-tool-called tool-name)
+         ;; Update identical-call counter (same tool + same input)
+         (if (and (string= tool-name efrit-do--last-tool-called)
+                  input-hash
+                  (equal input-hash efrit-do--last-tool-input))
+             (cl-incf efrit-do--identical-call-count)
+           (setq efrit-do--identical-call-count 1))
 
-       ;; Track in session
-       (when (fboundp 'efrit-session-track-tool-used)
-         (efrit-session-track-tool-used tool-name))
+         ;; Update last tool and input
+         (setq efrit-do--last-tool-called tool-name)
+         (setq efrit-do--last-tool-input input-hash)
 
-       ;; Log the call
-       (efrit-log 'debug "Circuit breaker: tool=%s count=%d/%d same=%d/%d"
-                  tool-name
-                  efrit-do--session-tool-count
-                  efrit-do-max-tool-calls-per-session
-                  efrit-do--tool-call-count
-                  efrit-do-max-same-tool-calls))
+         ;; Track in session
+         (when (fboundp 'efrit-session-track-tool-used)
+           (efrit-session-track-tool-used tool-name))
+
+         ;; Log the call
+         (efrit-log 'debug "Circuit breaker: tool=%s count=%d/%d same=%d/%d identical=%d/%d"
+                    tool-name
+                    efrit-do--session-tool-count
+                    efrit-do-max-tool-calls-per-session
+                    efrit-do--tool-call-count
+                    efrit-do-max-same-tool-calls
+                    efrit-do--identical-call-count
+                    efrit-do-max-identical-tool-calls)))
      "recording tool call"
      "Check circuit breaker state and session tracking")))
 
@@ -532,14 +595,16 @@ Updates counters and session tracking. Uses efrit--safe-execute for safety."
     
     "LOOP PREVENTION PROTOCOL:\n"
     "1. CIRCUIT BREAKER PROTECTION:\n"
-    "   - Hard limit: Maximum 30 tool calls per session\n"
-    "   - Soft limit: Same tool cannot be called more than 3 times consecutively\n"
+    "   - Session limit: Maximum 30 tool calls per session\n"
+    "   - Same tool limit: Max 15 consecutive calls to same tool (warning at 10)\n"
+    "   - Identical call limit: Max 3 calls with SAME tool AND SAME input (true loop detection)\n"
     "   - If you see circuit breaker warnings, CHANGE YOUR APPROACH immediately\n"
-    "   - Circuit breaker trips = session terminated, must start new session\n\n"
+    "   - Circuit breaker trips = session terminated, must start new session\n"
+    "   - Multi-step coding tasks (writing multiple functions) are fine up to 15 calls\n\n"
     "2. If you see [CRITICAL LOOP] or [ERROR] messages:\n"
     "   - Read the error message carefully\n"
     "   - Follow the IMMEDIATE ACTION REQUIRED instructions\n"
-    "   - Never repeat the tool that caused the error\n\n"
+    "   - Never repeat the exact same tool call (same input)\n\n"
     "3. If you're making no progress after 3 attempts:\n"
     "   - Call session_complete with an explanation\n\n"
     "4. Trust the error messages - they prevent infinite loops\n\n"
@@ -1352,7 +1417,7 @@ Applies circuit breaker limits to prevent infinite loops."
       (message "Efrit: Executing tool '%s'..." tool-name))
 
     ;; CIRCUIT BREAKER: Check limits before executing
-    (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name)))
+    (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name tool-input)))
       (if (not (car breaker-check))
           ;; Circuit breaker blocked execution
           (progn
@@ -1362,7 +1427,7 @@ Applies circuit breaker limits to prevent infinite loops."
             (cdr breaker-check))
 
         ;; Circuit breaker allows execution - record the call
-        (efrit-do--circuit-breaker-record-call tool-name)
+        (efrit-do--circuit-breaker-record-call tool-name tool-input)
 
         ;; If there's a warning message, prepend it to the result
         (let ((warning (cdr breaker-check))
