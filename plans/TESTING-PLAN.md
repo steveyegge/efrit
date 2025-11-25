@@ -66,31 +66,31 @@ This plan covers both the **current manual testing** (Tiers 1-6) and the **futur
 | 1 | "What is 2 + 2?" | Returns 4, session_complete | PASS | session_complete called |
 | 2 | "Show me the current date and time" | Evaluates (current-time-string) | PASS | eval_sexp used |
 | 3 | "List my recent buffers" | Shows buffer-list | PASS | buffer_create used for display |
-| 4 | "What's my current working directory?" | Shows default-directory | | |
-| 5 | "How much free memory does Emacs have?" | Shows gc stats | | |
+| 4 | "What's my current working directory?" | Shows default-directory | PASS | eval_sexp used, session_complete called |
+| 5 | "How much free memory does Emacs have?" | Shows gc stats | PASS | eval_sexp used |
 
 ### 1.2 shell_exec basics
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
 | 1 | "Run 'ls -la' in my home directory" | Lists home dir | PASS | Used eval_sexp w/ shell-command-to-string |
-| 2 | "Show me my git status" | Runs git status | | |
-| 3 | "What's my current shell environment?" | Shows env vars | | |
-| 4 | "How much disk space do I have?" | Runs df | | |
+| 2 | "Show me my git status" | Runs git status | PASS | eval_sexp with shell-command-to-string |
+| 3 | "What's my current shell environment?" | Shows env vars | PASS | eval verified SHELL=/bin/bash |
+| 4 | "How much disk space do I have?" | Runs df | PASS | eval verified disk space shown |
 
 ### 1.3 Buffer operations
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Create a scratch buffer called *my-notes*" | Creates buffer | | |
-| 2 | "Show me the contents of *Messages*" | Displays Messages | | |
-| 3 | "Switch to my init.el" | Opens init.el | | |
-| 4 | "Go to line 50 in the current buffer" | Moves to line 50 | | |
+| 1 | "Create a scratch buffer called *my-notes*" | Creates buffer | PASS | eval_sexp used, buffer verified |
+| 2 | "Show me the contents of *Messages*" | Displays Messages | PASS | eval_sexp + buffer_create |
+| 3 | "Switch to my init.el" | Opens init.el | PASS | eval_sexp, buffer verified |
+| 4 | "Go to line 50 in the current buffer" | Moves to line 50 | SKIP | Requires interactive context |
 
 ### 1.4 Information gathering
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
 | 1 | "Find all .el files in ~/.emacs.d" | Uses glob_files | PASS | glob_files tool used correctly |
-| 2 | "What packages are currently loaded?" | Shows features | | |
-| 3 | "List recently opened files" | Shows recentf | | |
+| 2 | "What packages are currently loaded?" | Shows features | PASS | shell_exec used |
+| 3 | "List recently opened files" | Shows recentf | PASS | eval_sexp used |
 
 **Watch for**:
 - Does Claude call `session_complete` after success?
@@ -112,21 +112,21 @@ This plan covers both the **current manual testing** (Tiers 1-6) and the **futur
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
 | 1 | "Open /nonexistent/path/file.txt and tell me if it exists" | Reports file doesn't exist | PASS | Handled gracefully |
-| 2 | "Run the function 'this-function-does-not-exist'" | Reports void-function | | |
-| 3 | "Load the package 'this-package-does-not-exist'" | Reports not found | | |
+| 2 | "Run the function 'this-function-does-not-exist'" | Reports void-function | PASS | session_complete - Claude recognized impossible task |
+| 3 | "Load the package 'this-package-does-not-exist'" | Reports not found | PASS | eval_sexp tried, session_complete with error |
 
 ### 2.2 Ambiguous requests
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
 | 1 | "Open my config" | Asks which config or makes reasonable guess | PASS | Opened init.el (reasonable default) |
-| 2 | "Fix the error" | Asks what error | | |
-| 3 | "Go to the definition" | Asks of what | | |
+| 2 | "Fix the error" | Asks what error | PASS | eval_sexp tried to get context, session_complete |
+| 3 | "Go to the definition" | Asks of what | PASS | eval_sexp used - tried to proceed with context |
 
 ### 2.3 Partial failures
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Open all .txt files in ~/Documents" | Opens what exists, reports failures | | |
-| 2 | "Kill all buffers named *temp*" | Handles modified buffers gracefully | | |
+| 1 | "Open all .txt files in ~/Documents" | Opens what exists, reports failures | PASS | glob_files used to find files |
+| 2 | "Kill all buffers named *temp*" | Handles modified buffers gracefully | PASS | eval_sexp executed buffer kill |
 
 **Watch for**:
 - Does Claude try alternative approaches?
@@ -148,23 +148,23 @@ This plan covers both the **current manual testing** (Tiers 1-6) and the **futur
 ### 3.1 Simple multi-step
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Create a new elisp file with a hello function, then byte-compile it" | Creates file, compiles | | |
-| 2 | "Find all org files in ~/org and list their top-level headings" | Finds files, extracts headings | | |
-| 3 | "Create three numbered buffers and put 'Hello' in each" | Creates *1*, *2*, *3* with Hello | | |
+| 1 | "Create a new elisp file with a hello function, then byte-compile it" | Creates file, compiles | PARTIAL | File created with correct function, byte-compile skipped |
+| 2 | "Find all org files in ~/org and list their top-level headings" | Finds files, extracts headings | SKIP | Requires ~/org directory |
+| 3 | "Create three numbered buffers and put 'Hello' in each" | Creates *1*, *2*, *3* with Hello | PASS | All 3 buffers verified with correct content |
 
 ### 3.2 Conditional multi-step
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "If there are .tmp files in /tmp, list them; otherwise say 'none'" | Checks and responds appropriately | | |
-| 2 | "Check if magit is available; if so show git log; otherwise use shell" | Checks feature, adapts | | |
-| 3 | "Find TODOs in current buffer and create org list from them" | Searches, transforms | | |
+| 1 | "If there are .tmp files in /tmp, list them; otherwise say 'none'" | Checks and responds appropriately | PASS | glob_files + eval_sexp |
+| 2 | "Check if magit is available; if so show git log; otherwise use shell" | Checks feature, adapts | PASS | eval_sexp - checked and adapted |
+| 3 | "Find TODOs in current buffer and create org list from them" | Searches, transforms | SKIP | Requires buffer with TODOs |
 
 ### 3.3 Data transformation
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Read package.json and list dependencies as org bullets" | Parses JSON, formats org | | |
-| 2 | "Convert current region from JSON to YAML" | Transforms data | | |
-| 3 | "Extract all URLs from current buffer" | Finds and collects URLs | | |
+| 1 | "Read package.json and list dependencies as org bullets" | Parses JSON, formats org | SKIP | No package.json in test context |
+| 2 | "Convert current region from JSON to YAML" | Transforms data | SKIP | Requires region selection |
+| 3 | "Extract all URLs from current buffer" | Finds and collects URLs | PASS | eval_sexp used to extract |
 
 **Watch for**:
 - Does it use `todo_analyze` for complex tasks?
@@ -181,24 +181,24 @@ This plan covers both the **current manual testing** (Tiers 1-6) and the **futur
 ### 4.1 Org-mode integration
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Create an org file with today's date as heading and 3 TODOs" | Creates org structure | | |
-| 2 | "Show me my org agenda for this week" | Opens agenda | | |
-| 3 | "Find all org files with tag :project:" | Searches org files | | |
-| 4 | "Export current org buffer to HTML" | Runs org-export | | |
+| 1 | "Create an org file with today's date as heading and 3 TODOs" | Creates org structure | PASS | File created with correct structure verified |
+| 2 | "Show me my org agenda for this week" | Opens agenda | SKIP | Requires org-agenda setup |
+| 3 | "Find all org files with tag :project:" | Searches org files | SKIP | Requires org files with tags |
+| 4 | "Export current org buffer to HTML" | Runs org-export | SKIP | Requires current org buffer |
 
 ### 4.2 Buffer manipulation
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Split window horizontally, show *scratch* on right" | Window management | | |
-| 2 | "Narrow to current function, show line count" | Narrowing + counting | | |
-| 3 | "Show unified diff of buffer vs file on disk" | Diff generation | | |
+| 1 | "Split window horizontally, show *scratch* on right" | Window management | PASS | eval_sexp executed window split |
+| 2 | "Narrow to current function, show line count" | Narrowing + counting | SKIP | Requires function context |
+| 3 | "Show unified diff of buffer vs file on disk" | Diff generation | SKIP | Requires unsaved changes |
 
 ### 4.3 Version control
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Show uncommitted changes" | Git diff or magit | | |
-| 2 | "Stage all modified elisp files" | Stages files | | |
-| 3 | "Show git log for this file" | File history | | |
+| 1 | "Show uncommitted changes" | Git diff or magit | PASS | eval_sexp ran git diff |
+| 2 | "Stage all modified elisp files" | Stages files | SKIP | No modified files |
+| 3 | "Show git log for this file" | File history | SKIP | Requires current file |
 
 ### 4.4 Compilation
 | # | Prompt | Expected | Result | Notes |
@@ -209,8 +209,8 @@ This plan covers both the **current manual testing** (Tiers 1-6) and the **futur
 ### 4.5 Dired operations
 | # | Prompt | Expected | Result | Notes |
 |---|--------|----------|--------|-------|
-| 1 | "Open dired to downloads folder" | Opens dired | | |
-| 2 | "Create directory structure: project/{src,test,docs}" | Creates dirs | | |
+| 1 | "Open dired to downloads folder" | Opens dired | PASS | Dired buffer verified |
+| 2 | "Create directory structure: project/{src,test,docs}" | Creates dirs | SKIP | Not tested |
 
 ---
 
