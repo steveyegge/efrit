@@ -184,11 +184,19 @@ Calls CALLBACK with the final result string."
 
           ;; Process successful response
           (let ((content (gethash "content" response))
+                (stop-reason (gethash "stop_reason" response))
                 (result-text "")
                 (session-complete-p nil)
                 (completion-message nil)
                 (tool-results '())
                 (session (efrit-session-active)))
+
+            ;; Check stop_reason for session completion
+            ;; "end_turn" means Claude is done (no more tool calls)
+            ;; "tool_use" means Claude wants to use tools
+            (when (string= stop-reason "end_turn")
+              (efrit-log 'info "stop_reason=end_turn, session will complete")
+              (setq session-complete-p t))
 
             (when content
               ;; Process each content item

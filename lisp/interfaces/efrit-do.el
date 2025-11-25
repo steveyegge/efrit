@@ -488,8 +488,29 @@ This is the main entry point for dynamic tool filtering."
   (efrit-do--error-loop-reset))
 
 (defun efrit-do--hash-tool-input (tool-input)
-  "Create a hash string for TOOL-INPUT to detect identical calls."
-  (secure-hash 'md5 (format "%S" tool-input)))
+  "Create a hash string for TOOL-INPUT to detect identical calls.
+For hash tables, sorts keys to ensure consistent ordering."
+  (let ((normalized (efrit-do--normalize-for-hash tool-input)))
+    (secure-hash 'md5 (format "%S" normalized))))
+
+(defun efrit-do--normalize-for-hash (obj)
+  "Normalize OBJ for consistent hashing, handling hash table key order.
+Converts hash tables to sorted alists for order-independent comparison."
+  (cond
+   ((hash-table-p obj)
+    ;; Convert to alist with sorted keys for consistent ordering
+    (let ((pairs '()))
+      (maphash (lambda (k v)
+                 (push (cons k (efrit-do--normalize-for-hash v)) pairs))
+               obj)
+      (sort pairs (lambda (a b)
+                    (string< (format "%S" (car a))
+                            (format "%S" (car b)))))))
+   ((vectorp obj)
+    (vconcat (mapcar #'efrit-do--normalize-for-hash obj)))
+   ((listp obj)
+    (mapcar #'efrit-do--normalize-for-hash obj))
+   (t obj)))
 
 ;;; Error Loop Detection Functions
 
@@ -705,9 +726,17 @@ Updates counters and session tracking. Uses efrit--safe-execute for safety."
   (concat
    "SESSION PROTOCOL:\n"
    "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
-   
+
+   "🚨 MOST IMPORTANT RULE - SESSION COMPLETION 🚨\n"
+   "When code executes SUCCESSFULLY → Call session_complete IMMEDIATELY!\n"
+   "- If eval_sexp returns a result (not error): SUCCESS → session_complete\n"
+   "- If you already executed the code and it worked: DO NOT execute it again\n"
+   "- If the work log shows the task was accomplished: session_complete NOW\n"
+   "- NEVER re-execute code that already succeeded. That's wasting tokens.\n"
+   "- Look at the work log: if your goal is already achieved, call session_complete\n\n"
+
    "0. CHOOSE YOUR APPROACH:\n"
-   "   - SIMPLE tasks (open files, single commands): Use eval_sexp directly\n"  
+   "   - SIMPLE tasks (open files, single commands): Use eval_sexp directly\n"
    "   - COMPLEX tasks (multi-step workflows): Use todo_analyze to break down\n"
    "   - For CONTINUING sessions: The system will provide work log context\n"
    "   - NEVER call todo_status first on a new task - it will fail!\n"
@@ -1486,45 +1515,86 @@ This signals that a multi-step session is complete."
       (error
       (format "\n[Error displaying in buffer: %s]" (error-message-string err))))))
 
+(defcustom efrit-do-glob-files-max-results 1000
+  "Maximum number of files to return from glob_files.
+Prevents runaway searches from overwhelming the system."
+  :type 'integer
+  :group 'efrit-do)
+
 (defun efrit-do--handle-glob-files (tool-input)
-  "Handle glob_files tool to list files matching pattern."
-  (let* ((pattern (if (hash-table-p tool-input)
-                     (gethash "pattern" tool-input)
-                   "~/"))
-         (extension (if (hash-table-p tool-input)
-                       (gethash "extension" tool-input)
-                     "*"))
-         (recursive (if (hash-table-p tool-input)
-                       (gethash "recursive" tool-input)
-                     t)))
-    (condition-case err
-        (let* ((expanded-pattern (expand-file-name pattern))
-               (extensions (if (string= extension "*")
-                              '("")
-                            (split-string extension ",")))
-               (all-files '()))
-          (dolist (ext extensions)
-            (let* ((ext-clean (string-trim ext))
-                   (search-pattern (if recursive
-                                      (format "%s/**/*.%s" expanded-pattern ext-clean)
-                                    (format "%s/*.%s" expanded-pattern ext-clean)))
-                   (files (if (string= ext-clean "")
-                             (if recursive
-                                 (directory-files-recursively expanded-pattern ".*")
-                               (directory-files expanded-pattern t "^[^.]"))
-                           (file-expand-wildcards search-pattern))))
-              (setq all-files (append all-files files))))
-          (let ((file-count (length all-files))
-                (preview (if (> (length all-files) 10)
-                            (append (seq-take all-files 8) 
-                                   (list (format "... and %d more files" (- (length all-files) 8))))
-                          all-files)))
-            (format "\n[Found %d files in %s:\n%s]"
-                    file-count
-                    pattern
-                    (mapconcat #'identity preview "\n"))))
-      (error
-       (format "\n[Error finding files: %s]" (error-message-string err))))))
+  "Handle glob_files tool to list files matching pattern.
+Includes safety limits to prevent hanging on large directories."
+  ;; Validate input - must be a hash table with required 'pattern' field
+  (if (not (hash-table-p tool-input))
+      "\n[Error: glob_files requires a hash table input with 'pattern' and 'extension' fields]"
+    (let* ((pattern (gethash "pattern" tool-input))
+           (extension (gethash "extension" tool-input))
+           (recursive (gethash "recursive" tool-input t)))
+
+      ;; Validate required fields
+      (cond
+       ((or (null pattern) (string-empty-p pattern))
+        "\n[Error: glob_files requires 'pattern' field (directory path)]")
+
+       ((or (null extension) (string-empty-p extension))
+        "\n[Error: glob_files requires 'extension' field (e.g., 'el' or 'py,js' or '*')]")
+
+       ;; Reject dangerous patterns that could hang Emacs
+       ((and recursive
+             (member (expand-file-name pattern)
+                     (list (expand-file-name "~")
+                           (expand-file-name "/")
+                           (expand-file-name "~/"))))
+        (format "\n[Error: Recursive search from '%s' not allowed - too broad. Please specify a more specific directory.]" pattern))
+
+       (t
+        (condition-case err
+            (let* ((expanded-pattern (expand-file-name pattern))
+                   (extensions (if (string= extension "*")
+                                  '("")
+                                (split-string extension ",")))
+                   (all-files '())
+                   (file-limit efrit-do-glob-files-max-results)
+                   (limit-reached nil))
+
+              ;; Verify directory exists
+              (unless (file-directory-p expanded-pattern)
+                (error "Directory not found: %s" expanded-pattern))
+
+              (catch 'limit-reached
+                (dolist (ext extensions)
+                  (let* ((ext-clean (string-trim ext))
+                         (files (if (string= ext-clean "")
+                                   (if recursive
+                                       (directory-files-recursively expanded-pattern ".*")
+                                     (directory-files expanded-pattern t "^[^.]"))
+                                 (if recursive
+                                     (directory-files-recursively
+                                      expanded-pattern
+                                      (format "\\.%s$" (regexp-quote ext-clean)))
+                                   (file-expand-wildcards
+                                    (format "%s/*.%s" expanded-pattern ext-clean))))))
+                    (setq all-files (append all-files files))
+                    ;; Check limit
+                    (when (> (length all-files) file-limit)
+                      (setq limit-reached t)
+                      (setq all-files (seq-take all-files file-limit))
+                      (throw 'limit-reached t)))))
+
+              (let ((file-count (length all-files))
+                    (preview (if (> (length all-files) 10)
+                                (append (seq-take all-files 8)
+                                       (list (format "... and %d more files" (- (length all-files) 8))))
+                              all-files)))
+                (format "\n[Found %d files%s in %s:\n%s]"
+                        file-count
+                        (if limit-reached
+                            (format " (limit %d reached)" file-limit)
+                          "")
+                        pattern
+                        (mapconcat #'identity preview "\n"))))
+          (error
+           (format "\n[Error finding files: %s]" (error-message-string err)))))))))
 
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
@@ -1734,10 +1804,30 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
                               (or work-log "[]")
                               (efrit-do--session-protocol-instructions)))))
     (concat "You are Efrit, an AI assistant that executes natural language commands in Emacs.\n\n"
-          
+
           (if session-id
               "IMPORTANT: You are in SESSION MODE. Follow the session protocol for multi-step execution.\n\n"
-            "IMPORTANT: You are in COMMAND MODE - INITIAL EXECUTION.\n\n")
+            (concat "IMPORTANT: You are in COMMAND MODE - INITIAL EXECUTION.\n\n"
+
+                    "🚨 CRITICAL - SESSION COMPLETION RULES 🚨\n"
+                    "1. After executing code that SUCCEEDS → Call session_complete IMMEDIATELY\n"
+                    "2. NEVER re-execute code that already worked - that wastes tokens\n"
+                    "3. One successful eval_sexp = task is done = call session_complete\n"
+                    "4. DO NOT 'verify' or 're-run' successful code - you saw it succeed!\n"
+                    "5. If you call the same tool twice with same input, you're in a loop - STOP and call session_complete\n\n"
+
+                    "SUCCESS DETECTION:\n"
+                    "- If eval_sexp returns a valid result (not an error), the task SUCCEEDED\n"
+                    "- 'Hello, Steve!' appearing = success = call session_complete\n"
+                    "- Function defined (returns function symbol) = success = call session_complete\n"
+                    "- File opened (returns buffer) = success = call session_complete\n"
+                    "- Don't keep calling tools after success - FINISH THE SESSION\n\n"
+
+                    "QUESTIONS WITHOUT TOOL NEEDS:\n"
+                    "- For questions like 'what is 2+2?' or 'explain X' - NO tools needed!\n"
+                    "- Just respond with the answer in text, then call session_complete\n"
+                    "- Don't call eval_sexp for pure math/knowledge questions\n"
+                    "- If no Emacs operation is needed, just answer and complete\n\n"))
           
           "CRITICAL CONTEXT RULES:\n"
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
