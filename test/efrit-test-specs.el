@@ -450,14 +450,19 @@
     :timeout 180))
 
   ;; 5.2 Code generation
+  ;; Note: Claude executes the code via tools and gives a summary, so we validate
+  ;; that the function was actually defined rather than checking response text.
   (efrit-test-register
    (efrit-test-spec
     :id "t5-5.2-word-count"
     :name "Write word count function"
     :tier 5
     :category 'code-generation
-    :prompt "Write an elisp function that counts words in region"
-    :validators '((response-matches "defun")
+    :prompt "Write an elisp function called my-count-words-in-region that counts words in region and define it now"
+    :setup (lambda () (fmakunbound 'my-count-words-in-region))
+    :teardown (lambda () (when (fboundp 'my-count-words-in-region)
+                          (fmakunbound 'my-count-words-in-region)))
+    :validators '((function-defined my-count-words-in-region)
                   (no-error))
     :timeout 180))
 
@@ -467,8 +472,11 @@
     :name "Write duplicate line command"
     :tier 5
     :category 'code-generation
-    :prompt "Write a command that duplicates current line"
-    :validators '((response-matches "\\(defun\\|interactive\\)")
+    :prompt "Write an interactive command called my-duplicate-line that duplicates current line and define it now"
+    :setup (lambda () (fmakunbound 'my-duplicate-line))
+    :teardown (lambda () (when (fboundp 'my-duplicate-line)
+                          (fmakunbound 'my-duplicate-line)))
+    :validators '((function-defined my-duplicate-line)
                   (no-error))
     :timeout 180))
 

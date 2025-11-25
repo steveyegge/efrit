@@ -219,11 +219,12 @@ Handles both static strings and dynamic functions."
 
 (defun efrit-common-escape-json-unicode (json-string)
   "Escape unicode characters in JSON-STRING for HTTP transmission.
-This prevents multibyte encoding errors when sending to APIs."
+This prevents multibyte encoding errors when sending to APIs.
+Converts non-ASCII characters to JSON unicode escapes (\\uXXXX)."
   (replace-regexp-in-string
    "[^\x00-\x7F]"
    (lambda (char)
-     (format "\\\\u%04X" (string-to-char char)))
+     (format "\\u%04X" (string-to-char char)))
    json-string))
 
 ;;; Error Recovery

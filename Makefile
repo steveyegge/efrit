@@ -180,12 +180,12 @@ test-auto: compile
 	@echo "✅ Automated tests completed"
 
 test-tier: compile
-	@echo "Usage: make test-tier TIER=n (where n is 1-10)"
+	@echo "Usage: make test-tier TIER=n (where n is 1-6)"
 	@echo "⚠️  WARNING: This BURNS TOKENS!"
 	@if [ -z "$(TIER)" ]; then echo "Error: TIER not specified"; exit 1; fi
 	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L test \
-		--eval "(require 'efrit-test-runner)" \
-		--eval "(efrit-test-register-tier1-samples)" \
+		--eval "(require 'efrit-test-specs)" \
+		--eval "(efrit-test-register-all-tiers)" \
 		--eval "(efrit-test-run-tier $(TIER))"
 
 # Debug build (with extra information)
