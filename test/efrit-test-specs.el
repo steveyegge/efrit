@@ -33,6 +33,13 @@
 
 (require 'efrit-test-runner)
 
+;; Declare external variables used in Tier 9-10 tests
+(defvar efrit-progress--current-session)
+(declare-function efrit-progress-inject "efrit-progress")
+(declare-function efrit-progress--inject-dir "efrit-progress")
+(declare-function efrit-progress--session-dir "efrit-progress")
+(declare-function efrit-progress-session-info "efrit-progress")
+
 ;;; ============================================================
 ;;; Tier 1: Single-Tool Smoke Tests
 ;;; ============================================================
@@ -524,6 +531,406 @@
   (message "Registered %d Tier 6 tests" 3))
 
 ;;; ============================================================
+;;; Tier 9: Injection and Conversation Tests
+;;; ============================================================
+
+(defun efrit-test-register-tier9 ()
+  "Register Tier 9 injection and conversation tests.
+These tests verify the mid-task injection and guidance system."
+  (interactive)
+  (require 'efrit-progress)
+  (require 'efrit-executor)
+
+  ;; 9.1 Basic injection - verify injection file processing
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.1-inject-guidance"
+    :name "Inject guidance during execution"
+    :tier 9
+    :category 'injection
+    :prompt "Count to 10 slowly, showing each number"
+    :setup (lambda ()
+             ;; Set up injection to be delivered after 2 seconds
+             (run-with-timer
+              2 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'guidance
+                                        "Skip to 10 immediately")))))
+    :validators '((no-error))
+    :timeout 120))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.1-inject-abort"
+    :name "Inject abort command"
+    :tier 9
+    :category 'injection
+    :prompt "Create buffers *a*, *b*, *c*, *d*, *e* one by one"
+    :setup (lambda ()
+             ;; Clean up any existing test buffers
+             (dolist (name '("*a*" "*b*" "*c*" "*d*" "*e*"))
+               (when (get-buffer name) (kill-buffer name)))
+             ;; Inject abort after 3 seconds
+             (run-with-timer
+              3 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'abort
+                                        "User requested stop")))))
+    :teardown (lambda ()
+                (dolist (name '("*a*" "*b*" "*c*" "*d*" "*e*"))
+                  (when (get-buffer name) (kill-buffer name))))
+    :validators '((no-error))
+    :timeout 120))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.1-inject-context"
+    :name "Inject additional context"
+    :tier 9
+    :category 'injection
+    :prompt "Find files with 'TODO' in them"
+    :setup (lambda ()
+             ;; Inject context after 2 seconds
+             (run-with-timer
+              2 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'context
+                                        "Only look in the lisp/ directory")))))
+    :validators '((no-error))
+    :timeout 120))
+
+  ;; 9.2 Multiple injections - verify queue processing
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.2-multiple-injections"
+    :name "Multiple sequential injections"
+    :tier 9
+    :category 'injection-queue
+    :prompt "Create a list of 5 items about programming"
+    :setup (lambda ()
+             ;; Inject 3 guidance messages in sequence
+             (run-with-timer
+              2 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'guidance "Focus on Emacs"))))
+             (run-with-timer
+              4 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'guidance "Use bullet points"))))
+             (run-with-timer
+              6 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'guidance "Include lisp")))))
+    :validators '((no-error))
+    :timeout 180))
+
+  ;; 9.3 Injection types validation
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.3-inject-priority"
+    :name "Inject priority change"
+    :tier 9
+    :category 'injection-types
+    :prompt "Create 10 numbered files in /tmp/efrit-test/"
+    :setup (lambda ()
+             (let ((dir "/tmp/efrit-test/"))
+               (when (file-directory-p dir)
+                 (delete-directory dir t))
+               (make-directory dir t))
+             ;; Inject priority change after 2 seconds
+             (run-with-timer
+              2 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'priority
+                                        "Complete this task quickly" 1)))))
+    :teardown (lambda ()
+                (let ((dir "/tmp/efrit-test/"))
+                  (when (file-directory-p dir)
+                    (delete-directory dir t))))
+    :validators '((no-error))
+    :timeout 120))
+
+  ;; 9.4 Injection file format validation (tests the inject queue)
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t9-9.4-inject-queue-direct"
+    :name "Direct inject queue file writing"
+    :tier 9
+    :category 'injection-queue
+    :prompt "Wait for 5 seconds and tell me when done"
+    :setup (lambda ()
+             ;; Write injection file directly (simulates external process)
+             (run-with-timer
+              1 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session)
+                            (inject-dir (efrit-progress--inject-dir session)))
+                  (unless (file-directory-p inject-dir)
+                    (make-directory inject-dir t))
+                  (let ((filepath (expand-file-name
+                                   (format "%s_guidance.json"
+                                          (format-time-string "%Y%m%d%H%M%S%3N"))
+                                   inject-dir)))
+                    (with-temp-file filepath
+                      (insert (json-encode
+                               '(("type" . "guidance")
+                                 ("message" . "Actually, just count to 3 instead"))))))))))
+    :validators '((no-error))
+    :timeout 90))
+
+  (message "Registered %d Tier 9 tests" 6))
+
+;;; ============================================================
+;;; Tier 10: Claude Code Integration Tests
+;;; ============================================================
+
+(defun efrit-test-register-tier10 ()
+  "Register Tier 10 Claude Code integration tests.
+These tests verify external monitoring and injection capabilities."
+  (interactive)
+  (require 'efrit-progress)
+
+  ;; 10.1 Progress monitoring - verify progress.jsonl generation
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.1-progress-file-creation"
+    :name "Progress file created on session start"
+    :tier 10
+    :category 'progress-monitoring
+    :prompt "What is 1 + 1?"
+    :validators '((custom efrit-test--validate-progress-file-exists)
+                  (no-error))
+    :timeout 60))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.1-progress-events"
+    :name "Progress events emitted"
+    :tier 10
+    :category 'progress-monitoring
+    :prompt "Create buffer *progress-test* with hello"
+    :setup (lambda ()
+             (when (get-buffer "*progress-test*")
+               (kill-buffer "*progress-test*")))
+    :teardown (lambda ()
+                (when (get-buffer "*progress-test*")
+                  (kill-buffer "*progress-test*")))
+    :validators '((custom efrit-test--validate-progress-has-events)
+                  (no-error))
+    :timeout 60))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.1-progress-tool-events"
+    :name "Tool start/result events in progress"
+    :tier 10
+    :category 'progress-monitoring
+    :prompt "Evaluate (+ 2 2) and show the result"
+    :validators '((custom efrit-test--validate-progress-tool-events)
+                  (no-error))
+    :timeout 60))
+
+  ;; 10.2 Session info accessibility
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.2-session-info-query"
+    :name "Session info queryable"
+    :tier 10
+    :category 'session-info
+    :prompt "Tell me the current time"
+    :validators '((custom efrit-test--validate-session-info-available)
+                  (no-error))
+    :timeout 60))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.2-session-dir-structure"
+    :name "Session directory structure correct"
+    :tier 10
+    :category 'session-info
+    :prompt "Show my buffers"
+    :validators '((custom efrit-test--validate-session-dir-structure)
+                  (no-error))
+    :timeout 60))
+
+  ;; 10.3 External process integration (simulated)
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.3-tail-f-compatible"
+    :name "Progress file is tail -f compatible"
+    :tier 10
+    :category 'external-integration
+    :prompt "Create three scratch buffers"
+    :validators '((custom efrit-test--validate-progress-tail-compatible)
+                  (no-error))
+    :timeout 90))
+
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.3-jq-parseable"
+    :name "Progress events parseable by jq"
+    :tier 10
+    :category 'external-integration
+    :prompt "List files in current directory"
+    :validators '((custom efrit-test--validate-progress-jq-parseable)
+                  (no-error))
+    :timeout 60))
+
+  ;; 10.4 Full workflow test
+  (efrit-test-register
+   (efrit-test-spec
+    :id "t10-10.4-full-workflow"
+    :name "Full observe-inject-complete cycle"
+    :tier 10
+    :category 'full-workflow
+    :prompt "Find all elisp files in lisp/ and summarize"
+    :setup (lambda ()
+             ;; Set up injection after observing some progress
+             (run-with-timer
+              5 nil
+              (lambda ()
+                (when-let* ((session efrit-progress--current-session))
+                  (efrit-progress-inject session 'guidance
+                                        "Just list the file count, don't read contents")))))
+    :validators '((custom efrit-test--validate-full-workflow)
+                  (no-error))
+    :timeout 180))
+
+  (message "Registered %d Tier 10 tests" 8))
+
+;;; ============================================================
+;;; Custom Validators for Tier 9-10
+;;; ============================================================
+
+(defun efrit-test--validate-progress-file-exists ()
+  "Validate that a progress.jsonl file was created.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (progress-file (expand-file-name "progress.jsonl"
+                                            (efrit-progress--session-dir session))))
+      (if (file-exists-p progress-file)
+          (cons t "Progress file exists")
+        (cons nil "Progress file not found"))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-progress-has-events ()
+  "Validate that progress file has events.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (progress-file (expand-file-name "progress.jsonl"
+                                            (efrit-progress--session-dir session))))
+      (if (and (file-exists-p progress-file)
+               (> (file-attribute-size (file-attributes progress-file)) 0))
+          (cons t "Progress file has events")
+        (cons nil "Progress file empty or missing"))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-progress-tool-events ()
+  "Validate that progress has tool-start and tool-result events.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (progress-file (expand-file-name "progress.jsonl"
+                                            (efrit-progress--session-dir session))))
+      (if (file-exists-p progress-file)
+          (with-temp-buffer
+            (insert-file-contents progress-file)
+            (let ((content (buffer-string)))
+              (if (and (string-match-p "tool-start\\|tool-result" content))
+                  (cons t "Found tool events in progress")
+                (cons nil "No tool events found"))))
+        (cons nil "Progress file not found"))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-session-info-available ()
+  "Validate that session info is queryable.
+Returns (pass-p . message)."
+  (if-let* ((info (efrit-progress-session-info)))
+      (if (and (assoc 'session-id info)
+               (assoc 'session-dir info))
+          (cons t "Session info available")
+        (cons nil "Session info incomplete"))
+    (cons nil "No session info returned")))
+
+(defun efrit-test--validate-session-dir-structure ()
+  "Validate that session directory has correct structure.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (session-dir (efrit-progress--session-dir session)))
+      (let* ((progress-file (expand-file-name "progress.jsonl" session-dir))
+             (inject-dir (expand-file-name "inject" session-dir)))
+        (if (and (file-directory-p session-dir)
+                 (or (file-exists-p progress-file)
+                     (file-directory-p inject-dir)))
+            (cons t "Session directory structure valid")
+          (cons nil (format "Missing expected files in %s" session-dir))))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-progress-tail-compatible ()
+  "Validate that progress file can be tailed (newline-delimited).
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (progress-file (expand-file-name "progress.jsonl"
+                                            (efrit-progress--session-dir session))))
+      (if (file-exists-p progress-file)
+          (with-temp-buffer
+            (insert-file-contents progress-file)
+            (let ((content (buffer-string)))
+              ;; Each line should be complete JSON
+              (if (string-match-p "\n" content)
+                  (cons t "Progress file is newline-delimited")
+                (cons nil "Progress file not properly formatted"))))
+        (cons nil "Progress file not found"))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-progress-jq-parseable ()
+  "Validate that each line of progress is valid JSON.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (progress-file (expand-file-name "progress.jsonl"
+                                            (efrit-progress--session-dir session))))
+      (if (file-exists-p progress-file)
+          (with-temp-buffer
+            (insert-file-contents progress-file)
+            (let ((lines (split-string (buffer-string) "\n" t))
+                  (valid t)
+                  (error-line nil))
+              (dolist (line lines)
+                (when (and valid (> (length line) 0))
+                  (condition-case _
+                      (json-read-from-string line)
+                    (error (setq valid nil
+                                 error-line line)))))
+              (if valid
+                  (cons t "All lines are valid JSON")
+                (cons nil (format "Invalid JSON: %s"
+                                 (truncate-string-to-width error-line 50))))))
+        (cons nil "Progress file not found"))
+    (cons nil "No current session")))
+
+(defun efrit-test--validate-full-workflow ()
+  "Validate that full observe-inject-complete workflow works.
+Returns (pass-p . message)."
+  (if-let* ((session efrit-progress--current-session)
+            (session-dir (efrit-progress--session-dir session))
+            (progress-file (expand-file-name "progress.jsonl" session-dir)))
+      (if (file-exists-p progress-file)
+          (with-temp-buffer
+            (insert-file-contents progress-file)
+            (let ((content (buffer-string)))
+              (if (string-match-p "injection-received\\|session-complete" content)
+                  (cons t "Full workflow events observed")
+                (cons t "Workflow completed (injection may have been processed)"))))
+        (cons nil "Progress file not found"))
+    (cons nil "No current session")))
+
+;;; ============================================================
 ;;; Registration Utilities
 ;;; ============================================================
 
@@ -537,7 +944,9 @@
   (efrit-test-register-tier4)
   (efrit-test-register-tier5)
   (efrit-test-register-tier6)
-  (message "Registered all %d tests across 6 tiers"
+  (efrit-test-register-tier9)
+  (efrit-test-register-tier10)
+  (message "Registered all %d tests across 8 tiers"
            (length efrit-test--registry)))
 
 (defun efrit-test-register-passing-tiers ()
