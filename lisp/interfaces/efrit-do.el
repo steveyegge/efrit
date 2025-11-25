@@ -388,7 +388,7 @@ DO NOT USE for simple tasks:
      ("description" . "Get list of files matching a pattern. INFORMATIONAL ONLY - does not open files. Use results with eval_sexp to perform actions.
 
 EXAMPLES:
-- Find images: pattern=\"~/Pictures\" extension=\"png,jpg,jpeg\"  
+- Find images: pattern=\"~/Pictures\" extension=\"png,jpg,jpeg\"
 - Find code files: pattern=\"~/project/src\" extension=\"py,js,ts\"
 - Find all files: pattern=\"~/Documents\" extension=\"*\"")
      ("input_schema" . (("type" . "object")
@@ -398,7 +398,23 @@ EXAMPLES:
                                                       ("description" . "File extensions to match (comma-separated, or * for all)")))
                                        ("recursive" . (("type" . "boolean")
                                                       ("description" . "Whether to search subdirectories (default: true)")))))
-                       ("required" . ["pattern" "extension"]))))]
+                       ("required" . ["pattern" "extension"]))))
+    (("name" . "request_user_input")
+     ("description" . "Pause execution and ask the user a question. Use this when you need clarification, confirmation, or a choice from the user before proceeding. The session will pause until the user responds.
+
+EXAMPLES:
+- Clarification: \"Which file do you want me to modify: config.el or init.el?\"
+- Confirmation: \"This will delete 15 files. Proceed?\" with options [\"Yes\", \"No\"]
+- Choice: \"How should I format the output?\" with options [\"Table\", \"List\", \"JSON\"]
+
+IMPORTANT: After calling this tool, the session pauses. You will receive the user's response in the next API call continuation.")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("question" . (("type" . "string")
+                                                       ("description" . "The question to ask the user")))
+                                       ("options" . (("type" . "array")
+                                                    ("items" . (("type" . "string")))
+                                                    ("description" . "Optional list of choices. If provided, user picks one. If omitted, user provides free-form input.")))))
+                       ("required" . ["question"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-tools-for-state ()
@@ -419,7 +435,7 @@ without actual code execution."
           ;; These tools are safe in any state
           '("glob_files" "buffer_create" "format_file_list"
             "format_todo_list" "display_in_buffer" "session_complete"
-            "suggest_execution_mode"))
+            "suggest_execution_mode" "request_user_input"))
          (planning-tools
           ;; For initial planning and analysis
           '("todo_analyze" "todo_add"))
@@ -1596,6 +1612,41 @@ Includes safety limits to prevent hanging on large directories."
           (error
            (format "\n[Error finding files: %s]" (error-message-string err)))))))))
 
+(defun efrit-do--handle-request-user-input (tool-input)
+  "Handle request_user_input tool to pause and ask user a question.
+Sets the session to waiting-for-user state and emits a progress event."
+  (require 'efrit-session)
+  (require 'efrit-progress)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: request_user_input requires a hash table input with 'question' field]"
+    (let* ((question (gethash "question" tool-input))
+           (options (gethash "options" tool-input))
+           (session (efrit-session-active)))
+      (cond
+       ((or (null question) (string-empty-p question))
+        "\n[Error: request_user_input requires 'question' field]")
+
+       ((not session)
+        "\n[Error: request_user_input requires an active session]")
+
+       (t
+        ;; Set pending question on session
+        (efrit-session-set-pending-question
+         session question
+         (when options (append options nil)))  ; Convert vector to list
+
+        ;; Emit progress event
+        (efrit-progress-show-message
+         (format "🤔 Question for user: %s" question)
+         'claude)
+
+        ;; Return a special marker that the executor can recognize
+        (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
+                question
+                (if options
+                    (format "\nOptions: %s" (mapconcat #'identity options ", "))
+                  "")))))))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
@@ -1680,6 +1731,8 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-do--handle-session-complete tool-input))
                 ((string= tool-name "glob_files")
                  (efrit-do--handle-glob-files tool-input))
+                ((string= tool-name "request_user_input")
+                 (efrit-do--handle-request-user-input tool-input))
                 (t
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))

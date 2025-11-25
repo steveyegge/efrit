@@ -213,6 +213,13 @@ Calls CALLBACK with the final result string."
                         (setq session-complete-p t)
                         (setq completion-message (match-string 1 tool-result)))
 
+                      ;; Check for waiting-for-user (paused session)
+                      (when (string-match "\\[WAITING-FOR-USER\\]" tool-result)
+                        ;; Session is paused waiting for user input
+                        ;; The session state has already been set by the handler
+                        (setq session-complete-p t)  ; Stop continuation
+                        (setq completion-message nil))  ; Don't mark as complete
+
                       ;; Track tool execution
                       (when session
                         (push (list tool-result
@@ -223,6 +230,14 @@ Calls CALLBACK with the final result string."
 
             ;; Handle session continuation or completion
             (cond
+             ;; Session waiting for user input - don't complete, just pause
+             ((and session (efrit-session-waiting-for-user-p session))
+              (efrit-executor--update-mode-line "Waiting for user...")
+              (efrit-progress-show-message "Session paused - awaiting user input" 'info)
+              ;; Don't clear active session - it's paused, not done
+              (when callback
+                (funcall callback result-text)))
+
              ;; Session complete or no active session
              ((or (not session)
                   session-complete-p
@@ -289,47 +304,104 @@ Returns the tool result string."
 
 ;;; Session Continuation
 
+(defun efrit-executor--process-injection (injection session)
+  "Process INJECTION message for SESSION.
+Returns non-nil if session should abort."
+  (let ((inject-type (cdr (assoc "type" injection)))
+        (inject-msg (cdr (assoc "message" injection))))
+    (efrit-log 'info "Processing injection [%s]: %s"
+               inject-type (efrit-common-truncate-string inject-msg 100))
+    (pcase inject-type
+      ("abort"
+       ;; Add abort reason to work log and signal abort
+       (efrit-session-add-work session
+                               (format "[INJECTION-ABORT] %s" inject-msg)
+                               "User requested abort via injection")
+       t)  ; Return t to signal abort
+      ("guidance"
+       ;; Add guidance to work log so Claude sees it
+       (efrit-session-add-work session
+                               (format "[USER-GUIDANCE] %s" inject-msg)
+                               "Guidance injected by supervising process")
+       nil)
+      ("context"
+       ;; Add context to work log
+       (efrit-session-add-work session
+                               (format "[ADDITIONAL-CONTEXT] %s" inject-msg)
+                               "Context added by external process")
+       nil)
+      ("priority"
+       ;; Log priority change (informational)
+       (efrit-session-add-work session
+                               (format "[PRIORITY-CHANGE] %s" inject-msg)
+                               "Priority changed by external process")
+       nil)
+      (_
+       (efrit-log 'warn "Unknown injection type: %s" inject-type)
+       nil))))
+
+(defun efrit-executor--drain-injections (session)
+  "Process all pending injections for SESSION.
+Returns non-nil if session should abort."
+  (let ((should-abort nil))
+    (while (efrit-progress-has-pending-injection-p)
+      (when-let* ((injection (efrit-progress-check-inject-queue)))
+        (when (efrit-executor--process-injection injection session)
+          (setq should-abort t))))
+    should-abort))
+
 (defun efrit-executor--continue-session (session callback)
   "Continue multi-step SESSION by calling Claude again.
 Calls CALLBACK with the final result."
   (let* ((session-id (efrit-session-id session))
-         (work-log (efrit-session-compress-log session))
          (original-command (efrit-session-command session))
          (continuation-count (efrit-session-continuation-count session)))
 
-    ;; Safety check: prevent infinite loops
-    (if (>= continuation-count efrit-executor-max-continuations)
+    ;; Check for injected messages before continuing
+    (if (efrit-executor--drain-injections session)
+        ;; Abort requested via injection
         (progn
-          (efrit-executor--handle-error
-           (format "SESSION LIMIT: Maximum continuations (%d) reached"
-                   efrit-executor-max-continuations)
-           callback)
-          nil)  ; Return early
+          (efrit-log 'info "Session %s aborted via injection" session-id)
+          (efrit-executor--complete-session session "[ABORTED] Session terminated by user request")
+          (when callback
+            (funcall callback "Session aborted via injection")))
 
-      ;; Increment continuation counter
-      (cl-incf (efrit-session-continuation-count session))
+      ;; Get work log after processing injections (so guidance is included)
+      (let ((work-log (efrit-session-compress-log session)))
 
-      ;; Build system prompt
-      (require 'efrit-do)
-      (let* ((system-prompt (efrit-do--command-system-prompt
-                             nil nil nil session-id work-log))
-             (request-data
-              `(("model" . ,efrit-default-model)
-                ("max_tokens" . 8192)
-                ("temperature" . 0.0)
-                ("messages" . [(("role" . "user")
-                               ("content" . ,original-command))])
-                ("system" . ,system-prompt)
-                ("tools" . ,(efrit-executor--get-tools-schema)))))
+        ;; Safety check: prevent infinite loops
+        (if (>= continuation-count efrit-executor-max-continuations)
+            (progn
+              (efrit-executor--handle-error
+               (format "SESSION LIMIT: Maximum continuations (%d) reached"
+                       efrit-executor-max-continuations)
+               callback)
+              nil)  ; Return early
 
-        (efrit-log 'debug "Continuing session %s (continuation #%d)"
-                   session-id continuation-count)
-        (efrit-executor--update-mode-line "Continuing...")
+          ;; Increment continuation counter
+          (cl-incf (efrit-session-continuation-count session))
 
-        (efrit-executor--api-request
-         request-data
-         (lambda (response)
-           (efrit-executor--handle-response response callback)))))))
+          ;; Build system prompt
+          (require 'efrit-do)
+          (let* ((system-prompt (efrit-do--command-system-prompt
+                                 nil nil nil session-id work-log))
+                 (request-data
+                  `(("model" . ,efrit-default-model)
+                    ("max_tokens" . 8192)
+                    ("temperature" . 0.0)
+                    ("messages" . [(("role" . "user")
+                                   ("content" . ,original-command))])
+                    ("system" . ,system-prompt)
+                    ("tools" . ,(efrit-executor--get-tools-schema)))))
+
+            (efrit-log 'debug "Continuing session %s (continuation #%d)"
+                       session-id continuation-count)
+            (efrit-executor--update-mode-line "Continuing...")
+
+            (efrit-executor--api-request
+             request-data
+             (lambda (response)
+               (efrit-executor--handle-response response callback)))))))))
 
 (defun efrit-executor--complete-session (session result)
   "Mark SESSION complete with final RESULT and process queue."
@@ -475,6 +547,97 @@ Calls optional CALLBACK with the result when complete."
           (lambda (result)
             (efrit-executor--update-mode-line "Complete!")
             (when callback (funcall callback result)))))))))
+
+;;; Session Resume (for user input responses)
+
+;;;###autoload
+(defun efrit-executor-respond (response)
+  "Respond to a waiting session's pending question with RESPONSE.
+If there's an active session waiting for user input, this submits
+the response and resumes execution."
+  (interactive
+   (let ((session (efrit-session-active)))
+     (if (and session (efrit-session-waiting-for-user-p session))
+         (let* ((pending (efrit-session-get-pending-question session))
+                (question (car pending))
+                (options (cadr pending)))
+           (list (if options
+                     (completing-read (format "%s " question) options nil t)
+                   (read-string (format "%s " question)))))
+       (user-error "No session waiting for input"))))
+  (let ((session (efrit-session-active)))
+    (unless session
+      (user-error "No active session"))
+    (unless (efrit-session-waiting-for-user-p session)
+      (user-error "Session is not waiting for user input"))
+
+    ;; Record the response
+    (efrit-session-respond-to-question session response)
+
+    ;; Log the response
+    (efrit-log 'info "User responded: %s"
+               (efrit-common-truncate-string response 100))
+
+    ;; Emit progress event
+    (efrit-progress-show-message (format "👤 User: %s" response) 'user)
+
+    ;; Resume the session with the updated conversation
+    (efrit-executor--resume-session session)))
+
+(defun efrit-executor--resume-session (session &optional callback)
+  "Resume a paused SESSION after user input.
+Continues the API call chain with the user's response in context."
+  (let* ((session-id (efrit-session-id session))
+         (work-log (efrit-session-compress-log session))
+         (messages (efrit-session-format-conversation-for-api session))
+         (continuation-count (efrit-session-continuation-count session)))
+
+    ;; Safety check: prevent infinite loops
+    (if (>= continuation-count efrit-executor-max-continuations)
+        (progn
+          (efrit-executor--handle-error
+           (format "SESSION LIMIT: Maximum continuations (%d) reached"
+                   efrit-executor-max-continuations)
+           callback)
+          nil)
+
+      ;; Increment continuation counter
+      (cl-incf (efrit-session-continuation-count session))
+
+      ;; Build system prompt with user response context
+      (require 'efrit-do)
+      (let* ((last-response (car (last (efrit-session-user-responses session))))
+             (response-context (when last-response
+                                (format "\n\n[USER RESPONDED TO QUESTION]\nQ: %s\nA: %s\n\nContinue with the user's answer."
+                                        (cadr last-response)  ; question
+                                        (car last-response))))  ; response
+             (base-system-prompt (efrit-do--command-system-prompt
+                                  nil nil nil session-id work-log))
+             (system-prompt (if response-context
+                               (concat base-system-prompt response-context)
+                             base-system-prompt))
+             (request-data
+              `(("model" . ,efrit-default-model)
+                ("max_tokens" . 8192)
+                ("temperature" . 0.0)
+                ("messages" . ,messages)
+                ("system" . ,system-prompt)
+                ("tools" . ,(efrit-executor--get-tools-schema)))))
+
+        (efrit-log 'info "Resuming session %s after user response" session-id)
+        (efrit-executor--update-mode-line "Resuming...")
+
+        (efrit-executor--api-request
+         request-data
+         (lambda (response)
+           (efrit-executor--handle-response response callback)))))))
+
+;;;###autoload
+(defun efrit-executor-pending-question ()
+  "Return the pending question for the active session, if any.
+Returns (question options timestamp) or nil."
+  (when-let* ((session (efrit-session-active)))
+    (efrit-session-get-pending-question session)))
 
 ;;; User Commands
 

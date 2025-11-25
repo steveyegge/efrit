@@ -131,14 +131,24 @@
 
 (defun efrit-progress--injection-file (session-id)
   "Return the injection file path for SESSION-ID.
-External processes can write to this file to inject messages."
+External processes can write to this file to inject messages.
+DEPRECATED: Use `efrit-progress--inject-dir' for queue-based injection."
   (expand-file-name "inject.json" (efrit-progress--session-dir session-id)))
 
+(defun efrit-progress--inject-dir (session-id)
+  "Return the inject queue directory for SESSION-ID.
+External processes write JSON files here to inject messages into the session."
+  (expand-file-name "inject" (efrit-progress--session-dir session-id)))
+
 (defun efrit-progress--ensure-session-dir (session-id)
-  "Ensure the session directory exists for SESSION-ID."
-  (let ((dir (efrit-progress--session-dir session-id)))
+  "Ensure the session directory exists for SESSION-ID.
+Also creates the inject queue subdirectory."
+  (let ((dir (efrit-progress--session-dir session-id))
+        (inject-dir (efrit-progress--inject-dir session-id)))
     (unless (file-directory-p dir)
       (make-directory dir t))
+    (unless (file-directory-p inject-dir)
+      (make-directory inject-dir t))
     dir))
 
 ;;; JSONL Event Emission
@@ -353,10 +363,36 @@ SUCCESS-P indicates if the execution was successful."
                               (format "%S" result) 300))))))
 
 ;;; Injection Support (for external process communication)
+;;
+;; The injection system allows external processes (like Claude Code) to send
+;; messages to an active Efrit session. Messages are delivered via a queue
+;; directory in the session folder.
+;;
+;; Protocol:
+;; - External process writes JSON file to: <session-dir>/inject/<timestamp>_<type>.json
+;; - File must be atomically written (write temp, rename)
+;; - File format:
+;;   {
+;;     "type": "guidance" | "abort" | "priority" | "context",
+;;     "message": "string message for Claude",
+;;     "timestamp": "ISO8601",
+;;     "priority": 0-3 (optional, for priority type)
+;;   }
+;;
+;; Message types:
+;; - guidance: Add guidance/hint to Claude's next prompt
+;; - abort: Request graceful session termination
+;; - priority: Change task priority
+;; - context: Add additional context to the session
+
+(defconst efrit-progress-injection-types
+  '(guidance abort priority context)
+  "Valid injection message types.")
 
 (defun efrit-progress-check-injection ()
   "Check for and return any injected message, clearing the injection file.
-Returns nil if no injection is pending."
+Returns nil if no injection is pending.
+DEPRECATED: Use `efrit-progress-check-inject-queue' instead."
   (when (and efrit-progress--current-session
              efrit-progress-enabled)
     (let ((inject-file (efrit-progress--injection-file
@@ -381,6 +417,109 @@ Returns nil if no injection is pending."
                      (error-message-string err))
            nil))))))
 
+(defun efrit-progress--list-inject-files (session-id)
+  "List all pending injection files for SESSION-ID, sorted by name (timestamp order)."
+  (let ((inject-dir (efrit-progress--inject-dir session-id)))
+    (when (file-directory-p inject-dir)
+      (sort (directory-files inject-dir t "\\.json$") #'string<))))
+
+(defun efrit-progress--parse-inject-file (file-path)
+  "Parse injection FILE-PATH and return alist, or nil on error."
+  (condition-case err
+      (let* ((content (with-temp-buffer
+                        (insert-file-contents file-path)
+                        (buffer-string)))
+             (json-object-type 'alist)
+             (json-array-type 'vector)
+             (json-key-type 'string)
+             (data (json-read-from-string content)))
+        ;; Validate required fields
+        (if (and (assoc "type" data)
+                 (assoc "message" data))
+            data
+          (efrit-log 'warn "Invalid injection file (missing type/message): %s" file-path)
+          nil))
+    (error
+     (efrit-log 'warn "Failed to parse injection file %s: %s"
+                file-path (error-message-string err))
+     nil)))
+
+(defun efrit-progress-check-inject-queue ()
+  "Check inject queue directory and return next pending injection.
+Returns nil if no injection is pending.
+Returns alist with keys: type, message, timestamp, (optional) priority.
+Processed files are deleted after reading."
+  (when (and efrit-progress--current-session
+             efrit-progress-enabled)
+    (let ((files (efrit-progress--list-inject-files efrit-progress--current-session)))
+      (when files
+        (let* ((next-file (car files))
+               (data (efrit-progress--parse-inject-file next-file)))
+          (when data
+            ;; Delete processed file
+            (condition-case err
+                (delete-file next-file)
+              (error
+               (efrit-log 'warn "Failed to delete injection file: %s"
+                          (error-message-string err))))
+            ;; Emit injection-received event
+            (efrit-progress--emit-event 'injection-received
+                                        `((content . ,data)
+                                          (file . ,(file-name-nondirectory next-file))))
+            ;; Show in progress buffer
+            (let ((msg-type (cdr (assoc "type" data)))
+                  (message (cdr (assoc "message" data))))
+              (efrit-progress--buffer-append
+               (format "📥 Injection [%s]: %s"
+                       msg-type
+                       (efrit-progress--truncate message 100))
+               'efrit-progress-section-header))
+            data))))))
+
+(defun efrit-progress-inject-queue-count ()
+  "Return count of pending injections in queue."
+  (if efrit-progress--current-session
+      (length (efrit-progress--list-inject-files efrit-progress--current-session))
+    0))
+
+(defun efrit-progress-has-pending-injection-p ()
+  "Return non-nil if there are pending injections."
+  (> (efrit-progress-inject-queue-count) 0))
+
+;;;###autoload
+(defun efrit-progress-inject (session-id type message &optional priority)
+  "Inject MESSAGE of TYPE into SESSION-ID.
+TYPE must be one of: guidance, abort, priority, context.
+PRIORITY is optional (0-3, only used for priority type).
+This function is for elisp callers; external processes should write files directly."
+  (interactive
+   (list (or efrit-progress--current-session
+             (read-string "Session ID: "))
+         (intern (completing-read "Type: " '("guidance" "abort" "priority" "context")))
+         (read-string "Message: ")
+         nil))
+  (unless (memq type efrit-progress-injection-types)
+    (error "Invalid injection type: %s (must be one of %s)"
+           type efrit-progress-injection-types))
+  (let* ((inject-dir (efrit-progress--inject-dir session-id))
+         (timestamp (format-time-string "%Y%m%d%H%M%S%3N"))
+         (filename (format "%s_%s.json" timestamp type))
+         (filepath (expand-file-name filename inject-dir))
+         (temp-file (make-temp-file "efrit-inject-" nil ".json"))
+         (data `(("type" . ,(symbol-name type))
+                 ("message" . ,message)
+                 ("timestamp" . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+                 ,@(when priority `(("priority" . ,priority))))))
+    ;; Ensure directory exists
+    (unless (file-directory-p inject-dir)
+      (make-directory inject-dir t))
+    ;; Write atomically: temp file then rename
+    (with-temp-file temp-file
+      (insert (json-encode data)))
+    (rename-file temp-file filepath)
+    (efrit-log 'info "Injected %s message into session %s" type session-id)
+    filepath))
+
 ;;; Status Query
 
 (defun efrit-progress-get-status ()
@@ -388,6 +527,9 @@ Returns nil if no injection is pending."
 Useful for external queries."
   `((session . ,efrit-progress--current-session)
     (progress-file . ,efrit-progress--current-file)
+    (inject-dir . ,(when efrit-progress--current-session
+                     (efrit-progress--inject-dir efrit-progress--current-session)))
+    (pending-injections . ,(efrit-progress-inject-queue-count))
     (event-count . ,efrit-progress--event-counter)
     (last-tool . ,efrit-progress--last-tool)
     (tool-repeat-count . ,efrit-progress--tool-repeat-count)))
@@ -454,6 +596,230 @@ Returns the path to the progress file."
         efrit-progress--current-file)
     (message "No active session")
     nil))
+
+;;;###autoload
+(defun efrit-progress-inject-dir ()
+  "Show current session's inject directory for injections.
+Returns the path to the inject queue directory."
+  (interactive)
+  (if efrit-progress--current-session
+      (let ((dir (efrit-progress--inject-dir efrit-progress--current-session)))
+        (message "Inject to: %s/<timestamp>_<type>.json" dir)
+        dir)
+    (message "No active session")
+    nil))
+
+;;; Session Inspector
+
+(defun efrit-progress--list-sessions ()
+  "Return list of available session IDs with progress files."
+  (let ((sessions-dir (efrit-config-data-file "" "sessions"))
+        sessions)
+    (when (file-directory-p sessions-dir)
+      (dolist (dir (directory-files sessions-dir t "^[^.]"))
+        (when (and (file-directory-p dir)
+                   (file-exists-p (expand-file-name "progress.jsonl" dir)))
+          (push (file-name-nondirectory dir) sessions))))
+    (nreverse sessions)))
+
+(defun efrit-progress--parse-jsonl-line (line)
+  "Parse a JSONL LINE and return alist."
+  (condition-case nil
+      (let ((json-object-type 'alist)
+            (json-array-type 'vector)
+            (json-key-type 'string))
+        (json-read-from-string line))
+    (error nil)))
+
+(defun efrit-progress--format-event (event)
+  "Format EVENT alist for display in inspector buffer."
+  (let* ((event-type (cdr (assoc "type" event)))
+         (timestamp (cdr (assoc "timestamp" event)))
+         (time-str (if timestamp
+                       (replace-regexp-in-string ".*T\\([0-9:]+\\).*" "\\1" timestamp)
+                     "??:??:??")))
+    (pcase event-type
+      ("session-start"
+       (let ((command (cdr (assoc "command" event))))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize "═══ SESSION START ═══\n" 'face 'efrit-progress-section-header)
+                 (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (format "Command: %s\n" command))))
+      ("session-end"
+       (let ((success (cdr (assoc "success" event))))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize (format "═══ SESSION %s ═══\n"
+                                    (if success "COMPLETE" "FAILED"))
+                            'face (if success 'efrit-progress-success 'efrit-progress-error)))))
+      ("tool-start"
+       (let ((tool (cdr (assoc "tool" event)))
+             (repeat (cdr (assoc "repeat_count" event))))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize (format "▶ %s" tool) 'face 'efrit-progress-tool-name)
+                 (if (and repeat (> repeat 1))
+                     (format " (repeat #%d)" repeat)
+                   "")
+                 "\n")))
+      ("tool-result"
+       (let ((tool (cdr (assoc "tool" event)))
+             (success (cdr (assoc "success" event))))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize (format "◀ %s %s\n" tool (if success "✓" "✗"))
+                            'face (if success 'efrit-progress-success 'efrit-progress-error)))))
+      ("text"
+       (let ((message (cdr (assoc "message" event)))
+             (msg-type (cdr (assoc "message_type" event))))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize (efrit-progress--truncate message 200)
+                            'face (pcase msg-type
+                                    ("claude" 'efrit-progress-claude-message)
+                                    ("error" 'efrit-progress-error)
+                                    (_ nil)))
+                 "\n")))
+      ("injection-received"
+       (let* ((content (cdr (assoc "content" event)))
+              (inject-type (if content (cdr (assoc "type" content)) "?"))
+              (inject-msg (if content (cdr (assoc "message" content)) "?")))
+         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+                 (propertize (format "📥 INJECTION [%s]: %s\n"
+                                    inject-type
+                                    (efrit-progress--truncate inject-msg 100))
+                            'face 'efrit-progress-section-header))))
+      (_
+       (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
+               (format "%s\n" event-type))))))
+
+(defvar efrit-watch--session-id nil
+  "Session ID being watched in current buffer.")
+
+(defvar efrit-watch--last-position 0
+  "Last read position in progress file.")
+
+(defvar efrit-watch--timer nil
+  "Timer for auto-refresh.")
+
+(defun efrit-watch--refresh ()
+  "Refresh the watch buffer with new events."
+  (when-let* ((session-id efrit-watch--session-id)
+              (progress-file (efrit-progress--progress-file session-id)))
+    (when (file-exists-p progress-file)
+      (let ((new-content "")
+            (current-size (nth 7 (file-attributes progress-file))))
+        ;; Read new content from last position
+        (when (> current-size efrit-watch--last-position)
+          (with-temp-buffer
+            (insert-file-contents progress-file nil efrit-watch--last-position current-size)
+            (goto-char (point-min))
+            (while (not (eobp))
+              (let ((line (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position))))
+                (unless (string-empty-p line)
+                  (when-let* ((event (efrit-progress--parse-jsonl-line line)))
+                    (setq new-content
+                          (concat new-content (efrit-progress--format-event event))))))
+              (forward-line 1)))
+          (setq efrit-watch--last-position current-size))
+        ;; Insert new content
+        (when (not (string-empty-p new-content))
+          (let ((inhibit-read-only t)
+                (at-end (= (point) (point-max))))
+            (save-excursion
+              (goto-char (point-max))
+              (insert new-content))
+            (when at-end
+              (goto-char (point-max)))))))))
+
+(defun efrit-watch--start-timer ()
+  "Start the auto-refresh timer."
+  (unless efrit-watch--timer
+    (setq efrit-watch--timer
+          (run-with-timer 0.5 0.5 #'efrit-watch--refresh-if-visible))))
+
+(defun efrit-watch--stop-timer ()
+  "Stop the auto-refresh timer."
+  (when efrit-watch--timer
+    (cancel-timer efrit-watch--timer)
+    (setq efrit-watch--timer nil)))
+
+(defun efrit-watch--refresh-if-visible ()
+  "Refresh watch buffer if it's visible."
+  (when-let* ((buffer (get-buffer "*Efrit Watch*")))
+    (when (get-buffer-window buffer t)
+      (with-current-buffer buffer
+        (efrit-watch--refresh)))))
+
+(defvar efrit-watch-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "q" 'quit-window)
+    (define-key map "g" 'efrit-watch--refresh)
+    (define-key map "i" 'efrit-watch-inject)
+    (define-key map "s" 'efrit-watch-session)
+    map)
+  "Keymap for efrit-watch-mode.")
+
+(define-derived-mode efrit-watch-mode special-mode "Efrit-Watch"
+  "Major mode for watching Efrit session progress.
+
+\\{efrit-watch-mode-map}"
+  (setq-local truncate-lines nil)
+  (setq-local word-wrap t)
+  (make-local-variable 'efrit-watch--session-id)
+  (make-local-variable 'efrit-watch--last-position)
+  (add-hook 'kill-buffer-hook #'efrit-watch--stop-timer nil t))
+
+(defun efrit-watch-inject ()
+  "Inject a message into the watched session."
+  (interactive)
+  (if efrit-watch--session-id
+      (let* ((type (intern (completing-read
+                           "Type: " '("guidance" "abort" "priority" "context"))))
+             (message (read-string "Message: ")))
+        (efrit-progress-inject efrit-watch--session-id type message)
+        (message "Injected %s message to %s" type efrit-watch--session-id))
+    (message "No session being watched")))
+
+;;;###autoload
+(defun efrit-watch-session (&optional session-id)
+  "Watch a session's progress in a live inspector buffer.
+If SESSION-ID is nil, prompt for a session from available sessions.
+If called interactively with prefix arg, always prompt."
+  (interactive
+   (list (when (or current-prefix-arg
+                   (not efrit-progress--current-session))
+           (let ((sessions (efrit-progress--list-sessions)))
+             (if sessions
+                 (completing-read "Session: " sessions nil t)
+               (user-error "No sessions with progress files found"))))))
+  ;; Default to current session
+  (setq session-id (or session-id efrit-progress--current-session))
+  (unless session-id
+    (let ((sessions (efrit-progress--list-sessions)))
+      (if sessions
+          (setq session-id (completing-read "Session: " sessions nil t))
+        (user-error "No sessions with progress files found"))))
+  ;; Create or get watch buffer
+  (let* ((buffer (get-buffer-create "*Efrit Watch*"))
+         (progress-file (efrit-progress--progress-file session-id)))
+    (unless (file-exists-p progress-file)
+      (user-error "No progress file for session %s" session-id))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer))
+      (efrit-watch-mode)
+      (setq efrit-watch--session-id session-id)
+      (setq efrit-watch--last-position 0)
+      ;; Insert header
+      (let ((inhibit-read-only t))
+        (insert (propertize (format "Watching session: %s\n" session-id)
+                           'face 'efrit-progress-section-header))
+        (insert (format "Progress file: %s\n" progress-file))
+        (insert "Keys: g=refresh, i=inject, s=switch session, q=quit\n")
+        (insert "───────────────────────────────────────\n"))
+      ;; Load existing content
+      (efrit-watch--refresh)
+      ;; Start auto-refresh
+      (efrit-watch--start-timer))
+    (display-buffer buffer)))
 
 (provide 'efrit-progress)
 

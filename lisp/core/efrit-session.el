@@ -96,7 +96,7 @@ If nil, uses the default location in the efrit data directory."
   command                 ; Original command from user
   work-log                ; List of (result elisp todo-snapshot) tuples
   start-time              ; When session started
-  status                  ; 'active, 'waiting, 'complete, 'cancelled
+  status                  ; 'active, 'waiting, 'complete, 'cancelled, 'waiting-for-user
   buffer                  ; Original buffer for context
   ;; Loop detection and session tracking
   tool-history            ; List of (tool-name timestamp progress-tick input-hash result-hash)
@@ -110,7 +110,11 @@ If nil, uses the default location in the efrit data directory."
   buffers-created         ; Count of buffers created
   files-modified          ; Count of files modified
   execution-outputs       ; Count of non-empty eval_sexp/shell_exec outputs
-  last-tool-called)       ; Last tool name for simple repeat detection
+  last-tool-called        ; Last tool name for simple repeat detection
+  ;; Conversation history for interactive sessions
+  conversation-history    ; List of messages: (role content timestamp)
+  pending-question        ; Current question waiting for user input
+  user-responses)         ; List of user responses received
 
 ;;; Session Registry (Multi-step Execution)
 
@@ -172,7 +176,10 @@ RESULT is the optional completion result (may be nil).")
                   :buffers-created 0
                   :files-modified 0
                   :execution-outputs 0
-                  :last-tool-called nil)))
+                  :last-tool-called nil
+                  :conversation-history nil
+                  :pending-question nil
+                  :user-responses nil)))
     (puthash id session efrit-session--registry)
     (efrit-log 'info "Created session %s: %s" id
                (efrit-common-truncate-string command 60))
@@ -384,6 +391,85 @@ file-modification, execution-output."
                           (or (efrit-session-files-modified session) 0)
                           (or (efrit-session-execution-outputs session) 0))))
       (> current-tick last-tick))))
+
+;;; Conversation History Management (for interactive sessions)
+
+(defun efrit-session-add-message (session role content)
+  "Add a message to SESSION's conversation history.
+ROLE is either \\='user or \\='assistant.
+CONTENT is the message text."
+  (when session
+    (let ((message (list role content (format-time-string "%Y-%m-%dT%H:%M:%S%z"))))
+      (setf (efrit-session-conversation-history session)
+            (append (efrit-session-conversation-history session) (list message)))
+      (efrit-log 'debug "Added %s message to conversation" role))))
+
+(defun efrit-session-get-conversation (session)
+  "Get the conversation history from SESSION as a list.
+Each item is (role content timestamp)."
+  (when session
+    (efrit-session-conversation-history session)))
+
+(defun efrit-session-set-pending-question (session question &optional options)
+  "Set QUESTION as pending user input in SESSION.
+OPTIONS is an optional list of choices for the user."
+  (when session
+    (setf (efrit-session-pending-question session)
+          (list question options (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+    (setf (efrit-session-status session) 'waiting-for-user)
+    (efrit-log 'info "Session %s waiting for user input: %s"
+               (efrit-session-id session)
+               (efrit-common-truncate-string question 60))))
+
+(defun efrit-session-get-pending-question (session)
+  "Get the pending question from SESSION.
+Returns (question options timestamp) or nil."
+  (when session
+    (efrit-session-pending-question session)))
+
+(defun efrit-session-respond-to-question (session response)
+  "Record user RESPONSE to pending question in SESSION.
+Clears the pending question and returns the session to active status."
+  (when (and session (efrit-session-pending-question session))
+    ;; Record the response
+    (let ((response-entry (list response
+                                (car (efrit-session-pending-question session))
+                                (format-time-string "%Y-%m-%dT%H:%M:%S%z"))))
+      (setf (efrit-session-user-responses session)
+            (append (efrit-session-user-responses session) (list response-entry))))
+    ;; Add to conversation history
+    (efrit-session-add-message session 'user response)
+    ;; Clear pending and resume
+    (setf (efrit-session-pending-question session) nil)
+    (setf (efrit-session-status session) 'active)
+    (efrit-log 'info "Session %s received user response"
+               (efrit-session-id session))
+    response))
+
+(defun efrit-session-waiting-for-user-p (session)
+  "Return non-nil if SESSION is waiting for user input."
+  (and session
+       (eq (efrit-session-status session) 'waiting-for-user)))
+
+(defun efrit-session-format-conversation-for-api (session)
+  "Format SESSION's conversation history for Claude API.
+Returns a vector of message objects suitable for the messages array."
+  (when session
+    (let ((history (efrit-session-conversation-history session)))
+      (if (null history)
+          ;; Just the original command
+          (vector `((role . "user")
+                   (content . ,(efrit-session-command session))))
+        ;; Full conversation
+        (vconcat
+         (list `((role . "user")
+                (content . ,(efrit-session-command session))))
+         (mapcar (lambda (msg)
+                  (let ((role (nth 0 msg))
+                        (content (nth 1 msg)))
+                    `((role . ,(if (eq role 'user) "user" "assistant"))
+                      (content . ,content))))
+                history))))))
 
 ;;; Session Queue Management (Multi-step Execution)
 
