@@ -269,5 +269,133 @@
       (let ((result (efrit-do--execute-tool tool3)))
         (should (string-match-p "Session limit" result))))))
 
+;;; Error Loop Detection Tests
+
+(ert-deftest test-error-loop-reset ()
+  "Test that error loop state resets correctly."
+  ;; Set up some error tracking state
+  (setq efrit-do--last-error-hash "abc123")
+  (setq efrit-do--same-error-count 5)
+  (setq efrit-do--error-history '(("hash1" . "error1") ("hash2" . "error2")))
+
+  ;; Reset via circuit breaker reset (which calls error loop reset)
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Verify error loop state is cleared
+  (should (null efrit-do--last-error-hash))
+  (should (= efrit-do--same-error-count 0))
+  (should (null efrit-do--error-history)))
+
+(ert-deftest test-error-loop-hash-normalization ()
+  "Test that error message hashing normalizes variations."
+  ;; Same error with different line numbers should hash the same
+  (let ((hash1 (efrit-do--hash-error-message "Error at line 10: undefined function"))
+        (hash2 (efrit-do--hash-error-message "Error at line 42: undefined function")))
+    (should (string= hash1 hash2)))
+
+  ;; Different errors should hash differently
+  (let ((hash1 (efrit-do--hash-error-message "Symbol's value as variable is void"))
+        (hash2 (efrit-do--hash-error-message "Wrong type argument")))
+    (should (not (string= hash1 hash2)))))
+
+(ert-deftest test-error-loop-record-same-error ()
+  "Test that recording same error increments counter."
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Record same error multiple times
+  (efrit-do--error-loop-record "Symbol's value as variable is void: foo")
+  (should (= efrit-do--same-error-count 1))
+
+  (efrit-do--error-loop-record "Symbol's value as variable is void: foo")
+  (should (= efrit-do--same-error-count 2))
+
+  (efrit-do--error-loop-record "Symbol's value as variable is void: foo")
+  (should (= efrit-do--same-error-count 3)))
+
+(ert-deftest test-error-loop-record-different-error ()
+  "Test that recording different error resets counter."
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Record first error
+  (efrit-do--error-loop-record "Symbol's value as variable is void: foo")
+  (efrit-do--error-loop-record "Symbol's value as variable is void: foo")
+  (should (= efrit-do--same-error-count 2))
+
+  ;; Record different error - should reset counter
+  (efrit-do--error-loop-record "Wrong type argument: stringp, 42")
+  (should (= efrit-do--same-error-count 1)))
+
+(ert-deftest test-error-loop-warning-threshold ()
+  "Test that warning is returned at threshold."
+  (efrit-do--circuit-breaker-reset)
+  (let ((efrit-do-max-same-error-occurrences 3)
+        (efrit-do-error-loop-auto-complete 10)) ; High so we don't hit it
+
+    ;; First two errors - no warning
+    (let ((result1 (efrit-do--error-loop-record "Test error")))
+      (should (null (car result1))))
+    (let ((result2 (efrit-do--error-loop-record "Test error")))
+      (should (null (car result2))))
+
+    ;; Third error - should trigger warning
+    (let ((result3 (efrit-do--error-loop-record "Test error")))
+      (should (eq (car result3) 'warning))
+      (should (string-match-p "ERROR LOOP DETECTED" (cdr result3)))
+      (should (string-match-p "3 times" (cdr result3))))))
+
+(ert-deftest test-error-loop-auto-complete ()
+  "Test that auto-complete trips circuit breaker at threshold."
+  (efrit-do--circuit-breaker-reset)
+  (let ((efrit-do-max-same-error-occurrences 2)
+        (efrit-do-error-loop-auto-complete 4))
+
+    ;; Record errors up to auto-complete threshold
+    (dotimes (i 3)
+      (efrit-do--error-loop-record "Persistent error"))
+    (should (null efrit-do--circuit-breaker-tripped))
+
+    ;; 4th occurrence should trip breaker
+    (let ((result (efrit-do--error-loop-record "Persistent error")))
+      (should (eq (car result) 'auto-complete))
+      (should efrit-do--circuit-breaker-tripped)
+      (should (string-match-p "Error loop detected" efrit-do--circuit-breaker-tripped)))))
+
+(ert-deftest test-error-loop-check-result-with-error ()
+  "Test error loop check on tool result containing error."
+  (efrit-do--circuit-breaker-reset)
+  (let ((efrit-do-max-same-error-occurrences 2)
+        (efrit-do-error-loop-auto-complete nil)) ; Disable auto-complete
+
+    ;; Simulate two tool results with same error
+    (efrit-do--error-loop-check-result "[Error: Symbol's value as variable is void: test]")
+    (let ((check (efrit-do--error-loop-check-result "[Error: Symbol's value as variable is void: test]")))
+      ;; Second occurrence hits threshold - result should be modified
+      (should (car check))
+      (should (string-match-p "ERROR LOOP DETECTED" (cdr check))))))
+
+(ert-deftest test-error-loop-check-result-success-resets ()
+  "Test that successful result resets error counter."
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Build up error count
+  (efrit-do--error-loop-record "Test error")
+  (efrit-do--error-loop-record "Test error")
+  (should (= efrit-do--same-error-count 2))
+
+  ;; Success should reset the counter
+  (efrit-do--error-loop-check-result "[Success: Operation completed]")
+  (should (= efrit-do--same-error-count 0)))
+
+(ert-deftest test-error-loop-history-limit ()
+  "Test that error history is limited to 10 entries."
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Record 15 different errors
+  (dotimes (i 15)
+    (efrit-do--error-loop-record (format "Error %d: unique message" i)))
+
+  ;; History should be limited to 10
+  (should (= (length efrit-do--error-history) 10)))
+
 (provide 'test-circuit-breaker)
 ;;; test-circuit-breaker.el ends here

@@ -112,6 +112,21 @@ Recommended to keep enabled for safety."
   :type 'boolean
   :group 'efrit-do)
 
+(defcustom efrit-do-max-same-error-occurrences 3
+  "Maximum times the same error can occur before triggering loop detection.
+When this limit is reached, a warning message is injected telling Claude
+to try a different approach.  Error signatures are tracked by hashing
+the error message."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-error-loop-auto-complete 5
+  "Auto-complete session after this many same-error occurrences.
+When the same error occurs this many times, the session is automatically
+terminated with an error summary.  Set to nil to disable auto-completion."
+  :type '(choice integer (const nil))
+  :group 'efrit-do)
+
 (defcustom efrit-do-show-tool-execution t
   "Whether to show feedback when tools are executed.
 When non-nil, displays messages like \\='Executing tool eval_sexp...\\=' during
@@ -219,6 +234,18 @@ runaway loops.")
 (defvar efrit-do--circuit-breaker-tripped nil
   "When non-nil, circuit breaker has tripped and session is terminated.
 Stores reason for tripping as a string.")
+
+;;; Error Loop Detection State
+
+(defvar efrit-do--last-error-hash nil
+  "Hash of the most recent error message for loop detection.")
+
+(defvar efrit-do--same-error-count 0
+  "Count of consecutive occurrences of the same error.")
+
+(defvar efrit-do--error-history nil
+  "List of recent error signatures for pattern analysis.
+Each entry is (error-hash . error-message).")
 
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
@@ -456,11 +483,104 @@ This is the main entry point for dynamic tool filtering."
   (setq efrit-do--last-tool-called nil)
   (setq efrit-do--tool-call-count 0)
   (setq efrit-do--last-tool-input nil)
-  (setq efrit-do--identical-call-count 0))
+  (setq efrit-do--identical-call-count 0)
+  ;; Reset error loop detection state
+  (efrit-do--error-loop-reset))
 
 (defun efrit-do--hash-tool-input (tool-input)
   "Create a hash string for TOOL-INPUT to detect identical calls."
   (secure-hash 'md5 (format "%S" tool-input)))
+
+;;; Error Loop Detection Functions
+
+(defun efrit-do--hash-error-message (error-msg)
+  "Create a hash string for ERROR-MSG to detect repeated errors.
+Normalizes the error message to ignore minor variations like timestamps
+or memory addresses that might differ between identical errors."
+  (when error-msg
+    (let ((normalized (replace-regexp-in-string
+                       ;; Remove hex addresses like #<buffer 0x12345>
+                       "#<[^>]+>"
+                       "#<normalized>"
+                       (replace-regexp-in-string
+                        ;; Remove line numbers that might vary
+                        "line [0-9]+"
+                        "line N"
+                        error-msg))))
+      (secure-hash 'md5 normalized))))
+
+(defun efrit-do--error-loop-reset ()
+  "Reset error loop detection state for a new session."
+  (setq efrit-do--last-error-hash nil)
+  (setq efrit-do--same-error-count 0)
+  (setq efrit-do--error-history nil))
+
+(defun efrit-do--error-loop-record (error-msg)
+  "Record ERROR-MSG for error loop detection.
+Returns (WARNING-P . MESSAGE) where WARNING-P indicates an error loop detected."
+  (when (and error-msg (stringp error-msg))
+    (let* ((error-hash (efrit-do--hash-error-message error-msg))
+           (is-same-error (and error-hash
+                               efrit-do--last-error-hash
+                               (equal error-hash efrit-do--last-error-hash))))
+      ;; Update tracking state
+      (if is-same-error
+          (setq efrit-do--same-error-count (1+ efrit-do--same-error-count))
+        (setq efrit-do--same-error-count 1))
+      (setq efrit-do--last-error-hash error-hash)
+
+      ;; Add to history (keep last 10)
+      (push (cons error-hash (substring error-msg 0 (min 100 (length error-msg))))
+            efrit-do--error-history)
+      (when (> (length efrit-do--error-history) 10)
+        (setq efrit-do--error-history (seq-take efrit-do--error-history 10)))
+
+      ;; Check for error loop conditions
+      (cond
+       ;; Auto-complete threshold reached - trip the circuit breaker
+       ((and efrit-do-error-loop-auto-complete
+             (>= efrit-do--same-error-count efrit-do-error-loop-auto-complete))
+        (setq efrit-do--circuit-breaker-tripped
+              (format "Error loop detected: Same error occurred %d times. Error: %s"
+                      efrit-do--same-error-count
+                      (substring error-msg 0 (min 150 (length error-msg)))))
+        (efrit-log 'error "Error loop auto-complete: %s" efrit-do--circuit-breaker-tripped)
+        (cons 'auto-complete efrit-do--circuit-breaker-tripped))
+
+       ;; Warning threshold reached - inject guidance
+       ((>= efrit-do--same-error-count efrit-do-max-same-error-occurrences)
+        (let ((warning (format "[ERROR LOOP DETECTED: This error has occurred %d times. The same approach keeps failing. You MUST try a COMPLETELY DIFFERENT approach. Consider:\n- Different function or API\n- Alternative algorithm\n- Simplified approach\n- Ask user for clarification\nDO NOT retry the same code pattern.]"
+                               efrit-do--same-error-count)))
+          (efrit-log 'warn "Error loop warning: error occurred %d times" efrit-do--same-error-count)
+          (cons 'warning warning)))
+
+       ;; No loop detected yet
+       (t (cons nil nil))))))
+
+(defun efrit-do--error-loop-check-result (result)
+  "Check RESULT for errors and track for loop detection.
+Returns (MODIFIED-P . NEW-RESULT) where MODIFIED-P is t if result was modified
+with an error loop warning, and NEW-RESULT contains the possibly modified result."
+  (let* ((error-info (efrit-do--extract-error-info result))
+         (is-error (car error-info))
+         (error-msg (cdr error-info)))
+    (if (not is-error)
+        ;; No error - reset the same-error counter (but keep last hash)
+        (progn
+          (setq efrit-do--same-error-count 0)
+          (cons nil result))
+      ;; Error detected - record and check for loop
+      (let ((loop-result (efrit-do--error-loop-record error-msg)))
+        (pcase (car loop-result)
+          ('auto-complete
+           ;; Session should be terminated
+           (cons t (concat result "\n\n" (cdr loop-result))))
+          ('warning
+           ;; Inject warning into result
+           (cons t (concat result "\n\n" (cdr loop-result))))
+          (_
+           ;; No loop detected
+           (cons nil result)))))))
 
 (defun efrit-do--circuit-breaker-check-limits (tool-name &optional tool-input)
   "Check circuit breaker limits before executing TOOL-NAME with TOOL-INPUT.
@@ -1494,10 +1614,13 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))
 
-          ;; Prepend warning if present
-          (if warning
-              (concat "\n" warning "\n" result)
-            result)))))))
+          ;; Check result for error loops and inject warnings if needed
+          (let* ((loop-check (efrit-do--error-loop-check-result result))
+                 (final-result (cdr loop-check)))
+            ;; Prepend circuit breaker warning if present
+            (if warning
+                (concat "\n" warning "\n" final-result)
+              final-result))))))))
 
 ;;; Command execution
 
