@@ -123,6 +123,12 @@ If nil, uses the default location in the efrit data directory."
 (defvar efrit-session--registry (make-hash-table :test 'equal)
   "Hash table of all multi-step sessions by ID.")
 
+(defvar efrit-session-completed-hook nil
+  "Hook run when a multi-step session completes.
+Each function is called with two arguments: SESSION and RESULT.
+SESSION is the efrit-session struct that completed.
+RESULT is the optional completion result (may be nil).")
+
 ;;; Metrics Tracking State Variables
 
 (defvar efrit-session-id nil
@@ -200,7 +206,9 @@ If nil, uses the default location in the efrit data directory."
                    "")))
     ;; Clear active if this was active
     (when (eq session efrit-session--active)
-      (setq efrit-session--active nil))))
+      (setq efrit-session--active nil))
+    ;; Fire completion hook so async callers can be notified
+    (run-hook-with-args 'efrit-session-completed-hook session result)))
 
 (defun efrit-session-cancel (session)
   "Cancel multi-step SESSION and mark it as aborted."
