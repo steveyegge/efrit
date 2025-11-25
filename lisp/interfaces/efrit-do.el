@@ -657,8 +657,26 @@ Updates counters and session tracking. Uses efrit--safe-execute for safety."
    "   - DO NOT alternate between todo_status and todo_analyze\n"
    "   - DO NOT call todo_analyze multiple times without creating TODOs\n"
    "   - After todo_status shows pending TODOs: call todo_get_instructions (preferred) or todo_execute_next\n"
-     "   - After todo_get_instructions: DO the actual work with eval_sexp/shell_exec, then todo_update to mark complete\n"
-     "   - Focus on EXECUTION not endless analysis\n"))
+   "   - After todo_get_instructions: DO the actual work with eval_sexp/shell_exec, then todo_update to mark complete\n"
+   "   - Focus on EXECUTION not endless analysis\n\n"
+
+   "8. ERROR ADAPTATION PROTOCOL (CRITICAL!):\n"
+   "   When code fails with an error:\n"
+   "   a) ANALYZE the error message - understand WHY it failed\n"
+   "      - Type errors mean wrong data type (check return values with describe-function)\n"
+   "      - 'Wrong type argument' means you're passing X when it expects Y\n"
+   "      - Void function/variable means the name is wrong or not loaded\n"
+   "   b) If same error occurs 2+ times, TRY A DIFFERENT APPROACH:\n"
+   "      - Use (describe-function 'function-name) to read actual documentation\n"
+   "      - Use (symbol-function 'function-name) to inspect implementation\n"
+   "      - Try simpler alternatives (e.g., message instead of complex formatting)\n"
+   "   c) NEVER retry the same code pattern more than twice\n"
+   "      - If (foo (bar x)) fails, don't try (foo (bar (baz x)))\n"
+   "      - Instead, read documentation or try completely different approach\n"
+   "   d) When in doubt, use (describe-function 'name) to learn correct usage\n"
+   "   e) Example: If garbage-collect returns unexpected structure:\n"
+   "      - DON'T keep guessing the structure\n"
+   "      - DO: (describe-function 'garbage-collect) to learn the actual return format\n"))
 
 ;;; Context ring management
 
@@ -1582,9 +1600,9 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
                                             (error 
                                              (format "Error building context: %s" 
                                                      (error-message-string err))))))
-                        (format "\n\nRETRY ATTEMPT %d/%d:\nPrevious code that failed: %s\nError encountered: %s\n\nCURRENT EMACS STATE:\n%s\n\nPlease analyze the error and current state to provide a corrected solution.\n\n"
-                                retry-count efrit-do-max-retries 
-                                (or previous-code "Unknown") 
+                        (format "\n\nRETRY ATTEMPT %d/%d:\nPrevious code that failed: %s\nError encountered: %s\n\nCURRENT EMACS STATE:\n%s\n\nERROR ADAPTATION REQUIRED:\n1. ANALYZE the error - what type is expected vs provided?\n2. If 'Wrong type argument', the function returns a different type than you assumed\n3. Use (describe-function 'name) to learn the ACTUAL return value format\n4. DO NOT retry similar code - try a fundamentally different approach\n5. If the same error pattern occurred before, you MUST read documentation first\n\n"
+                                retry-count efrit-do-max-retries
+                                (or previous-code "Unknown")
                                 (or error-msg "Unknown error")
                                 rich-context))))
         (session-info (when session-id
@@ -1608,10 +1626,18 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n\n"
           
           "TOOL SELECTION GUIDE:\n"
-          "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, etc.)\n"
+          "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, define functions, etc.)\n"
           "- shell_exec: ONLY when explicitly asking for shell/terminal operations\n"
-          "- buffer_create: For reports, lists, and formatted output display\n"
+          "- buffer_create: ONLY for read-only reports, lists, and formatted output display\n"
+          "  * NEVER use buffer_create for code that needs to be evaluated/executed\n"
+          "  * For code generation: use eval_sexp with (with-current-buffer... (insert...)) then evaluate\n"
           "- todo_analyze: ONLY for genuinely complex multi-step workflows\n\n"
+
+          "CODE GENERATION vs DISPLAY:\n"
+          "- When user asks to WRITE CODE or DEFINE FUNCTIONS: Use eval_sexp to insert into buffer AND evaluate\n"
+          "- When user asks to SHOW/DISPLAY RESULTS: Use buffer_create for formatted output\n"
+          "- Example: 'write fibonacci function' -> Use eval_sexp to (defun fib ...)\n"
+          "- Example: 'show me all buffers' -> Use buffer_create with (buffer-list) results\n\n"
           
           "EXECUTION RULES:\n"
           "- Generate valid Elisp code to accomplish the user's request\n"
