@@ -35,11 +35,29 @@
 (declare-function efrit-config-data-file "efrit-config")
 
 (require 'package)
-(require 'efrit-config)
 
 ;; Minimal package setup for autonomous mode
 (setq package-enable-at-startup nil)
 (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/") t)
+
+;; Load Efrit core system FIRST to set up load paths
+;; efrit-source-dir points to lisp/ (parent of dev/)
+(defvar efrit-source-dir
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name buffer-file-name))))
+  "Directory containing Efrit source files (lisp/).")
+
+(message "Efrit Autonomous: Loading Efrit from %s" efrit-source-dir)
+
+;; Add Efrit source to load path BEFORE requiring any efrit modules
+(add-to-list 'load-path efrit-source-dir)
+(add-to-list 'load-path (expand-file-name "core" efrit-source-dir))
+(add-to-list 'load-path (expand-file-name "interfaces" efrit-source-dir))
+(add-to-list 'load-path (expand-file-name "support" efrit-source-dir))
+
+;; NOW we can require efrit-config
+(require 'efrit-config)
 
 ;; Configure autonomous environment
 (message "Efrit Autonomous: Starting AI development environment...")
@@ -55,23 +73,20 @@
 (when (fboundp 'tool-bar-mode) (tool-bar-mode -1))
 (when (fboundp 'scroll-bar-mode) (scroll-bar-mode -1))
 
-;; Load Efrit core system
-(defvar efrit-source-dir (file-name-directory (or load-file-name buffer-file-name))
-  "Directory containing Efrit source files.")
-
-(message "Efrit Autonomous: Loading Efrit from %s" efrit-source-dir)
-
-;; Add Efrit source to load path
-(add-to-list 'load-path efrit-source-dir)
-(add-to-list 'load-path (expand-file-name "core" efrit-source-dir))
-(add-to-list 'load-path (expand-file-name "interfaces" efrit-source-dir))
-(add-to-list 'load-path (expand-file-name "support" efrit-source-dir))
-
-;; Configure autonomous queue system BEFORE loading modules
-(defvar efrit-autonomous-queue-dir nil
+;; Initialize directories using efrit-config (already loaded above)
+(setq efrit-autonomous-work-dir (efrit-config-workspace-dir))
+(defvar efrit-autonomous-queue-dir (efrit-config-data-file "queue-ai")
   "Queue directory for autonomous AI communication.")
 
-(message "Efrit Autonomous: Setting up queue system at %s" efrit-autonomous-queue-dir)
+;; Ensure workspace exists
+(unless (file-directory-p efrit-autonomous-work-dir)
+  (make-directory efrit-autonomous-work-dir t))
+
+;; Set default directory to workspace
+(setq default-directory efrit-autonomous-work-dir)
+
+(message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
+(message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
 
 ;; Override queue directory for AI isolation (MUST be set before loading remote-queue)
 (setq efrit-remote-queue-directory efrit-autonomous-queue-dir)
@@ -79,17 +94,6 @@
 ;; Load Efrit modules in dependency order
 (condition-case err
     (progn
-      (require 'efrit-config)
-      ;; Initialize directories after config is loaded
-      (setq efrit-autonomous-work-dir (efrit-config-workspace-dir))
-      (setq efrit-autonomous-queue-dir (efrit-config-data-file "queue-ai"))
-      ;; Ensure workspace exists now that the path is known
-      (unless (file-directory-p efrit-autonomous-work-dir)
-        (make-directory efrit-autonomous-work-dir t))
-      ;; Set default directory to workspace
-      (setq default-directory efrit-autonomous-work-dir)
-      (message "Efrit Autonomous: Using workspace %s" efrit-autonomous-work-dir)
-      (message "Efrit Autonomous: Using queue %s" efrit-autonomous-queue-dir)
       (require 'efrit-tools)
       (require 'efrit-do)
       (require 'efrit-chat)

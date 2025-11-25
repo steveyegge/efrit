@@ -225,7 +225,9 @@ Converts non-ASCII characters to JSON unicode escapes (\\uXXXX)."
    "[^\x00-\x7F]"
    (lambda (char)
      (format "\\u%04X" (string-to-char char)))
-   json-string))
+   json-string
+   nil    ; FIXEDCASE - preserve case
+   t))    ; LITERAL - don't interpret \& and \N in replacement
 
 ;;; Error Recovery
 
