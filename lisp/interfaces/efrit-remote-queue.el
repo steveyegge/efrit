@@ -24,6 +24,26 @@
 (declare-function efrit-do "efrit-do")
 (declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
+;; Forward declarations for efrit-session functions
+(declare-function efrit-session-active "efrit-session")
+(declare-function efrit-session-id "efrit-session")
+(declare-function efrit-session-command "efrit-session")
+(declare-function efrit-session-status "efrit-session")
+(declare-function efrit-session-start-time "efrit-session")
+(declare-function efrit-session-continuation-count "efrit-session")
+(declare-function efrit-session-work-log "efrit-session")
+(declare-function efrit-session-last-tool-called "efrit-session")
+(declare-function efrit-session-buffer-modifications "efrit-session")
+(declare-function efrit-session-todo-status-changes "efrit-session")
+(declare-function efrit-session-buffers-created "efrit-session")
+(declare-function efrit-session-files-modified "efrit-session")
+(declare-function efrit-session-execution-outputs "efrit-session")
+(declare-function efrit-session-last-error "efrit-session")
+(declare-function efrit-session-queue-length "efrit-session")
+
+;; Forward declarations for efrit-progress functions
+(declare-function efrit-progress-get-status "efrit-progress")
+
 ;;; Customization
 
 (defgroup efrit-remote-queue nil
@@ -99,7 +119,7 @@ Must match EFRIT_SCHEMA_VERSION in mcp/src/types.ts.")
   "Valid response status values.
 Must match EfritResponseStatus in mcp/src/types.ts.")
 
-(defconst efrit-remote-queue-valid-request-types '("command" "chat" "eval")
+(defconst efrit-remote-queue-valid-request-types '("command" "chat" "eval" "status")
   "Valid request type values.
 Must match EfritRequestType in mcp/src/types.ts.")
 
@@ -302,13 +322,16 @@ Includes schema version for protocol compatibility."
                  (cond
                   ((string= request-type "command")
                    (efrit-remote-queue--execute-command content))
-                  
+
                   ((string= request-type "chat")
                    (efrit-remote-queue--execute-chat content))
-                  
+
                   ((string= request-type "eval")
                    (efrit-remote-queue--execute-eval content))
-                  
+
+                  ((string= request-type "status")
+                   (efrit-remote-queue--execute-status content))
+
                   (t (error "Unknown request type: %s" request-type))))))
           
           (let ((execution-time (- (float-time) start-time))
@@ -393,6 +416,77 @@ Includes schema version for protocol compatibility."
         (prin1-to-string result))
     (error
      (format "Eval failed: %s" (error-message-string err)))))
+
+(defun efrit-remote-queue--execute-status (_content)
+  "Execute a status query request.
+CONTENT is ignored - status queries return current state.
+Returns a JSON-encodable hash table with session and queue status."
+  (require 'efrit-session)
+  (require 'efrit-progress)
+  (let ((result (make-hash-table :test 'equal)))
+    ;; Queue status
+    (puthash "queue_active" (if efrit-remote-queue--active t :json-false) result)
+    (puthash "queue_stats"
+             (let ((stats (make-hash-table :test 'equal)))
+               (puthash "requests_processed" (alist-get 'requests-processed efrit-remote-queue--stats) stats)
+               (puthash "requests_succeeded" (alist-get 'requests-succeeded efrit-remote-queue--stats) stats)
+               (puthash "requests_failed" (alist-get 'requests-failed efrit-remote-queue--stats) stats)
+               (puthash "processing_count" (hash-table-count efrit-remote-queue--processing) stats)
+               stats)
+             result)
+
+    ;; Active session info
+    (if-let* ((session (efrit-session-active)))
+        (let ((session-info (make-hash-table :test 'equal)))
+          (puthash "has_active_session" t result)
+          (puthash "session_id" (efrit-session-id session) session-info)
+          (puthash "command" (efrit-session-command session) session-info)
+          (puthash "status" (symbol-name (efrit-session-status session)) session-info)
+          (puthash "elapsed_seconds"
+                   (float-time (time-since (efrit-session-start-time session)))
+                   session-info)
+          (puthash "continuation_count"
+                   (or (efrit-session-continuation-count session) 0)
+                   session-info)
+          (puthash "work_log_entries"
+                   (length (efrit-session-work-log session))
+                   session-info)
+          (puthash "last_tool"
+                   (or (efrit-session-last-tool-called session) "none")
+                   session-info)
+          ;; Progress metrics
+          (let ((progress (make-hash-table :test 'equal)))
+            (puthash "buffer_modifications"
+                     (or (efrit-session-buffer-modifications session) 0)
+                     progress)
+            (puthash "todo_status_changes"
+                     (or (efrit-session-todo-status-changes session) 0)
+                     progress)
+            (puthash "buffers_created"
+                     (or (efrit-session-buffers-created session) 0)
+                     progress)
+            (puthash "files_modified"
+                     (or (efrit-session-files-modified session) 0)
+                     progress)
+            (puthash "execution_outputs"
+                     (or (efrit-session-execution-outputs session) 0)
+                     progress)
+            (puthash "progress" progress session-info))
+          (when (efrit-session-last-error session)
+            (puthash "last_error" (efrit-session-last-error session) session-info))
+          (puthash "session" session-info result))
+      (puthash "has_active_session" :json-false result))
+
+    ;; Command queue info
+    (puthash "queued_commands" (efrit-session-queue-length) result)
+
+    ;; Progress file info (for external tail -f)
+    (when-let* ((progress-status (efrit-progress-get-status)))
+      (when-let* ((progress-file (alist-get 'progress-file progress-status)))
+        (puthash "progress_file" progress-file result)))
+
+    ;; Return as JSON string for consistency with other handlers
+    (json-encode result)))
 
 ;;; File monitoring and event handling
 
