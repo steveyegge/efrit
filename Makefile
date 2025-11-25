@@ -39,6 +39,8 @@ help:
 	@echo "  test-simple - Run basic tests only"
 	@echo "  test-loop   - Test TODO loop detection (safe)"
 	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
+	@echo "  test-auto   - Run automated Tier 1 tests (⚠️  BURNS TOKENS!)"
+	@echo "  test-tier TIER=n - Run specific tier tests (⚠️  BURNS TOKENS!)"
 	@echo "  check       - Check syntax and compilation"
 	@echo ""
 	@echo "MCP Server:"
@@ -166,6 +168,25 @@ test-integration: compile
 	@echo "🚀 Running REAL integration test..."
 	@$(EMACS_BATCH) -L lisp -l test/test-real-integration.el
 	@echo "✅ Integration test completed"
+
+# Automated test runner (burns tokens!)
+test-auto: compile
+	@echo "⚠️  WARNING: This runs the automated test suite and BURNS TOKENS!"
+	@echo "Running automated Tier 1 tests..."
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L test \
+		--eval "(require 'efrit-test-runner)" \
+		--eval "(efrit-test-register-tier1-samples)" \
+		--eval "(efrit-test-run-tier 1)"
+	@echo "✅ Automated tests completed"
+
+test-tier: compile
+	@echo "Usage: make test-tier TIER=n (where n is 1-10)"
+	@echo "⚠️  WARNING: This BURNS TOKENS!"
+	@if [ -z "$(TIER)" ]; then echo "Error: TIER not specified"; exit 1; fi
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L test \
+		--eval "(require 'efrit-test-runner)" \
+		--eval "(efrit-test-register-tier1-samples)" \
+		--eval "(efrit-test-run-tier $(TIER))"
 
 # Debug build (with extra information)
 debug:
