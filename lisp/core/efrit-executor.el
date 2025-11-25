@@ -28,13 +28,7 @@
 (require 'efrit-log)
 (require 'efrit-common)
 (require 'efrit-session)
-
-;; Forward declarations
-(declare-function efrit-progress-start-session "efrit-progress")
-(declare-function efrit-progress-end-session "efrit-progress")
-(declare-function efrit-progress-show-message "efrit-progress")
-(declare-function efrit-progress-show-tool-start "efrit-progress")
-(declare-function efrit-progress-show-tool-result "efrit-progress")
+(require 'efrit-progress)
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--execute-tool "efrit-do")
 (declare-function efrit-do--get-current-tools-schema "efrit-do")
@@ -148,13 +142,11 @@ Optionally calls CALLBACK with error message."
     (efrit-executor--update-mode-line "Error!")
     (message "Efrit error: %s" message)
 
-    (when (fboundp 'efrit-progress-show-message)
-      (efrit-progress-show-message message 'error))
+    (efrit-progress-show-message message 'error)
 
     (when-let* ((session (efrit-session-active)))
       (setf (efrit-session-last-error session) message)
-      (when (fboundp 'efrit-progress-end-session)
-        (efrit-progress-end-session (efrit-session-id session) nil)))
+      (efrit-progress-end-session (efrit-session-id session) nil))
 
     (efrit-session-set-active nil)
     (efrit-executor--clear-mode-line)
@@ -208,8 +200,7 @@ Calls CALLBACK with the final result string."
                    ((string= type "text")
                     (when-let* ((text (gethash "text" item)))
                       (setq result-text (concat result-text text))
-                      (when (fboundp 'efrit-progress-show-message)
-                        (efrit-progress-show-message text 'claude))))
+                      (efrit-progress-show-message text 'claude)))
 
                    ;; Handle tool use
                    ((string= type "tool_use")
@@ -275,8 +266,7 @@ Returns the tool result string."
              efrit-executor-max-tool-calls))
 
     ;; Show progress
-    (when (fboundp 'efrit-progress-show-tool-start)
-      (efrit-progress-show-tool-start tool-name input-data))
+    (efrit-progress-show-tool-start tool-name input-data)
 
     ;; Execute via efrit-do's tool handler
     (require 'efrit-do)
@@ -285,13 +275,11 @@ Returns the tool result string."
                (efrit-do--execute-tool tool-item)
              (error
               (let ((error-msg (error-message-string err)))
-                (when (fboundp 'efrit-progress-show-tool-result)
-                  (efrit-progress-show-tool-result tool-name error-msg nil))
+                (efrit-progress-show-tool-result tool-name error-msg nil)
                 (signal (car err) (cdr err)))))))
 
       ;; Show result
-      (when (fboundp 'efrit-progress-show-tool-result)
-        (efrit-progress-show-tool-result tool-name result t))
+      (efrit-progress-show-tool-result tool-name result t)
 
       ;; Track in session
       (when session
@@ -349,8 +337,7 @@ Calls CALLBACK with the final result."
   (efrit-session-complete session result)
   (efrit-executor--clear-mode-line)
 
-  (when (fboundp 'efrit-progress-end-session)
-    (efrit-progress-end-session (efrit-session-id session) t))
+  (efrit-progress-end-session (efrit-session-id session) t)
 
   (let ((elapsed (float-time (time-since (efrit-session-start-time session))))
         (steps (length (efrit-session-work-log session))))
@@ -478,8 +465,7 @@ Calls optional CALLBACK with the result when complete."
       (efrit-executor--update-mode-line "Processing...")
       (efrit-log 'info "Executing asynchronously: %s" command)
 
-      (when (fboundp 'efrit-progress-start-session)
-        (efrit-progress-start-session session-id command))
+      (efrit-progress-start-session session-id command)
 
       (efrit-executor--api-request
        request-data

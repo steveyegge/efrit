@@ -233,7 +233,10 @@ DATA is an alist of event-specific data."
      (format "═══ Starting Session: %s ═══" session-id)
      'efrit-progress-section-header)
     (efrit-progress--buffer-append (format "Command: %s" command))
-    (efrit-progress--buffer-append (format "Progress file: %s\n" efrit-progress--current-file)))
+    (efrit-progress--buffer-append (format "Progress file: %s\n" efrit-progress--current-file))
+    ;; Auto-show the progress buffer
+    (display-buffer buffer '(display-buffer-at-bottom
+                             (window-height . 10))))
 
   (efrit-log 'info "Progress tracking started for session %s" session-id))
 
