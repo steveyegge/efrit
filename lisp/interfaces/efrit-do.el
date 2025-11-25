@@ -30,6 +30,7 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-chat)
+(require 'efrit-progress)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -2129,7 +2130,8 @@ _COMMAND is a short description (currently unused)."
                    (message "Efrit: Executing (%.1fs)..." elapsed)))))
 
 (defun efrit-do--process-result (command result attempt)
-  "Process the final RESULT from executing COMMAND after ATTEMPT attempts."
+  "Process the final RESULT from executing COMMAND after ATTEMPT attempts.
+Returns RESULT for programmatic use."
   (if result
       (let* ((error-info (efrit-do--extract-error-info result))
              (is-error (car error-info)))
@@ -2145,7 +2147,9 @@ _COMMAND is a short description (currently unused)."
           (message "Command executed successfully%s"
                   (if (> attempt 1)
                       (format " (after %d attempts)" attempt)
-                      ""))))
+                      ""))
+          ;; Return the result for programmatic use
+          result))
     ;; Should never reach here, but handle just in case
     (let ((fallback-error "Failed to execute command"))
       (setq efrit-do--last-result fallback-error)
@@ -2199,7 +2203,9 @@ Progress feedback shows elapsed time and tool executions.
 Use \\[keyboard-quit] (C-g) to cancel execution during API calls.
 
 If retry is enabled and errors occur, automatically retry by sending
-error details back to Claude for correction."
+error details back to Claude for correction.
+
+Returns the result string for programmatic use."
   (interactive
    (list (read-string "Command: " nil 'efrit-do-history)))
 
@@ -2212,19 +2218,30 @@ error details back to Claude for correction."
   ;; Reset circuit breaker for new command session
   (efrit-do--circuit-breaker-reset)
 
-  ;; Execute with retry logic and progress feedback
-  (let* ((start-time (current-time))
-         (progress-timer (efrit-do--start-progress-timer start-time command)))
+  ;; Generate session ID and start progress tracking
+  (let* ((session-id (efrit-session-generate-id))
+         (start-time (current-time))
+         (progress-timer (efrit-do--start-progress-timer start-time command))
+         result)
+
+    ;; Start progress tracking for this command
+    (efrit-progress-start-session session-id command)
+
     (unwind-protect
         (progn
           (message "Executing: %s..." command)
           (let* ((result-and-attempt (efrit-do--execute-with-retry command))
                  (final-result (car result-and-attempt))
                  (attempt (cdr result-and-attempt)))
-            (efrit-do--process-result command final-result attempt)))
-      ;; Always cancel the timer when done
+            (setq result (efrit-do--process-result command final-result attempt))))
+      ;; Always cancel the timer and end progress when done
       (when progress-timer
-        (cancel-timer progress-timer)))))
+        (cancel-timer progress-timer))
+      ;; End progress tracking (success if result is non-nil and not an error)
+      (efrit-progress-end-session session-id (and result (not (string-match-p "^Error\\|^API error" result)))))
+
+    ;; Return the result
+    result))
 
 ;;;###autoload
 (defun efrit-do-repeat ()

@@ -1017,6 +1017,16 @@ If MODE-FILTER is provided, only clear messages from that mode."
   (when efrit-context--ring
     (setq efrit-context--ring (make-ring efrit-context-ring-size))))
 
+(defun efrit-context-ring--make-serializable (item)
+  "Convert ITEM to a serializable form by removing unreadable objects.
+Returns a copy with window-config set to nil since window configurations
+cannot be serialized."
+  (let ((copy (copy-sequence item)))
+    ;; Window configurations are unreadable objects (print as #<window-configuration>)
+    ;; Set to nil so the context can be serialized and restored
+    (setf (efrit-context-item-window-config copy) nil)
+    copy))
+
 (defun efrit-context-ring-persist ()
   "Persist context ring to file."
   (when efrit-context--ring
@@ -1027,7 +1037,9 @@ If MODE-FILTER is provided, only clear messages from that mode."
         (with-temp-file file
           (insert ";; Efrit context ring data\n")
           (insert ";; Saved: " (current-time-string) "\n\n")
-          (prin1 items (current-buffer)))
+          ;; Convert items to serializable form before persisting
+          (prin1 (mapcar #'efrit-context-ring--make-serializable items)
+                 (current-buffer)))
         (efrit-log 'debug "Persisted %d context items to %s" (length items) file)))))
 
 (defun efrit-context-ring-restore ()

@@ -366,26 +366,21 @@ Includes schema version for protocol compatibility."
 ;;; Request execution handlers
 
 (defun efrit-remote-queue--execute-command (content)
-  "Execute a command-type request with CONTENT."
+  "Execute a command-type request with CONTENT.
+Returns the result string from efrit-do."
   (if (fboundp 'efrit-do)
       (condition-case err
-          ;; Capture the result by temporarily redirecting efrit-do output
           (let ((original-show-results (and (boundp 'efrit-do-show-results)
-                                            efrit-do-show-results))
-                result-captured)
+                                            efrit-do-show-results)))
             ;; Don't show UI during remote execution
             (when (boundp 'efrit-do-show-results)
               (setq efrit-do-show-results nil))
             (unwind-protect
-                (progn
-                  ;; Execute the command and capture output
-                  (with-temp-buffer
-                    (let ((standard-output (current-buffer)))
-                      (efrit-do content)
-                      (setq result-captured (buffer-string))))
-                  (if (string-empty-p result-captured)
-                      "Command executed successfully"
-                    result-captured))
+                ;; efrit-do now returns the result directly
+                (let ((result (efrit-do content)))
+                  (if (and result (not (string-empty-p result)))
+                      result
+                    "Command executed successfully"))
               ;; Restore original value if variable exists
               (when (boundp 'efrit-do-show-results)
                 (setq efrit-do-show-results original-show-results))))
