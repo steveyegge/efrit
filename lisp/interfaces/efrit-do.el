@@ -28,6 +28,21 @@
 ;; Declare external functions from efrit-tool-confirm-action
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
 
+;; Declare external functions from efrit-tool-checkpoint
+(declare-function efrit-tool-checkpoint "efrit-tool-checkpoint")
+(declare-function efrit-tool-restore-checkpoint "efrit-tool-checkpoint")
+(declare-function efrit-tool-list-checkpoints "efrit-tool-checkpoint")
+(declare-function efrit-tool-delete-checkpoint "efrit-tool-checkpoint")
+
+;; Declare external functions from efrit-tool-show-diff-preview
+(declare-function efrit-tool-show-diff-preview "efrit-tool-show-diff-preview")
+
+;; Declare external functions from efrit-tool-web-search
+(declare-function efrit-tool-web-search "efrit-tool-web-search")
+
+;; Declare external functions from efrit-tool-fetch-url
+(declare-function efrit-tool-fetch-url "efrit-tool-fetch-url")
+
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
@@ -447,7 +462,118 @@ The session PAUSES until user responds. On timeout, treated as rejection.")
                                                    ("description" . "Custom choices (default: ['Yes', 'No'])")))
                                       ("timeout_seconds" . (("type" . "number")
                                                            ("description" . "How long to wait before auto-rejecting (default: 300)")))))
-                      ("required" . ["action"]))))]
+                      ("required" . ["action"]))))
+   ;; Checkpoint tools - Phase 3: Workflow Enhancement
+   (("name" . "checkpoint")
+    ("description" . "Create a restore point before risky operations. Uses git stash internally.
+
+EXAMPLES:
+- Before refactoring: checkpoint description=\"Before refactoring auth module\"
+- Before bulk changes: checkpoint description=\"Before renaming all variables\"
+
+Returns checkpoint_id which can be used with restore_checkpoint to undo changes.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("description" . (("type" . "string")
+                                                         ("description" . "What operation we're about to do (required)")))))
+                      ("required" . ["description"]))))
+   (("name" . "restore_checkpoint")
+    ("description" . "Restore from a previous checkpoint created by the checkpoint tool.
+
+EXAMPLES:
+- Undo all changes: restore_checkpoint checkpoint_id=\"efrit-20251125-123456-abc123\"
+- Keep checkpoint after restore: restore_checkpoint checkpoint_id=\"...\" keep_checkpoint=true
+
+If the refactoring went wrong, this undoes all changes back to the checkpoint.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("checkpoint_id" . (("type" . "string")
+                                                           ("description" . "ID of checkpoint to restore (required)")))
+                                      ("keep_checkpoint" . (("type" . "boolean")
+                                                           ("description" . "If true, don't delete checkpoint after restore (default: false)")))))
+                      ("required" . ["checkpoint_id"]))))
+   (("name" . "list_checkpoints")
+    ("description" . "List all available checkpoints. Shows checkpoint IDs, descriptions, and creation times.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . ()))))
+   (("name" . "delete_checkpoint")
+    ("description" . "Delete a checkpoint without restoring it. Use when you're satisfied with changes and don't need the safety net.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("checkpoint_id" . (("type" . "string")
+                                                           ("description" . "ID of checkpoint to delete (required)")))))
+                      ("required" . ["checkpoint_id"]))))
+   ;; Diff preview tool - Phase 3: Workflow Enhancement
+   (("name" . "show_diff_preview")
+    ("description" . "Show the user proposed changes in a diff view before applying them. Use this when you want to preview multiple file changes and let the user approve, reject, or selectively apply them.
+
+EXAMPLES:
+- Refactoring: Show all files that will change before renaming a function
+- Code generation: Preview new files before creating them
+- Bulk edits: Show diff of all affected files before making changes
+
+The user sees a unified diff view and can:
+- Approve all changes
+- Reject all changes
+- In selective mode: Choose which changes to apply
+
+IMPORTANT: Session PAUSES until user responds.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("changes" . (("type" . "array")
+                                                     ("items" . (("type" . "object")
+                                                                 ("properties" . (("file" . (("type" . "string")))
+                                                                                 ("old_content" . (("type" . "string")))
+                                                                                 ("new_content" . (("type" . "string")))))))
+                                                     ("description" . "List of changes. Each has: file (path), old_content (current, or null for new file), new_content (proposed, or null for deletion)")))
+                                      ("description" . (("type" . "string")
+                                                        ("description" . "What these changes accomplish")))
+                                      ("apply_mode" . (("type" . "string")
+                                                      ("enum" . ["all_or_nothing" "selective"])
+                                                      ("description" . "all_or_nothing (default): approve/reject all. selective: user picks which changes")))))
+                      ("required" . ["changes"]))))
+   ;; Web search tool - Phase 4: External Knowledge
+   (("name" . "web_search")
+    ("description" . "Search the web for documentation, solutions, and examples. Use this when you need to look up information, find how to do something in Emacs, or research a problem.
+
+EXAMPLES:
+- Documentation: query=\"emacs company-mode configuration\"
+- How-to: query=\"how to parse json in elisp\"
+- Site-specific: query=\"magit stage hunks\" site=\"emacs.stackexchange.com\"
+
+PRIVACY: Search queries are sent to an external search engine.
+Do not include sensitive user data in queries.
+
+RATE LIMITED: Max 10 searches per session by default.
+REQUIRES USER CONSENT on first use in session.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("query" . (("type" . "string")
+                                                   ("description" . "Search terms (required)")))
+                                      ("site" . (("type" . "string")
+                                                 ("description" . "Optional site restriction (e.g., 'emacs.stackexchange.com')")))
+                                      ("max_results" . (("type" . "number")
+                                                        ("description" . "Maximum results to return (default: 5)")))
+                                      ("type" . (("type" . "string")
+                                                ("enum" . ["general" "docs" "code"])
+                                                ("description" . "Search type hint (default: general)")))))
+                      ("required" . ["query"]))))
+   (("name" . "fetch_url")
+    ("description" . "Retrieve content from a specific URL. Use this to fetch documentation pages, README files, or other web content found via web_search.
+
+EXAMPLES:
+- Fetch docs: url=\"https://www.gnu.org/software/emacs/manual/html_node/elisp/index.html\"
+- GitHub README: url=\"https://raw.githubusercontent.com/user/repo/main/README.md\" format=\"text\"
+- Extract section: url=\"https://emacs.stackexchange.com/q/12345\" selector=\".answer\"
+
+SECURITY: By default, only fetches from allowed domains (gnu.org, github.com, stackexchange.com, etc.).
+Configure via efrit-fetch-url-security-level and efrit-fetch-url-allowed-domains.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("url" . (("type" . "string")
+                                                 ("description" . "URL to fetch (required)")))
+                                      ("selector" . (("type" . "string")
+                                                     ("description" . "Optional CSS selector to extract specific content (#id, .class, or tag)")))
+                                      ("format" . (("type" . "string")
+                                                  ("enum" . ["text" "markdown" "html"])
+                                                  ("description" . "Output format (default: markdown)")))
+                                      ("max_length" . (("type" . "number")
+                                                       ("description" . "Max content length in chars (default: 50000)")))))
+                      ("required" . ["url"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-tools-for-state ()
@@ -468,7 +594,12 @@ without actual code execution."
           ;; These tools are safe in any state
           '("glob_files" "buffer_create" "format_file_list"
             "format_todo_list" "display_in_buffer" "session_complete"
-            "suggest_execution_mode" "request_user_input" "confirm_action"))
+            "suggest_execution_mode" "request_user_input" "confirm_action"
+            ;; Phase 3: Workflow Enhancement tools
+            "checkpoint" "restore_checkpoint" "list_checkpoints" "delete_checkpoint"
+            "show_diff_preview"
+            ;; Phase 4: External Knowledge tools
+            "web_search" "fetch_url"))
          (planning-tools
           ;; For initial planning and analysis
           '("todo_analyze" "todo_add"))
@@ -1705,6 +1836,115 @@ Prompts user synchronously and returns confirmation result as JSON."
           ;; Return JSON-encoded result for Claude to process
           (format "\n[Confirmation Result]\n%s" (json-encode result))))))))
 
+;;; Checkpoint Tool Handlers - Phase 3: Workflow Enhancement
+
+(defun efrit-do--handle-checkpoint (tool-input)
+  "Handle checkpoint tool to create a restore point before risky operations."
+  (require 'efrit-tool-checkpoint)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: checkpoint requires a hash table input with 'description' field]"
+    (let ((description (gethash "description" tool-input)))
+      (if (or (null description) (string-empty-p description))
+          "\n[Error: checkpoint requires 'description' field]"
+        (let* ((args `((description . ,description)))
+               (result (efrit-tool-checkpoint args)))
+          (format "\n[Checkpoint Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-restore-checkpoint (tool-input)
+  "Handle restore_checkpoint tool to restore from a previous checkpoint."
+  (require 'efrit-tool-checkpoint)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: restore_checkpoint requires a hash table input with 'checkpoint_id' field]"
+    (let ((checkpoint-id (gethash "checkpoint_id" tool-input))
+          (keep-checkpoint (gethash "keep_checkpoint" tool-input)))
+      (if (or (null checkpoint-id) (string-empty-p checkpoint-id))
+          "\n[Error: restore_checkpoint requires 'checkpoint_id' field]"
+        (let* ((args `((checkpoint_id . ,checkpoint-id)
+                       ,@(when keep-checkpoint `((keep_checkpoint . ,keep-checkpoint)))))
+               (result (efrit-tool-restore-checkpoint args)))
+          (format "\n[Restore Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-list-checkpoints ()
+  "Handle list_checkpoints tool to list all available checkpoints."
+  (require 'efrit-tool-checkpoint)
+  (let ((result (efrit-tool-list-checkpoints nil)))
+    (format "\n[Checkpoints]\n%s" (json-encode result))))
+
+(defun efrit-do--handle-delete-checkpoint (tool-input)
+  "Handle delete_checkpoint tool to delete a checkpoint without restoring."
+  (require 'efrit-tool-checkpoint)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: delete_checkpoint requires a hash table input with 'checkpoint_id' field]"
+    (let ((checkpoint-id (gethash "checkpoint_id" tool-input)))
+      (if (or (null checkpoint-id) (string-empty-p checkpoint-id))
+          "\n[Error: delete_checkpoint requires 'checkpoint_id' field]"
+        (let* ((args `((checkpoint_id . ,checkpoint-id)))
+               (result (efrit-tool-delete-checkpoint args)))
+          (format "\n[Delete Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-show-diff-preview (tool-input)
+  "Handle show_diff_preview tool to show proposed changes in a diff view."
+  (require 'efrit-tool-show-diff-preview)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: show_diff_preview requires a hash table input with 'changes' field]"
+    (let ((changes (gethash "changes" tool-input))
+          (description (gethash "description" tool-input))
+          (apply-mode (gethash "apply_mode" tool-input)))
+      (if (or (null changes) (zerop (length changes)))
+          "\n[Error: show_diff_preview requires non-empty 'changes' array]"
+        ;; Convert hash tables in changes array to alists for the tool
+        (let* ((changes-list
+                (mapcar (lambda (change)
+                          (if (hash-table-p change)
+                              `((file . ,(gethash "file" change))
+                                (old_content . ,(gethash "old_content" change))
+                                (new_content . ,(gethash "new_content" change)))
+                            change))
+                        (append changes nil)))  ; Convert vector to list
+               (args `((changes . ,changes-list)
+                       ,@(when description `((description . ,description)))
+                       ,@(when apply-mode `((apply_mode . ,apply-mode)))))
+               (result (efrit-tool-show-diff-preview args)))
+          (format "\n[Diff Preview Result]\n%s" (json-encode result)))))))
+
+;;; Web Search Tool Handler - Phase 4: External Knowledge
+
+(defun efrit-do--handle-web-search (tool-input)
+  "Handle web_search tool to search the web for information."
+  (require 'efrit-tool-web-search)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: web_search requires a hash table input with 'query' field]"
+    (let ((query (gethash "query" tool-input))
+          (site (gethash "site" tool-input))
+          (max-results (gethash "max_results" tool-input))
+          (search-type (gethash "type" tool-input)))
+      (if (or (null query) (string-empty-p query))
+          "\n[Error: web_search requires 'query' field]"
+        (let* ((args `((query . ,query)
+                       ,@(when site `((site . ,site)))
+                       ,@(when max-results `((max_results . ,max-results)))
+                       ,@(when search-type `((type . ,search-type)))))
+               (result (efrit-tool-web-search args)))
+          (format "\n[Web Search Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-fetch-url (tool-input)
+  "Handle fetch_url tool to retrieve content from a URL."
+  (require 'efrit-tool-fetch-url)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: fetch_url requires a hash table input with 'url' field]"
+    (let ((url (gethash "url" tool-input))
+          (selector (gethash "selector" tool-input))
+          (format-type (gethash "format" tool-input))
+          (max-length (gethash "max_length" tool-input)))
+      (if (or (null url) (string-empty-p url))
+          "\n[Error: fetch_url requires 'url' field]"
+        (let* ((args `((url . ,url)
+                       ,@(when selector `((selector . ,selector)))
+                       ,@(when format-type `((format . ,format-type)))
+                       ,@(when max-length `((max_length . ,max-length)))))
+               (result (efrit-tool-fetch-url args)))
+          (format "\n[Fetch URL Result]\n%s" (json-encode result)))))))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
@@ -1793,6 +2033,22 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-do--handle-request-user-input tool-input))
                 ((string= tool-name "confirm_action")
                  (efrit-do--handle-confirm-action tool-input))
+                ;; Checkpoint tools - Phase 3: Workflow Enhancement
+                ((string= tool-name "checkpoint")
+                 (efrit-do--handle-checkpoint tool-input))
+                ((string= tool-name "restore_checkpoint")
+                 (efrit-do--handle-restore-checkpoint tool-input))
+                ((string= tool-name "list_checkpoints")
+                 (efrit-do--handle-list-checkpoints))
+                ((string= tool-name "delete_checkpoint")
+                 (efrit-do--handle-delete-checkpoint tool-input))
+                ((string= tool-name "show_diff_preview")
+                 (efrit-do--handle-show-diff-preview tool-input))
+                ;; Phase 4: External Knowledge tools
+                ((string= tool-name "web_search")
+                 (efrit-do--handle-web-search tool-input))
+                ((string= tool-name "fetch_url")
+                 (efrit-do--handle-fetch-url tool-input))
                 (t
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))
