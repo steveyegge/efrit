@@ -22,6 +22,7 @@
 
 ;; Conditional requires for efrit subsystems
 (declare-function efrit-do "efrit-do")
+(declare-function efrit-execute "efrit-executor")
 (declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
 ;; Forward declarations for efrit-session functions
@@ -367,26 +368,49 @@ Includes schema version for protocol compatibility."
 
 (defun efrit-remote-queue--execute-command (content)
   "Execute a command-type request with CONTENT.
-Returns the result string from efrit-do."
-  (if (fboundp 'efrit-do)
-      (condition-case err
-          (let ((original-show-results (and (boundp 'efrit-do-show-results)
-                                            efrit-do-show-results)))
-            ;; Don't show UI during remote execution
+Uses efrit-execute which has proper agentic continuation loop support.
+Returns the result string."
+  ;; Load efrit-executor for continuation loop support
+  (require 'efrit-executor nil t)
+  ;; Try efrit-execute first (has continuation loop), fall back to efrit-do
+  (cond
+   ((fboundp 'efrit-execute)
+    (condition-case err
+        (let ((original-show-results (and (boundp 'efrit-do-show-results)
+                                          efrit-do-show-results)))
+          ;; Don't show UI during remote execution
+          (when (boundp 'efrit-do-show-results)
+            (setq efrit-do-show-results nil))
+          (unwind-protect
+              ;; efrit-execute handles the continuation loop
+              (let ((result (efrit-execute content)))
+                (if (and result (not (string-empty-p result)))
+                    result
+                  "Command executed successfully"))
+            ;; Restore original value if variable exists
             (when (boundp 'efrit-do-show-results)
-              (setq efrit-do-show-results nil))
-            (unwind-protect
-                ;; efrit-do now returns the result directly
-                (let ((result (efrit-do content)))
-                  (if (and result (not (string-empty-p result)))
-                      result
-                    "Command executed successfully"))
-              ;; Restore original value if variable exists
-              (when (boundp 'efrit-do-show-results)
-                (setq efrit-do-show-results original-show-results))))
-        (error
-         (format "Command execution failed: %s" (error-message-string err))))
-    (error "efrit-do not available")))
+              (setq efrit-do-show-results original-show-results))))
+      (error
+       (format "Command execution failed: %s" (error-message-string err)))))
+
+   ((fboundp 'efrit-do)
+    ;; Fallback to efrit-do (no continuation support)
+    (condition-case err
+        (let ((original-show-results (and (boundp 'efrit-do-show-results)
+                                          efrit-do-show-results)))
+          (when (boundp 'efrit-do-show-results)
+            (setq efrit-do-show-results nil))
+          (unwind-protect
+              (let ((result (efrit-do content)))
+                (if (and result (not (string-empty-p result)))
+                    result
+                  "Command executed successfully"))
+            (when (boundp 'efrit-do-show-results)
+              (setq efrit-do-show-results original-show-results))))
+      (error
+       (format "Command execution failed: %s" (error-message-string err)))))
+
+   (t (error "Neither efrit-execute nor efrit-do available"))))
 
 (defun efrit-remote-queue--execute-chat (content)
   "Execute a chat-type request with CONTENT."
