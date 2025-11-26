@@ -46,6 +46,17 @@ This prevents accidental access to files outside the project."
   :type 'boolean
   :group 'efrit-tool-utils)
 
+(defvar efrit-project-root nil
+  "Explicitly set project root directory.
+When non-nil, this takes precedence over `project-current' detection.
+This is useful for daemon mode where `default-directory' may be `~/'
+and there's no file visiting to provide project context.
+
+Can be set via:
+- The `set_project_root' tool
+- Programmatically via `(setq efrit-project-root \"/path/to/project\")'
+- Automatically from file-visiting buffers")
+
 (defcustom efrit-sensitive-file-patterns
   '("\\.env\\'" "\\.env\\.[^/]*\\'"
     "credentials" "\\.pem\\'" "\\.key\\'"
@@ -76,13 +87,44 @@ Matched files will trigger warnings or require confirmation."
 
 (defun efrit-tool--get-project-root ()
   "Get the project root directory.
-Returns the project root via project.el, or `default-directory' if no project."
-  (if-let* ((proj (project-current)))
-      (if (fboundp 'project-root)
-          (project-root proj)
-        ;; Older Emacs versions
-        (car (project-roots proj)))
-    default-directory))
+
+Priority order:
+1. `efrit-project-root' if explicitly set
+2. `project-current' via project.el
+3. `default-directory' as fallback
+
+Returns the expanded absolute path."
+  (expand-file-name
+   (cond
+    ;; Explicit project root takes precedence
+    ((and efrit-project-root
+          (file-directory-p efrit-project-root))
+     efrit-project-root)
+    ;; Try project.el detection
+    ((when-let* ((proj (project-current)))
+       (if (fboundp 'project-root)
+           (project-root proj)
+         (car (project-roots proj)))))
+    ;; Fallback to default-directory
+    (t default-directory))))
+
+(defun efrit-set-project-root (path)
+  "Set `efrit-project-root' to PATH.
+Returns the normalized path, or nil if PATH is invalid."
+  (let ((expanded (expand-file-name path)))
+    (if (file-directory-p expanded)
+        (progn
+          (setq efrit-project-root expanded)
+          (message "Efrit project root set to: %s" expanded)
+          expanded)
+      (message "Warning: Path does not exist: %s" path)
+      nil)))
+
+(defun efrit-clear-project-root ()
+  "Clear explicit project root, returning to auto-detection."
+  (interactive)
+  (setq efrit-project-root nil)
+  (message "Efrit project root cleared, using auto-detection"))
 
 (defun efrit-tool--path-in-directory-p (path directory)
   "Check if PATH is within DIRECTORY.

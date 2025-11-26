@@ -54,6 +54,12 @@
 (declare-function efrit-tool-vcs-blame "efrit-tool-vcs-blame")
 (declare-function efrit-tool-elisp-docs "efrit-tool-elisp-docs")
 
+;; Declare external functions from efrit-tool-utils for project root management
+(declare-function efrit-tool--get-project-root "efrit-tool-utils")
+(declare-function efrit-set-project-root "efrit-tool-utils")
+(declare-function efrit-clear-project-root "efrit-tool-utils")
+(defvar efrit-project-root)
+
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
@@ -758,7 +764,21 @@ Returns: Symbol type, docstring, signature (for functions), source location, rel
                                                            ("description" . "Include source file/line (default: false)")))
                                       ("related" . (("type" . "boolean")
                                                     ("description" . "Include related symbols (default: false)")))))
-                      ("required" . ["symbol"]))))]
+                      ("required" . ["symbol"]))))
+   (("name" . "set_project_root")
+    ("description" . "Set the project root directory explicitly. CALL THIS FIRST if you need to work with files but the project context is unclear or default-directory is wrong (e.g., in daemon mode).
+
+EXAMPLES:
+- Set project: set_project_root path=\"~/src/myproject\"
+- Clear and auto-detect: set_project_root path=\"\"
+
+This affects all file operations (project_files, search_content, read_file, etc.) which resolve relative paths against the project root.
+
+Returns: The normalized project root path, or error if path doesn't exist.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Absolute path to project root, or empty string to clear and auto-detect")))))
+                      ("required" . ["path"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-tools-for-state ()
@@ -787,7 +807,9 @@ without actual code execution."
             "web_search" "fetch_url"
             ;; Phase 1/2: Codebase Exploration tools
             "project_files" "search_content" "read_file" "file_info"
-            "vcs_status" "vcs_diff" "vcs_log" "vcs_blame" "elisp_docs"))
+            "vcs_status" "vcs_diff" "vcs_log" "vcs_blame" "elisp_docs"
+            ;; Project context management
+            "set_project_root"))
          (planning-tools
           ;; For initial planning and analysis
           '("todo_analyze" "todo_add"))
@@ -2273,6 +2295,25 @@ Prompts user synchronously and returns confirmation result as JSON."
                (result (efrit-tool-vcs-blame args)))
           (format "\n[VCS Blame Result]\n%s" (json-encode result)))))))
 
+(defun efrit-do--handle-set-project-root (tool-input)
+  "Handle set_project_root tool to set the project context."
+  (require 'efrit-tool-utils)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: set_project_root requires a hash table input with 'path' field]"
+    (let ((path (gethash "path" tool-input)))
+      (cond
+       ;; Empty path means clear and auto-detect
+       ((or (null path) (string-empty-p path))
+        (efrit-clear-project-root)
+        (format "\n[Project root cleared. Now using auto-detection: %s]"
+                (efrit-tool--get-project-root)))
+       ;; Set explicit path
+       (t
+        (let ((result (efrit-set-project-root path)))
+          (if result
+              (format "\n[Project root set to: %s]" result)
+            (format "\n[Error: Path does not exist: %s]" path))))))))
+
 (defun efrit-do--handle-elisp-docs (tool-input)
   "Handle elisp_docs tool to look up Emacs Lisp documentation."
   (require 'efrit-tool-elisp-docs)
@@ -2414,17 +2455,26 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-do--handle-vcs-blame tool-input))
                 ((string= tool-name "elisp_docs")
                  (efrit-do--handle-elisp-docs tool-input))
+                ((string= tool-name "set_project_root")
+                 (efrit-do--handle-set-project-root tool-input))
                 (t
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))
 
           ;; Check result for error loops and inject warnings if needed
           (let* ((loop-check (efrit-do--error-loop-check-result result))
-                 (final-result (cdr loop-check)))
-            ;; Prepend circuit breaker warning if present
-            (if warning
-                (concat "\n" warning "\n" final-result)
-              final-result))))))))
+                 (final-result (cdr loop-check))
+                 (return-value (if warning
+                                   (concat "\n" warning "\n" final-result)
+                                 final-result)))
+            ;; Log tool call to active session's work_log (if session exists)
+            (when-let* ((session (efrit-session-active)))
+              (efrit-session-add-work session
+                                      return-value
+                                      (format "(%s %S)" tool-name tool-input)
+                                      nil  ; no todo-snapshot
+                                      tool-name))
+            return-value)))))))
 
 ;;; Command execution
 
@@ -2564,13 +2614,17 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
                     "- If no Emacs operation is needed, just answer and complete\n\n"))
           
           "CRITICAL CONTEXT RULES:\n"
+          (format "- Project root: %s%s\n"
+                  (efrit-tool--get-project-root)
+                  (if efrit-project-root " (explicitly set)" " (auto-detected)"))
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
           "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
           "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"
           "- 'Edit', 'modify', 'change' means buffer operations, NOT external editors\n"
           "- SIMPLE TASKS (≤2 elisp forms): Use eval_sexp directly - NO todo_analyze needed\n"
           "- COMPLEX TASKS (multi-step workflows): Use todo_analyze to break down\n"
-          "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n\n"
+          "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n"
+          "- If project_files or search_content returns results from the wrong directory, use set_project_root first\n\n"
           
           "TOOL SELECTION GUIDE:\n"
           "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, define functions, etc.)\n"
@@ -2900,9 +2954,14 @@ Returns the result string for programmatic use."
 
   ;; Generate session ID and start progress tracking
   (let* ((session-id (efrit-session-generate-id))
+         ;; Create an actual session struct so tools can log to work_log
+         (session (efrit-session-create session-id command))
          (start-time (current-time))
          (progress-timer (efrit-do--start-progress-timer start-time command))
          result)
+
+    ;; Set this session as active (so efrit-do--execute-tool can find it)
+    (efrit-session-set-active session)
 
     ;; Start progress tracking for this command
     (efrit-progress-start-session session-id command)
@@ -2918,7 +2977,9 @@ Returns the result string for programmatic use."
       (when progress-timer
         (cancel-timer progress-timer))
       ;; End progress tracking (success if result is non-nil and not an error)
-      (efrit-progress-end-session session-id (and result (not (string-match-p "^Error\\|^API error" result)))))
+      (efrit-progress-end-session session-id (and result (not (string-match-p "^Error\\|^API error" result))))
+      ;; Complete the session
+      (efrit-session-complete session result))
 
     ;; Return the result
     result))
