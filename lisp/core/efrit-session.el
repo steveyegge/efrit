@@ -114,7 +114,9 @@ If nil, uses the default location in the efrit data directory."
   ;; Conversation history for interactive sessions
   conversation-history    ; List of messages: (role content timestamp)
   pending-question        ; Current question waiting for user input
-  user-responses)         ; List of user responses received
+  user-responses          ; List of user responses received
+  ;; API message history (proper tool_use/tool_result format for continuations)
+  api-messages)           ; Vector of API messages with tool_use/tool_result blocks
 
 ;;; Session Registry (Multi-step Execution)
 
@@ -179,7 +181,10 @@ RESULT is the optional completion result (may be nil).")
                   :last-tool-called nil
                   :conversation-history nil
                   :pending-question nil
-                  :user-responses nil)))
+                  :user-responses nil
+                  ;; Initialize with user's original command
+                  :api-messages (list `((role . "user")
+                                        (content . ,command))))))
     (puthash id session efrit-session--registry)
     (efrit-log 'info "Created session %s: %s" id
                (efrit-common-truncate-string command 60))
@@ -474,6 +479,68 @@ Returns a vector of message objects suitable for the messages array."
                     `((role . ,(if (eq role 'user) "user" "assistant"))
                       (content . ,content))))
                 history))))))
+
+;;; API Message Management (proper tool_use/tool_result format)
+;; These functions manage the session's api-messages list which stores
+;; the full conversation history in Claude API format, including:
+;; - User messages with text content
+;; - Assistant messages with tool_use content blocks
+;; - User messages with tool_result content blocks
+
+(defun efrit-session-add-assistant-response (session content-array)
+  "Add Claude's assistant response to SESSION's api-messages.
+CONTENT-ARRAY is the full content from Claude's response (with tool_use).
+Must be called BEFORE executing tools to maintain proper message order."
+  (when (and session content-array)
+    (let ((api-messages (efrit-session-api-messages session)))
+      (setf (efrit-session-api-messages session)
+            (append api-messages
+                    (list `((role . "assistant")
+                            (content . ,content-array)))))
+      (efrit-log 'debug "Added assistant response to api-messages (total: %d)"
+                 (length (efrit-session-api-messages session))))))
+
+(defun efrit-session-add-tool-results (session tool-results)
+  "Add tool results to SESSION's api-messages.
+TOOL-RESULTS should be a list of tool_result alists with type, tool_use_id,
+and content. Added as a user message with vector of tool_result blocks."
+  (when (and session tool-results (> (length tool-results) 0))
+    (let ((api-messages (efrit-session-api-messages session)))
+      (setf (efrit-session-api-messages session)
+            (append api-messages
+                    (list `((role . "user")
+                            (content . ,(vconcat tool-results))))))
+      (efrit-log 'debug "Added %d tool results to api-messages (total: %d)"
+                 (length tool-results)
+                 (length (efrit-session-api-messages session))))))
+
+(defun efrit-session-get-api-messages-for-continuation (session)
+  "Get SESSION's api-messages formatted for API continuation.
+Returns a vector of messages suitable for the messages field."
+  (when session
+    (let ((messages (efrit-session-api-messages session)))
+      (if messages
+          (vconcat messages)
+        ;; Fallback: just the original command
+        (vector `((role . "user")
+                  (content . ,(efrit-session-command session))))))))
+
+(defun efrit-session-build-tool-result (tool-id result &optional is-error)
+  "Build a tool_result content block for TOOL-ID with RESULT.
+If IS-ERROR is non-nil, marks the result as an error.
+Returns an alist:
+  ((type . \"tool_result\")
+   (tool_use_id . TOOL-ID)
+   (content . RESULT)
+   [is_error . t])"
+  (let ((block `((type . "tool_result")
+                 (tool_use_id . ,tool-id)
+                 (content . ,(if (stringp result)
+                                result
+                              (format "%S" result))))))
+    (when is-error
+      (setq block (append block '((is_error . t)))))
+    block))
 
 ;;; Session Queue Management (Multi-step Execution)
 
@@ -1080,8 +1147,7 @@ cannot be serialized."
   "Show N most recent messages from unified context (default 10).
 Displays context shared across all Efrit modes."
   (interactive "p")
-  (let ((count (or n 10))
-        (messages (efrit-unified-context-get-messages (or n 10))))
+  (let ((messages (efrit-unified-context-get-messages (or n 10))))
     (if (null messages)
         (message "No context history available")
       (with-output-to-temp-buffer "*Efrit Unified Context*"

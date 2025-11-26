@@ -161,7 +161,12 @@ Optionally calls CALLBACK with error message."
 
 (defun efrit-executor--handle-response (response callback)
   "Handle RESPONSE from Claude API and execute tools.
-Calls CALLBACK with the final result string."
+Calls CALLBACK with the final result string.
+
+CRITICAL: This function maintains proper Claude API message format by:
+1. Storing Claude's full response (with tool_use blocks) BEFORE executing tools
+2. Collecting tool_result blocks during execution
+3. Adding tool_results to session's api-messages for proper continuation"
   (efrit-log 'debug "Handling Claude API response")
   (condition-case err
       (if (not response)
@@ -180,7 +185,8 @@ Calls CALLBACK with the final result string."
                 (result-text "")
                 (session-complete-p nil)
                 (completion-message nil)
-                (tool-results '())
+                (tool-results-for-work-log '())  ; For legacy work log
+                (tool-result-blocks '())  ; For proper API format (tool_result blocks)
                 (session (efrit-session-active)))
 
             ;; Check stop_reason for session completion
@@ -191,6 +197,11 @@ Calls CALLBACK with the final result string."
               (setq session-complete-p t))
 
             (when content
+              ;; CRITICAL: Store Claude's full response BEFORE executing tools
+              ;; This ensures proper message ordering: [user, assistant-with-tool_use, user-with-tool_result]
+              (when session
+                (efrit-session-add-assistant-response session content))
+
               ;; Process each content item
               (dotimes (i (length content))
                 (let* ((item (aref content i))
@@ -204,9 +215,23 @@ Calls CALLBACK with the final result string."
 
                    ;; Handle tool use
                    ((string= type "tool_use")
-                    (let* ((tool-result (efrit-executor--execute-tool item session))
-                           (tool-input (gethash "input" item)))
+                    (let* ((tool-id (gethash "id" item))
+                           (tool-input (gethash "input" item))
+                           (tool-result nil)
+                           (is-error nil))
+
+                      ;; Execute the tool and capture result
+                      (condition-case err
+                          (setq tool-result (efrit-executor--execute-tool item session))
+                        (error
+                         (setq tool-result (format "Error: %s" (error-message-string err)))
+                         (setq is-error t)))
+
                       (setq result-text (concat result-text tool-result))
+
+                      ;; Build tool_result block for API (proper format)
+                      (push (efrit-session-build-tool-result tool-id tool-result is-error)
+                            tool-result-blocks)
 
                       ;; Check for session completion
                       (when (string-match "\\[SESSION-COMPLETE: \\(.+\\)\\]" tool-result)
@@ -220,13 +245,17 @@ Calls CALLBACK with the final result string."
                         (setq session-complete-p t)  ; Stop continuation
                         (setq completion-message nil))  ; Don't mark as complete
 
-                      ;; Track tool execution
+                      ;; Track tool execution for legacy work log
                       (when session
                         (push (list tool-result
                                   (if (hash-table-p tool-input)
                                       (json-encode tool-input)
                                     (format "%S" tool-input)))
-                              tool-results))))))))
+                              tool-results-for-work-log))))))))
+
+            ;; Add tool results to session's api-messages (for proper continuation)
+            (when (and session tool-result-blocks)
+              (efrit-session-add-tool-results session (nreverse tool-result-blocks)))
 
             ;; Handle session continuation or completion
             (cond
@@ -255,10 +284,10 @@ Calls CALLBACK with the final result string."
 
              ;; Session needs to continue
              (t
-              ;; Update session work log
-              (dolist (result (nreverse tool-results))
+              ;; Update session work log (legacy - for compression/history)
+              (dolist (result (nreverse tool-results-for-work-log))
                 (efrit-session-add-work session (car result) (cadr result)))
-              ;; Continue the session
+              ;; Continue the session with proper message format
               (efrit-executor--continue-session session callback))))))
     (error
      (efrit-executor--handle-error
@@ -352,9 +381,12 @@ Returns non-nil if session should abort."
 
 (defun efrit-executor--continue-session (session callback)
   "Continue multi-step SESSION by calling Claude again.
-Calls CALLBACK with the final result."
+Calls CALLBACK with the final result.
+
+CRITICAL: Uses proper Claude API message format with tool_use/tool_result
+history in the messages array, NOT in the system prompt.  This ensures
+Claude remembers previous tool calls and their results."
   (let* ((session-id (efrit-session-id session))
-         (original-command (efrit-session-command session))
          (continuation-count (efrit-session-continuation-count session)))
 
     ;; Check for injected messages before continuing
@@ -366,42 +398,41 @@ Calls CALLBACK with the final result."
           (when callback
             (funcall callback "Session aborted via injection")))
 
-      ;; Get work log after processing injections (so guidance is included)
-      (let ((work-log (efrit-session-compress-log session)))
+      ;; Safety check: prevent infinite loops
+      (if (>= continuation-count efrit-executor-max-continuations)
+          (progn
+            (efrit-executor--handle-error
+             (format "SESSION LIMIT: Maximum continuations (%d) reached"
+                     efrit-executor-max-continuations)
+             callback)
+            nil)  ; Return early
 
-        ;; Safety check: prevent infinite loops
-        (if (>= continuation-count efrit-executor-max-continuations)
-            (progn
-              (efrit-executor--handle-error
-               (format "SESSION LIMIT: Maximum continuations (%d) reached"
-                       efrit-executor-max-continuations)
-               callback)
-              nil)  ; Return early
+        ;; Increment continuation counter
+        (cl-incf (efrit-session-continuation-count session))
 
-          ;; Increment continuation counter
-          (cl-incf (efrit-session-continuation-count session))
+        ;; Build system prompt (WITHOUT work log - that's now in messages)
+        (require 'efrit-do)
+        (let* ((system-prompt (efrit-do--command-system-prompt
+                               nil nil nil session-id nil))  ; No work-log in system prompt
+               ;; CRITICAL: Use proper api-messages with tool_use/tool_result history
+               ;; This is the correct Claude API format for multi-turn tool conversations
+               (api-messages (efrit-session-get-api-messages-for-continuation session))
+               (request-data
+                `(("model" . ,efrit-default-model)
+                  ("max_tokens" . 8192)
+                  ("temperature" . 0.0)
+                  ("messages" . ,api-messages)
+                  ("system" . ,system-prompt)
+                  ("tools" . ,(efrit-executor--get-tools-schema)))))
 
-          ;; Build system prompt
-          (require 'efrit-do)
-          (let* ((system-prompt (efrit-do--command-system-prompt
-                                 nil nil nil session-id work-log))
-                 (request-data
-                  `(("model" . ,efrit-default-model)
-                    ("max_tokens" . 8192)
-                    ("temperature" . 0.0)
-                    ("messages" . [(("role" . "user")
-                                   ("content" . ,original-command))])
-                    ("system" . ,system-prompt)
-                    ("tools" . ,(efrit-executor--get-tools-schema)))))
+          (efrit-log 'info "Continuing session %s (continuation #%d, %d messages)"
+                     session-id continuation-count (length api-messages))
+          (efrit-executor--update-mode-line "Continuing...")
 
-            (efrit-log 'debug "Continuing session %s (continuation #%d)"
-                       session-id continuation-count)
-            (efrit-executor--update-mode-line "Continuing...")
-
-            (efrit-executor--api-request
-             request-data
-             (lambda (response)
-               (efrit-executor--handle-response response callback)))))))))
+          (efrit-executor--api-request
+           request-data
+           (lambda (response)
+             (efrit-executor--handle-response response callback))))))))
 
 (defun efrit-executor--complete-session (session result)
   "Mark SESSION complete with final RESULT and process queue."
