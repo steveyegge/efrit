@@ -33,6 +33,7 @@
 (require 'efrit-log)
 (require 'efrit-common)
 (require 'efrit-config)
+(require 'efrit-budget)
 
 ;;; Customization
 
@@ -98,6 +99,7 @@ If nil, uses the default location in the efrit data directory."
   start-time              ; When session started
   status                  ; 'active, 'waiting, 'complete, 'cancelled, 'waiting-for-user
   buffer                  ; Original buffer for context
+  budget                  ; efrit-budget struct for token tracking
   ;; Loop detection and session tracking
   tool-history            ; List of (tool-name timestamp progress-tick input-hash result-hash)
   loop-warnings           ; Hash table of tool -> warning-count
@@ -161,30 +163,35 @@ RESULT is the optional completion result (may be nil).")
 
 (defun efrit-session-create (id command)
   "Create a new multi-step session with ID and COMMAND."
-  (let ((session (make-efrit-session
-                  :id id
-                  :command command
-                  :start-time (current-time)
-                  :status 'active
-                  :buffer (current-buffer)
-                  :work-log nil
-                  :tool-history nil
-                  :loop-warnings (make-hash-table :test 'equal)
-                  :continuation-count 0
-                  :last-error nil
-                  :last-progress-tick 0
-                  :buffer-modifications 0
-                  :todo-status-changes 0
-                  :buffers-created 0
-                  :files-modified 0
-                  :execution-outputs 0
-                  :last-tool-called nil
-                  :conversation-history nil
-                  :pending-question nil
-                  :user-responses nil
-                  ;; Initialize with user's original command
-                  :api-messages (list `((role . "user")
-                                        (content . ,command))))))
+  (let* ((budget (efrit-budget-create))
+         (session (make-efrit-session
+                   :id id
+                   :command command
+                   :start-time (current-time)
+                   :status 'active
+                   :buffer (current-buffer)
+                   :budget budget
+                   :work-log nil
+                   :tool-history nil
+                   :loop-warnings (make-hash-table :test 'equal)
+                   :continuation-count 0
+                   :last-error nil
+                   :last-progress-tick 0
+                   :buffer-modifications 0
+                   :todo-status-changes 0
+                   :buffers-created 0
+                   :files-modified 0
+                   :execution-outputs 0
+                   :last-tool-called nil
+                   :conversation-history nil
+                   :pending-question nil
+                   :user-responses nil
+                   ;; Initialize with user's original command
+                   :api-messages (list `((role . "user")
+                                         (content . ,command))))))
+    ;; Record user message tokens in budget
+    (efrit-budget-record-usage budget 'user-message
+                               (efrit-budget-estimate-tokens command))
     (puthash id session efrit-session--registry)
     (efrit-log 'info "Created session %s: %s" id
                (efrit-common-truncate-string command 60))
@@ -235,10 +242,28 @@ RESULT is the optional completion result (may be nil).")
 (defun efrit-session-add-work (session result elisp &optional todo-snapshot tool-name)
   "Add a work log entry to SESSION.
 Records RESULT from executing ELISP, with optional TODO-SNAPSHOT.
-TOOL-NAME identifies which tool generated this result (for compression)."
+TOOL-NAME identifies which tool generated this result (for compression).
+Updates budget tracking and may evict old entries if history budget exceeded."
   (when session
-    (let ((entry (list result elisp todo-snapshot tool-name)))
+    (let* ((budget (efrit-session-budget session))
+           ;; Compress result for history storage using tool-specific compression
+           (compressed-result (if (and tool-name result)
+                                  (efrit-budget-compress-for-history tool-name result)
+                                (if (stringp result)
+                                    (efrit-common-truncate-string result 500)
+                                  (format "%s" result))))
+           (entry (list compressed-result elisp todo-snapshot tool-name)))
       (push entry (efrit-session-work-log session))
+
+      ;; Update budget with compressed result tokens
+      (when budget
+        (let ((entry-tokens (efrit-budget-estimate-tokens
+                             (format "%s %s" compressed-result elisp))))
+          ;; Update history usage
+          (efrit-budget-record-usage budget 'history
+                                     (+ (efrit-budget-history-used budget) entry-tokens))
+          ;; Evict old entries if over history budget
+          (efrit-session--evict-if-over-budget session)))
 
       ;; Limit work log size to prevent memory growth
       (when (> (length (efrit-session-work-log session))
@@ -271,6 +296,90 @@ Records TOOL-NAME, INPUT-DATA, and RESULT."
 
       ;; Update last-tool-called for simple repeat detection
       (setf (efrit-session-last-tool-called session) tool-name))))
+
+;;; Budget-Aware Work Log Management
+
+(defun efrit-session-evict-oldest-work (session)
+  "Remove the oldest work log entry from SESSION.
+Returns the removed entry, or nil if work log is empty."
+  (when (and session (efrit-session-work-log session))
+    (let* ((work-log (efrit-session-work-log session))
+           (reversed (nreverse (copy-sequence work-log)))
+           (oldest (car reversed))
+           (rest (nreverse (cdr reversed))))
+      (setf (efrit-session-work-log session) rest)
+      (efrit-log 'debug "Session %s: evicted oldest work log entry"
+                 (efrit-session-id session))
+      oldest)))
+
+(defun efrit-session--calculate-history-tokens (session)
+  "Calculate total tokens used by work log history in SESSION."
+  (when session
+    (let ((total 0))
+      (dolist (entry (efrit-session-work-log session))
+        (let ((result (nth 0 entry))
+              (elisp (nth 1 entry)))
+          (setq total (+ total (efrit-budget-estimate-tokens
+                                (format "%s %s" result elisp))))))
+      total)))
+
+(defun efrit-session--evict-if-over-budget (session)
+  "Evict oldest work log entries if SESSION history exceeds budget.
+Uses LRU (Least Recently Used) eviction - oldest entries are removed first."
+  (when-let* ((budget (efrit-session-budget session)))
+    (let ((history-tokens (efrit-session--calculate-history-tokens session)))
+      (while (and (efrit-budget-history-over-limit-p budget history-tokens)
+                  (> (length (efrit-session-work-log session)) 1))
+        (efrit-session-evict-oldest-work session)
+        (setq history-tokens (efrit-session--calculate-history-tokens session)))
+      ;; Update budget with actual history tokens
+      (efrit-budget-record-usage budget 'history history-tokens))))
+
+(defun efrit-session-get-budget (session)
+  "Get the budget struct for SESSION.
+Returns nil if session has no budget tracking."
+  (when session
+    (efrit-session-budget session)))
+
+(defun efrit-session-budget-status (session)
+  "Return budget summary string for SESSION.
+Suitable for inclusion in Claude context."
+  (if-let* ((budget (efrit-session-get-budget session)))
+      (efrit-budget-summary budget)
+    "No budget tracking"))
+
+(defun efrit-session-budget-for-claude (session)
+  "Return budget state formatted for Claude API context.
+Returns an alist suitable for JSON encoding."
+  (when-let* ((budget (efrit-session-get-budget session)))
+    (efrit-budget-for-claude budget)))
+
+(defun efrit-session-budget-warning (session)
+  "Return budget warning string if SESSION is low on budget.
+Returns nil if no warning needed."
+  (when-let* ((budget (efrit-session-get-budget session)))
+    (efrit-budget-format-warning budget)))
+
+(defun efrit-session-record-tool-result (session result)
+  "Record a tool RESULT's token usage in SESSION's budget.
+RESULT is the tool result string or object.
+Returns the number of tokens recorded."
+  (when-let* ((budget (efrit-session-get-budget session)))
+    (efrit-budget-record-tool-result budget result)))
+
+(defun efrit-session-reset-tool-results (session)
+  "Reset tool results usage for a new API turn in SESSION.
+Call this at the start of each Claude API call."
+  (when-let* ((budget (efrit-session-get-budget session)))
+    (efrit-budget-reset-tool-results budget)))
+
+(defun efrit-session-allocate-tool-budget (session &optional tool-name)
+  "Get token allocation for a tool call in SESSION.
+TOOL-NAME is optional and reserved for future per-tool budgets.
+Returns the number of tokens the tool should try to stay within."
+  (if-let* ((budget (efrit-session-get-budget session)))
+      (efrit-budget-allocate-tool budget tool-name)
+    efrit-budget-per-tool-default))
 
 ;;; Work Log Compression (Multi-step Execution)
 
