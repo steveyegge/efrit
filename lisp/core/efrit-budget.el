@@ -329,6 +329,216 @@ Returns 0 if no eviction needed."
     (let ((over (- history-tokens efrit-budget-history-max)))
       (max 0 over))))
 
+;;; Tool-Specific Result Compression
+;;
+;; These functions compress tool results for work log history.
+;; Target: ~500 chars max per compressed result.
+;; Each function takes a tool result (alist) and returns a summary string.
+
+(defconst efrit-budget-compress-max-chars 500
+  "Maximum characters for compressed tool result summary.")
+
+(defun efrit-budget--truncate-list (items max-items &optional format-fn)
+  "Truncate ITEMS to MAX-ITEMS, applying FORMAT-FN to each.
+Returns formatted string with \"...\" if truncated."
+  (let* ((format-fn (or format-fn #'identity))
+         (total (length items))
+         (shown (seq-take items max-items))
+         (formatted (mapcar format-fn shown)))
+    (if (> total max-items)
+        (concat (string-join formatted ", ") (format "... (+%d more)" (- total max-items)))
+      (string-join formatted ", "))))
+
+(defun efrit-budget-compress-project-files (result)
+  "Compress project_files RESULT for work log history.
+Output format: \"N files. Types: .el (M), .md (K). Key: path1/, path2/\""
+  (let* ((data (alist-get 'data result))
+         (files (append (alist-get 'files data) nil))
+         (total (or (alist-get 'total_files data) (length files)))
+         (type-counts (make-hash-table :test 'equal))
+         (dir-counts (make-hash-table :test 'equal)))
+    ;; Count file types
+    (dolist (file files)
+      (let* ((path (or (alist-get 'path_relative file) ""))
+             (ext (file-name-extension path)))
+        (when ext
+          (puthash ext (1+ (gethash ext type-counts 0)) type-counts))
+        ;; Count top-level directories
+        (when (string-match "^\\([^/]+\\)/" path)
+          (let ((dir (match-string 1 path)))
+            (puthash dir (1+ (gethash dir dir-counts 0)) dir-counts)))))
+    ;; Build summary
+    (let* ((type-list (let (pairs)
+                        (maphash (lambda (k v) (push (cons k v) pairs)) type-counts)
+                        (seq-sort (lambda (a b) (> (cdr a) (cdr b))) pairs)))
+           (dir-list (let (pairs)
+                       (maphash (lambda (k v) (push (cons k v) pairs)) dir-counts)
+                       (seq-sort (lambda (a b) (> (cdr a) (cdr b))) pairs)))
+           (type-str (efrit-budget--truncate-list
+                      (seq-take type-list 4)
+                      4
+                      (lambda (p) (format ".%s (%d)" (car p) (cdr p)))))
+           (dir-str (efrit-budget--truncate-list
+                     (seq-take dir-list 3)
+                     3
+                     (lambda (p) (format "%s/" (car p))))))
+      (format "%d files. Types: %s. Key: %s"
+              total
+              (if (string-empty-p type-str) "(no extensions)" type-str)
+              (if (string-empty-p dir-str) "(flat)" dir-str)))))
+
+(defun efrit-budget-compress-search-content (result)
+  "Compress search_content RESULT for work log history.
+Output format: \"N matches in M files: file1 (C), file2 (D)...\""
+  (let* ((data (alist-get 'data result))
+         (matches (append (alist-get 'matches data) nil))
+         (total-fetched (or (alist-get 'total_fetched data) (length matches)))
+         ;; Count matches per file
+         (file-counts (make-hash-table :test 'equal)))
+    (dolist (match matches)
+      (let ((file (or (alist-get 'file_relative match) "")))
+        (puthash file (1+ (gethash file file-counts 0)) file-counts)))
+    ;; Build file list sorted by match count
+    (let* ((file-list (let (pairs)
+                        (maphash (lambda (k v) (push (cons k v) pairs)) file-counts)
+                        (seq-sort (lambda (a b) (> (cdr a) (cdr b))) pairs)))
+           (file-str (efrit-budget--truncate-list
+                      file-list
+                      5
+                      (lambda (p) (format "%s (%d)" (car p) (cdr p))))))
+      (format "%d matches in %d files: %s"
+              total-fetched
+              (hash-table-count file-counts)
+              (if (string-empty-p file-str) "(no matches)" file-str)))))
+
+(defun efrit-budget-compress-read-file (result)
+  "Compress read_file RESULT for work log history.
+Output format: \"Read path/file.el (N lines, MKB)\""
+  (let* ((data (alist-get 'data result))
+         (path (or (alist-get 'path_relative data) (alist-get 'path data) "unknown"))
+         (total-lines (alist-get 'total_lines data))
+         (size (alist-get 'size data))
+         (is-binary (alist-get 'is_binary data))
+         (truncated (eq (alist-get 'truncated data) t)))
+    (cond
+     (is-binary
+      (format "Read %s (binary, %s)"
+              path
+              (efrit-budget--format-size size)))
+     (total-lines
+      (format "Read %s (%d lines, %s)%s"
+              path
+              total-lines
+              (efrit-budget--format-size size)
+              (if truncated " [truncated]" "")))
+     (t
+      (format "Read %s (%s)"
+              path
+              (efrit-budget--format-size size))))))
+
+(defun efrit-budget--format-size (bytes)
+  "Format BYTES as human-readable size."
+  (cond
+   ((null bytes) "?B")
+   ((< bytes 1024) (format "%dB" bytes))
+   ((< bytes (* 1024 1024)) (format "%.1fKB" (/ bytes 1024.0)))
+   (t (format "%.1fMB" (/ bytes (* 1024.0 1024.0))))))
+
+(defun efrit-budget-compress-vcs-status (result)
+  "Compress vcs_status RESULT for work log history.
+Output format: \"branch (clean)\" or \"branch: N staged, M unstaged, K untracked\""
+  (let* ((data (alist-get 'data result))
+         (branch (or (alist-get 'current_branch data) "unknown"))
+         (staged (length (alist-get 'staged_files data)))
+         (unstaged (length (alist-get 'unstaged_files data)))
+         (untracked (length (alist-get 'untracked_files data)))
+         (is-clean (eq (alist-get 'is_clean data) t))
+         (ahead (or (alist-get 'ahead data) 0))
+         (behind (or (alist-get 'behind data) 0)))
+    (if is-clean
+        (format "%s (clean)%s"
+                branch
+                (cond
+                 ((and (> ahead 0) (> behind 0))
+                  (format " [ahead %d, behind %d]" ahead behind))
+                 ((> ahead 0) (format " [ahead %d]" ahead))
+                 ((> behind 0) (format " [behind %d]" behind))
+                 (t "")))
+      (let ((parts '()))
+        (when (> staged 0) (push (format "%d staged" staged) parts))
+        (when (> unstaged 0) (push (format "%d modified" unstaged) parts))
+        (when (> untracked 0) (push (format "%d untracked" untracked) parts))
+        (format "%s: %s" branch (string-join (nreverse parts) ", "))))))
+
+(defun efrit-budget-compress-vcs-diff (result)
+  "Compress vcs_diff RESULT for work log history.
+Output format: \"N files, +M/-K lines. Modified: file1, file2...\""
+  (let* ((data (alist-get 'data result))
+         (summary (alist-get 'summary data))
+         (files (append (alist-get 'files data) nil))
+         (files-changed (or (alist-get 'files_changed summary) (length files)))
+         (insertions (or (alist-get 'insertions summary) 0))
+         (deletions (or (alist-get 'deletions summary) 0))
+         (diff-type (or (alist-get 'diff_type data) "diff")))
+    (if (zerop files-changed)
+        (format "No changes (%s)" diff-type)
+      (let ((file-names (mapcar (lambda (f) (alist-get 'path f)) files)))
+        (format "%d files, +%d/-%d lines (%s). %s"
+                files-changed
+                insertions
+                deletions
+                diff-type
+                (efrit-budget--truncate-list file-names 4))))))
+
+(defun efrit-budget-compress-vcs-log (result)
+  "Compress vcs_log RESULT for work log history.
+Output format: \"N commits. Recent: abc1234 msg1, def5678 msg2...\""
+  (let* ((data (alist-get 'data result))
+         (commits (append (alist-get 'commits data) nil))
+         (count (or (alist-get 'count data) (length commits))))
+    (if (zerop count)
+        "No commits found"
+      (let ((commit-strs (mapcar
+                          (lambda (c)
+                            (let ((hash (or (alist-get 'hash c) "?"))
+                                  (msg (or (alist-get 'message c) "")))
+                              ;; Truncate message to ~30 chars
+                              (when (> (length msg) 30)
+                                (setq msg (concat (substring msg 0 27) "...")))
+                              (format "%s %s" hash msg)))
+                          commits)))
+        (format "%d commits. Recent: %s"
+                count
+                (efrit-budget--truncate-list commit-strs 3))))))
+
+;;; Compression Dispatch
+
+(defun efrit-budget-compress-for-history (tool-name result)
+  "Compress RESULT from TOOL-NAME for work log history.
+TOOL-NAME is a string or symbol identifying the tool.
+RESULT is the tool response alist.
+Returns a compressed string summary (~500 chars max)."
+  (let* ((tool (if (symbolp tool-name) (symbol-name tool-name) tool-name))
+         (compressor (cond
+                      ((string= tool "project_files") #'efrit-budget-compress-project-files)
+                      ((string= tool "search_content") #'efrit-budget-compress-search-content)
+                      ((string= tool "read_file") #'efrit-budget-compress-read-file)
+                      ((string= tool "vcs_status") #'efrit-budget-compress-vcs-status)
+                      ((string= tool "vcs_diff") #'efrit-budget-compress-vcs-diff)
+                      ((string= tool "vcs_log") #'efrit-budget-compress-vcs-log)
+                      (t nil))))
+    (if compressor
+        (condition-case err
+            (let ((summary (funcall compressor result)))
+              ;; Ensure we stay within max chars
+              (if (> (length summary) efrit-budget-compress-max-chars)
+                  (concat (substring summary 0 (- efrit-budget-compress-max-chars 3)) "...")
+                summary))
+          (error
+           (format "[%s error: %s]" tool (error-message-string err))))
+      ;; Fallback for unknown tools
+      (format "[%s result]" tool))))
+
 (provide 'efrit-budget)
 
 ;;; efrit-budget.el ends here
