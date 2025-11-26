@@ -25,6 +25,9 @@
 ;; Declare external functions from efrit-executor
 (declare-function efrit-execute-async "efrit-executor")
 
+;; Declare external functions from efrit-tool-confirm-action
+(declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
+
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
@@ -415,7 +418,36 @@ IMPORTANT: After calling this tool, the session pauses. You will receive the use
                                        ("options" . (("type" . "array")
                                                     ("items" . (("type" . "string")))
                                                     ("description" . "Optional list of choices. If provided, user picks one. If omitted, user provides free-form input.")))))
-                       ("required" . ["question"]))))]
+                       ("required" . ["question"]))))
+   (("name" . "confirm_action")
+    ("description" . "Request explicit user confirmation before a destructive or important operation. Use this INSTEAD of request_user_input when confirming a specific action.
+
+SEVERITY LEVELS:
+- info: Simple y/n prompt for low-risk confirmations
+- warning: Yellow highlighting, shows details list, uses completing-read
+- danger: Red highlighting, requires typing 'yes' explicitly (not just y/n)
+
+EXAMPLES:
+- Delete files: action=\"Delete 15 files permanently\" severity=\"danger\" details=[\"file1.txt\",...]
+- Modify config: action=\"Update production config\" severity=\"warning\"
+- Create directory: action=\"Create src/utils/ directory\" severity=\"info\"
+
+The session PAUSES until user responds. On timeout, treated as rejection.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("action" . (("type" . "string")
+                                                    ("description" . "Short description of what will happen")))
+                                      ("details" . (("type" . "array")
+                                                   ("items" . (("type" . "string")))
+                                                   ("description" . "Optional list of specific items affected (files, settings, etc.)")))
+                                      ("severity" . (("type" . "string")
+                                                    ("enum" . ["info" "warning" "danger"])
+                                                    ("description" . "Severity level: info (y/n), warning (highlighting), danger (type 'yes')")))
+                                      ("options" . (("type" . "array")
+                                                   ("items" . (("type" . "string")))
+                                                   ("description" . "Custom choices (default: ['Yes', 'No'])")))
+                                      ("timeout_seconds" . (("type" . "number")
+                                                           ("description" . "How long to wait before auto-rejecting (default: 300)")))))
+                      ("required" . ["action"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-tools-for-state ()
@@ -436,7 +468,7 @@ without actual code execution."
           ;; These tools are safe in any state
           '("glob_files" "buffer_create" "format_file_list"
             "format_todo_list" "display_in_buffer" "session_complete"
-            "suggest_execution_mode" "request_user_input"))
+            "suggest_execution_mode" "request_user_input" "confirm_action"))
          (planning-tools
           ;; For initial planning and analysis
           '("todo_analyze" "todo_add"))
@@ -1648,6 +1680,31 @@ Sets the session to waiting-for-user state and emits a progress event."
                     (format "\nOptions: %s" (mapconcat #'identity options ", "))
                   "")))))))
 
+(defun efrit-do--handle-confirm-action (tool-input)
+  "Handle confirm_action tool to get user confirmation for destructive operations.
+Prompts user synchronously and returns confirmation result as JSON."
+  (require 'efrit-tool-confirm-action)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: confirm_action requires a hash table input with 'action' field]"
+    (let* ((action (gethash "action" tool-input))
+           (details (gethash "details" tool-input))
+           (severity (gethash "severity" tool-input))
+           (options (gethash "options" tool-input))
+           (timeout (gethash "timeout_seconds" tool-input)))
+      (cond
+       ((or (null action) (string-empty-p action))
+        "\n[Error: confirm_action requires 'action' field]")
+       (t
+        ;; Build args alist for the tool function
+        (let* ((args `((action . ,action)
+                       ,@(when details `((details . ,details)))
+                       ,@(when severity `((severity . ,severity)))
+                       ,@(when options `((options . ,options)))
+                       ,@(when timeout `((timeout_seconds . ,timeout)))))
+               (result (efrit-tool-confirm-action args)))
+          ;; Return JSON-encoded result for Claude to process
+          (format "\n[Confirmation Result]\n%s" (json-encode result))))))))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
@@ -1734,6 +1791,8 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-do--handle-glob-files tool-input))
                 ((string= tool-name "request_user_input")
                  (efrit-do--handle-request-user-input tool-input))
+                ((string= tool-name "confirm_action")
+                 (efrit-do--handle-confirm-action tool-input))
                 (t
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))
