@@ -43,6 +43,17 @@
 ;; Declare external functions from efrit-tool-fetch-url
 (declare-function efrit-tool-fetch-url "efrit-tool-fetch-url")
 
+;; Declare external functions from Phase 1/2 tools
+(declare-function efrit-tool-project-files "efrit-tool-project-files")
+(declare-function efrit-tool-search-content "efrit-tool-search-content")
+(declare-function efrit-tool-read-file "efrit-tool-read-file")
+(declare-function efrit-tool-file-info "efrit-tool-file-info")
+(declare-function efrit-tool-vcs-status "efrit-tool-vcs-status")
+(declare-function efrit-tool-vcs-diff "efrit-tool-vcs-diff")
+(declare-function efrit-tool-vcs-log "efrit-tool-vcs-log")
+(declare-function efrit-tool-vcs-blame "efrit-tool-vcs-blame")
+(declare-function efrit-tool-elisp-docs "efrit-tool-elisp-docs")
+
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
@@ -573,7 +584,181 @@ Configure via efrit-fetch-url-security-level and efrit-fetch-url-allowed-domains
                                                   ("description" . "Output format (default: markdown)")))
                                       ("max_length" . (("type" . "number")
                                                        ("description" . "Max content length in chars (default: 50000)")))))
-                      ("required" . ["url"]))))]
+                      ("required" . ["url"]))))
+   ;; Phase 1/2: Codebase Exploration Tools
+   (("name" . "project_files")
+    ("description" . "List files in the project directory. Uses git ls-files for git repos (fast, respects .gitignore), falls back to directory traversal otherwise.
+
+EXAMPLES:
+- List all: project_files (no args, shows project root)
+- Filter by glob: project_files pattern=\"*.el\"
+- Specific dir: project_files path=\"lisp/\"
+- Include hidden: project_files include_hidden=true
+
+Returns: File paths with metadata (size, mtime, relative paths).")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Directory to scan (default: project root)")))
+                                      ("pattern" . (("type" . "string")
+                                                    ("description" . "Glob pattern filter (e.g., \"*.el\")")))
+                                      ("max_depth" . (("type" . "number")
+                                                      ("description" . "Max directory depth (default: 5)")))
+                                      ("include_hidden" . (("type" . "boolean")
+                                                           ("description" . "Include dotfiles (default: false)")))
+                                      ("max_files" . (("type" . "number")
+                                                      ("description" . "Max files to return (default: 500)")))
+                                      ("offset" . (("type" . "number")
+                                                   ("description" . "Pagination offset (default: 0)")))))
+                      ("required" . []))))
+   (("name" . "search_content")
+    ("description" . "Search for content across the codebase. Uses ripgrep when available for best performance.
+
+EXAMPLES:
+- Simple search: search_content pattern=\"defun my-function\"
+- Regex search: search_content pattern=\"defun.*test\" is_regex=true
+- Filter files: search_content pattern=\"TODO\" file_pattern=\"*.el\"
+- Case sensitive: search_content pattern=\"MyClass\" case_sensitive=true
+
+Returns: Matches with file path, line number, column, content, and context lines.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string")
+                                                     ("description" . "Search pattern (required)")))
+                                      ("is_regex" . (("type" . "boolean")
+                                                     ("description" . "Treat pattern as regex (default: false)")))
+                                      ("path" . (("type" . "string")
+                                                 ("description" . "Search scope directory (default: project root)")))
+                                      ("file_pattern" . (("type" . "string")
+                                                         ("description" . "Glob filter for files (e.g., \"*.el\")")))
+                                      ("context_lines" . (("type" . "number")
+                                                          ("description" . "Lines before/after match (default: 2)")))
+                                      ("max_results" . (("type" . "number")
+                                                        ("description" . "Max results (default: 50)")))
+                                      ("case_sensitive" . (("type" . "boolean")
+                                                           ("description" . "Case sensitive search (default: false)")))
+                                      ("offset" . (("type" . "number")
+                                                   ("description" . "Pagination offset (default: 0)")))))
+                      ("required" . ["pattern"]))))
+   (("name" . "read_file")
+    ("description" . "Read a file and return its contents with metadata. Supports line ranges for large files.
+
+EXAMPLES:
+- Full file: read_file path=\"lisp/efrit.el\"
+- Line range: read_file path=\"init.el\" start_line=100 end_line=150
+- With encoding: read_file path=\"data.txt\" encoding=\"latin-1\"
+
+Returns: File content, encoding, size, line counts. Binary files return metadata only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File path to read (required)")))
+                                      ("start_line" . (("type" . "number")
+                                                       ("description" . "Start line (1-indexed, optional)")))
+                                      ("end_line" . (("type" . "number")
+                                                     ("description" . "End line (inclusive, optional)")))
+                                      ("encoding" . (("type" . "string")
+                                                     ("description" . "Encoding override (optional)")))
+                                      ("max_size" . (("type" . "number")
+                                                     ("description" . "Max bytes to read (default: 100000)")))))
+                      ("required" . ["path"]))))
+   (("name" . "file_info")
+    ("description" . "Get metadata about files without reading contents. Useful for checking existence, size, type before reading.
+
+EXAMPLES:
+- Single file: file_info paths=\"config.el\"
+- Multiple files: file_info paths=[\"a.el\", \"b.el\", \"c.el\"]
+
+Returns: exists, size, mtime, permissions, is_binary, is_directory, first_line peek.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("paths" . (("type" . "array")
+                                                   ("items" . (("type" . "string")))
+                                                   ("description" . "File paths to query (required)")))))
+                      ("required" . ["paths"]))))
+   (("name" . "vcs_status")
+    ("description" . "Get the current git repository status.
+
+Returns: current branch, upstream tracking info, staged/unstaged/untracked files, stash count, recent commits, and special states (rebasing, merging, etc.).")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Repository path (default: project root)")))))
+                      ("required" . []))))
+   (("name" . "vcs_diff")
+    ("description" . "Get diff output for repository changes.
+
+EXAMPLES:
+- Unstaged changes: vcs_diff
+- Staged changes: vcs_diff staged=true
+- Against commit: vcs_diff commit=\"HEAD~3\"
+- Specific file: vcs_diff path=\"lisp/efrit.el\"
+
+Returns: Unified diff output with file statistics (insertions/deletions per file).")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File or directory to diff (default: all)")))
+                                      ("staged" . (("type" . "boolean")
+                                                   ("description" . "Show staged changes only (default: false)")))
+                                      ("commit" . (("type" . "string")
+                                                   ("description" . "Diff against specific commit")))
+                                      ("context_lines" . (("type" . "number")
+                                                          ("description" . "Lines of context (default: 3)")))))
+                      ("required" . []))))
+   (("name" . "vcs_log")
+    ("description" . "Get commit history.
+
+EXAMPLES:
+- Recent commits: vcs_log
+- File history: vcs_log path=\"lisp/efrit.el\"
+- By author: vcs_log author=\"steve\"
+- Search messages: vcs_log grep=\"fix bug\"
+
+Returns: Commit list with hash, author, date, message.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File or directory for filtered history")))
+                                      ("count" . (("type" . "number")
+                                                  ("description" . "Number of commits (default: 10)")))
+                                      ("since" . (("type" . "string")
+                                                  ("description" . "Date filter (e.g., '1 week ago')")))
+                                      ("author" . (("type" . "string")
+                                                   ("description" . "Author filter")))
+                                      ("grep" . (("type" . "string")
+                                                 ("description" . "Commit message search")))))
+                      ("required" . []))))
+   (("name" . "vcs_blame")
+    ("description" . "Get line-by-line code attribution via git blame.
+
+EXAMPLES:
+- Full file: vcs_blame path=\"lisp/efrit.el\"
+- Line range: vcs_blame path=\"efrit.el\" start_line=100 end_line=150
+
+Returns: Per-line commit info (hash, author, date, message) with content.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File to blame (required)")))
+                                      ("start_line" . (("type" . "number")
+                                                       ("description" . "Range start (1-indexed)")))
+                                      ("end_line" . (("type" . "number")
+                                                     ("description" . "Range end (inclusive)")))))
+                      ("required" . ["path"]))))
+   (("name" . "elisp_docs")
+    ("description" . "Look up Emacs Lisp documentation. Returns structured data without opening help buffers.
+
+EXAMPLES:
+- Single symbol: elisp_docs symbol=\"defun\"
+- Multiple: elisp_docs symbol=[\"defun\", \"defvar\", \"defmacro\"]
+- With source: elisp_docs symbol=\"find-file\" include_source=true
+- Related symbols: elisp_docs symbol=\"buffer\" related=true
+
+Returns: Symbol type, docstring, signature (for functions), source location, related symbols.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string")
+                                                    ("description" . "Symbol name or list of names (required)")))
+                                      ("type" . (("type" . "string")
+                                                 ("enum" . ["auto" "function" "variable" "face"])
+                                                 ("description" . "Symbol type (default: auto-detect)")))
+                                      ("include_source" . (("type" . "boolean")
+                                                           ("description" . "Include source file/line (default: false)")))
+                                      ("related" . (("type" . "boolean")
+                                                    ("description" . "Include related symbols (default: false)")))))
+                      ("required" . ["symbol"]))))]
                       "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-tools-for-state ()
@@ -599,7 +784,10 @@ without actual code execution."
             "checkpoint" "restore_checkpoint" "list_checkpoints" "delete_checkpoint"
             "show_diff_preview"
             ;; Phase 4: External Knowledge tools
-            "web_search" "fetch_url"))
+            "web_search" "fetch_url"
+            ;; Phase 1/2: Codebase Exploration tools
+            "project_files" "search_content" "read_file" "file_info"
+            "vcs_status" "vcs_diff" "vcs_log" "vcs_blame" "elisp_docs"))
          (planning-tools
           ;; For initial planning and analysis
           '("todo_analyze" "todo_add"))
@@ -1945,6 +2133,164 @@ Prompts user synchronously and returns confirmation result as JSON."
                (result (efrit-tool-fetch-url args)))
           (format "\n[Fetch URL Result]\n%s" (json-encode result)))))))
 
+;;; Phase 1/2: Codebase Exploration Tool Handlers
+
+(defun efrit-do--handle-project-files (tool-input)
+  "Handle project_files tool to list files in the project."
+  (require 'efrit-tool-project-files)
+  (let* ((args (if (hash-table-p tool-input)
+                   `(,@(when-let* ((path (gethash "path" tool-input)))
+                         `((path . ,path)))
+                     ,@(when-let* ((pattern (gethash "pattern" tool-input)))
+                         `((pattern . ,pattern)))
+                     ,@(when-let* ((max-depth (gethash "max_depth" tool-input)))
+                         `((max_depth . ,max-depth)))
+                     ,@(when-let* ((include-hidden (gethash "include_hidden" tool-input)))
+                         `((include_hidden . ,include-hidden)))
+                     ,@(when-let* ((max-files (gethash "max_files" tool-input)))
+                         `((max_files . ,max-files)))
+                     ,@(when-let* ((offset (gethash "offset" tool-input)))
+                         `((offset . ,offset))))
+                 nil))
+         (result (efrit-tool-project-files args)))
+    (format "\n[Project Files Result]\n%s" (json-encode result))))
+
+(defun efrit-do--handle-search-content (tool-input)
+  "Handle search_content tool to search for content in the codebase."
+  (require 'efrit-tool-search-content)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: search_content requires a hash table input with 'pattern' field]"
+    (let ((pattern (gethash "pattern" tool-input)))
+      (if (or (null pattern) (string-empty-p pattern))
+          "\n[Error: search_content requires 'pattern' field]"
+        (let* ((args `((pattern . ,pattern)
+                       ,@(when-let* ((is-regex (gethash "is_regex" tool-input)))
+                           `((is_regex . ,is-regex)))
+                       ,@(when-let* ((path (gethash "path" tool-input)))
+                           `((path . ,path)))
+                       ,@(when-let* ((file-pattern (gethash "file_pattern" tool-input)))
+                           `((file_pattern . ,file-pattern)))
+                       ,@(when-let* ((context-lines (gethash "context_lines" tool-input)))
+                           `((context_lines . ,context-lines)))
+                       ,@(when-let* ((max-results (gethash "max_results" tool-input)))
+                           `((max_results . ,max-results)))
+                       ,@(when-let* ((case-sensitive (gethash "case_sensitive" tool-input)))
+                           `((case_sensitive . ,case-sensitive)))
+                       ,@(when-let* ((offset (gethash "offset" tool-input)))
+                           `((offset . ,offset)))))
+               (result (efrit-tool-search-content args)))
+          (format "\n[Search Content Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-read-file (tool-input)
+  "Handle read_file tool to read a file's contents."
+  (require 'efrit-tool-read-file)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: read_file requires a hash table input with 'path' field]"
+    (let ((path (gethash "path" tool-input)))
+      (if (or (null path) (string-empty-p path))
+          "\n[Error: read_file requires 'path' field]"
+        (let* ((args `((path . ,path)
+                       ,@(when-let* ((start-line (gethash "start_line" tool-input)))
+                           `((start_line . ,start-line)))
+                       ,@(when-let* ((end-line (gethash "end_line" tool-input)))
+                           `((end_line . ,end-line)))
+                       ,@(when-let* ((encoding (gethash "encoding" tool-input)))
+                           `((encoding . ,encoding)))
+                       ,@(when-let* ((max-size (gethash "max_size" tool-input)))
+                           `((max_size . ,max-size)))))
+               (result (efrit-tool-read-file args)))
+          (format "\n[Read File Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-file-info (tool-input)
+  "Handle file_info tool to get metadata about files."
+  (require 'efrit-tool-file-info)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: file_info requires a hash table input with 'paths' field]"
+    (let ((paths (gethash "paths" tool-input)))
+      (if (null paths)
+          "\n[Error: file_info requires 'paths' field]"
+        (let* ((args `((paths . ,(if (vectorp paths) (append paths nil) paths))))
+               (result (efrit-tool-file-info args)))
+          (format "\n[File Info Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-vcs-status (tool-input)
+  "Handle vcs_status tool to get git repository status."
+  (require 'efrit-tool-vcs-status)
+  (let* ((args (if (hash-table-p tool-input)
+                   `(,@(when-let* ((path (gethash "path" tool-input)))
+                         `((path . ,path))))
+                 nil))
+         (result (efrit-tool-vcs-status args)))
+    (format "\n[VCS Status Result]\n%s" (json-encode result))))
+
+(defun efrit-do--handle-vcs-diff (tool-input)
+  "Handle vcs_diff tool to get git diff output."
+  (require 'efrit-tool-vcs-diff)
+  (let* ((args (if (hash-table-p tool-input)
+                   `(,@(when-let* ((path (gethash "path" tool-input)))
+                         `((path . ,path)))
+                     ,@(when-let* ((staged (gethash "staged" tool-input)))
+                         `((staged . ,staged)))
+                     ,@(when-let* ((commit (gethash "commit" tool-input)))
+                         `((commit . ,commit)))
+                     ,@(when-let* ((context-lines (gethash "context_lines" tool-input)))
+                         `((context_lines . ,context-lines))))
+                 nil))
+         (result (efrit-tool-vcs-diff args)))
+    (format "\n[VCS Diff Result]\n%s" (json-encode result))))
+
+(defun efrit-do--handle-vcs-log (tool-input)
+  "Handle vcs_log tool to get commit history."
+  (require 'efrit-tool-vcs-log)
+  (let* ((args (if (hash-table-p tool-input)
+                   `(,@(when-let* ((path (gethash "path" tool-input)))
+                         `((path . ,path)))
+                     ,@(when-let* ((count (gethash "count" tool-input)))
+                         `((count . ,count)))
+                     ,@(when-let* ((since (gethash "since" tool-input)))
+                         `((since . ,since)))
+                     ,@(when-let* ((author (gethash "author" tool-input)))
+                         `((author . ,author)))
+                     ,@(when-let* ((grep (gethash "grep" tool-input)))
+                         `((grep . ,grep))))
+                 nil))
+         (result (efrit-tool-vcs-log args)))
+    (format "\n[VCS Log Result]\n%s" (json-encode result))))
+
+(defun efrit-do--handle-vcs-blame (tool-input)
+  "Handle vcs_blame tool to get line-by-line code attribution."
+  (require 'efrit-tool-vcs-blame)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: vcs_blame requires a hash table input with 'path' field]"
+    (let ((path (gethash "path" tool-input)))
+      (if (or (null path) (string-empty-p path))
+          "\n[Error: vcs_blame requires 'path' field]"
+        (let* ((args `((path . ,path)
+                       ,@(when-let* ((start-line (gethash "start_line" tool-input)))
+                           `((start_line . ,start-line)))
+                       ,@(when-let* ((end-line (gethash "end_line" tool-input)))
+                           `((end_line . ,end-line)))))
+               (result (efrit-tool-vcs-blame args)))
+          (format "\n[VCS Blame Result]\n%s" (json-encode result)))))))
+
+(defun efrit-do--handle-elisp-docs (tool-input)
+  "Handle elisp_docs tool to look up Emacs Lisp documentation."
+  (require 'efrit-tool-elisp-docs)
+  (if (not (hash-table-p tool-input))
+      "\n[Error: elisp_docs requires a hash table input with 'symbol' field]"
+    (let ((symbol (gethash "symbol" tool-input)))
+      (if (null symbol)
+          "\n[Error: elisp_docs requires 'symbol' field]"
+        (let* ((args `((symbol . ,(if (vectorp symbol) (append symbol nil) symbol))
+                       ,@(when-let* ((type (gethash "type" tool-input)))
+                           `((type . ,type)))
+                       ,@(when-let* ((include-source (gethash "include_source" tool-input)))
+                           `((include_source . ,include-source)))
+                       ,@(when-let* ((related (gethash "related" tool-input)))
+                           `((related . ,related)))))
+               (result (efrit-tool-elisp-docs args)))
+          (format "\n[Elisp Docs Result]\n%s" (json-encode result)))))))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
@@ -2049,6 +2395,25 @@ Applies circuit breaker limits to prevent infinite loops."
                  (efrit-do--handle-web-search tool-input))
                 ((string= tool-name "fetch_url")
                  (efrit-do--handle-fetch-url tool-input))
+                ;; Phase 1/2: Codebase Exploration tools
+                ((string= tool-name "project_files")
+                 (efrit-do--handle-project-files tool-input))
+                ((string= tool-name "search_content")
+                 (efrit-do--handle-search-content tool-input))
+                ((string= tool-name "read_file")
+                 (efrit-do--handle-read-file tool-input))
+                ((string= tool-name "file_info")
+                 (efrit-do--handle-file-info tool-input))
+                ((string= tool-name "vcs_status")
+                 (efrit-do--handle-vcs-status tool-input))
+                ((string= tool-name "vcs_diff")
+                 (efrit-do--handle-vcs-diff tool-input))
+                ((string= tool-name "vcs_log")
+                 (efrit-do--handle-vcs-log tool-input))
+                ((string= tool-name "vcs_blame")
+                 (efrit-do--handle-vcs-blame tool-input))
+                ((string= tool-name "elisp_docs")
+                 (efrit-do--handle-elisp-docs tool-input))
                 (t
                  (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
                  (format "\n[Unknown tool: %s]" tool-name)))))

@@ -55,6 +55,7 @@
 (add-to-list 'load-path (expand-file-name "core" efrit-source-dir))
 (add-to-list 'load-path (expand-file-name "interfaces" efrit-source-dir))
 (add-to-list 'load-path (expand-file-name "support" efrit-source-dir))
+(add-to-list 'load-path (expand-file-name "tools" efrit-source-dir))
 
 ;; NOW we can require efrit-config
 (require 'efrit-config)
