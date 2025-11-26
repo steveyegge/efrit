@@ -252,20 +252,17 @@ Updates budget tracking and may evict old entries if history budget exceeded."
                                 (if (stringp result)
                                     (efrit-common-truncate-string result 500)
                                   (format "%s" result))))
-           (entry (list compressed-result elisp todo-snapshot tool-name)))
+           (entry (list compressed-result elisp todo-snapshot tool-name))
+           (entry-tokens (efrit-budget-estimate-tokens
+                          (format "%s %s" compressed-result elisp))))
       (push entry (efrit-session-work-log session))
 
-      ;; Update budget with compressed result tokens
+      ;; Update budget and evict if over history budget
       (when budget
-        (let ((entry-tokens (efrit-budget-estimate-tokens
-                             (format "%s %s" compressed-result elisp))))
-          ;; Update history usage
-          (efrit-budget-record-usage budget 'history
-                                     (+ (efrit-budget-history-used budget) entry-tokens))
-          ;; Evict old entries if over history budget
-          (efrit-session--evict-if-over-budget session)))
+        (efrit-session--update-history-budget session entry-tokens))
 
-      ;; Limit work log size to prevent memory growth
+      ;; Safety backstop: hard limit on entry count (should rarely trigger
+      ;; if token-based eviction is working, but protects against edge cases)
       (when (> (length (efrit-session-work-log session))
                efrit-session-max-work-log-entries)
         (setf (efrit-session-work-log session)
@@ -273,6 +270,7 @@ Updates budget tracking and may evict old entries if history budget exceeded."
                        efrit-session-max-work-log-entries)))
 
       ;; Also add to unified context (tool call and result)
+      ;; Note: Uses original result, not compressed, for richer context
       (efrit-unified-context-add-message 'user elisp 'async
                                         `((session . ,(efrit-session-id session))))
       (when result
@@ -304,10 +302,8 @@ Records TOOL-NAME, INPUT-DATA, and RESULT."
 Returns the removed entry, or nil if work log is empty."
   (when (and session (efrit-session-work-log session))
     (let* ((work-log (efrit-session-work-log session))
-           (reversed (nreverse (copy-sequence work-log)))
-           (oldest (car reversed))
-           (rest (nreverse (cdr reversed))))
-      (setf (efrit-session-work-log session) rest)
+           (oldest (car (last work-log))))
+      (setf (efrit-session-work-log session) (butlast work-log))
       (efrit-log 'debug "Session %s: evicted oldest work log entry"
                  (efrit-session-id session))
       oldest)))
@@ -323,10 +319,23 @@ Returns the removed entry, or nil if work log is empty."
                                 (format "%s %s" result elisp))))))
       total)))
 
-(defun efrit-session--evict-if-over-budget (session)
-  "Evict oldest work log entries if SESSION history exceeds budget.
-Uses LRU (Least Recently Used) eviction - oldest entries are removed first."
+(defun efrit-session--update-history-budget (session new-entry-tokens)
+  "Update SESSION's history budget after adding NEW-ENTRY-TOKENS.
+Performs LRU eviction if history exceeds budget limit."
   (when-let* ((budget (efrit-session-budget session)))
+    (let ((new-total (+ (efrit-budget-history-used budget) new-entry-tokens)))
+      ;; Update with new total
+      (efrit-budget-record-usage budget 'history new-total)
+      ;; Evict if over budget (recalculates tokens only during eviction)
+      (when (efrit-budget-history-over-limit-p budget new-total)
+        (efrit-session--evict-until-under-budget session)))))
+
+(defun efrit-session--evict-until-under-budget (session)
+  "Evict oldest work log entries until SESSION history is under budget.
+Uses LRU (Least Recently Used) eviction - oldest entries are removed first.
+Recalculates token count after eviction to ensure accuracy."
+  (when-let* ((budget (efrit-session-budget session)))
+    ;; Recalculate from scratch to ensure accuracy after eviction
     (let ((history-tokens (efrit-session--calculate-history-tokens session)))
       (while (and (efrit-budget-history-over-limit-p budget history-tokens)
                   (> (length (efrit-session-work-log session)) 1))
@@ -334,6 +343,14 @@ Uses LRU (Least Recently Used) eviction - oldest entries are removed first."
         (setq history-tokens (efrit-session--calculate-history-tokens session)))
       ;; Update budget with actual history tokens
       (efrit-budget-record-usage budget 'history history-tokens))))
+
+;;; Session Budget API
+;;
+;; These functions provide a consistent session-level API for budget operations.
+;; While they mostly delegate to efrit-budget functions, they:
+;; - Handle nil sessions gracefully
+;; - Encapsulate the budget struct implementation detail
+;; - Allow future changes without affecting callers
 
 (defun efrit-session-get-budget (session)
   "Get the budget struct for SESSION.
