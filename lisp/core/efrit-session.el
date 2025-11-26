@@ -94,7 +94,7 @@ If nil, uses the default location in the efrit data directory."
   "Session tracking for multi-step operations."
   id                      ; Unique identifier from Claude
   command                 ; Original command from user
-  work-log                ; List of (result elisp todo-snapshot) tuples
+  work-log                ; List of (result elisp todo-snapshot tool-name) tuples
   start-time              ; When session started
   status                  ; 'active, 'waiting, 'complete, 'cancelled, 'waiting-for-user
   buffer                  ; Original buffer for context
@@ -227,11 +227,12 @@ RESULT is the optional completion result (may be nil).")
 
 ;;; Work Log Management (Multi-step Execution)
 
-(defun efrit-session-add-work (session result elisp &optional todo-snapshot)
+(defun efrit-session-add-work (session result elisp &optional todo-snapshot tool-name)
   "Add a work log entry to SESSION.
-Records RESULT from executing ELISP, with optional TODO-SNAPSHOT."
+Records RESULT from executing ELISP, with optional TODO-SNAPSHOT.
+TOOL-NAME identifies which tool generated this result (for compression)."
   (when session
-    (let ((entry (list result elisp todo-snapshot)))
+    (let ((entry (list result elisp todo-snapshot tool-name)))
       (push entry (efrit-session-work-log session))
 
       ;; Limit work log size to prevent memory growth
@@ -300,9 +301,12 @@ Returns a JSON string representation."
           (mapcar (lambda (entry)
                    (let ((result (nth 0 entry))
                          (elisp (nth 1 entry))
-                         (todos (nth 2 entry)))
+                         (todos (nth 2 entry))
+                         (tool-name (nth 3 entry)))
                      `((elisp . ,(efrit-session--compress-code elisp))
                        (result . ,(efrit-session--compress-result result))
+                       ,@(when tool-name
+                           `((tool . ,tool-name)))
                        ,@(when todos
                            `((todos . ,(length todos)))))))
                  recent-entries)))
