@@ -84,7 +84,10 @@ Returns either:
 - A standard tool error response if the file can't be read
 - A special image response that will be converted to an image content block
 
-The image is returned as base64-encoded data with the appropriate MIME type."
+The image is returned as base64-encoded data with the appropriate MIME type.
+
+Note: This tool bypasses the project sandbox since image viewing is read-only
+and users commonly need to view images from anywhere (Desktop, Downloads, etc.)."
   (efrit-tool-execute read_image args
     (let* ((path-input (or (alist-get 'path args) ""))
            (warnings '()))
@@ -93,10 +96,10 @@ The image is returned as base64-encoded data with the appropriate MIME type."
       (when (string-empty-p path-input)
         (signal 'user-error (list "Path is required")))
 
-      ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
-             (path (plist-get path-info :path))
-             (path-relative (plist-get path-info :path-relative)))
+      ;; Resolve path WITHOUT sandbox check - image reading is read-only and
+      ;; users commonly need to view images from Desktop, Downloads, etc.
+      (let* ((path (expand-file-name path-input))
+             (path-relative (file-name-nondirectory path)))
 
         ;; Check file exists
         (unless (file-exists-p path)
@@ -124,10 +127,6 @@ The image is returned as base64-encoded data with the appropriate MIME type."
               (push (format "Large image: %s bytes (may slow processing)"
                             size)
                     warnings))
-
-            ;; Check for sensitive file
-            (when (plist-get path-info :is-sensitive)
-              (push (format "Sensitive file: %s" path-relative) warnings))
 
             ;; Read and encode the image
             (let ((base64-data (efrit-tool-read-image--encode-base64 path)))
