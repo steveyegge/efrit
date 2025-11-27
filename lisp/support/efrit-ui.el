@@ -1313,6 +1313,111 @@ Called automatically when todo_write is executed."
   (advice-add 'efrit-do--handle-todo-write :after #'efrit-todos--after-todo-write-advice))
 
 ;;; ========================================================================
+;;; SECTION 6: MODE LINE TASK INDICATOR
+;;; Show current in-progress task in the mode line
+;;; ========================================================================
+
+(defcustom efrit-show-task-in-modeline t
+  "Whether to show the current task in the mode line.
+When non-nil and a task is in_progress, displays:
+  [Efrit: Task description...]
+When no tasks are in progress, displays:
+  [Efrit: idle]"
+  :type 'boolean
+  :group 'efrit-todos)
+
+(defcustom efrit-modeline-task-max-length 40
+  "Maximum length of task description in mode line.
+Longer descriptions will be truncated with ellipsis."
+  :type 'integer
+  :group 'efrit-todos)
+
+(defface efrit-modeline-task
+  '((t :inherit mode-line-emphasis))
+  "Face for the task indicator in the mode line."
+  :group 'efrit-todos)
+
+(defface efrit-modeline-idle
+  '((t :inherit mode-line-inactive))
+  "Face for the idle indicator in the mode line."
+  :group 'efrit-todos)
+
+(defvar efrit-modeline--current-task nil
+  "Cache of current in-progress task for mode line display.")
+
+(defun efrit-modeline--truncate (text max-length)
+  "Truncate TEXT to MAX-LENGTH characters, adding ellipsis if needed."
+  (if (> (length text) max-length)
+      (concat (substring text 0 (- max-length 3)) "...")
+    text))
+
+(defun efrit-modeline--get-current-task ()
+  "Get the current in-progress task content, or nil if none."
+  (when (bound-and-true-p efrit-do--current-todos)
+    (let ((in-progress-task
+           (seq-find (lambda (todo)
+                       (eq (efrit-do-todo-item-status todo) 'in-progress))
+                     efrit-do--current-todos)))
+      (when in-progress-task
+        (efrit-do-todo-item-content in-progress-task)))))
+
+(defun efrit-modeline--update ()
+  "Update the mode line task cache and force mode line redisplay."
+  (setq efrit-modeline--current-task (efrit-modeline--get-current-task))
+  (force-mode-line-update t))
+
+(defun efrit-modeline-construct ()
+  "Construct the mode line string for the current task.
+Returns nil if `efrit-show-task-in-modeline' is nil."
+  (when efrit-show-task-in-modeline
+    (let ((task efrit-modeline--current-task))
+      (if task
+          (propertize
+           (format "[Efrit: %s]"
+                   (efrit-modeline--truncate task efrit-modeline-task-max-length))
+           'face 'efrit-modeline-task
+           'help-echo (format "Current task: %s" task))
+        (propertize "[Efrit: idle]"
+                    'face 'efrit-modeline-idle
+                    'help-echo "No task in progress")))))
+
+;;;###autoload
+(defun efrit-modeline-mode-line-format ()
+  "Return the mode line format element for efrit task display.
+Add this to `mode-line-format' or `global-mode-string' to display."
+  '(:eval (efrit-modeline-construct)))
+
+;; Hook to update mode line when todos change
+(defun efrit-modeline--after-todo-write-advice (&rest _args)
+  "Update mode line after todo_write is called."
+  (efrit-modeline--update))
+
+;; Add advice when efrit-do is loaded
+(with-eval-after-load 'efrit-do
+  (advice-add 'efrit-do--handle-todo-write :after #'efrit-modeline--after-todo-write-advice))
+
+;;;###autoload
+(defun efrit-modeline-enable ()
+  "Enable the Efrit task indicator in the mode line.
+Adds the indicator to `global-mode-string'."
+  (interactive)
+  (unless (member '(:eval (efrit-modeline-construct)) global-mode-string)
+    (setq global-mode-string
+          (append global-mode-string
+                  '((:eval (efrit-modeline-construct))))))
+  (efrit-modeline--update)
+  (message "Efrit mode line task indicator enabled"))
+
+;;;###autoload
+(defun efrit-modeline-disable ()
+  "Disable the Efrit task indicator in the mode line."
+  (interactive)
+  (setq global-mode-string
+        (delete '(:eval (efrit-modeline-construct)) global-mode-string))
+  (force-mode-line-update t)
+  (message "Efrit mode line task indicator disabled"))
+
+;;; ========================================================================
 ;;; INITIALIZATION
 ;;; ========================================================================
 
