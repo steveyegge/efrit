@@ -302,6 +302,7 @@ Each entry is (error-hash . error-message).")
     ("todo_execute_next"  . (efrit-do--handle-todo-execute-next . :none))
     ("todo_get_instructions" . (efrit-do--handle-todo-execute-next . :none))
     ("todo_complete_check" . (efrit-do--handle-todo-complete-check . :none))
+    ("todo_write" . (efrit-do--handle-todo-write . :tool-input))
     ;; Buffer and display tools
     ("buffer_create"      . (efrit-do--handle-buffer-create . :both))
     ("format_file_list"   . (efrit-do--handle-format-file-list . :input-str))
@@ -527,6 +528,39 @@ DO NOT USE for simple tasks:
     ("description" . "Check if all TODOs are completed. Returns true if all done, false if work remains.")
     ("input_schema" . (("type" . "object")
                       ("properties" . ()))))
+   (("name" . "todo_write")
+    ("description" . "Write the complete TODO list, replacing any existing list. Use for tracking multi-step tasks.
+
+USE WHEN:
+- Complex multi-step tasks (3+ steps)
+- User provides multiple tasks
+- Breaking down large features into steps
+- Updating task status as you work
+
+DO NOT USE for:
+- Simple single-action tasks
+- Trivial operations that complete in one step
+- Pure information queries
+
+Each TODO item requires:
+- content: What needs to be done (imperative form, e.g., 'Fix the bug')
+- status: pending, in_progress, or completed
+- activeForm: Present continuous form shown during execution (e.g., 'Fixing the bug')
+
+IMPORTANT: Only one task should be in_progress at a time. Mark tasks complete immediately after finishing.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("todos" . (("type" . "array")
+                                                   ("description" . "The complete TODO list")
+                                                   ("items" . (("type" . "object")
+                                                              ("properties" . (("content" . (("type" . "string")
+                                                                                             ("description" . "Task in imperative form (e.g., 'Fix the bug')")))
+                                                                              ("status" . (("type" . "string")
+                                                                                          ("enum" . ["pending" "in_progress" "completed"])
+                                                                                          ("description" . "Task status")))
+                                                                              ("activeForm" . (("type" . "string")
+                                                                                              ("description" . "Task in present continuous (e.g., 'Fixing the bug')")))))
+                                                              ("required" . ["content" "status" "activeForm"])))))))
+                      ("required" . ["todos"]))))
    (("name" . "suggest_execution_mode")
    ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
    ("input_schema" . (("type" . "object")
@@ -1966,6 +2000,74 @@ STOP calling todo_status repeatedly!]"
     (if incomplete
         "\n[TODOs incomplete - work remains]"
       "\n[All TODOs completed!]")))
+
+(defun efrit-do--handle-todo-write (tool-input)
+  "Handle todo_write tool - replaces entire TODO list.
+TOOL-INPUT is a hash table with a `todos' array.
+Each todo has content, status, and activeForm.
+
+This is a Pure Executor implementation - it simply stores what
+Claude sends without validation or state machine logic."
+  (let* ((todos-array (when (hash-table-p tool-input)
+                        (gethash "todos" tool-input)))
+         (new-todos nil))
+    ;; Convert the input array to our internal TODO item format
+    (when (and todos-array (> (length todos-array) 0))
+      (let ((counter 0))
+        (seq-doseq (todo-data todos-array)
+          (let* ((content (gethash "content" todo-data ""))
+                 (status-str (gethash "status" todo-data "pending"))
+                 ;; activeForm is stored but not yet used (for future UI display)
+                 (_active-form (gethash "activeForm" todo-data content))
+                 (status (intern status-str))
+                 ;; Map status strings to internal symbols
+                 (internal-status (cond
+                                   ((eq status 'pending) 'todo)
+                                   ((eq status 'in_progress) 'in-progress)
+                                   ((eq status 'completed) 'completed)
+                                   (t 'todo)))
+                 (todo-id (format "todo-%d" (cl-incf counter)))
+                 (todo (efrit-do-todo-item-create
+                        :id todo-id
+                        :content content
+                        :status internal-status
+                        :priority 'medium
+                        :created-at (current-time)
+                        :completed-at (when (eq internal-status 'completed)
+                                        (current-time)))))
+            ;; activeForm will be used by *efrit-todos* buffer (ef-kyl)
+            (push todo new-todos)))))
+
+    ;; Replace the entire TODO list (nreverse is destructive, so capture result)
+    (setq efrit-do--current-todos (nreverse new-todos))
+    (setq efrit-do--todo-counter (length efrit-do--current-todos))
+
+    ;; Update workflow state if we have todos
+    (when efrit-do--current-todos
+      (setq efrit-do--workflow-state 'todos-created))
+
+    ;; Return a summary
+    (let* ((total (length efrit-do--current-todos))
+           (pending (seq-count (lambda (todo)
+                                 (eq (efrit-do-todo-item-status todo) 'todo))
+                               efrit-do--current-todos))
+           (in-progress (seq-count (lambda (todo)
+                                     (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                   efrit-do--current-todos))
+           (completed (seq-count (lambda (todo)
+                                   (eq (efrit-do-todo-item-status todo) 'completed))
+                                 efrit-do--current-todos))
+           ;; Find the current in-progress task
+           (current-task (seq-find (lambda (todo)
+                                     (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                   efrit-do--current-todos)))
+      (efrit-log 'debug "todo_write: stored %d todos (%d pending, %d in-progress, %d completed)"
+                 total pending in-progress completed)
+      (format "\n[TODO list updated: %d total (%d pending, %d in-progress, %d completed)%s]"
+              total pending in-progress completed
+              (if current-task
+                  (format "\nCurrent task: %s" (efrit-do-todo-item-content current-task))
+                "")))))
 
 (defun efrit-do--handle-buffer-create (tool-input input-str)
   "Handle buffer creation."
