@@ -272,15 +272,28 @@ CRITICAL: This function maintains proper Claude API message format by:
                   session-complete-p
                   (and (boundp 'efrit-do--force-complete)
                        efrit-do--force-complete))
-              (when session
-                (efrit-executor--complete-session
-                 session
-                 (or completion-message result-text
-                     (when (and (boundp 'efrit-do--force-complete)
-                               efrit-do--force-complete)
-                       "Session auto-completed after successful code execution"))))
-              (when callback
-                (funcall callback (or completion-message result-text))))
+              ;; Combine result-text and completion-message for full detail
+              ;; result-text contains tool execution details, don't lose them
+              (let ((final-result (cond
+                                   ;; Both present: combine them
+                                   ((and result-text (not (string-empty-p result-text))
+                                         completion-message)
+                                    (concat result-text "\n\n" completion-message))
+                                   ;; Only result-text
+                                   ((and result-text (not (string-empty-p result-text)))
+                                    result-text)
+                                   ;; Only completion-message
+                                   (completion-message completion-message)
+                                   ;; Force complete fallback
+                                   ((and (boundp 'efrit-do--force-complete)
+                                         efrit-do--force-complete)
+                                    "Session auto-completed after successful code execution")
+                                   ;; Default
+                                   (t "Session completed"))))
+                (when session
+                  (efrit-executor--complete-session session final-result))
+                (when callback
+                  (funcall callback final-result))))
 
              ;; Session needs to continue
              (t
@@ -486,53 +499,120 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
 ;;;###autoload
 (defun efrit-execute (command)
   "Execute natural language COMMAND synchronously.
-This is a blocking call that waits for Claude's response."
+This is a blocking call that waits for Claude's complete response,
+including multi-turn tool use conversations."
   (interactive (list (read-string "Efrit command: " nil 'efrit-do-history)))
 
   (let* ((session-id (format "sync-%s" (format-time-string "%Y%m%d%H%M%S")))
          (session (efrit-session-create session-id command))
          (system-prompt (efrit-executor--build-system-prompt session-id "[]"))
-         (request-data
-          `(("model" . ,efrit-default-model)
-            ("max_tokens" . 8192)
-            ("temperature" . 0.0)
-            ("messages" . [(("role" . "user")
-                           ("content" . ,command))])
-            ("system" . ,system-prompt)
-            ("tools" . ,(efrit-executor--get-tools-schema)))))
+         (messages (vector `(("role" . "user") ("content" . ,command))))
+         (final-result nil)
+         (accumulated-results "")  ; Accumulate results across all turns
+         (continuation-count 0)
+         (done nil))
 
     (efrit-session-set-active session)
     (efrit-log 'info "Executing synchronously: %s" command)
 
-    ;; Synchronous API call
+    ;; Synchronous execution loop - handles multi-turn tool use
     (condition-case err
-        (let* ((api-key (efrit-common-get-api-key))
-               (json-string (json-encode request-data))
-               (escaped-json (efrit-common-escape-json-unicode json-string))
-               (url-request-method "POST")
-               (url-request-extra-headers (efrit-common-build-headers api-key))
-               (url-request-data (encode-coding-string escaped-json 'utf-8))
-               (response-buffer (url-retrieve-synchronously
-                                (efrit-common-get-api-url) nil t 30)))
+        (progn
+          (while (and (not done)
+                      (< continuation-count efrit-executor-max-continuations))
+            (let* ((request-data
+                    `(("model" . ,efrit-default-model)
+                      ("max_tokens" . 8192)
+                      ("temperature" . 0.0)
+                      ("messages" . ,messages)
+                      ("system" . ,system-prompt)
+                      ("tools" . ,(efrit-executor--get-tools-schema))))
+                   (api-key (efrit-common-get-api-key))
+                   (json-string (json-encode request-data))
+                   (escaped-json (efrit-common-escape-json-unicode json-string))
+                   (url-request-method "POST")
+                   (url-request-extra-headers (efrit-common-build-headers api-key))
+                   (url-request-data (encode-coding-string escaped-json 'utf-8))
+                   (response-buffer (url-retrieve-synchronously
+                                    (efrit-common-get-api-url) nil t 60)))
 
-          (unless response-buffer
-            (error "Failed to get response from API"))
+              (unless response-buffer
+                (error "Failed to get response from API"))
 
-          (with-current-buffer response-buffer
-            (goto-char (point-min))
-            (re-search-forward "\n\n" nil t)
-            (let* ((json-object-type 'hash-table)
-                   (json-array-type 'vector)
-                   (json-key-type 'string)
-                   (response (json-read)))
-              (kill-buffer)
+              (with-current-buffer response-buffer
+                (goto-char (point-min))
+                (re-search-forward "\n\n" nil t)
+                (let* ((json-object-type 'hash-table)
+                       (json-array-type 'vector)
+                       (json-key-type 'string)
+                       (response (json-read))
+                       (stop-reason (gethash "stop_reason" response))
+                       (content (gethash "content" response))
+                       (result-text "")
+                       (tool-result-blocks '()))
+                  (kill-buffer)
 
-              ;; Process response synchronously
-              (let ((result nil))
-                (efrit-executor--handle-response
-                 response
-                 (lambda (r) (setq result r)))
-                result))))
+                  ;; Process response content
+                  (when content
+                    ;; Add assistant response to messages (required for continuation)
+                    (setq messages (vconcat messages
+                                            (vector `(("role" . "assistant")
+                                                     ("content" . ,content)))))
+
+                    (dotimes (i (length content))
+                      (let* ((item (aref content i))
+                             (type (gethash "type" item)))
+                        (cond
+                         ;; Handle text
+                         ((string= type "text")
+                          (setq result-text (concat result-text (gethash "text" item))))
+
+                         ;; Handle tool use
+                         ((string= type "tool_use")
+                          (let* ((tool-id (gethash "id" item))
+                                 (tool-result
+                                  (condition-case tool-err
+                                      (efrit-executor--execute-tool item session)
+                                    (error
+                                     (format "Error: %s" (error-message-string tool-err))))))
+                            (setq result-text (concat result-text tool-result))
+                            ;; Collect tool results for continuation
+                            (push `(("type" . "tool_result")
+                                    ("tool_use_id" . ,tool-id)
+                                    ("content" . ,tool-result))
+                                  tool-result-blocks)))))))
+
+                  ;; Accumulate results from this turn
+                  (when (and result-text (not (string-empty-p result-text)))
+                    (setq accumulated-results
+                          (if (string-empty-p accumulated-results)
+                              result-text
+                            (concat accumulated-results "\n" result-text))))
+
+                  ;; Check if we need to continue
+                  (if (string= stop-reason "end_turn")
+                      ;; Done - Claude finished
+                      (progn
+                        (setq done t)
+                        (setq final-result accumulated-results)
+                        (efrit-executor--complete-session session accumulated-results))
+
+                    ;; Need to continue - add tool results to messages
+                    (when tool-result-blocks
+                      (setq messages (vconcat messages
+                                              (vector `(("role" . "user")
+                                                       ("content" . ,(vconcat (nreverse tool-result-blocks))))))))
+                    (cl-incf continuation-count)
+                    (efrit-log 'info "Continuing session (turn %d)" continuation-count))))))
+
+          ;; Check if we hit the limit
+          (when (>= continuation-count efrit-executor-max-continuations)
+            (setq final-result
+                  (format "Session limit reached after %d turns. Last result: %s"
+                          continuation-count (or final-result ""))))
+
+          final-result)
+
       (error
        (efrit-executor--handle-error err)
        nil))))
