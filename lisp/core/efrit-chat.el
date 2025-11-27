@@ -451,9 +451,9 @@ For text results:
                                                                                              ("description" . "Natural language path description")))))
                                                       ("required" . ["path_description"]))))
 
-                                  ;; Image reading for visual analysis
+                                  ;; Image reading - THIS IS HOW CLAUDE SEES IMAGES
                                   (("name" . "read_image")
-                                  ("description" . "Read an image file for visual analysis. Supports PNG, JPEG, GIF, and WebP formats. Use this when you need to see and analyze the contents of an image file.")
+                                  ("description" . "View an image file so that YOU (Claude) can see its visual contents. This is the ONLY way you can see images - opening a file in Emacs with find-file does NOT give you vision access, it only displays the image to the user. When a user asks you to look at, describe, analyze, or examine an image, you MUST use this tool. Supports PNG, JPEG, GIF, and WebP formats.")
                                   ("input_schema" . (("type" . "object")
                                                       ("properties" . (("path" . (("type" . "string")
                                                                                   ("description" . "Path to the image file")))))
@@ -826,7 +826,7 @@ is a list of tool_result blocks for sending back to Claude."
                                                                                  ("description" . "Context request")))))
                                                   ("required" . []))))
                               (("name" . "read_image")
-                               ("description" . "Read an image file for visual analysis. Supports PNG, JPEG, GIF, and WebP formats.")
+                               ("description" . "View an image file so that YOU (Claude) can see its visual contents. This is the ONLY way you can see images - opening a file in Emacs does NOT give you vision access. When asked to look at, describe, or analyze an image, you MUST use this tool. Supports PNG, JPEG, GIF, WebP.")
                                ("input_schema" . (("type" . "object")
                                                   ("properties" . (("path" . (("type" . "string")
                                                                               ("description" . "Path to the image file")))))
