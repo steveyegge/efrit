@@ -219,7 +219,9 @@ showing task progress, activity log, and allowing user interaction.
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
-  (setq efrit-agent--expanded-items (make-hash-table :test 'equal)))
+  (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
+  ;; Clean up timer when buffer is killed (fixes memory leak)
+  (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
 
 ;;; Interactive Commands (Placeholder Implementations)
 
@@ -377,6 +379,12 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
     (let ((buffer (efrit-agent--get-buffer)))
       (display-buffer buffer '(display-buffer-at-bottom
                                (window-height . 15))))))
+
+(defun efrit-agent--cleanup-timer ()
+  "Clean up the elapsed timer when buffer is killed."
+  (when efrit-agent--elapsed-timer
+    (cancel-timer efrit-agent--elapsed-timer)
+    (setq efrit-agent--elapsed-timer nil)))
 
 (defun efrit-agent--update-elapsed (buffer)
   "Update the elapsed time display in BUFFER."
@@ -641,8 +649,9 @@ ACTIVITY is a plist with :type, :timestamp, and type-specific fields."
         ;; Add unique ID if not present
         (unless (plist-get activity :id)
           (setq activity (plist-put activity :id (format "act-%d" (length efrit-agent--activities)))))
-        (push activity efrit-agent--activities)
-        (setq efrit-agent--activities (nreverse efrit-agent--activities))
+        ;; Append to end of list (O(1) with nconc when keeping tail pointer,
+        ;; but for simplicity we use nconc which is O(n) but only traverses once)
+        (setq efrit-agent--activities (nconc efrit-agent--activities (list activity)))
         (efrit-agent--render)))))
 
 (defun efrit-agent-set-status (status)
@@ -721,13 +730,17 @@ TOOL-NAME is the name of the tool being called."
 
 (defun efrit-agent--on-tool-result (tool-name result success-p)
   "Advice function called when a tool completes.
-Updates the most recent tool activity with RESULT and SUCCESS-P."
+Updates the most recent incomplete tool activity with RESULT and SUCCESS-P.
+Uses reverse iteration to find the most recently started (not yet completed)
+instance of TOOL-NAME, which correctly handles parallel tool calls."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        ;; Find the most recent activity for this tool and update it
-        (let ((found nil))
-          (dolist (activity efrit-agent--activities)
+        ;; Find the most recent incomplete activity for this tool
+        ;; by iterating in reverse (most recent first)
+        (let ((found nil)
+              (activities-rev (reverse efrit-agent--activities)))
+          (dolist (activity activities-rev)
             (when (and (not found)
                        (eq (plist-get activity :type) 'tool)
                        (equal (plist-get activity :tool) tool-name)
