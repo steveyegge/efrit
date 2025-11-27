@@ -73,7 +73,6 @@ bd sync                                            # CRITICAL at end of session
 - ❌ Test infrastructure incomplete (see mcp-fmw)
 - ❌ MCP server only 50% complete (see mcp-b0f)
 - ❌ Async workflow may have issues (see mcp-6gr)
-- ❌ Tool selection loops (todo_get_instructions) - see mcp-bt0
 - ❌ Documentation scattered across multiple files
 
 ### Active Work

@@ -1,5 +1,8 @@
 # Efrit TODO System Design Proposal
 
+> **STATUS: IMPLEMENTED** - The `todo_write` tool described below is now live in Efrit.
+> See `lisp/interfaces/efrit-do.el` for the implementation.
+
 ## Dogfood Run #6 Summary
 
 ### Issues Discovered
@@ -240,9 +243,17 @@ And so on until all tasks are completed.
 
 ---
 
-## Open Questions
+## Open Questions (Post-Implementation Notes)
 
-1. Should we persist TODO state across sessions? (Currently ephemeral)
-2. Should we allow nested/hierarchical TODOs?
-3. Should TODOs have IDs for referencing in responses?
-4. How to handle user interruption mid-TODO?
+1. **Should we persist TODO state across sessions?** - Currently ephemeral, which works well for single-session tasks.
+2. **Should we allow nested/hierarchical TODOs?** - Not implemented. Flat list is sufficient.
+3. **Should TODOs have IDs for referencing in responses?** - Yes, implemented with auto-generated IDs.
+4. **How to handle user interruption mid-TODO?** - TODOs persist in buffer until session ends or cleared.
+
+## What Was Implemented
+
+- Single `todo_write` tool (replaced 8-tool system)
+- `*efrit-todos*` buffer with live display and progress bar
+- Mode line task indicator (`efrit-modeline-enable`)
+- Auto-update via advice when `todo_write` is called
+- System prompt guidance for proactive TODO usage
