@@ -334,6 +334,71 @@ Each entry is (error-hash . error-message).")
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input)))
   "Dispatch table mapping tool names to handlers and argument types.")
 
+;;; Budget Hints for Tool Schemas
+;;
+;; These functions modify tool descriptions dynamically based on remaining
+;; context budget, giving Claude guidance on how much data tools can return.
+
+(defvar efrit-do--budget-hints-alist
+  '(("project_files" . "Budget allows ~%d files.")
+    ("search_content" . "Budget allows ~%d matches with context.")
+    ("read_file" . "Budget allows ~%d KB of file content.")
+    ("vcs_log" . "Budget allows ~%d commits.")
+    ("vcs_diff" . "Budget allows ~%d KB of diff output.")
+    ("vcs_blame" . "Budget allows ~%d lines of blame output."))
+  "Alist mapping tool names to budget hint templates.
+Template uses %d for the calculated limit based on remaining budget.")
+
+(defvar efrit-do--budget-item-sizes
+  '(("project_files" . 100)      ; ~100 tokens per file entry
+    ("search_content" . 200)     ; ~200 tokens per match with context
+    ("read_file" . 285)          ; ~285 tokens per KB (1KB / 3.5 chars/token)
+    ("vcs_log" . 150)            ; ~150 tokens per commit entry
+    ("vcs_diff" . 285)           ; ~285 tokens per KB
+    ("vcs_blame" . 50))          ; ~50 tokens per blame line
+  "Alist mapping tool names to estimated tokens per item.
+Used to calculate budget limits from remaining token budget.")
+
+(defun efrit-do--budget-hint-for-tool (tool-name remaining-budget)
+  "Generate budget hint for TOOL-NAME given REMAINING-BUDGET tokens.
+Returns a hint string or nil if no hint applies."
+  (when-let* ((template (alist-get tool-name efrit-do--budget-hints-alist nil nil #'string=))
+              (item-size (alist-get tool-name efrit-do--budget-item-sizes nil nil #'string=))
+              (limit (max 1 (floor (/ (float remaining-budget) item-size)))))
+    (format template limit)))
+
+(defun efrit-do--inject-budget-hints (schema budget)
+  "Return copy of SCHEMA with budget hints injected into descriptions.
+BUDGET is an efrit-budget struct from efrit-budget.el.
+If BUDGET is nil, returns schema unchanged."
+  (if (or (null budget)
+          (not (fboundp 'efrit-budget-remaining)))
+      schema
+    (let ((remaining (efrit-budget-remaining budget)))
+      (if (or (null remaining) (< remaining 5000))
+          schema ; Don't modify if budget critically low or unknown
+        (vconcat
+         (mapcar
+          (lambda (tool)
+            (let* ((name (alist-get "name" tool nil nil #'string=))
+                   (description (alist-get "description" tool nil nil #'string=))
+                   (hint (efrit-do--budget-hint-for-tool name remaining)))
+              (if hint
+                  ;; Create a copy with modified description
+                  (let ((new-tool (copy-tree tool)))
+                    (setcdr (assoc "description" new-tool #'string=)
+                            (concat description "\n\n[" hint "]"))
+                    new-tool)
+                tool)))
+          schema))))))
+
+(defun efrit-do--budget-warning-prompt (budget)
+  "Generate budget warning string if BUDGET is low.
+Returns nil if no warning needed, otherwise a warning string
+suitable for prepending to system prompt."
+  (when (and budget (fboundp 'efrit-budget-format-warning))
+    (efrit-budget-format-warning budget)))
+
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
   ("description" . "PRIMARY TOOL: Execute Elisp code directly. Use for simple tasks like opening files, buffer operations, single commands. For complex multi-step tasks, use todo_analyze first.
@@ -910,10 +975,15 @@ without actual code execution."
                          allowed-tool-names))
                efrit-do--tools-schema)))
 
-(defun efrit-do--get-current-tools-schema ()
+(defun efrit-do--get-current-tools-schema (&optional budget)
   "Return tool schema for current workflow state.
-This is the main entry point for dynamic tool filtering."
-  (efrit-do--get-tools-for-state))
+This is the main entry point for dynamic tool filtering.
+If BUDGET is provided (an efrit-budget struct), inject budget hints
+into tool descriptions."
+  (let ((filtered-schema (efrit-do--get-tools-for-state)))
+    (if budget
+        (efrit-do--inject-budget-hints filtered-schema budget)
+      filtered-schema)))
 
 ;;; Circuit Breaker Implementation
 
@@ -2097,6 +2167,53 @@ Prompts user synchronously and returns confirmation result as JSON."
           ;; Return JSON-encoded result for Claude to process
           (format "\n[Confirmation Result]\n%s" (json-encode result))))))))
 
+;;; Tool Handler Helpers - Reduce boilerplate in handler definitions
+;;
+;; Tool handlers follow a repetitive pattern:
+;; 1. require the tool module
+;; 2. validate hash-table input
+;; 3. extract required/optional fields
+;; 4. build alist
+;; 5. call tool function
+;; 6. format result as JSON
+;;
+;; These helper functions reduce boilerplate while keeping handlers readable.
+
+(defun efrit-do--validate-hash-table (tool-input tool-name)
+  "Validate TOOL-INPUT is a hash-table for TOOL-NAME.
+Returns error string if invalid, nil if valid."
+  (unless (hash-table-p tool-input)
+    (format "\n[Error: %s requires a hash table input]" tool-name)))
+
+(defun efrit-do--validate-required (tool-input tool-name field)
+  "Validate required FIELD exists in TOOL-INPUT for TOOL-NAME.
+Returns error string if invalid, nil if valid."
+  (let ((val (gethash field tool-input)))
+    (when (or (null val) (and (stringp val) (string-empty-p val)))
+      (format "\n[Error: %s requires '%s' field]" tool-name field))))
+
+(defun efrit-do--extract-fields (tool-input field-specs)
+  "Extract fields from TOOL-INPUT according to FIELD-SPECS.
+FIELD-SPECS is a list of (json-key . transform-fn) or just json-key strings.
+Returns an alist suitable for passing to tool functions.
+Nil values and nil results from transforms are filtered out."
+  (delq nil
+        (mapcar (lambda (spec)
+                  (let* ((key (if (consp spec) (car spec) spec))
+                         (transform (if (consp spec) (cdr spec) #'identity))
+                         (val (gethash key tool-input)))
+                    (when val
+                      (cons key (funcall transform val)))))
+                field-specs)))
+
+(defun efrit-do--format-tool-result (result label)
+  "Format tool RESULT with LABEL for return to Claude."
+  (format "\n[%s]\n%s" label (json-encode result)))
+
+(defun efrit-do--vector-to-list (val)
+  "Convert VAL from vector to list if needed."
+  (if (vectorp val) (append val nil) val))
+
 ;;; Checkpoint Tool Handlers - Phase 3: Workflow Enhancement
 
 (defun efrit-do--handle-checkpoint (tool-input)
@@ -2173,178 +2290,101 @@ Prompts user synchronously and returns confirmation result as JSON."
 (defun efrit-do--handle-web-search (tool-input)
   "Handle web_search tool to search the web for information."
   (require 'efrit-tool-web-search)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: web_search requires a hash table input with 'query' field]"
-    (let ((query (gethash "query" tool-input))
-          (site (gethash "site" tool-input))
-          (max-results (gethash "max_results" tool-input))
-          (search-type (gethash "type" tool-input)))
-      (if (or (null query) (string-empty-p query))
-          "\n[Error: web_search requires 'query' field]"
-        (let* ((args `((query . ,query)
-                       ,@(when site `((site . ,site)))
-                       ,@(when max-results `((max_results . ,max-results)))
-                       ,@(when search-type `((type . ,search-type)))))
-               (result (efrit-tool-web-search args)))
-          (format "\n[Web Search Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "web_search")
+      (efrit-do--validate-required tool-input "web_search" "query")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("query" "site" "max_results" "type")))
+             (result (efrit-tool-web-search args)))
+        (efrit-do--format-tool-result result "Web Search Result"))))
 
 (defun efrit-do--handle-fetch-url (tool-input)
   "Handle fetch_url tool to retrieve content from a URL."
   (require 'efrit-tool-fetch-url)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: fetch_url requires a hash table input with 'url' field]"
-    (let ((url (gethash "url" tool-input))
-          (selector (gethash "selector" tool-input))
-          (format-type (gethash "format" tool-input))
-          (max-length (gethash "max_length" tool-input)))
-      (if (or (null url) (string-empty-p url))
-          "\n[Error: fetch_url requires 'url' field]"
-        (let* ((args `((url . ,url)
-                       ,@(when selector `((selector . ,selector)))
-                       ,@(when format-type `((format . ,format-type)))
-                       ,@(when max-length `((max_length . ,max-length)))))
-               (result (efrit-tool-fetch-url args)))
-          (format "\n[Fetch URL Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "fetch_url")
+      (efrit-do--validate-required tool-input "fetch_url" "url")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("url" "selector" "format" "max_length")))
+             (result (efrit-tool-fetch-url args)))
+        (efrit-do--format-tool-result result "Fetch URL Result"))))
 
 ;;; Phase 1/2: Codebase Exploration Tool Handlers
 
 (defun efrit-do--handle-project-files (tool-input)
   "Handle project_files tool to list files in the project."
   (require 'efrit-tool-project-files)
-  (let* ((args (if (hash-table-p tool-input)
-                   `(,@(when-let* ((path (gethash "path" tool-input)))
-                         `((path . ,path)))
-                     ,@(when-let* ((pattern (gethash "pattern" tool-input)))
-                         `((pattern . ,pattern)))
-                     ,@(when-let* ((max-depth (gethash "max_depth" tool-input)))
-                         `((max_depth . ,max-depth)))
-                     ,@(when-let* ((include-hidden (gethash "include_hidden" tool-input)))
-                         `((include_hidden . ,include-hidden)))
-                     ,@(when-let* ((max-files (gethash "max_files" tool-input)))
-                         `((max_files . ,max-files)))
-                     ,@(when-let* ((offset (gethash "offset" tool-input)))
-                         `((offset . ,offset))))
-                 nil))
+  (let* ((args (when (hash-table-p tool-input)
+                 (efrit-do--extract-fields
+                  tool-input '("path" "pattern" "max_depth" "include_hidden"
+                               "max_files" "offset"))))
          (result (efrit-tool-project-files args)))
-    (format "\n[Project Files Result]\n%s" (json-encode result))))
+    (efrit-do--format-tool-result result "Project Files Result")))
 
 (defun efrit-do--handle-search-content (tool-input)
   "Handle search_content tool to search for content in the codebase."
   (require 'efrit-tool-search-content)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: search_content requires a hash table input with 'pattern' field]"
-    (let ((pattern (gethash "pattern" tool-input)))
-      (if (or (null pattern) (string-empty-p pattern))
-          "\n[Error: search_content requires 'pattern' field]"
-        (let* ((args `((pattern . ,pattern)
-                       ,@(when-let* ((is-regex (gethash "is_regex" tool-input)))
-                           `((is_regex . ,is-regex)))
-                       ,@(when-let* ((path (gethash "path" tool-input)))
-                           `((path . ,path)))
-                       ,@(when-let* ((file-pattern (gethash "file_pattern" tool-input)))
-                           `((file_pattern . ,file-pattern)))
-                       ,@(when-let* ((context-lines (gethash "context_lines" tool-input)))
-                           `((context_lines . ,context-lines)))
-                       ,@(when-let* ((max-results (gethash "max_results" tool-input)))
-                           `((max_results . ,max-results)))
-                       ,@(when-let* ((case-sensitive (gethash "case_sensitive" tool-input)))
-                           `((case_sensitive . ,case-sensitive)))
-                       ,@(when-let* ((offset (gethash "offset" tool-input)))
-                           `((offset . ,offset)))))
-               (result (efrit-tool-search-content args)))
-          (format "\n[Search Content Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "search_content")
+      (efrit-do--validate-required tool-input "search_content" "pattern")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("pattern" "is_regex" "path" "file_pattern"
+                                 "context_lines" "max_results" "case_sensitive" "offset")))
+             (result (efrit-tool-search-content args)))
+        (efrit-do--format-tool-result result "Search Content Result"))))
 
 (defun efrit-do--handle-read-file (tool-input)
   "Handle read_file tool to read a file's contents."
   (require 'efrit-tool-read-file)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: read_file requires a hash table input with 'path' field]"
-    (let ((path (gethash "path" tool-input)))
-      (if (or (null path) (string-empty-p path))
-          "\n[Error: read_file requires 'path' field]"
-        (let* ((args `((path . ,path)
-                       ,@(when-let* ((start-line (gethash "start_line" tool-input)))
-                           `((start_line . ,start-line)))
-                       ,@(when-let* ((end-line (gethash "end_line" tool-input)))
-                           `((end_line . ,end-line)))
-                       ,@(when-let* ((encoding (gethash "encoding" tool-input)))
-                           `((encoding . ,encoding)))
-                       ,@(when-let* ((max-size (gethash "max_size" tool-input)))
-                           `((max_size . ,max-size)))))
-               (result (efrit-tool-read-file args)))
-          (format "\n[Read File Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "read_file")
+      (efrit-do--validate-required tool-input "read_file" "path")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("path" "start_line" "end_line" "encoding" "max_size")))
+             (result (efrit-tool-read-file args)))
+        (efrit-do--format-tool-result result "Read File Result"))))
 
 (defun efrit-do--handle-file-info (tool-input)
   "Handle file_info tool to get metadata about files."
   (require 'efrit-tool-file-info)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: file_info requires a hash table input with 'paths' field]"
-    (let ((paths (gethash "paths" tool-input)))
-      (if (null paths)
-          "\n[Error: file_info requires 'paths' field]"
-        (let* ((args `((paths . ,(if (vectorp paths) (append paths nil) paths))))
-               (result (efrit-tool-file-info args)))
-          (format "\n[File Info Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "file_info")
+      (efrit-do--validate-required tool-input "file_info" "paths")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input `(("paths" . ,#'efrit-do--vector-to-list))))
+             (result (efrit-tool-file-info args)))
+        (efrit-do--format-tool-result result "File Info Result"))))
 
 (defun efrit-do--handle-vcs-status (tool-input)
   "Handle vcs_status tool to get git repository status."
   (require 'efrit-tool-vcs-status)
-  (let* ((args (if (hash-table-p tool-input)
-                   `(,@(when-let* ((path (gethash "path" tool-input)))
-                         `((path . ,path))))
-                 nil))
+  (let* ((args (when (hash-table-p tool-input)
+                 (efrit-do--extract-fields tool-input '("path"))))
          (result (efrit-tool-vcs-status args)))
-    (format "\n[VCS Status Result]\n%s" (json-encode result))))
+    (efrit-do--format-tool-result result "VCS Status Result")))
 
 (defun efrit-do--handle-vcs-diff (tool-input)
   "Handle vcs_diff tool to get git diff output."
   (require 'efrit-tool-vcs-diff)
-  (let* ((args (if (hash-table-p tool-input)
-                   `(,@(when-let* ((path (gethash "path" tool-input)))
-                         `((path . ,path)))
-                     ,@(when-let* ((staged (gethash "staged" tool-input)))
-                         `((staged . ,staged)))
-                     ,@(when-let* ((commit (gethash "commit" tool-input)))
-                         `((commit . ,commit)))
-                     ,@(when-let* ((context-lines (gethash "context_lines" tool-input)))
-                         `((context_lines . ,context-lines))))
-                 nil))
+  (let* ((args (when (hash-table-p tool-input)
+                 (efrit-do--extract-fields
+                  tool-input '("path" "staged" "commit" "context_lines"))))
          (result (efrit-tool-vcs-diff args)))
-    (format "\n[VCS Diff Result]\n%s" (json-encode result))))
+    (efrit-do--format-tool-result result "VCS Diff Result")))
 
 (defun efrit-do--handle-vcs-log (tool-input)
   "Handle vcs_log tool to get commit history."
   (require 'efrit-tool-vcs-log)
-  (let* ((args (if (hash-table-p tool-input)
-                   `(,@(when-let* ((path (gethash "path" tool-input)))
-                         `((path . ,path)))
-                     ,@(when-let* ((count (gethash "count" tool-input)))
-                         `((count . ,count)))
-                     ,@(when-let* ((since (gethash "since" tool-input)))
-                         `((since . ,since)))
-                     ,@(when-let* ((author (gethash "author" tool-input)))
-                         `((author . ,author)))
-                     ,@(when-let* ((grep (gethash "grep" tool-input)))
-                         `((grep . ,grep))))
-                 nil))
+  (let* ((args (when (hash-table-p tool-input)
+                 (efrit-do--extract-fields
+                  tool-input '("path" "count" "since" "author" "grep"))))
          (result (efrit-tool-vcs-log args)))
-    (format "\n[VCS Log Result]\n%s" (json-encode result))))
+    (efrit-do--format-tool-result result "VCS Log Result")))
 
 (defun efrit-do--handle-vcs-blame (tool-input)
   "Handle vcs_blame tool to get line-by-line code attribution."
   (require 'efrit-tool-vcs-blame)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: vcs_blame requires a hash table input with 'path' field]"
-    (let ((path (gethash "path" tool-input)))
-      (if (or (null path) (string-empty-p path))
-          "\n[Error: vcs_blame requires 'path' field]"
-        (let* ((args `((path . ,path)
-                       ,@(when-let* ((start-line (gethash "start_line" tool-input)))
-                           `((start_line . ,start-line)))
-                       ,@(when-let* ((end-line (gethash "end_line" tool-input)))
-                           `((end_line . ,end-line)))))
-               (result (efrit-tool-vcs-blame args)))
-          (format "\n[VCS Blame Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "vcs_blame")
+      (efrit-do--validate-required tool-input "vcs_blame" "path")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("path" "start_line" "end_line")))
+             (result (efrit-tool-vcs-blame args)))
+        (efrit-do--format-tool-result result "VCS Blame Result"))))
 
 (defun efrit-do--handle-set-project-root (tool-input)
   "Handle set_project_root tool to set the project context."
@@ -2368,20 +2408,13 @@ Prompts user synchronously and returns confirmation result as JSON."
 (defun efrit-do--handle-elisp-docs (tool-input)
   "Handle elisp_docs tool to look up Emacs Lisp documentation."
   (require 'efrit-tool-elisp-docs)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: elisp_docs requires a hash table input with 'symbol' field]"
-    (let ((symbol (gethash "symbol" tool-input)))
-      (if (null symbol)
-          "\n[Error: elisp_docs requires 'symbol' field]"
-        (let* ((args `((symbol . ,(if (vectorp symbol) (append symbol nil) symbol))
-                       ,@(when-let* ((type (gethash "type" tool-input)))
-                           `((type . ,type)))
-                       ,@(when-let* ((include-source (gethash "include_source" tool-input)))
-                           `((include_source . ,include-source)))
-                       ,@(when-let* ((related (gethash "related" tool-input)))
-                           `((related . ,related)))))
-               (result (efrit-tool-elisp-docs args)))
-          (format "\n[Elisp Docs Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "elisp_docs")
+      (efrit-do--validate-required tool-input "elisp_docs" "symbol")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input `(("symbol" . ,#'efrit-do--vector-to-list)
+                                 "type" "include_source" "related")))
+             (result (efrit-tool-elisp-docs args)))
+        (efrit-do--format-tool-result result "Elisp Docs Result"))))
 
 (defun efrit-do--dispatch-tool (tool-name tool-input input-str)
   "Dispatch TOOL-NAME to its handler with appropriate arguments.
