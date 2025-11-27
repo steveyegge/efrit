@@ -23,6 +23,7 @@
 (declare-function efrit--build-headers "efrit-chat")
 
 ;; Declare external functions from efrit-executor
+(declare-function efrit-execute "efrit-executor")
 (declare-function efrit-execute-async "efrit-executor")
 
 ;; Declare external functions from efrit-tool-confirm-action
@@ -1812,15 +1813,17 @@ Returns error string if invalid, nil if valid."
 (defun efrit-do--extract-fields (tool-input field-specs)
   "Extract fields from TOOL-INPUT according to FIELD-SPECS.
 FIELD-SPECS is a list of (json-key . transform-fn) or just json-key strings.
-Returns an alist suitable for passing to tool functions.
+Returns an alist with SYMBOL keys suitable for passing to tool functions.
 Nil values and nil results from transforms are filtered out."
   (delq nil
         (mapcar (lambda (spec)
                   (let* ((key (if (consp spec) (car spec) spec))
                          (transform (if (consp spec) (cdr spec) #'identity))
-                         (val (gethash key tool-input)))
+                         (val (gethash key tool-input))
+                         ;; Convert string keys to symbols for alist-get compatibility
+                         (sym-key (if (stringp key) (intern key) key)))
                     (when val
-                      (cons key (funcall transform val)))))
+                      (cons sym-key (funcall transform val)))))
                 field-specs)))
 
 (defun efrit-do--format-tool-result (result label)
@@ -2571,8 +2574,8 @@ buffer if `efrit-do-show-results' is non-nil.
 Progress feedback shows elapsed time and tool executions.
 Use \\[keyboard-quit] (C-g) to cancel execution during API calls.
 
-If retry is enabled and errors occur, automatically retry by sending
-error details back to Claude for correction.
+This uses the proper agentic loop that continues the conversation
+until Claude calls session_complete or returns with stop_reason end_turn.
 
 Returns the result string for programmatic use."
   (interactive
@@ -2587,37 +2590,30 @@ Returns the result string for programmatic use."
   ;; Reset circuit breaker for new command session
   (efrit-do--circuit-breaker-reset)
 
-  ;; Generate session ID and start progress tracking
-  (let* ((session-id (efrit-session-generate-id))
-         ;; Create an actual session struct so tools can log to work_log
-         (session (efrit-session-create session-id command))
-         (start-time (current-time))
+  ;; Reset TODO list for new session
+  (setq efrit-do--current-todos nil)
+  (setq efrit-do--todo-counter 0)
+
+  ;; Use efrit-execute which has proper agentic loop with continuation
+  (require 'efrit-executor)
+  (let* ((start-time (current-time))
          (progress-timer (efrit-do--start-progress-timer start-time command))
          result)
-
-    ;; Set this session as active (so efrit-do--execute-tool can find it)
-    (efrit-session-set-active session)
-
-    ;; Start progress tracking for this command
-    (efrit-progress-start-session session-id command)
-
     (unwind-protect
         (progn
           (message "Executing: %s..." command)
-          (let* ((result-and-attempt (efrit-do--execute-with-retry command))
-                 (final-result (car result-and-attempt))
-                 (attempt (cdr result-and-attempt)))
-            (setq result (efrit-do--process-result command final-result attempt))))
-      ;; Always cancel the timer and end progress when done
+          (setq result (efrit-execute command))
+          ;; Process and display result
+          (when result
+            (let* ((error-info (efrit-do--extract-error-info result))
+                   (is-error (car error-info)))
+              (efrit-do--capture-context command result)
+              (efrit-do--display-result command result is-error)
+              (setq efrit-do--last-result result)))
+          result)
+      ;; Always cancel the timer when done
       (when progress-timer
-        (cancel-timer progress-timer))
-      ;; End progress tracking (success if result is non-nil and not an error)
-      (efrit-progress-end-session session-id (and result (not (string-match-p "^Error\\|^API error" result))))
-      ;; Complete the session
-      (efrit-session-complete session result))
-
-    ;; Return the result
-    result))
+        (cancel-timer progress-timer)))))
 
 ;;;###autoload
 (defun efrit-do-repeat ()
