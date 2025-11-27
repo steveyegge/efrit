@@ -31,6 +31,7 @@
 (declare-function efrit-tools-system-prompt "efrit-tools")
 (declare-function efrit-tools-get-context "efrit-tools")
 (declare-function efrit-common-get-api-url "efrit-common")
+(declare-function efrit-tool-read-image "efrit-tool-read-image")
 
 ;;; Customization
 
@@ -177,13 +178,38 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
 
 (defun efrit--build-tool-result (tool-id result)
   "Build a tool_result content block for TOOL-ID with RESULT.
-Returns an alist in the format required by the Anthropic API:
+Returns an alist in the format required by the Anthropic API.
+
+RESULT can be:
+- A string: returned as simple text content
+- An alist with an `image' key: returned as an image content block
+- Anything else: converted to string via `format'
+
+For image results, the content is an array containing the image block:
+  ((type . \"tool_result\")
+   (tool_use_id . TOOL-ID)
+   (content . [((type . \"image\") (source . ...))]))
+
+For text results:
   ((type . \"tool_result\")
    (tool_use_id . TOOL-ID)
    (content . RESULT-STRING))"
-  `((type . "tool_result")
-    (tool_use_id . ,tool-id)
-    (content . ,(format "%s" result))))
+  (let ((content
+         (cond
+          ;; Check for image response format from efrit-tool-read-image
+          ((and (listp result)
+                (alist-get 'image result))
+           ;; Return as array containing the image block
+           (vector (alist-get 'image result)))
+          ;; String result - use as-is
+          ((stringp result)
+           result)
+          ;; Everything else - convert to string
+          (t
+           (format "%s" result)))))
+    `((type . "tool_result")
+      (tool_use_id . ,tool-id)
+      (content . ,content))))
 
 ;;; Faces
 
@@ -425,6 +451,14 @@ Returns an alist in the format required by the Anthropic API:
                                                                                              ("description" . "Natural language path description")))))
                                                       ("required" . ["path_description"]))))
 
+                                  ;; Image reading for visual analysis
+                                  (("name" . "read_image")
+                                  ("description" . "Read an image file for visual analysis. Supports PNG, JPEG, GIF, and WebP formats. Use this when you need to see and analyze the contents of an image file.")
+                                  ("input_schema" . (("type" . "object")
+                                                      ("properties" . (("path" . (("type" . "string")
+                                                                                  ("description" . "Path to the image file")))))
+                                                      ("required" . ["path"]))))
+
                                   ])))
                                   ))
          (json-string (json-encode request-data))
@@ -542,6 +576,13 @@ is a list of tool_result blocks for sending back to Claude."
                                  ;; Handle get_context tool call
                                  ((string= tool-name "get_context")
                                  (efrit-tools-get-context))
+                                 ;; Handle read_image tool call
+                                 ((string= tool-name "read_image")
+                                  (require 'efrit-tool-read-image)
+                                  (let* ((path (gethash "path" input))
+                                         (args `((path . ,path))))
+                                    (efrit-log-debug "Reading image: %s" path)
+                                    (efrit-tool-read-image args)))
                                  ;; Unknown tool
                                  (t
                                   (format "Error: Unknown tool '%s'" tool-name)))
@@ -556,7 +597,9 @@ is a list of tool_result blocks for sending back to Claude."
 
                 ;; In chat mode, don't display tool results inline
                 ;; Only show errors (buffer objects and nil results are suppressed)
-                (when (string-match-p "^Error:" result)
+                ;; For image results (alists), just skip display
+                (when (and (stringp result)
+                           (string-match-p "^Error:" result))
                   (setq message-text (concat message-text "\n" result))))))))
 
       ;; Check if we should delegate to efrit-do
@@ -782,6 +825,12 @@ is a list of tool_result blocks for sending back to Claude."
                                                   ("properties" . (("request" . (("type" . "string")
                                                                                  ("description" . "Context request")))))
                                                   ("required" . []))))
+                              (("name" . "read_image")
+                               ("description" . "Read an image file for visual analysis. Supports PNG, JPEG, GIF, and WebP formats.")
+                               ("input_schema" . (("type" . "object")
+                                                  ("properties" . (("path" . (("type" . "string")
+                                                                              ("description" . "Path to the image file")))))
+                                                  ("required" . ["path"]))))
                               ])))
             ))
          (json-string (json-encode request-data))
@@ -977,6 +1026,19 @@ ASSISTANT-CONTENT is the original content array from the assistant response."
                    (efrit-streamlined--log-to-work
                     (format "Context: %d chars" (length context)))
                    context))
+
+                ((string-equal tool-name "read_image")
+                 (require 'efrit-tool-read-image)
+                 (let ((path (alist-get 'path tool-input)))
+                   (efrit-streamlined--log-to-work (format "Reading image: %s" path))
+                   (condition-case err
+                       (let ((result (efrit-tool-read-image `((path . ,path)))))
+                         (efrit-streamlined--log-to-work "Image read successfully")
+                         result)
+                     (error
+                      (let ((error-msg (error-message-string err)))
+                        (efrit-streamlined--log-to-work (format "Error: %s" error-msg))
+                        (format "Error reading image: %s" error-msg))))))
 
                 (t
                  (efrit-streamlined--log-to-work
