@@ -245,6 +245,16 @@ CRITICAL: This function maintains proper Claude API message format by:
                         (setq session-complete-p t)  ; Stop continuation
                         (setq completion-message nil))  ; Don't mark as complete
 
+                      ;; Check if circuit breaker has tripped - stop session immediately
+                      (when (and (boundp 'efrit-do--circuit-breaker-tripped)
+                                 efrit-do--circuit-breaker-tripped)
+                        (efrit-log 'warn "Circuit breaker tripped - stopping session: %s"
+                                   efrit-do--circuit-breaker-tripped)
+                        (setq session-complete-p t)
+                        (setq completion-message
+                              (format "[CIRCUIT BREAKER] Session terminated: %s"
+                                      efrit-do--circuit-breaker-tripped)))
+
                       ;; Track tool execution for legacy work log
                       (when session
                         (push (list tool-result
@@ -402,17 +412,29 @@ Claude remembers previous tool calls and their results."
   (let* ((session-id (efrit-session-id session))
          (continuation-count (efrit-session-continuation-count session)))
 
-    ;; Check for injected messages before continuing
-    (if (efrit-executor--drain-injections session)
-        ;; Abort requested via injection
+    ;; Check for circuit breaker FIRST - if tripped, don't continue
+    (if (and (boundp 'efrit-do--circuit-breaker-tripped)
+             efrit-do--circuit-breaker-tripped)
         (progn
-          (efrit-log 'info "Session %s aborted via injection" session-id)
-          (efrit-executor--complete-session session "[ABORTED] Session terminated by user request")
+          (efrit-log 'warn "Session %s stopped by circuit breaker: %s"
+                     session-id efrit-do--circuit-breaker-tripped)
+          (efrit-executor--complete-session
+           session
+           (format "[CIRCUIT BREAKER] %s" efrit-do--circuit-breaker-tripped))
           (when callback
-            (funcall callback "Session aborted via injection")))
+            (funcall callback (format "Circuit breaker: %s" efrit-do--circuit-breaker-tripped))))
 
-      ;; Safety check: prevent infinite loops
-      (if (>= continuation-count efrit-executor-max-continuations)
+      ;; Check for injected messages before continuing
+      (if (efrit-executor--drain-injections session)
+          ;; Abort requested via injection
+          (progn
+            (efrit-log 'info "Session %s aborted via injection" session-id)
+            (efrit-executor--complete-session session "[ABORTED] Session terminated by user request")
+            (when callback
+              (funcall callback "Session aborted via injection")))
+
+        ;; Safety check: prevent infinite loops
+        (if (>= continuation-count efrit-executor-max-continuations)
           (progn
             (efrit-executor--handle-error
              (format "SESSION LIMIT: Maximum continuations (%d) reached"
@@ -445,7 +467,7 @@ Claude remembers previous tool calls and their results."
           (efrit-executor--api-request
            request-data
            (lambda (response)
-             (efrit-executor--handle-response response callback))))))))
+             (efrit-executor--handle-response response callback)))))))))
 
 (defun efrit-executor--complete-session (session result)
   "Mark SESSION complete with final RESULT and process queue."

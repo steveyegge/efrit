@@ -397,5 +397,48 @@
   ;; History should be limited to 10
   (should (= (length efrit-do--error-history) 10)))
 
+;;; Executor Integration Tests
+
+(ert-deftest test-circuit-breaker-stops-session-continuation ()
+  "Test that tripped circuit breaker stops executor from continuing session.
+This verifies the fix for ef-9jp: Circuit breaker trips but session keeps calling tools."
+  (require 'efrit-executor)
+  (efrit-do--circuit-breaker-reset)
+  (let ((efrit-do-circuit-breaker-enabled t)
+        (callback-called nil)
+        (callback-result nil))
+
+    ;; Trip the circuit breaker manually
+    (setq efrit-do--circuit-breaker-tripped "Test: Session limit exceeded")
+
+    ;; Create a mock session (needs id and command)
+    (let ((mock-session (efrit-session-create "test-circuit-breaker" "test command")))
+      ;; Call continue-session - it should detect the tripped breaker and NOT continue
+      (efrit-executor--continue-session
+       mock-session
+       (lambda (result)
+         (setq callback-called t)
+         (setq callback-result result)))
+
+      ;; Verify callback was called with circuit breaker message
+      (should callback-called)
+      (should (string-match-p "Circuit breaker" callback-result))
+
+      ;; Session should be complete (status = 'complete)
+      (should (eq (efrit-session-status mock-session) 'complete)))))
+
+(ert-deftest test-circuit-breaker-allows-session-when-not-tripped ()
+  "Test that session continuation is allowed when circuit breaker is NOT tripped."
+  (require 'efrit-executor)
+  (efrit-do--circuit-breaker-reset)
+
+  ;; Verify breaker is not tripped
+  (should (null efrit-do--circuit-breaker-tripped))
+
+  ;; The check in efrit-executor--continue-session should pass
+  ;; We can't fully test without mocking the API, but we can verify the condition
+  (should (not (and (boundp 'efrit-do--circuit-breaker-tripped)
+                    efrit-do--circuit-breaker-tripped))))
+
 (provide 'test-circuit-breaker)
 ;;; test-circuit-breaker.el ends here
