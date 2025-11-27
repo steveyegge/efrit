@@ -206,7 +206,7 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
            ;; Stronger warning at 5 repetitions
            ((= efrit-progress--tool-repeat-count 5)
             (efrit-progress--append
-             (format "\n🚨 CRITICAL LOOP: %s called %d times!\n🔄 MANDATORY: Change your approach - current strategy is failing!\n💡 SUGGESTION: If using todo_analyze repeatedly, try eval_sexp instead!"
+             (format "\n🚨 CRITICAL LOOP: %s called %d times!\n🔄 MANDATORY: Change your approach - current strategy is failing!"
                      tool-name efrit-progress--tool-repeat-count)
              'error))
            ;; Emergency stop at 7 repetitions
@@ -223,20 +223,11 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
      'efrit-progress-tool-name)
     ;; Show meaningful info for TODO tools
     (cond
-     ((and (string= tool-name "todo_add") input)
-      (let ((content (if (hash-table-p input)
-                       (gethash "content" input)
-                     input)))
-        (when content
+     ((and (string= tool-name "todo_write") input)
+      (let ((todos (when (hash-table-p input) (gethash "todos" input))))
+        (when todos
           (efrit-progress--append
-           (format "\n  → Adding: %s" content)
-           'font-lock-comment-face))))
-     ((and (string= tool-name "todo_update") input)
-      (let ((id (when (hash-table-p input) (gethash "id" input)))
-            (status (when (hash-table-p input) (gethash "status" input))))
-        (when (and id status)
-          (efrit-progress--append
-           (format "\n  → Marking %s as %s" id status)
+           (format "\n  → Writing %d TODO items" (length todos))
            'font-lock-comment-face))))
      ((eq efrit-progress-verbosity 'verbose)
       (efrit-progress--append
@@ -1134,6 +1125,192 @@ or :malformed if JSON parsing fails."
     (setq buffer-read-only t)
     (goto-char (point-min))
     (display-buffer (current-buffer))))
+
+;;; ========================================================================
+;;; SECTION 5: LIVE TODO BUFFER
+;;; Dedicated buffer showing current TODO state with visual indicators
+;;; ========================================================================
+
+(defconst efrit-todos-buffer-name "*efrit-todos*"
+  "Name of the dedicated TODO display buffer.")
+
+(defgroup efrit-todos nil
+  "Live TODO display for Efrit."
+  :group 'efrit)
+
+(defcustom efrit-todos-auto-show t
+  "Whether to automatically show the TODO buffer when todos are updated."
+  :type 'boolean
+  :group 'efrit-todos)
+
+(defcustom efrit-todos-window-height 10
+  "Height of the TODO buffer window."
+  :type 'integer
+  :group 'efrit-todos)
+
+;;; TODO Buffer Faces
+
+(defface efrit-todos-header
+  '((t :weight bold :height 1.1))
+  "Face for the TODO buffer header."
+  :group 'efrit-todos)
+
+(defface efrit-todos-pending
+  '((t :foreground "gray70"))
+  "Face for pending tasks."
+  :group 'efrit-todos)
+
+(defface efrit-todos-in-progress
+  '((t :weight bold :foreground "orange"))
+  "Face for in-progress tasks."
+  :group 'efrit-todos)
+
+(defface efrit-todos-completed
+  '((t :foreground "gray50" :strike-through t))
+  "Face for completed tasks."
+  :group 'efrit-todos)
+
+(defface efrit-todos-progress-bar
+  '((t :foreground "green"))
+  "Face for the progress bar."
+  :group 'efrit-todos)
+
+;;; TODO Buffer Mode
+
+(defvar efrit-todos-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "q" 'quit-window)
+    (define-key map "g" 'efrit-todos-refresh)
+    (define-key map "c" 'efrit-todos-clear-completed)
+    map)
+  "Keymap for efrit-todos-mode.")
+
+(define-derived-mode efrit-todos-mode special-mode "Efrit-TODOs"
+  "Major mode for viewing Efrit TODO list.
+\\{efrit-todos-mode-map}"
+  (setq-local truncate-lines t)
+  (setq-local word-wrap nil)
+  (hl-line-mode 1))
+
+;;; TODO Buffer Functions
+
+(defun efrit-todos--get-buffer ()
+  "Get or create the TODO buffer."
+  (let ((buffer (get-buffer-create efrit-todos-buffer-name)))
+    (with-current-buffer buffer
+      (unless (eq major-mode 'efrit-todos-mode)
+        (efrit-todos-mode)))
+    buffer))
+
+(defun efrit-todos--render ()
+  "Render the TODO list in the buffer."
+  (require 'efrit-do)
+  (let* ((buffer (efrit-todos--get-buffer))
+         (todos (when (boundp 'efrit-do--current-todos)
+                  (symbol-value 'efrit-do--current-todos))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+
+        ;; Header
+        (insert (propertize "Efrit Tasks" 'face 'efrit-todos-header) "\n")
+        (insert (make-string 40 ?═) "\n\n")
+
+        (if (null todos)
+            (insert (propertize "No active tasks" 'face 'font-lock-comment-face) "\n")
+
+          ;; Progress bar
+          (let* ((total (length todos))
+                 (completed (seq-count (lambda (todo)
+                                        (eq (efrit-do-todo-item-status todo) 'completed))
+                                      todos))
+                 (progress-pct (if (> total 0) (/ (* 100.0 completed) total) 0))
+                 (bar-width 20)
+                 (filled (round (* bar-width (/ progress-pct 100.0))))
+                 (empty (- bar-width filled)))
+            (insert (format "Progress: %d/%d complete\n" completed total))
+            (insert "[")
+            (insert (propertize (make-string filled ?█) 'face 'efrit-todos-progress-bar))
+            (insert (make-string empty ?░))
+            (insert (format "] %.0f%%\n\n" progress-pct)))
+
+          ;; Task list
+          (dolist (todo todos)
+            (let* ((status (efrit-do-todo-item-status todo))
+                   (content (efrit-do-todo-item-content todo))
+                   (icon (pcase status
+                           ('todo "  ")       ; pending
+                           ('pending "  ")    ; alias
+                           ('in-progress "→ ")
+                           ('completed "✓ ")))
+                   (face (pcase status
+                           ('todo 'efrit-todos-pending)
+                           ('pending 'efrit-todos-pending)
+                           ('in-progress 'efrit-todos-in-progress)
+                           ('completed 'efrit-todos-completed)))
+                   (status-str (pcase status
+                                 ('todo "[PENDING]")
+                                 ('pending "[PENDING]")
+                                 ('in-progress "[IN PROGRESS]")
+                                 ('completed "[COMPLETED]"))))
+              (insert (propertize (concat icon status-str " " content "\n") 'face face)))))
+
+        ;; Footer with key bindings
+        (insert "\n" (make-string 40 ?─) "\n")
+        (insert (propertize "q" 'face 'bold) " quit  ")
+        (insert (propertize "g" 'face 'bold) " refresh  ")
+        (insert (propertize "c" 'face 'bold) " clear completed\n")))))
+
+(defun efrit-todos-refresh ()
+  "Refresh the TODO buffer."
+  (interactive)
+  (efrit-todos--render)
+  (when (called-interactively-p 'interactive)
+    (message "TODO list refreshed")))
+
+(defun efrit-todos-clear-completed ()
+  "Clear completed TODOs from the list."
+  (interactive)
+  (require 'efrit-do)
+  (when (bound-and-true-p efrit-do--current-todos)
+    (setq efrit-do--current-todos
+          (seq-remove (lambda (todo)
+                       (eq (efrit-do-todo-item-status todo) 'completed))
+                     efrit-do--current-todos))
+    (efrit-todos--render)
+    (message "Cleared completed TODOs")))
+
+;;;###autoload
+(defun efrit-todos-show ()
+  "Show the TODO buffer."
+  (interactive)
+  (efrit-todos--render)
+  (let ((buffer (efrit-todos--get-buffer)))
+    (display-buffer buffer
+                    `((display-buffer-reuse-window
+                       display-buffer-at-bottom)
+                      (window-height . ,efrit-todos-window-height)
+                      (dedicated . t)))))
+
+(defun efrit-todos-update ()
+  "Update the TODO buffer if it exists and is visible.
+Called automatically when todo_write is executed."
+  (let ((buffer (get-buffer efrit-todos-buffer-name)))
+    (when (and buffer (get-buffer-window buffer))
+      (efrit-todos--render))))
+
+;; Hook into todo_write to auto-update the buffer
+(defun efrit-todos--after-todo-write-advice (&rest _args)
+  "Advice function to update TODO buffer after todo_write."
+  (efrit-todos-update)
+  (when (and efrit-todos-auto-show
+             (not (get-buffer-window efrit-todos-buffer-name)))
+    ;; Auto-show buffer if enabled and not already visible
+    (efrit-todos-show)))
+
+;; This advice will be added when efrit-do is loaded
+(with-eval-after-load 'efrit-do
+  (advice-add 'efrit-do--handle-todo-write :after #'efrit-todos--after-todo-write-advice))
 
 ;;; ========================================================================
 ;;; INITIALIZATION
