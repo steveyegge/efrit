@@ -418,7 +418,7 @@ DEPRECATED: Use `efrit-progress-check-inject-queue' instead."
            nil))))))
 
 (defun efrit-progress--list-inject-files (session-id)
-  "List all pending injection files for SESSION-ID, sorted by name (timestamp order)."
+  "List pending injection files for SESSION-ID, sorted by timestamp."
   (let ((inject-dir (efrit-progress--inject-dir session-id)))
     (when (file-directory-p inject-dir)
       (sort (directory-files inject-dir t "\\.json$") #'string<))))
@@ -490,8 +490,7 @@ Processed files are deleted after reading."
 (defun efrit-progress-inject (session-id type message &optional priority)
   "Inject MESSAGE of TYPE into SESSION-ID.
 TYPE must be one of: guidance, abort, priority, context.
-PRIORITY is optional (0-3, only used for priority type).
-This function is for elisp callers; external processes should write files directly."
+PRIORITY is optional (0-3, only used for priority type)."
   (interactive
    (list (or efrit-progress--current-session
              (read-string "Session ID: "))

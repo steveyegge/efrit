@@ -889,8 +889,8 @@ is a list of tool_result blocks for sending back to Claude."
 
 (defun efrit-streamlined--continue-with-results (tool-results assistant-content)
   "Continue conversation with TOOL-RESULTS from executed tools.
-TOOL-RESULTS should be a list of tool_result blocks built with efrit--build-tool-result.
-ASSISTANT-CONTENT is the original content array from the assistant's response (with tool_use blocks)."
+TOOL-RESULTS is a list of tool_result blocks from `efrit--build-tool-result'.
+ASSISTANT-CONTENT is the original content array from the assistant response."
   (let ((updated-messages efrit-streamlined--current-messages))
 
     ;; CRITICAL: Add messages in correct chronological order!

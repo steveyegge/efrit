@@ -155,8 +155,7 @@ Returns a standard tool response with file contents."
       ;; Resolve path with sandbox check
       (let* ((path-info (efrit-resolve-path path-input))
              (path (plist-get path-info :path))
-             (path-relative (plist-get path-info :path-relative))
-             (project-root (plist-get path-info :project-root)))
+             (path-relative (plist-get path-info :path-relative)))
 
         ;; Check file exists
         (unless (file-exists-p path)

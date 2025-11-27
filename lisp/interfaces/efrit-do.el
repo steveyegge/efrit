@@ -119,8 +119,7 @@ terminated.  This prevents infinite loops from burning through API tokens."
   :group 'efrit-do)
 
 (defcustom efrit-do-max-same-tool-calls 15
-  "Maximum number of consecutive calls to the same tool.
-When this limit is reached, the circuit breaker trips and terminates the session.
+  "Maximum consecutive calls to the same tool before circuit breaker trips.
 Set higher (15) to allow legitimate multi-step coding tasks that require
 many eval_sexp calls in sequence (e.g., writing multiple functions)."
   :type 'integer
@@ -135,9 +134,8 @@ likely to indicate a loop than varied calls to the same tool."
   :group 'efrit-do)
 
 (defcustom efrit-do-same-tool-warning-threshold 10
-  "Issue a warning after this many consecutive calls to the same tool.
-The warning is sent to Claude before the hard limit at `efrit-do-max-same-tool-calls'
-to give it a chance to change approach."
+  "Warn after this many consecutive calls to the same tool.
+Warning is sent before the hard limit at `efrit-do-max-same-tool-calls'."
   :type 'integer
   :group 'efrit-do)
 
@@ -282,6 +280,58 @@ Stores reason for tripping as a string.")
 (defvar efrit-do--error-history nil
   "List of recent error signatures for pattern analysis.
 Each entry is (error-hash . error-message).")
+
+;;; Tool Dispatch Table
+;; Maps tool names to (HANDLER-FN . ARG-TYPE) where ARG-TYPE is:
+;;   :input-str - handler takes extracted input string
+;;   :tool-input - handler takes raw tool-input hash table
+;;   :both - handler takes (tool-input, input-str)
+;;   :none - handler takes no arguments
+(defconst efrit-do--tool-dispatch-table
+  '(;; Core execution tools
+    ("eval_sexp"          . (efrit-do--handle-eval-sexp . :input-str))
+    ("shell_exec"         . (efrit-do--handle-shell-exec . :input-str))
+    ;; TODO management tools
+    ("todo_add"           . (efrit-do--handle-todo-add . :tool-input))
+    ("todo_update"        . (efrit-do--handle-todo-update . :both))
+    ("todo_show"          . (efrit-do--handle-todo-show . :none))
+    ("todo_analyze"       . (efrit-do--handle-todo-analyze . :tool-input))
+    ("todo_status"        . (efrit-do--handle-todo-status . :none))
+    ("todo_next"          . (efrit-do--handle-todo-next . :none))
+    ("todo_execute_next"  . (efrit-do--handle-todo-execute-next . :none))
+    ("todo_get_instructions" . (efrit-do--handle-todo-execute-next . :none))
+    ("todo_complete_check" . (efrit-do--handle-todo-complete-check . :none))
+    ;; Buffer and display tools
+    ("buffer_create"      . (efrit-do--handle-buffer-create . :both))
+    ("format_file_list"   . (efrit-do--handle-format-file-list . :input-str))
+    ("format_todo_list"   . (efrit-do--handle-format-todo-list . :tool-input))
+    ("display_in_buffer"  . (efrit-do--handle-display-in-buffer . :both))
+    ;; Session tools
+    ("session_complete"   . (efrit-do--handle-session-complete . :tool-input))
+    ("glob_files"         . (efrit-do--handle-glob-files . :tool-input))
+    ("request_user_input" . (efrit-do--handle-request-user-input . :tool-input))
+    ("confirm_action"     . (efrit-do--handle-confirm-action . :tool-input))
+    ;; Checkpoint tools (Phase 3)
+    ("checkpoint"         . (efrit-do--handle-checkpoint . :tool-input))
+    ("restore_checkpoint" . (efrit-do--handle-restore-checkpoint . :tool-input))
+    ("list_checkpoints"   . (efrit-do--handle-list-checkpoints . :none))
+    ("delete_checkpoint"  . (efrit-do--handle-delete-checkpoint . :tool-input))
+    ("show_diff_preview"  . (efrit-do--handle-show-diff-preview . :tool-input))
+    ;; External knowledge tools (Phase 4)
+    ("web_search"         . (efrit-do--handle-web-search . :tool-input))
+    ("fetch_url"          . (efrit-do--handle-fetch-url . :tool-input))
+    ;; Codebase exploration tools (Phase 1/2)
+    ("project_files"      . (efrit-do--handle-project-files . :tool-input))
+    ("search_content"     . (efrit-do--handle-search-content . :tool-input))
+    ("read_file"          . (efrit-do--handle-read-file . :tool-input))
+    ("file_info"          . (efrit-do--handle-file-info . :tool-input))
+    ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
+    ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))
+    ("vcs_log"            . (efrit-do--handle-vcs-log . :tool-input))
+    ("vcs_blame"          . (efrit-do--handle-vcs-blame . :tool-input))
+    ("elisp_docs"         . (efrit-do--handle-elisp-docs . :tool-input))
+    ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input)))
+  "Dispatch table mapping tool names to handlers and argument types.")
 
 (defconst efrit-do--tools-schema
   [(("name" . "eval_sexp")
@@ -970,8 +1020,8 @@ Returns (WARNING-P . MESSAGE) where WARNING-P indicates an error loop detected."
 
 (defun efrit-do--error-loop-check-result (result)
   "Check RESULT for errors and track for loop detection.
-Returns (MODIFIED-P . NEW-RESULT) where MODIFIED-P is t if result was modified
-with an error loop warning, and NEW-RESULT contains the possibly modified result."
+Returns (MODIFIED-P . NEW-RESULT) where MODIFIED-P indicates if result
+was modified with an error loop warning."
   (let* ((error-info (efrit-do--extract-error-info result))
          (is-error (car error-info))
          (error-msg (cdr error-info)))
@@ -2332,137 +2382,77 @@ Prompts user synchronously and returns confirmation result as JSON."
                (result (efrit-tool-elisp-docs args)))
           (format "\n[Elisp Docs Result]\n%s" (json-encode result)))))))
 
+(defun efrit-do--dispatch-tool (tool-name tool-input input-str)
+  "Dispatch TOOL-NAME to its handler with appropriate arguments.
+TOOL-INPUT is the raw hash table, INPUT-STR is the extracted string.
+Uses `efrit-do--tool-dispatch-table' for lookup."
+  (if-let* ((entry (assoc tool-name efrit-do--tool-dispatch-table))
+            (handler-info (cdr entry))
+            (handler (car handler-info))
+            (arg-type (cdr handler-info)))
+      (pcase arg-type
+        (:input-str
+         (if input-str
+             (funcall handler input-str)
+           (format "\n[Error: %s requires input parameter]" tool-name)))
+        (:tool-input
+         (funcall handler tool-input))
+        (:both
+         (funcall handler tool-input input-str))
+        (:none
+         (funcall handler))
+        (_
+         (efrit-log 'error "Invalid arg-type %s for tool %s" arg-type tool-name)
+         (format "\n[Internal error: invalid dispatch for %s]" tool-name)))
+    ;; Unknown tool
+    (progn
+      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+      (format "\n[Unknown tool: %s]" tool-name))))
+
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
 Returns a formatted string with execution results or empty string on failure.
 Applies circuit breaker limits to prevent infinite loops."
-  ;; Validate tool-item is not nil
   (if (null tool-item)
       "\n[Error: Tool input cannot be nil]"
     (let* ((tool-name (gethash "name" tool-item))
-         (tool-input (gethash "input" tool-item))
-         (input-str (cond
-                     ((stringp tool-input) tool-input)
-                     ((hash-table-p tool-input)
-                      (seq-some (lambda (key) (gethash key tool-input))
-                                '("expr" "expression" "code" "command")))
-                     (t (format "%S" tool-input)))))
+           (tool-input (gethash "input" tool-item))
+           (input-str (cond
+                       ((stringp tool-input) tool-input)
+                       ((hash-table-p tool-input)
+                        (seq-some (lambda (key) (gethash key tool-input))
+                                  '("expr" "expression" "code" "command")))
+                       (t (format "%S" tool-input)))))
+      ;; Sanitize potentially over-escaped strings
+      (when input-str
+        (setq input-str (efrit-do--sanitize-elisp-string input-str)))
 
-    ;; Sanitize potentially over-escaped strings
-    (when input-str
-      (setq input-str (efrit-do--sanitize-elisp-string input-str)))
+      (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)"
+                 tool-name tool-input input-str)
 
-    (efrit-log 'debug "Tool use: %s with input: %S (extracted: %S)"
-               tool-name tool-input input-str)
+      ;; Show user-visible feedback for tool execution if enabled
+      (when efrit-do-show-tool-execution
+        (message "Efrit: Executing tool '%s'..." tool-name))
 
-    ;; Show user-visible feedback for tool execution if enabled
-    (when efrit-do-show-tool-execution
-      (message "Efrit: Executing tool '%s'..." tool-name))
+      ;; CIRCUIT BREAKER: Check limits before executing
+      (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name tool-input)))
+        (if (not (car breaker-check))
+            ;; Circuit breaker blocked execution
+            (progn
+              (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
+              (when (fboundp 'efrit-session-track-error)
+                (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
+              (cdr breaker-check))
 
-    ;; CIRCUIT BREAKER: Check limits before executing
-    (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name tool-input)))
-      (if (not (car breaker-check))
-          ;; Circuit breaker blocked execution
-          (progn
-            (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
-            (when (fboundp 'efrit-session-track-error)
-              (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
-            (cdr breaker-check))
+          ;; Circuit breaker allows execution - record the call
+          (efrit-do--circuit-breaker-record-call tool-name tool-input)
 
-        ;; Circuit breaker allows execution - record the call
-        (efrit-do--circuit-breaker-record-call tool-name tool-input)
-
-        ;; If there's a warning message, prepend it to the result
-        (let ((warning (cdr breaker-check))
-              (result
-               ;; Dispatch to appropriate handler
-               (cond
-                ((string= tool-name "eval_sexp")
-                 (if input-str
-                     (efrit-do--handle-eval-sexp input-str)
-                   "\n[Error: eval_sexp requires 'code' parameter]"))
-                ((string= tool-name "shell_exec")
-                 (if input-str
-                     (efrit-do--handle-shell-exec input-str)
-                   "\n[Error: shell_exec requires 'command' parameter]"))
-                ((string= tool-name "todo_add")
-                 (efrit-do--handle-todo-add tool-input))
-                ((string= tool-name "todo_update")
-                 (efrit-do--handle-todo-update tool-input input-str))
-                ((string= tool-name "todo_show")
-                 (efrit-do--handle-todo-show))
-                ((string= tool-name "todo_analyze")
-                 (efrit-do--handle-todo-analyze tool-input))
-                ((string= tool-name "todo_status")
-                 (efrit-do--handle-todo-status))
-                ((string= tool-name "todo_next")
-                 (efrit-do--handle-todo-next))
-                ((string= tool-name "todo_execute_next")
-                 (efrit-do--handle-todo-execute-next))
-                ((string= tool-name "todo_get_instructions")
-                 (efrit-do--handle-todo-execute-next))  ; Same handler, clearer name
-                ((string= tool-name "todo_complete_check")
-                 (efrit-do--handle-todo-complete-check))
-                ((string= tool-name "buffer_create")
-                 (efrit-do--handle-buffer-create tool-input input-str))
-                ((string= tool-name "format_file_list")
-                 (efrit-do--handle-format-file-list input-str))
-                ((string= tool-name "format_todo_list")
-                 (efrit-do--handle-format-todo-list tool-input))
-                ((string= tool-name "display_in_buffer")
-                 (efrit-do--handle-display-in-buffer tool-input input-str))
-                ((string= tool-name "session_complete")
-                 (efrit-do--handle-session-complete tool-input))
-                ((string= tool-name "glob_files")
-                 (efrit-do--handle-glob-files tool-input))
-                ((string= tool-name "request_user_input")
-                 (efrit-do--handle-request-user-input tool-input))
-                ((string= tool-name "confirm_action")
-                 (efrit-do--handle-confirm-action tool-input))
-                ;; Checkpoint tools - Phase 3: Workflow Enhancement
-                ((string= tool-name "checkpoint")
-                 (efrit-do--handle-checkpoint tool-input))
-                ((string= tool-name "restore_checkpoint")
-                 (efrit-do--handle-restore-checkpoint tool-input))
-                ((string= tool-name "list_checkpoints")
-                 (efrit-do--handle-list-checkpoints))
-                ((string= tool-name "delete_checkpoint")
-                 (efrit-do--handle-delete-checkpoint tool-input))
-                ((string= tool-name "show_diff_preview")
-                 (efrit-do--handle-show-diff-preview tool-input))
-                ;; Phase 4: External Knowledge tools
-                ((string= tool-name "web_search")
-                 (efrit-do--handle-web-search tool-input))
-                ((string= tool-name "fetch_url")
-                 (efrit-do--handle-fetch-url tool-input))
-                ;; Phase 1/2: Codebase Exploration tools
-                ((string= tool-name "project_files")
-                 (efrit-do--handle-project-files tool-input))
-                ((string= tool-name "search_content")
-                 (efrit-do--handle-search-content tool-input))
-                ((string= tool-name "read_file")
-                 (efrit-do--handle-read-file tool-input))
-                ((string= tool-name "file_info")
-                 (efrit-do--handle-file-info tool-input))
-                ((string= tool-name "vcs_status")
-                 (efrit-do--handle-vcs-status tool-input))
-                ((string= tool-name "vcs_diff")
-                 (efrit-do--handle-vcs-diff tool-input))
-                ((string= tool-name "vcs_log")
-                 (efrit-do--handle-vcs-log tool-input))
-                ((string= tool-name "vcs_blame")
-                 (efrit-do--handle-vcs-blame tool-input))
-                ((string= tool-name "elisp_docs")
-                 (efrit-do--handle-elisp-docs tool-input))
-                ((string= tool-name "set_project_root")
-                 (efrit-do--handle-set-project-root tool-input))
-                (t
-                 (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-                 (format "\n[Unknown tool: %s]" tool-name)))))
-
-          ;; Check result for error loops and inject warnings if needed
-          (let* ((loop-check (efrit-do--error-loop-check-result result))
+          ;; If there's a warning message, prepend it to the result
+          (let* ((warning (cdr breaker-check))
+                 (result (efrit-do--dispatch-tool tool-name tool-input input-str))
+                 ;; Check result for error loops and inject warnings if needed
+                 (loop-check (efrit-do--error-loop-check-result result))
                  (final-result (cdr loop-check))
                  (return-value (if warning
                                    (concat "\n" warning "\n" final-result)
@@ -2474,7 +2464,7 @@ Applies circuit breaker limits to prevent infinite loops."
                                       (format "(%s %S)" tool-name tool-input)
                                       nil  ; no todo-snapshot
                                       tool-name))
-            return-value)))))))
+            return-value))))))
 
 ;;; Command execution
 

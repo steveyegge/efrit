@@ -63,8 +63,7 @@ Returns plist with :path, :insertions, :deletions or nil."
 (defun efrit-tool-vcs-diff--get-numstat (args)
   "Get file statistics using git diff --numstat with ARGS.
 Returns list of file stats."
-  (let ((numstat-args (append args '("--numstat")))
-        (result (efrit-tool-run-git (append args '("--numstat")))))
+  (let ((result (efrit-tool-run-git (append args '("--numstat")))))
     (when (plist-get result :success)
       (let ((lines (split-string (plist-get result :output) "\n" t)))
         (mapcar (lambda (line)

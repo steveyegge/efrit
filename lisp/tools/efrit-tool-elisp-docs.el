@@ -61,8 +61,7 @@ Returns \\='function, \\='variable, \\='face, or nil if unknown."
   "Get the argument signature for function SYMBOL.
 Returns a string like \"(ARG1 ARG2 &optional ARG3)\"."
   (condition-case nil
-      (let* ((func (symbol-function symbol))
-             (args (help-function-arglist symbol t)))
+      (let* ((args (help-function-arglist symbol t)))
         (if (eq args t)
             nil  ; No arglist available
           (format "%S" args)))
@@ -129,8 +128,6 @@ Returns a string like \"user-option\", \"constant\", \"buffer-local\"."
 Returns a list of symbol names."
   (condition-case nil
       (let* ((pattern (symbol-name symbol))
-             ;; Run apropos but suppress output
-             (apropos-do-all nil)
              (matches (apropos-internal pattern)))
         ;; Filter and limit
         (seq-take

@@ -125,16 +125,6 @@ This is called automatically when the data directory is initialized."
   :type 'string
   :group 'efrit)
 
-(defcustom efrit-completion-model "claude-sonnet-4-5-20250929"
-  "Claude model for completion assessment and lightweight operations."
-  :type 'string
-  :group 'efrit)
-
-(defcustom efrit-agent-model "claude-4-sonnet-20250514"
-  "Claude model for agent operations."
-  :type 'string
-  :group 'efrit)
-
 (defcustom efrit-default-max-tokens 8192
   "Default maximum tokens for responses."
   :type 'integer

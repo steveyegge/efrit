@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# efrit-test-simple.sh - Simple integration test runner for efrit-chat
-# Tests both basic chat functionality and multi-turn conversations
+# efrit-test-simple.sh - Simple integration test runner for efrit
+# Tests basic load and compilation
 
-echo "🚀 Starting efrit-chat integration tests..."
+echo "🚀 Starting efrit integration tests..."
 
 # Check if emacs is available
 if ! command -v emacs &> /dev/null; then
@@ -13,64 +13,73 @@ fi
 
 # Set up test environment
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_DIR="$SCRIPT_DIR/.."
 cd "$SCRIPT_DIR"
 
 echo "📁 Test directory: $SCRIPT_DIR"
+echo "📁 Project directory: $PROJECT_DIR"
+
+# Load path for new directory structure
+LOAD_PATH="-L $PROJECT_DIR/lisp -L $PROJECT_DIR/lisp/core -L $PROJECT_DIR/lisp/interfaces -L $PROJECT_DIR/lisp/tools -L $PROJECT_DIR/lisp/support"
 
 # Run syntax validation
 echo "🔍 Checking efrit-chat.el syntax..."
-if emacs --batch --eval "(check-parens)" ../lisp/efrit-chat.el 2>/dev/null; then
+if emacs --batch --eval "(check-parens)" "$PROJECT_DIR/lisp/core/efrit-chat.el" 2>/dev/null; then
     echo "✅ Syntax check passed"
 else
     echo "❌ Syntax check failed"
     exit 1
 fi
 
-# Run byte-compilation test (check for syntax errors)
-echo "🔨 Testing byte-compilation (syntax validation)..."
-COMPILE_OUTPUT=$(emacs --batch --eval "(progn (add-to-list 'load-path \"../lisp\") (byte-compile-file \"../lisp/efrit-chat.el\"))" 2>&1)
-if echo "$COMPILE_OUTPUT" | grep -q "wrote.*efrit-chat.elc"; then
-    echo "✅ Byte-compilation passed completely"
-elif echo "$COMPILE_OUTPUT" | grep -q "Cannot open load file.*efrit-tools"; then
-    echo "✅ Syntax validation passed (missing efrit-tools dependency is expected)"
-elif echo "$COMPILE_OUTPUT" | grep -E "Error.*void-variable|Error.*parse-err|Error.*condition-case"; then
-    echo "❌ Critical syntax errors found:"
-    echo "$COMPILE_OUTPUT"
+# Run byte-compilation test
+echo "🔨 Testing byte-compilation..."
+COMPILE_OUTPUT=$(cd "$PROJECT_DIR" && make compile 2>&1)
+if echo "$COMPILE_OUTPUT" | grep -q "Error:"; then
+    echo "❌ Byte-compilation errors found:"
+    echo "$COMPILE_OUTPUT" | grep "Error:"
     exit 1
 else
-    echo "⚠️  Compilation issues detected:"
-    echo "$COMPILE_OUTPUT"
+    echo "✅ Byte-compilation passed"
 fi
 
 # Basic functionality test
 echo "🧪 Testing basic functionality..."
 
-# Test basic tool functionality
+# Test efrit-tools loading
 echo "🔧 Testing core tool functionality..."
-if emacs --batch -L ../lisp --eval "(progn (require 'efrit-tools) (message \"✅ efrit-tools loads and works: %s\" (efrit-tools-eval-sexp \"(+ 2 3)\")))" 2>/dev/null; then
+if emacs --batch $LOAD_PATH --eval "(progn (require 'efrit-tools) (message \"efrit-tools loaded\") (message \"eval_sexp result: %s\" (efrit-tools-eval-sexp \"(+ 2 3)\")))" 2>&1 | grep -q "eval_sexp result:"; then
     echo "✅ Core tools working"
 else
     echo "❌ Core tools failed to load"
     exit 1
 fi
 
+# Test efrit loading
+echo "🔧 Testing efrit main module..."
+if emacs --batch $LOAD_PATH --eval "(progn (require 'efrit) (message \"efrit loaded, version: %s\" (if (boundp 'efrit-version) efrit-version \"unknown\")))" 2>&1 | grep -q "efrit loaded"; then
+    echo "✅ efrit module loads successfully"
+else
+    echo "❌ efrit module failed to load"
+    exit 1
+fi
+
+# Test efrit-do loading and dispatch table
+echo "🔧 Testing efrit-do and dispatch table..."
+if emacs --batch $LOAD_PATH --eval "(progn (require 'efrit-do) (message \"efrit-do loaded, %d tools in dispatch table\" (length efrit-do--tool-dispatch-table)))" 2>&1 | grep -q "tools in dispatch table"; then
+    echo "✅ efrit-do loads with dispatch table"
+else
+    echo "❌ efrit-do failed to load"
+    exit 1
+fi
+
 # Summary
 echo ""
 echo "📊 Test Summary:"
-echo "   ✅ Syntax validation completed"
-echo "   ✅ Byte compilation successful" 
-echo "   ✅ Core functionality tested"
-echo "   ✅ Loading verification complete"
-echo ""
-
-# Check if efrit-chat can be loaded
-echo "🔧 Testing efrit-chat loading..."
-if emacs --batch --eval "(progn (add-to-list 'load-path \"../lisp\") (condition-case err (progn (require 'json) (load \"../lisp/efrit-chat.el\" t) (message \"SUCCESS: efrit-chat loaded\")) (error (message \"ERROR: %s\" (error-message-string err)))))" 2>&1 | grep -q "SUCCESS"; then
-    echo "✅ efrit-chat loads successfully"
-else
-    echo "⚠️  efrit-chat loading has dependency issues (expected in isolated testing)"
-fi
-
+echo "   ✅ Syntax validation passed"
+echo "   ✅ Byte compilation successful"
+echo "   ✅ Core tools working"
+echo "   ✅ Main module loads"
+echo "   ✅ efrit-do loads with dispatch table"
 echo ""
 echo "🎉 Efrit testing completed!"
 echo "   All basic functionality tests passed."

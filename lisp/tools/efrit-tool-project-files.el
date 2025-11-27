@@ -85,7 +85,7 @@ INCLUDE-HIDDEN controls dotfile inclusion.
 REGEX is the optional file pattern filter.
 FILES is accumulated result (modified in place, returns new list)."
   (when (<= depth max-depth)
-    (condition-case err
+    (condition-case _err
         (dolist (entry (directory-files dir t nil t))
           (let ((name (file-name-nondirectory entry)))
             ;; Skip . and ..

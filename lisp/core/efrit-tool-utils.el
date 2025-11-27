@@ -102,9 +102,7 @@ Returns the expanded absolute path."
      efrit-project-root)
     ;; Try project.el detection
     ((when-let* ((proj (project-current)))
-       (if (fboundp 'project-root)
-           (project-root proj)
-         (car (project-roots proj)))))
+       (project-root proj)))
     ;; Fallback to default-directory
     (t default-directory))))
 
