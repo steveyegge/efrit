@@ -66,6 +66,7 @@
 (require 'efrit-session)
 (require 'efrit-chat)
 (require 'efrit-progress)
+(require 'efrit-tool-utils)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
