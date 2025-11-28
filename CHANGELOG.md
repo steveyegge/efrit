@@ -2,6 +2,38 @@
 
 All notable changes to Efrit will be documented in this file.
 
+## [0.3.1] - 2025-11-28
+
+### Added
+- **efrit-agent.el**: World-class agentic session buffer with real-time tool progress display
+  - Interactive input section for user interaction
+  - Terminal-compatible display for tool execution
+  - Memory-efficient parallel tool call handling
+- **Session Transcript Persistence**: Sessions can now be saved and resumed
+  - `efrit-session--save-transcript` and `efrit-session--load-transcript`
+  - Messages synced to session for full transcript persistence
+- **Naming Conventions Guidance**: Added to system prompts for consistent Elisp style
+- **Improved TodoWrite Documentation**: Enhanced guidance for tool usage
+
+### Changed
+- Increased executor turn limit from 25 to 50 with encouragement for batching
+- Enhanced tool progress display for better terminal compatibility
+
+### Fixed
+- **search_content Tool**: Fixed path sandbox bugs that blocked legitimate searches
+- **UTF-8 Encoding**: Resolved encoding bug in watch buffer refresh (efrit-progress)
+- **Memory Leak**: Fixed timer and buffer leaks in efrit-agent parallel tool handling
+- **Agentic Loop**: Fixed efrit-do agentic loop and string/symbol key bug
+- **Executor Messages**: Fixed message sync to session for transcript persistence
+
+### Infrastructure
+- **MCP Tests**: All 79 tests now passing (was 17/27)
+  - Added `isolatedModules: true` to tsconfig.json
+  - Added `NODE_OPTIONS='--experimental-vm-modules'` to npm test script
+  - Fixed ESM `require()` calls to use proper imports
+- **Security**: Fixed npm vulnerabilities (body-parser DoS, js-yaml prototype pollution)
+- **STATUS.md**: Updated to reflect current project state
+
 ## [0.3.0] - 2025-11-24
 
 ### Milestone: First Working End-to-End Since Modernization

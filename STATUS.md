@@ -1,19 +1,18 @@
 # Efrit Project Status
 
-> **Last Updated**: 2025-11-21
+> **Last Updated**: 2025-11-28
 >
 > **Single source of truth** for Efrit's current state. For user docs see [README.md](README.md), for architecture see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick Status
 
-**Overall Health**: 🟡 Core functionality works, modernization in progress
+**Overall Health**: 🟢 Core functionality works, MCP tests passing
 
 - ✅ **Core workflows operational** - chat, do, async, remote-queue all load and work
-- ✅ **Test infrastructure fixed** - 36/36 comprehensive tests passing
-- ✅ **Build system working** - Elisp compilation succeeds with minor warnings
-- ⚠️  **MCP server incomplete** - 50% done, needs server.ts implementation
-- ⚠️  **Tool selection loops** - Known issue with todo_get_instructions
-- ⚠️  **Documentation scattered** - 9+ planning docs need consolidation
+- ✅ **Test infrastructure working** - Elisp tests run, 79/79 MCP tests passing
+- ✅ **Build system working** - Elisp compilation succeeds
+- ✅ **MCP server tests pass** - All 79 tests passing
+- ⚠️  **Documentation needs update** - Some docs reference old issue IDs
 
 ## What Works
 
@@ -23,210 +22,110 @@
 - **efrit-do-async**: Async execution with session management
 - **efrit-remote-queue**: File-based AI-to-AI communication
 - **Session tracking**: Full session lifecycle management
-- **Dashboard**: Real-time status display and metrics
-- **Tool system**: All 16+ tools load and are available to Claude
+- **Tool system**: All tools load and are available to Claude
 
 ### Development Infrastructure ✅
-- **Test suite**: 36/36 tests passing in test-comprehensive.el
-- **Build system**: `make compile` succeeds (1 minor warning in efrit-do.el:1374)
-- **Test runner**: test/efrit-test-simple.sh works correctly
-- **Module loading**: All core modules (efrit-*.el) compile and load successfully
-- **Dependency management**: MCP npm dependencies resolved (as of 2025-11-21)
+- **Build system**: `make compile` succeeds
+- **Elisp tests**: Individual test files run (e.g., test-tool-search-content.el - 19/19 passing)
+- **MCP tests**: 79/79 tests passing (npm test in mcp/)
+- **Module loading**: All core modules compile and load successfully
 
 ### Quality Gates ✅
 - All Elisp files have `lexical-binding: t`
-- Syntax validation passes (make check)
 - Byte compilation succeeds for all modules
 - Session persistence working (save/load)
+- No known security vulnerabilities (npm audit clean)
 
-## What Doesn't Work / Known Issues
+## What Needs Work
 
-### Critical Issues (P0) 🔴
+### Priority 2 Tasks (Ready to Work)
 
-**1. Tool Selection Loops (mcp-bt0)**
-- **Symptom**: `todo_get_instructions` called repeatedly in infinite loops
-- **Impact**: Can burn tokens and hang sessions
-- **Status**: Documented, needs fix
-- **Solution**: Implement schema-based tool prevention + circuit breaker
-- **Issue**: mcp-bt0 (epic), mcp-it8 (schema prevention), mcp-nyo (circuit breaker)
+**1. Split efrit-do.el (ef-xng)**
+- 2869 lines with 98 functions - needs breaking into focused modules
+- Circuit breaker, error detection, context, tool handlers could be separate files
 
-**2. MCP Server Incomplete (mcp-b0f)**
-- **Symptom**: MCP server only 50% implemented
-- **What's missing**:
-  - server.ts protocol handler implementation
-  - efrit_execute tool with parameter validation
-  - Request routing to queue system
-  - Integration tests
-- **Status**: Builds but not functional
-- **Impact**: Can't use MCP protocol to control Efrit remotely
-- **Issue**: mcp-b0f (epic), mcp-dnu, mcp-dsb, mcp-4nc
+**2. Split efrit-session.el (ef-cji)**
+- 106 functions in 1700 lines - highest function count in codebase
+- Needs analysis for natural boundaries
 
-### High Priority Issues (P1) ⚠️
+**3. Refactor efrit-do--budget-warning-prompt (ef-q4w)**
+- 491 lines - longest function in codebase
+- Giant prompt builder that needs restructuring
 
-**3. Documentation Scattered (mcp-jnk)**
-- **Symptom**: 9+ planning docs in plans/ with contradictory info
-- **Impact**: Hard to understand project state
-- **Status**: This STATUS.md is first step toward consolidation
-- **Issue**: mcp-jnk (epic), mcp-le1 (STATUS.md - in progress)
+**4. Add systematic test coverage (ef-dn9)**
+- Core modules need dedicated unit tests
+- efrit-common.el, efrit-config.el, efrit-log.el lack tests
 
-**4. Async Architecture Complexity (mcp-cf1)**
-- **Symptom**: Async workflow has complex session management
-- **Impact**: Hard to debug and maintain
-- **Status**: Works but needs simplification
-- **Issue**: mcp-cf1
+### Priority 3 Tasks
 
-### Test Issues 🧪
+**5. Consolidate duplicate truncation functions (ef-50o)**
+- 7 implementations scattered across codebase
 
-**MCP Test Failures**
-- **Tests failing**: 10/27 MCP tests fail (efrit-client tests)
-- **Reason**: Response file polling issues (ENOENT errors)
-- **Impact**: MCP server development workflow unreliable
-- **Not blocking**: Elisp side works fine
-- **Status**: Separate issue from MCP server implementation
+**6. Centralize magic numbers (ef-83h)**
+- 36 magic numbers found, including duplicate token budgets
 
-## Recent Progress (Last Session)
-
-### Completed ✅
-1. **Fixed test infrastructure (mcp-fmw)** - test/efrit-test-simple.sh exists and works
-2. **Fixed MCP dependencies (mcp-deh)** - Resolved resolve.exports missing dist/ issue
-3. **Validated core workflows (mcp-6gr)** - All 4 workflows load and have correct functions
-4. **Created STATUS.md (mcp-le1)** - This document (in progress)
-
-### Build/Compile Status
-```bash
-make compile  # ✅ Succeeds with 1 warning
-# Warning: efrit-do.el:1374:42 - efrit--build-headers not known (compile-time)
-
-make test-simple  # ✅ Passes
-# ✅ Syntax check passed
-# ✅ Byte-compilation passed
-# ✅ Core tools working
-# ✅ efrit-chat loads successfully
-
-Test suite (test-comprehensive.el)  # ✅ 36/36 passing
-# ✅ Session tracking
-# ✅ Dashboard functionality
-# ✅ Error handling
-# ✅ Performance characteristics
-# ✅ Integration tests
-```
+**7. Update CHANGELOG.md (ef-ccp)**
+- Last entry is [0.3.0] - 2025-11-24
 
 ## Issue Tracking Summary
 
 Using **beads (bd)** for all issue tracking:
 
 ```
-Total Issues:    28
-Open:            24
-In Progress:     1 (mcp-le1 - this document)
-Closed:          3 (mcp-fmw, mcp-deh, mcp-6gr)
-Blocked:         24
-Ready:           1
+Total Issues:    68
+Open:            16
+In Progress:     1
+Closed:          51
+Blocked:         3
+Ready:           13
 ```
 
-### Priority Breakdown
-- **P0 (Critical)**: 3 issues (tool loops, MCP server, test infra)
-- **P1 (High)**: 15 issues (docs, async, utilities)
-- **P2 (Medium)**: 7 issues (modernization tasks)
-- **P3 (Low)**: 3 issues (polish, consolidation)
+### Recent Completed
+- **ef-fjv**: Fixed MCP test failure - added isolatedModules, NODE_OPTIONS, fixed ESM imports
+- **ef-7no**: Fixed npm security vulnerabilities - npm audit now clean
 
-### Major Epics
-1. **mcp-hsl**: Efrit Modernization for Community Readiness (P1)
-2. **mcp-bt0**: Fix Tool Selection Loop Prevention (P1)
-3. **mcp-b0f**: Complete MCP Server Implementation (P1)
-4. **mcp-jnk**: Consolidate Documentation (P1)
-5. **mcp-2kq**: Community Readiness (P2)
-6. **mcp-9qu**: Modernize Development Experience (P2)
+## Development Workflow
 
-## Critical Blockers
+### Working Commands ✅
+```bash
+# Build
+make compile                           # Byte-compile all Elisp
 
-**None currently blocking development.**
+# MCP Tests
+cd mcp && npm test                     # Run 79 MCP tests
 
-All core workflows work. The main blockers are quality/polish issues:
-- Tool loops can be worked around (don't use todo_get_instructions excessively)
-- MCP server is optional (Elisp interfaces work fine)
-- Documentation is scattered but exists
+# Elisp Tests (example)
+emacs --batch -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test -l test/test-tool-search-content.el -f ert-run-tests-batch-and-exit
 
-## Next Steps (Recommended)
-
-Based on current state, recommended order:
-
-### Immediate (This Week)
-1. ✅ **Fix test infrastructure** - Done
-2. ✅ **Fix MCP dependencies** - Done
-3. ✅ **Validate workflows** - Done
-4. 🔄 **Complete STATUS.md** - In progress
-5. **Archive stale plans/** - Clean up old planning docs (mcp-xfj)
-
-### Short Term (Next Week)
-1. **Fix tool selection loops** (mcp-bt0)
-   - Implement schema-based prevention (mcp-it8)
-   - Add circuit breaker (mcp-nyo)
-2. **Complete MCP server** (mcp-b0f)
-   - Implement server.ts (mcp-dnu)
-   - Add efrit_execute tool (mcp-dsb)
-   - Add integration tests (mcp-4nc)
-3. **Consolidate documentation** (mcp-jnk)
-   - Create DEVELOPMENT.md (mcp-dxi)
-   - Create TROUBLESHOOTING.md (mcp-dy9)
-   - Update ROADMAP.md (mcp-enr)
-
-### Medium Term (Next Month)
-1. **Simplify async architecture** (mcp-cf1)
-2. **Add CI/CD pipeline** (mcp-vl3)
-3. **Create onboarding docs** (mcp-7tt, mcp-dxi)
-4. **Add GitHub templates** (mcp-hgc)
-
-## Development Workflow Status
-
-### Working ✅
-- `make compile` - Byte-compile all Elisp
-- `make test-simple` - Run basic tests
-- `make check` - Syntax validation
-- `make lint` - Code style checks
-- `cd test && emacs --batch -L ../lisp -l test-comprehensive.el` - Full test suite
-- `bd ready` - Find unblocked work
-- `bd create/update/close` - Issue tracking
-
-### Partially Working ⚠️
-- `make test` - Runs Elisp tests ✅ but MCP tests fail ❌
-- `make mcp-test` - 10/27 tests fail (polling issues)
-
-### Not Implemented ❌
-- `make ci` - Would work but no CI/CD yet
-- MCP server functionality (building works, runtime doesn't)
+# Issue tracking
+bd ready                               # Find unblocked work
+bd create/update/close                 # Issue management
+bd sync                                # Sync with git
+```
 
 ## File Organization
 
 ```
 efrit/
-├── lisp/              # All Elisp source (18 modules) ✅
-├── test/              # Test files (17 test files) ✅
-│   ├── test-comprehensive.el        # 36 tests ✅
-│   ├── efrit-test-simple.sh         # Smoke tests ✅
-│   └── ...                          # Integration tests
-├── mcp/               # MCP server (TypeScript) ⚠️
-│   ├── src/           # Source files (incomplete)
-│   ├── test/          # Tests (10/27 failing)
-│   └── dist/          # Built files ✅
-├── docs/              # Documentation (needs work)
-├── plans/             # Planning docs (needs cleanup)
+├── lisp/              # All Elisp source ✅
+│   ├── core/          # Core modules (efrit-chat.el, etc.)
+│   ├── interfaces/    # Interface modules (efrit-do.el, efrit-remote-queue.el)
+│   ├── support/       # Support modules (efrit-ui.el, etc.)
+│   ├── tools/         # Tool implementations
+│   ├── dev/           # Development utilities
+│   └── deprecated/    # Deprecated code
+├── test/              # Elisp test files (31 .el files)
+├── mcp/               # MCP server (TypeScript) ✅
+│   ├── src/           # Source files
+│   ├── test/          # Tests (79 passing)
+│   └── dist/          # Built files
+├── docs/              # Documentation
 ├── .beads/            # Issue tracker ✅
 ├── ARCHITECTURE.md    # Core principles ✅
 ├── README.md          # User docs ✅
 ├── CLAUDE.md          # Agent instructions ✅
-└── STATUS.md          # This file 🔄
+└── STATUS.md          # This file
 ```
-
-## Known Anti-Patterns (See ARCHITECTURE.md)
-
-From the Pure Executor principle, these are forbidden:
-- ❌ Pattern recognition in Efrit code
-- ❌ Decision-making heuristics
-- ❌ Pre-written solutions or templates
-- ❌ Task-specific logic in Efrit
-
-**Current Violations**: None known. Efrit correctly delegates all decisions to Claude.
 
 ## Version Information
 
@@ -237,14 +136,13 @@ From the Pure Executor principle, these are forbidden:
 
 ## Success Metrics
 
-As of 2025-11-21:
+As of 2025-11-28:
 
-- ✅ **36/36 Elisp tests passing** (100%)
-- ⚠️  **17/27 MCP tests passing** (63%)
+- ✅ **79/79 MCP tests passing** (100%)
+- ✅ **Elisp tests working** (individual test files run correctly)
 - ✅ **All core workflows functional**
-- ✅ **Build succeeds** (1 minor warning)
-- ⚠️  **Documentation fragmented** (9+ files)
-- ❌ **MCP server incomplete** (50%)
+- ✅ **Build succeeds**
+- ✅ **No security vulnerabilities** (npm audit clean)
 
 ## Getting Help
 
@@ -256,6 +154,6 @@ As of 2025-11-21:
 
 ---
 
-**Maintained By**: AI agents working on Efrit modernization
+**Maintained By**: AI agents working on Efrit
 **Issue Tracker**: `.beads/beads.jsonl` (use `bd` command)
-**Last Status Review**: 2025-11-21
+**Last Status Review**: 2025-11-28
