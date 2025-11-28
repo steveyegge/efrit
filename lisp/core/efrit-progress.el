@@ -691,33 +691,43 @@ Returns the path to the inject queue directory."
 (defvar efrit-watch--session-id nil
   "Session ID being watched in current buffer.")
 
-(defvar efrit-watch--last-position 0
-  "Last read position in progress file.")
+(defvar efrit-watch--last-line-count 0
+  "Number of lines already processed from progress file.
+Using line count instead of byte position avoids issues with
+multibyte UTF-8 characters being split at byte boundaries.")
 
 (defvar efrit-watch--timer nil
   "Timer for auto-refresh.")
 
 (defun efrit-watch--refresh ()
-  "Refresh the watch buffer with new events."
+  "Refresh the watch buffer with new events.
+Reads the progress file and appends any new lines since last refresh.
+Uses line-based tracking to avoid multibyte UTF-8 encoding issues
+that can occur when reading from arbitrary byte positions."
   (when-let* ((session-id efrit-watch--session-id)
               (progress-file (efrit-progress--progress-file session-id)))
     (when (file-exists-p progress-file)
       (let ((new-content "")
-            (current-size (nth 7 (file-attributes progress-file))))
-        ;; Read new content from last position
-        (when (> current-size efrit-watch--last-position)
-          (with-temp-buffer
-            (insert-file-contents progress-file nil efrit-watch--last-position current-size)
-            (goto-char (point-min))
-            (while (not (eobp))
-              (let ((line (buffer-substring-no-properties
-                          (line-beginning-position) (line-end-position))))
-                (unless (string-empty-p line)
-                  (when-let* ((event (efrit-progress--parse-jsonl-line line)))
-                    (setq new-content
-                          (concat new-content (efrit-progress--format-event event))))))
-              (forward-line 1)))
-          (setq efrit-watch--last-position current-size))
+            (lines-processed 0))
+        ;; Read entire file to avoid splitting multibyte characters
+        (with-temp-buffer
+          (insert-file-contents progress-file)
+          (goto-char (point-min))
+          ;; Skip lines we've already processed
+          (dotimes (_ efrit-watch--last-line-count)
+            (forward-line 1))
+          ;; Process new lines
+          (while (not (eobp))
+            (let ((line (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position))))
+              (unless (string-empty-p line)
+                (when-let* ((event (efrit-progress--parse-jsonl-line line)))
+                  (setq new-content
+                        (concat new-content (efrit-progress--format-event event)))))
+              (cl-incf lines-processed))
+            (forward-line 1)))
+        ;; Update line count
+        (cl-incf efrit-watch--last-line-count lines-processed)
         ;; Insert new content
         (when (not (string-empty-p new-content))
           (let ((inhibit-read-only t)
@@ -763,7 +773,7 @@ Returns the path to the inject queue directory."
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (make-local-variable 'efrit-watch--session-id)
-  (make-local-variable 'efrit-watch--last-position)
+  (make-local-variable 'efrit-watch--last-line-count)
   (add-hook 'kill-buffer-hook #'efrit-watch--stop-timer nil t))
 
 (defun efrit-watch-inject ()
@@ -806,7 +816,7 @@ If called interactively with prefix arg, always prompt."
         (erase-buffer))
       (efrit-watch-mode)
       (setq efrit-watch--session-id session-id)
-      (setq efrit-watch--last-position 0)
+      (setq efrit-watch--last-line-count 0)
       ;; Insert header
       (let ((inhibit-read-only t))
         (insert (propertize (format "Watching session: %s\n" session-id)
