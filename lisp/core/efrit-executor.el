@@ -47,8 +47,10 @@
   :type 'boolean
   :group 'efrit-executor)
 
-(defcustom efrit-executor-max-continuations 30
-  "Maximum API calls per session before emergency stop."
+(defcustom efrit-executor-max-continuations 50
+  "Maximum API calls per session before emergency stop.
+This is a safety limit to prevent runaway sessions.
+Most tasks complete within 20 API calls; complex exploration may need more."
   :type 'integer
   :group 'efrit-executor)
 
@@ -450,6 +452,13 @@ Claude remembers previous tool calls and their results."
 
         ;; Increment continuation counter
         (cl-incf (efrit-session-continuation-count session))
+
+        ;; Warn when approaching the limit (80%)
+        (when (>= continuation-count (floor (* 0.8 efrit-executor-max-continuations)))
+          (efrit-log 'warn "Session %s approaching turn limit (%d/%d)"
+                     session-id continuation-count efrit-executor-max-continuations)
+          (message "Efrit: Session approaching turn limit (%d/%d) - consider batching tool calls"
+                   continuation-count efrit-executor-max-continuations))
 
         ;; Build system prompt (WITHOUT work log - that's now in messages)
         (require 'efrit-do)
