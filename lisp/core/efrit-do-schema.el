@@ -205,15 +205,7 @@ IMPORTANT: Only ONE task in_progress at a time. Mark complete IMMEDIATELY after 
                                                                                               ("description" . "Task in present continuous (e.g., 'Fixing the bug')")))))
                                                               ("required" . ["content" "status" "activeForm"])))))))
                       ("required" . ["todos"]))))
-   (("name" . "suggest_execution_mode")
-   ("description" . "Suggest whether a command should run synchronously or asynchronously based on its characteristics.")
-   ("input_schema" . (("type" . "object")
-   ("properties" . (("mode" . (("type" . "string")
-   ("enum" . ["sync" "async"])
-   ("description" . "Suggested execution mode")))
-   ("reason" . (("type" . "string")
-   ("description" . "Brief explanation for the suggestion")))))
-   ("required" . ["mode"]))))
+   ;; suggest_execution_mode removed - no handler implemented
     (("name" . "glob_files")
      ("description" . "Get list of files matching a pattern. INFORMATIONAL ONLY - does not open files. Use results with eval_sexp to perform actions.
 

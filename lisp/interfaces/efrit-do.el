@@ -192,9 +192,9 @@ When nil, uses the centralized configuration."
   "When t, forces session completion on next API response.")
 
 ;; Circuit breaker state and error loop detection state moved to efrit-do-circuit-breaker.el
-;; Tool dispatch table and tool schemas moved to efrit-do-schema.el
+;; Tool schemas (JSON definitions for Claude) moved to efrit-do-schema.el
 
-;;; Tool Dispatch Table (reference - actual definition in efrit-do-schema.el)
+;;; Tool Dispatch Table
 ;; Maps tool names to (HANDLER-FN . ARG-TYPE) where ARG-TYPE is:
 ;;   :input-str - handler takes extracted input string
 ;;   :tool-input - handler takes raw tool-input hash table
