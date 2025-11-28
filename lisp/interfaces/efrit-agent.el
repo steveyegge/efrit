@@ -26,8 +26,15 @@
 
 (require 'cl-lib)
 
-;; Forward declaration to silence byte-compiler
+;; Forward declarations to silence byte-compiler
 (defvar efrit-do--current-todos)
+(declare-function efrit-do-todo-item-id "efrit-do")
+(declare-function efrit-do-todo-item-content "efrit-do")
+(declare-function efrit-do-todo-item-status "efrit-do")
+(declare-function efrit-executor-cancel "efrit-executor")
+(declare-function efrit-executor-respond "efrit-executor")
+(declare-function efrit-session-active "efrit-session")
+(declare-function efrit-session-waiting-for-user-p "efrit-session")
 
 ;;; Customization
 
@@ -234,31 +241,35 @@ showing task progress, activity log, and allowing user interaction.
   "Cancel the current session."
   (interactive)
   (if (memq efrit-agent--status '(working paused waiting))
-      (when (yes-or-no-p "Cancel the current session? ")
-        (message "Session cancellation not yet implemented")
-        ;; TODO: Wire to efrit-executor-cancel
-        )
+      (progn
+        (efrit-executor-cancel)
+        (efrit-agent-set-status 'failed)
+        (efrit-agent--render))
     (message "No active session to cancel")))
 
 (defun efrit-agent-pause ()
-  "Pause the current session."
+  "Pause the current session.
+Note: Currently Efrit sessions can only be paused by Claude
+requesting user input. Arbitrary pause/resume is not yet supported."
   (interactive)
   (if (eq efrit-agent--status 'working)
-      (progn
-        (message "Session pause not yet implemented")
-        ;; TODO: Wire to efrit-executor-pause
-        )
+      (message "Arbitrary pause not yet implemented. Sessions pause when waiting for user input.")
     (message "Session is not currently working")))
 
 (defun efrit-agent-resume ()
-  "Resume a paused session."
+  "Resume a paused/waiting session by prompting for user input.
+If the session is waiting for user input, prompts for a response."
   (interactive)
-  (if (eq efrit-agent--status 'paused)
-      (progn
-        (message "Session resume not yet implemented")
-        ;; TODO: Wire to efrit-executor-resume
-        )
-    (message "Session is not paused")))
+  (cond
+   ((eq efrit-agent--status 'waiting)
+    ;; Session is waiting for user input - use efrit-executor-respond
+    (call-interactively #'efrit-executor-respond)
+    (efrit-agent-set-status 'working)
+    (efrit-agent--render))
+   ((eq efrit-agent--status 'paused)
+    (message "Session resume not yet implemented"))
+   (t
+    (message "Session is not paused or waiting for input"))))
 
 (defun efrit-agent-refresh ()
   "Refresh the buffer display."
@@ -331,11 +342,15 @@ Press q to close this help."))
       (princ help-text))))
 
 (defun efrit-agent-send-input ()
-  "Send user input to the session."
+  "Send user input to the session.
+If the session is waiting for user input, prompts for a response."
   (interactive)
-  (message "Input sending not yet implemented")
-  ;; TODO: Wire to efrit-executor-respond
-  )
+  (if (eq efrit-agent--status 'waiting)
+      (progn
+        (call-interactively #'efrit-executor-respond)
+        (efrit-agent-set-status 'working)
+        (efrit-agent--render))
+    (message "Session is not waiting for input")))
 
 (defun efrit-agent-abort ()
   "Abort the current operation."
@@ -443,10 +458,22 @@ HELP-ECHO is the tooltip text shown on hover."
     (goto-char (min pos (point-max)))))
 
 (defun efrit-agent--render-header-only ()
-  "Re-render just the header for elapsed time updates."
-  ;; For now, just do a full re-render
-  ;; TODO: Optimize to only update the elapsed time
-  (efrit-agent--render))
+  "Re-render just the elapsed time in the header for efficiency.
+Updates only the elapsed time region marked with `efrit-agent-elapsed' property,
+avoiding full buffer re-render which causes cursor flicker."
+  (save-excursion
+    (goto-char (point-min))
+    ;; Find the elapsed time region by text property
+    (let ((elapsed-start (text-property-any (point-min) (point-max)
+                                            'efrit-agent-elapsed t)))
+      (when elapsed-start
+        (let* ((elapsed-end (next-single-property-change elapsed-start 'efrit-agent-elapsed))
+               (new-elapsed (format " (%s)" (efrit-agent--format-elapsed)))
+               (inhibit-read-only t))
+          ;; Replace just the elapsed time text
+          (goto-char elapsed-start)
+          (delete-region elapsed-start (or elapsed-end (point-max)))
+          (insert (propertize new-elapsed 'efrit-agent-elapsed t)))))))
 
 (defun efrit-agent--render-header ()
   "Render the header section."
@@ -477,7 +504,10 @@ HELP-ECHO is the tooltip text shown on hover."
   (insert (propertize "│" 'face 'efrit-agent-header))
   (insert " Status: ")
   (insert (efrit-agent--status-string))
-  (insert (format " (%s)" (efrit-agent--format-elapsed)))
+  ;; Mark elapsed time position for efficient partial updates
+  (let ((elapsed-start (point)))
+    (insert (format " (%s)" (efrit-agent--format-elapsed)))
+    (put-text-property elapsed-start (point) 'efrit-agent-elapsed t))
   ;; Add action buttons for active sessions
   (when (memq efrit-agent--status '(working paused waiting))
     (insert "  ")
@@ -666,12 +696,12 @@ STATUS should be one of: working, paused, waiting, complete, failed."
 ;;; Integration with efrit-do TODO tracking
 
 (defun efrit-agent--convert-todo-item (todo)
-  "Convert an efrit-do-todo-item struct TODO to plist format for display."
-  (when (and (vectorp todo) (>= (length todo) 4))
-    ;; Vector format: [id content status priority created-at completed-at]
-    (let* ((id (aref todo 0))
-           (content (aref todo 1))
-           (status (aref todo 2))
+  "Convert an efrit-do-todo-item struct TODO to plist format for display.
+Uses proper accessor functions to avoid fragility when struct changes."
+  (when (vectorp todo)
+    (let* ((id (efrit-do-todo-item-id todo))
+           (content (efrit-do-todo-item-content todo))
+           (status (efrit-do-todo-item-status todo))
            ;; Convert efrit-do status to agent status
            (agent-status (pcase status
                            ('todo 'pending)
