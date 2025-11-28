@@ -33,8 +33,10 @@
 (declare-function efrit-do-todo-item-status "efrit-do")
 (declare-function efrit-executor-cancel "efrit-executor")
 (declare-function efrit-executor-respond "efrit-executor")
+(declare-function efrit-executor-pending-question "efrit-executor")
 (declare-function efrit-session-active "efrit-session")
 (declare-function efrit-session-waiting-for-user-p "efrit-session")
+(declare-function efrit-progress-inject "efrit-progress")
 
 ;;; Customization
 
@@ -225,6 +227,26 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
   "Face for buttons on mouse hover."
   :group 'efrit-agent)
 
+(defface efrit-agent-question
+  '((t :weight bold :foreground "cyan"))
+  "Face for pending questions from Claude."
+  :group 'efrit-agent)
+
+(defface efrit-agent-option
+  '((t :box (:line-width -1 :style released-button) :foreground "LightGreen"))
+  "Face for clickable option buttons."
+  :group 'efrit-agent)
+
+(defface efrit-agent-option-hover
+  '((t :box (:line-width -1 :style released-button) :foreground "white" :background "DarkGreen"))
+  "Face for option buttons on hover."
+  :group 'efrit-agent)
+
+(defface efrit-agent-input-prompt
+  '((t :foreground "gold"))
+  "Face for the input prompt."
+  :group 'efrit-agent)
+
 ;;; Buffer-local State Variables
 
 (defvar-local efrit-agent--session-id nil
@@ -252,6 +274,13 @@ One of: idle, working, paused, waiting, complete, failed.")
 (defvar-local efrit-agent--expanded-items nil
   "Set of activity item IDs that are expanded.")
 
+(defvar-local efrit-agent--pending-question nil
+  "The current pending question from Claude.
+Format: (question options timestamp) or nil.")
+
+(defvar-local efrit-agent--input-text ""
+  "Current text in the input area.")
+
 ;;; Keymap
 
 (defvar efrit-agent-mode-map
@@ -274,6 +303,11 @@ One of: idle, working, paused, waiting, complete, failed.")
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
     (define-key map (kbd "C-c C-c") #'efrit-agent-abort)
+    (define-key map (kbd "i") #'efrit-agent-inject-guidance)
+    (define-key map (kbd "1") #'efrit-agent-select-option-1)
+    (define-key map (kbd "2") #'efrit-agent-select-option-2)
+    (define-key map (kbd "3") #'efrit-agent-select-option-3)
+    (define-key map (kbd "4") #'efrit-agent-select-option-4)
 
     map)
   "Keymap for `efrit-agent-mode'.")
@@ -416,9 +450,11 @@ Display Style:
   Current: %s
   Set `efrit-agent-display-style' to 'ascii for terminal compatibility
 
-Input:
-  C-c C-s        Send input to Claude
+Input (when waiting for response):
+  C-c C-s        Send typed input to Claude
   C-c C-c        Cancel current operation
+  1-4            Select option 1-4 (when options available)
+  i              Inject guidance to Claude mid-session
 
 Press q to close this help."
                  (make-string 43 ?=)
@@ -443,6 +479,58 @@ If the session is waiting for user input, prompts for a response."
   "Abort the current operation."
   (interactive)
   (efrit-agent-cancel))
+
+(defun efrit-agent--select-option (n)
+  "Select option N (1-indexed) from pending question options.
+Returns nil if no options or N is out of range."
+  (when (eq efrit-agent--status 'waiting)
+    (let* ((options (cadr efrit-agent--pending-question))
+           (option (and options (nth (1- n) options))))
+      (when option
+        (efrit-executor-respond option)
+        (efrit-agent-set-status 'working)
+        t))))
+
+(defun efrit-agent-select-option-1 ()
+  "Select option 1."
+  (interactive)
+  (unless (efrit-agent--select-option 1)
+    (message "No option 1 available")))
+
+(defun efrit-agent-select-option-2 ()
+  "Select option 2."
+  (interactive)
+  (unless (efrit-agent--select-option 2)
+    (message "No option 2 available")))
+
+(defun efrit-agent-select-option-3 ()
+  "Select option 3."
+  (interactive)
+  (unless (efrit-agent--select-option 3)
+    (message "No option 3 available")))
+
+(defun efrit-agent-select-option-4 ()
+  "Select option 4."
+  (interactive)
+  (unless (efrit-agent--select-option 4)
+    (message "No option 4 available")))
+
+(defun efrit-agent-inject-guidance ()
+  "Inject guidance into the current session.
+This allows you to provide hints or direction to Claude mid-session,
+even when not waiting for explicit input."
+  (interactive)
+  (unless efrit-agent--session-id
+    (user-error "No active session"))
+  (let ((guidance (read-string "Guidance for Claude: ")))
+    (when (and guidance (not (string-empty-p guidance)))
+      (efrit-progress-inject efrit-agent--session-id 'guidance guidance)
+      ;; Add to activity log
+      (efrit-agent-add-activity
+       (list :type 'message
+             :text (format "💡 Guidance: %s" guidance)
+             :timestamp (current-time)))
+      (message "Guidance injected"))))
 
 ;;; Buffer Creation and Management
 
@@ -812,19 +900,63 @@ CONTENT can be a string or a complex object (will be pretty-printed)."
                           'face 'efrit-agent-timestamp))
       (insert "\n"))))
 
+(defun efrit-agent--make-option-button (option index)
+  "Create a clickable button for OPTION with INDEX (1-indexed)."
+  (let* ((label (format "[%d] %s" index option))
+         (map (make-sparse-keymap))
+         (action (lambda ()
+                   (interactive)
+                   (efrit-agent--select-option index))))
+    (define-key map [mouse-1] action)
+    (define-key map (kbd "RET") action)
+    (propertize label
+                'face 'efrit-agent-option
+                'mouse-face 'efrit-agent-option-hover
+                'keymap map
+                'help-echo (format "Click or press %d to select" index))))
+
 (defun efrit-agent--render-input ()
-  "Render the input section."
+  "Render the input section.
+Shows pending question from Claude with options if available."
   (when (eq efrit-agent--status 'waiting)
     (let ((start (point))
-          (s-char (efrit-agent--char 'section-line)))
+          (s-char (efrit-agent--char 'section-line))
+          (question (car efrit-agent--pending-question))
+          (options (cadr efrit-agent--pending-question)))
+      ;; Section header
       (insert (propertize (format "%c%c%c Input " s-char s-char s-char)
                           'face 'efrit-agent-section-header
                           'efrit-agent-section 'input))
       (insert (propertize (make-string (max 1 (- 60 (- (point) start))) s-char)
                           'face 'efrit-agent-section-header))
       (insert "\n")
-      (insert "Type response (C-c C-s to send, C-c C-c to cancel):\n")
-      (insert "> "))))
+
+      ;; Question from Claude
+      (when question
+        (insert (propertize "Question: " 'face 'efrit-agent-timestamp))
+        (insert (propertize question 'face 'efrit-agent-question))
+        (insert "\n"))
+
+      ;; Options (if available)
+      (when options
+        (insert (propertize "Options: " 'face 'efrit-agent-timestamp))
+        (let ((idx 1))
+          (dolist (opt options)
+            (insert (efrit-agent--make-option-button opt idx))
+            (insert " ")
+            (cl-incf idx)))
+        (insert "\n"))
+
+      ;; Instructions
+      (insert "\n")
+      (if options
+          (insert (propertize "Press 1-4 to select, or type custom response:\n"
+                              'face 'efrit-agent-timestamp))
+        (insert (propertize "Type response (C-c C-s to send, C-c C-c to cancel):\n"
+                            'face 'efrit-agent-timestamp)))
+
+      ;; Input prompt
+      (insert (propertize "> " 'face 'efrit-agent-input-prompt)))))
 
 ;;; Public API
 
@@ -1040,6 +1172,46 @@ This makes the agent buffer appear automatically when sessions start."
   (advice-remove 'efrit-progress-start-session #'efrit-agent--on-session-start)
   (advice-remove 'efrit-progress-end-session #'efrit-agent--on-session-end))
 
+;;; User input integration
+
+(defun efrit-agent--on-pending-question (_session question &optional options)
+  "Advice function called when a pending question is set.
+Updates the agent buffer with QUESTION and OPTIONS, sets status to waiting."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        ;; Store the pending question
+        (setq efrit-agent--pending-question
+              (list question
+                    (when options (if (listp options) options (append options nil)))
+                    (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+        ;; Set status to waiting
+        (setq efrit-agent--status 'waiting)
+        (efrit-agent--render)))))
+
+(defun efrit-agent--on-question-response (_session _response)
+  "Advice function called when user responds to a question.
+Clears the pending question and sets status back to working."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq efrit-agent--pending-question nil)
+        (setq efrit-agent--status 'working)
+        (efrit-agent--render)))))
+
+(defun efrit-agent-setup-input-integration ()
+  "Set up advice to track user input requests from session.
+This makes the input section appear when Claude asks questions."
+  (when (fboundp 'efrit-session-set-pending-question)
+    (advice-add 'efrit-session-set-pending-question :after #'efrit-agent--on-pending-question))
+  (when (fboundp 'efrit-session-respond-to-question)
+    (advice-add 'efrit-session-respond-to-question :after #'efrit-agent--on-question-response)))
+
+(defun efrit-agent-remove-input-integration ()
+  "Remove advice for user input tracking."
+  (advice-remove 'efrit-session-set-pending-question #'efrit-agent--on-pending-question)
+  (advice-remove 'efrit-session-respond-to-question #'efrit-agent--on-question-response))
+
 ;;; Combined setup/teardown
 
 (defun efrit-agent-setup-integration ()
@@ -1047,13 +1219,15 @@ This makes the agent buffer appear automatically when sessions start."
 Call this after loading efrit-do and efrit-progress."
   (efrit-agent-setup-todo-integration)
   (efrit-agent-setup-progress-integration)
-  (efrit-agent-setup-session-integration))
+  (efrit-agent-setup-session-integration)
+  (efrit-agent-setup-input-integration))
 
 (defun efrit-agent-remove-integration ()
   "Remove all integration hooks."
   (efrit-agent-remove-todo-integration)
   (efrit-agent-remove-progress-integration)
-  (efrit-agent-remove-session-integration))
+  (efrit-agent-remove-session-integration)
+  (efrit-agent-remove-input-integration))
 
 (provide 'efrit-agent)
 
