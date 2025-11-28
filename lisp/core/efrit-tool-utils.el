@@ -594,6 +594,31 @@ ARGS are passed to `format'."
   (when (fboundp 'efrit-log)
     (efrit-log level (format "[%s] %s" tool-name (apply #'format message args)))))
 
+
+;;; Word Counting Utility
+
+(defun efrit-utils-count-words (text)
+  "Count words in TEXT.
+Returns the number of words, where a word is defined as a sequence
+of non-whitespace characters separated by whitespace.
+
+Example:
+  (efrit-utils-count-words \"Hello world\") => 2
+  (efrit-utils-count-words \"  foo   bar  baz  \") => 3"
+  (if (or (null text) (string-empty-p text))
+      0
+    (let ((count 0)
+          (in-word nil))
+      (dotimes (i (length text))
+        (let ((char (aref text i)))
+          (if (memq char '(?  ?	 ?
+ ?))
+              (setq in-word nil)
+            (unless in-word
+              (setq count (1+ count))
+              (setq in-word t)))))
+      count)))
+
 (provide 'efrit-tool-utils)
 
 ;;; efrit-tool-utils.el ends here

@@ -59,6 +59,13 @@ Most tasks complete within 20 API calls; complex exploration may need more."
   :type 'integer
   :group 'efrit-executor)
 
+(defcustom efrit-executor-session-timeout 300
+  "Maximum seconds for a session before timeout.
+This prevents runaway sessions from blocking indefinitely.
+Default is 5 minutes (300 seconds)."
+  :type 'integer
+  :group 'efrit-executor)
+
 ;;; Progress Display
 
 (defvar efrit-executor-mode-line-string nil
@@ -572,6 +579,7 @@ history instead of starting fresh."
          (final-result nil)
          (accumulated-results "")  ; Accumulate results across all turns
          (continuation-count 0)
+         (session-start-time (current-time))
          (done nil))
 
     (when resuming
@@ -585,7 +593,9 @@ history instead of starting fresh."
     (condition-case err
         (progn
           (while (and (not done)
-                      (< continuation-count efrit-executor-max-continuations))
+                      (< continuation-count efrit-executor-max-continuations)
+                      (< (float-time (time-since session-start-time))
+                         efrit-executor-session-timeout))
             (let* ((request-data
                     `(("model" . ,efrit-default-model)
                       ("max_tokens" . 8192)
@@ -674,11 +684,18 @@ history instead of starting fresh."
                     (cl-incf continuation-count)
                     (efrit-log 'info "Continuing session (turn %d)" continuation-count))))))
 
-          ;; Check if we hit the limit
-          (when (>= continuation-count efrit-executor-max-continuations)
-            (setq final-result
-                  (format "Session limit reached after %d turns. Last result: %s"
-                          continuation-count (or final-result ""))))
+          ;; Check if we hit limits
+          (let ((elapsed (float-time (time-since session-start-time))))
+            (cond
+             ((>= elapsed efrit-executor-session-timeout)
+              (setq final-result
+                    (format "Session timeout after %.0fs (limit: %ds). Last result: %s"
+                            elapsed efrit-executor-session-timeout
+                            (or accumulated-results ""))))
+             ((>= continuation-count efrit-executor-max-continuations)
+              (setq final-result
+                    (format "Session limit reached after %d turns. Last result: %s"
+                            continuation-count (or accumulated-results ""))))))
 
           final-result)
 
