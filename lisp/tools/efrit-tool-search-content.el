@@ -104,6 +104,7 @@ Returns a plist with :matches and :files-searched."
       (when (string-prefix-p "{" line)
         (condition-case nil
             (let* ((json-object-type 'alist)
+                   (json-key-type 'symbol)  ; Ensure symbol keys for alist-get
                    (obj (json-read-from-string line))
                    (type (alist-get 'type obj)))
               (pcase type

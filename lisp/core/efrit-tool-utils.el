@@ -126,10 +126,13 @@ Returns the normalized path, or nil if PATH is invalid."
 
 (defun efrit-tool--path-in-directory-p (path directory)
   "Check if PATH is within DIRECTORY.
-Both paths are expanded before comparison."
+Both paths are expanded before comparison.
+Handles the case where PATH equals DIRECTORY (same directory)."
   (let ((expanded-path (expand-file-name path))
         (expanded-dir (file-name-as-directory (expand-file-name directory))))
-    (string-prefix-p expanded-dir expanded-path)))
+    ;; Either path is a prefix match, or they're the same directory
+    (or (string-prefix-p expanded-dir expanded-path)
+        (file-equal-p expanded-path (directory-file-name expanded-dir)))))
 
 (defun efrit-tool--is-sensitive-file (path)
   "Check if PATH matches any sensitive file pattern."
