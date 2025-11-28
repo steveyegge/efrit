@@ -661,6 +661,9 @@ history instead of starting fresh."
                       (progn
                         (setq done t)
                         (setq final-result accumulated-results)
+                        ;; Sync messages back to session for transcript persistence
+                        (setf (efrit-session-api-messages session)
+                              (append messages nil))
                         (efrit-executor--complete-session session accumulated-results))
 
                     ;; Need to continue - add tool results to messages
