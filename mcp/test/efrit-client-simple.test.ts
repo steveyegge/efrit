@@ -3,6 +3,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import { EfritClient } from '../src/efrit-client';
 import { InstanceConfig, EFRIT_SCHEMA_VERSION } from '../src/types';
 import * as setup from './setup';
@@ -58,7 +59,7 @@ describe('EfritClient - Simple Tests', () => {
 
     // Wait for request file to be written
     const requestId = await setup.waitForRequestFile(queueStructure.requestsDir);
-    const content = await require('fs/promises').readFile(
+    const content = await fs.readFile(
       path.join(queueStructure.requestsDir, `req_${requestId}.json`),
       'utf-8'
     );
@@ -108,11 +109,11 @@ describe('EfritClient - Simple Tests', () => {
 
   test('should get queue statistics', async () => {
     // Create some mock files
-    await require('fs/promises').writeFile(
-      path.join(queueStructure.requestsDir, 'req_1.json'), 
+    await fs.writeFile(
+      path.join(queueStructure.requestsDir, 'req_1.json'),
       '{}'
     );
-    await require('fs/promises').writeFile(
+    await fs.writeFile(
       path.join(queueStructure.processingDir, 'req_2.json'),
       '{}'
     );

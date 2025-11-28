@@ -4,6 +4,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import { EfritClient } from '../src/efrit-client';
 import { InstanceConfig, EfritError, EFRIT_SCHEMA_VERSION } from '../src/types';
 import {
@@ -127,7 +128,7 @@ describe('EfritClient', () => {
       await new Promise(resolve => setTimeout(resolve, 100));
       
       // Check that request file was created
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
+      const files = await fs.readdir(queueStructure.requestsDir);
       const requestFiles = files.filter((f: string) => f.startsWith('req_') && f.endsWith('.json'));
       expect(requestFiles).toHaveLength(1);
       
@@ -173,12 +174,12 @@ describe('EfritClient', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
       
       // Check that no .tmp files are left behind
-      const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-      const tempFiles = files.filter((f: string) => f.endsWith('.tmp'));
+      const allFiles = await fs.readdir(queueStructure.requestsDir);
+      const tempFiles = allFiles.filter((f: string) => f.endsWith('.tmp'));
       expect(tempFiles).toHaveLength(0);
       
       // Complete the request
-      const requestFiles = files.filter((f: string) => f.startsWith('req_'));
+      const requestFiles = allFiles.filter((f: string) => f.startsWith('req_'));
       if (requestFiles.length > 0) {
         const requestId = requestFiles[0].replace('req_', '').replace('.json', '');
         await writeMockResponse(queueStructure.responsesDir, requestId, {
@@ -259,7 +260,7 @@ describe('EfritClient', () => {
       
       // Write malformed JSON
       const responseFile = path.join(queueStructure.responsesDir, `resp_${requestId}.json`);
-      await require('fs/promises').writeFile(responseFile, '{ invalid json');
+      await fs.writeFile(responseFile, '{ invalid json');
       
       await expect(responsePromise).rejects.toThrow('Invalid JSON in response file');
     });
@@ -285,15 +286,15 @@ describe('EfritClient', () => {
   describe('Queue statistics', () => {
     test('should return accurate queue statistics', async () => {
       // Create some mock files
-      await require('fs/promises').writeFile(
-        path.join(queueStructure.requestsDir, 'req_1.json'), 
+      await fs.writeFile(
+        path.join(queueStructure.requestsDir, 'req_1.json'),
         '{}'
       );
-      await require('fs/promises').writeFile(
+      await fs.writeFile(
         path.join(queueStructure.processingDir, 'req_2.json'),
         '{}'
       );
-      await require('fs/promises').writeFile(
+      await fs.writeFile(
         path.join(queueStructure.responsesDir, 'resp_3.json'),
         '{}'
       );
@@ -330,11 +331,11 @@ describe('EfritClient', () => {
     test('should archive old response files', async () => {
       // Create an old response file
       const oldFile = path.join(queueStructure.responsesDir, 'resp_old.json');
-      await require('fs/promises').writeFile(oldFile, '{}');
-      
+      await fs.writeFile(oldFile, '{}');
+
       // Modify file timestamp to be old
       const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25 hours ago
-      await require('fs/promises').utimes(oldFile, oldTime, oldTime);
+      await fs.utimes(oldFile, oldTime, oldTime);
       
       await client.cleanup(24); // Clean files older than 24 hours
       
