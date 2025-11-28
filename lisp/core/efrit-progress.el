@@ -119,6 +119,15 @@
 (defvar efrit-progress--tool-repeat-count 0
   "Count consecutive calls to the same tool.")
 
+(defvar efrit-progress--current-tool nil
+  "Currently executing tool name, or nil if no tool running.")
+
+(defvar efrit-progress--current-tool-start nil
+  "Start time of currently executing tool.")
+
+(defvar efrit-progress--tool-call-count 0
+  "Total number of tool calls in current session.")
+
 ;;; Progress File Management
 
 (defun efrit-progress--session-dir (session-id)
@@ -221,6 +230,9 @@ DATA is an alist of event-specific data."
   (setq efrit-progress--event-counter 0)
   (setq efrit-progress--last-tool nil)
   (setq efrit-progress--tool-repeat-count 0)
+  (setq efrit-progress--current-tool nil)
+  (setq efrit-progress--current-tool-start nil)
+  (setq efrit-progress--tool-call-count 0)
 
   ;; Setup progress file
   (efrit-progress--ensure-session-dir session-id)
@@ -288,6 +300,11 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
 
 (defun efrit-progress-show-tool-start (tool-name input)
   "Show the start of TOOL-NAME execution with INPUT."
+  ;; Track current tool and timing
+  (setq efrit-progress--current-tool tool-name)
+  (setq efrit-progress--current-tool-start (current-time))
+  (cl-incf efrit-progress--tool-call-count)
+
   ;; Loop detection
   (if (equal tool-name efrit-progress--last-tool)
       (cl-incf efrit-progress--tool-repeat-count)
@@ -345,22 +362,33 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
 (defun efrit-progress-show-tool-result (tool-name result success-p)
   "Show the RESULT of TOOL-NAME execution.
 SUCCESS-P indicates if the execution was successful."
-  ;; Emit tool-result event
-  (efrit-progress--emit-event 'tool-result
-                              `((tool . ,tool-name)
-                               (success . ,(if success-p t :json-false))
-                               (result . ,(efrit-progress--truncate
-                                          (format "%s" result) 500))))
+  ;; Calculate elapsed time for this tool
+  (let ((tool-elapsed (if efrit-progress--current-tool-start
+                          (float-time (time-subtract
+                                       (current-time)
+                                       efrit-progress--current-tool-start))
+                        0)))
+    ;; Clear current tool tracking
+    (setq efrit-progress--current-tool nil)
+    (setq efrit-progress--current-tool-start nil)
 
-  ;; Buffer display
-  (when (memq efrit-progress-verbosity '(normal verbose))
-    (efrit-progress--buffer-append
-     (format "◀ %s: %s" tool-name (if success-p "✓" "✗"))
-     (if success-p 'efrit-progress-success 'efrit-progress-error))
-    (when (or (not success-p) (eq efrit-progress-verbosity 'verbose))
+    ;; Emit tool-result event (with elapsed time)
+    (efrit-progress--emit-event 'tool-result
+                                `((tool . ,tool-name)
+                                  (success . ,(if success-p t :json-false))
+                                  (elapsed_ms . ,(round (* tool-elapsed 1000)))
+                                  (result . ,(efrit-progress--truncate
+                                              (format "%s" result) 500))))
+
+    ;; Buffer display
+    (when (memq efrit-progress-verbosity '(normal verbose))
       (efrit-progress--buffer-append
-       (format "  Result: %s" (efrit-progress--truncate
-                              (format "%S" result) 300))))))
+       (format "◀ %s: %s (%.2fs)" tool-name (if success-p "✓" "✗") tool-elapsed)
+       (if success-p 'efrit-progress-success 'efrit-progress-error))
+      (when (or (not success-p) (eq efrit-progress-verbosity 'verbose))
+        (efrit-progress--buffer-append
+         (format "  Result: %s" (efrit-progress--truncate
+                                (format "%S" result) 300)))))))
 
 ;;; Injection Support (for external process communication)
 ;;
@@ -521,11 +549,26 @@ PRIORITY is optional (0-3, only used for priority type)."
 
 ;;; Status Query
 
+(defun efrit-progress-current-tool ()
+  "Return the currently executing tool name, or nil."
+  efrit-progress--current-tool)
+
+(defun efrit-progress-current-tool-elapsed ()
+  "Return elapsed seconds for current tool, or nil if no tool running."
+  (when efrit-progress--current-tool-start
+    (float-time (time-subtract (current-time) efrit-progress--current-tool-start))))
+
+(defun efrit-progress-tool-call-count ()
+  "Return total number of tool calls in current session."
+  efrit-progress--tool-call-count)
+
 (defun efrit-progress-get-status ()
   "Return current progress status as an alist.
 Useful for external queries."
   `((session . ,efrit-progress--current-session)
     (progress-file . ,efrit-progress--current-file)
+    (current-tool . ,efrit-progress--current-tool)
+    (tool-call-count . ,efrit-progress--tool-call-count)
     (inject-dir . ,(when efrit-progress--current-session
                      (efrit-progress--inject-dir efrit-progress--current-session)))
     (pending-injections . ,(efrit-progress-inject-queue-count))

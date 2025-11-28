@@ -64,6 +64,75 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
                  (const :tag "Verbose" verbose))
   :group 'efrit-agent)
 
+(defcustom efrit-agent-display-style 'unicode
+  "Display style for the agent buffer.
+- unicode: Use Unicode box-drawing characters and symbols (requires font support)
+- ascii: Use plain ASCII characters for maximum terminal compatibility"
+  :type '(choice (const :tag "Unicode (modern)" unicode)
+                 (const :tag "ASCII (compatible)" ascii))
+  :group 'efrit-agent)
+
+;;; Display Style Character Tables
+
+(defconst efrit-agent--unicode-chars
+  '((box-top-left . "╭")
+    (box-top-right . "╮")
+    (box-bottom-left . "╰")
+    (box-bottom-right . "╯")
+    (box-horizontal . ?─)
+    (box-vertical . "│")
+    (section-line . ?━)
+    (status-idle . "○")
+    (status-working . "●")
+    (status-paused . "⏸")
+    (status-waiting . "⏳")
+    (status-complete . "✓")
+    (status-failed . "✗")
+    (task-complete . "✓")
+    (task-in-progress . "▶")
+    (task-pending . "○")
+    (expand-collapsed . "▶")
+    (expand-expanded . "▼")
+    (tool-running . "⟳")
+    (tool-success . "✓")
+    (tool-failure . "✗")
+    (message-icon . "💬")
+    (error-icon . "❌"))
+  "Unicode characters for display elements.")
+
+(defconst efrit-agent--ascii-chars
+  '((box-top-left . "+")
+    (box-top-right . "+")
+    (box-bottom-left . "+")
+    (box-bottom-right . "+")
+    (box-horizontal . ?-)
+    (box-vertical . "|")
+    (section-line . ?=)
+    (status-idle . "o")
+    (status-working . "*")
+    (status-paused . "||")
+    (status-waiting . "...")
+    (status-complete . "[x]")
+    (status-failed . "[!]")
+    (task-complete . "[x]")
+    (task-in-progress . "->")
+    (task-pending . "[ ]")
+    (expand-collapsed . ">")
+    (expand-expanded . "v")
+    (tool-running . "~")
+    (tool-success . "[x]")
+    (tool-failure . "[!]")
+    (message-icon . "[C]")
+    (error-icon . "[E]"))
+  "ASCII characters for display elements (terminal compatible).")
+
+(defun efrit-agent--char (name)
+  "Get the display character/string for NAME based on current style."
+  (let ((table (if (eq efrit-agent-display-style 'unicode)
+                   efrit-agent--unicode-chars
+                 efrit-agent--ascii-chars)))
+    (alist-get name table)))
+
 ;;; Faces
 
 (defface efrit-agent-header
@@ -318,12 +387,12 @@ If the session is waiting for user input, prompts for a response."
   "Show help for agent buffer key bindings."
   (interactive)
   (let ((help-text
-         "Efrit Agent Buffer Help
-═══════════════════════════════════════════
+         (format "Efrit Agent Buffer Help
+%s
 
 Navigation:
   TAB / S-TAB    Move between sections
-  RET            Expand/collapse item at point
+  RET            Expand/collapse tool call at point
 
 Actions:
   q              Quit buffer (session continues)
@@ -333,11 +402,29 @@ Actions:
   g              Refresh display
   v              Cycle verbosity (minimal/normal/verbose)
 
+Verbosity Levels:
+  minimal        Show 20 chars result, 3 lines when expanded
+  normal         Show 40 chars result, 10 lines when expanded
+  verbose        Show 80 chars result, 50 lines when expanded
+
+Expand/Collapse:
+  Tool calls show %s (collapsed) or %s (expanded)
+  Press RET on a tool call to toggle details
+  Expanded view shows input parameters and full result
+
+Display Style:
+  Current: %s
+  Set `efrit-agent-display-style' to 'ascii for terminal compatibility
+
 Input:
   C-c C-s        Send input to Claude
   C-c C-c        Cancel current operation
 
-Press q to close this help."))
+Press q to close this help."
+                 (make-string 43 ?=)
+                 (efrit-agent--char 'expand-collapsed)
+                 (efrit-agent--char 'expand-expanded)
+                 efrit-agent-display-style)))
     (with-help-window "*Efrit Agent Help*"
       (princ help-text))))
 
@@ -425,12 +512,18 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
 (defun efrit-agent--status-string ()
   "Return the status string with appropriate face."
   (pcase efrit-agent--status
-    ('idle (propertize "○ Idle" 'face 'efrit-agent-session-id))
-    ('working (propertize "● Working" 'face 'efrit-agent-status-working))
-    ('paused (propertize "⏸ Paused" 'face 'efrit-agent-status-paused))
-    ('waiting (propertize "⏳ Waiting" 'face 'efrit-agent-status-waiting))
-    ('complete (propertize "✓ Complete" 'face 'efrit-agent-status-complete))
-    ('failed (propertize "✗ Failed" 'face 'efrit-agent-status-failed))
+    ('idle (propertize (format "%s Idle" (efrit-agent--char 'status-idle))
+                       'face 'efrit-agent-session-id))
+    ('working (propertize (format "%s Working" (efrit-agent--char 'status-working))
+                          'face 'efrit-agent-status-working))
+    ('paused (propertize (format "%s Paused" (efrit-agent--char 'status-paused))
+                         'face 'efrit-agent-status-paused))
+    ('waiting (propertize (format "%s Waiting" (efrit-agent--char 'status-waiting))
+                          'face 'efrit-agent-status-waiting))
+    ('complete (propertize (format "%s Complete" (efrit-agent--char 'status-complete))
+                           'face 'efrit-agent-status-complete))
+    ('failed (propertize (format "%s Failed" (efrit-agent--char 'status-failed))
+                         'face 'efrit-agent-status-failed))
     (_ (format "? %s" efrit-agent--status))))
 
 (defun efrit-agent--make-button (label action &optional help-echo)
@@ -477,57 +570,70 @@ avoiding full buffer re-render which causes cursor flicker."
 
 (defun efrit-agent--render-header ()
   "Render the header section."
-  (insert (propertize "╭" 'face 'efrit-agent-header))
-  (insert (make-string 58 ?─))
-  (insert (propertize "╮\n" 'face 'efrit-agent-header))
+  (let ((h-char (efrit-agent--char 'box-horizontal))
+        (v-char (efrit-agent--char 'box-vertical)))
+    (insert (propertize (efrit-agent--char 'box-top-left) 'face 'efrit-agent-header))
+    (insert (make-string 58 h-char))
+    (insert (propertize (concat (efrit-agent--char 'box-top-right) "\n")
+                        'face 'efrit-agent-header))
 
-  ;; Session line
-  (insert (propertize "│" 'face 'efrit-agent-header))
-  (insert " ")
-  (insert (propertize "Efrit Agent" 'face 'efrit-agent-header))
-  (when efrit-agent--session-id
+    ;; Session line
+    (insert (propertize v-char 'face 'efrit-agent-header))
     (insert " ")
-    (insert (propertize (truncate-string-to-width efrit-agent--session-id 30)
-                        'face 'efrit-agent-session-id)))
-  (insert (make-string (max 1 (- 58 (current-column))) ? ))
-  (insert (propertize "│\n" 'face 'efrit-agent-header))
+    (insert (propertize "Efrit Agent" 'face 'efrit-agent-header))
+    (when efrit-agent--session-id
+      (insert " ")
+      (insert (propertize (truncate-string-to-width efrit-agent--session-id 30)
+                          'face 'efrit-agent-session-id)))
+    (insert (make-string (max 1 (- 58 (current-column))) ? ))
+    (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
 
-  ;; Command line
-  (insert (propertize "│" 'face 'efrit-agent-header))
-  (insert " Command: ")
-  (insert (propertize (or (truncate-string-to-width (or efrit-agent--command "") 45) "")
-                      'face 'efrit-agent-command))
-  (insert (make-string (max 1 (- 58 (current-column))) ? ))
-  (insert (propertize "│\n" 'face 'efrit-agent-header))
+    ;; Command line
+    (insert (propertize v-char 'face 'efrit-agent-header))
+    (insert " Command: ")
+    (insert (propertize (or (truncate-string-to-width (or efrit-agent--command "") 45) "")
+                        'face 'efrit-agent-command))
+    (insert (make-string (max 1 (- 58 (current-column))) ? ))
+    (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
 
-  ;; Status line with buttons
-  (insert (propertize "│" 'face 'efrit-agent-header))
-  (insert " Status: ")
-  (insert (efrit-agent--status-string))
-  ;; Mark elapsed time position for efficient partial updates
-  (let ((elapsed-start (point)))
-    (insert (format " (%s)" (efrit-agent--format-elapsed)))
-    (put-text-property elapsed-start (point) 'efrit-agent-elapsed t))
-  ;; Add action buttons for active sessions
-  (when (memq efrit-agent--status '(working paused waiting))
-    (insert "  ")
-    (if (eq efrit-agent--status 'paused)
-        (insert (efrit-agent--make-button "Resume" #'efrit-agent-resume "Resume the paused session"))
-      (insert (efrit-agent--make-button "Pause" #'efrit-agent-pause "Pause the session")))
-    (insert " ")
-    (insert (efrit-agent--make-button "Cancel" #'efrit-agent-cancel "Cancel the session")))
-  (insert (make-string (max 1 (- 58 (current-column))) ? ))
-  (insert (propertize "│\n" 'face 'efrit-agent-header))
+    ;; Status line with buttons
+    (insert (propertize v-char 'face 'efrit-agent-header))
+    (insert " Status: ")
+    (insert (efrit-agent--status-string))
+    ;; Mark elapsed time position for efficient partial updates
+    (let ((elapsed-start (point)))
+      (insert (format " (%s)" (efrit-agent--format-elapsed)))
+      (put-text-property elapsed-start (point) 'efrit-agent-elapsed t))
+    ;; Show tool call count
+    (let ((tool-count (length (cl-remove-if-not
+                               (lambda (a) (eq (plist-get a :type) 'tool))
+                               efrit-agent--activities))))
+      (when (> tool-count 0)
+        (insert (propertize (format " [%d tools]" tool-count)
+                            'face 'efrit-agent-session-id))))
+    ;; Add action buttons for active sessions
+    (when (memq efrit-agent--status '(working paused waiting))
+      (insert "  ")
+      (if (eq efrit-agent--status 'paused)
+          (insert (efrit-agent--make-button "Resume" #'efrit-agent-resume "Resume the paused session"))
+        (insert (efrit-agent--make-button "Pause" #'efrit-agent-pause "Pause the session")))
+      (insert " ")
+      (insert (efrit-agent--make-button "Cancel" #'efrit-agent-cancel "Cancel the session")))
+    (insert (make-string (max 1 (- 58 (current-column))) ? ))
+    (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
 
-  ;; Bottom border
-  (insert (propertize "╰" 'face 'efrit-agent-header))
-  (insert (make-string 58 ?─))
-  (insert (propertize "╯\n\n" 'face 'efrit-agent-header)))
+    ;; Bottom border
+    (insert (propertize (efrit-agent--char 'box-bottom-left) 'face 'efrit-agent-header))
+    (insert (make-string 58 h-char))
+    (insert (propertize (concat (efrit-agent--char 'box-bottom-right) "\n\n")
+                        'face 'efrit-agent-header))))
 
 (defun efrit-agent--render-tasks ()
   "Render the tasks section."
-  (let ((start (point)))
-    (insert (propertize "━━━ Tasks " 'face 'efrit-agent-section-header
+  (let ((start (point))
+        (s-char (efrit-agent--char 'section-line)))
+    (insert (propertize (format "%c%c%c Tasks " s-char s-char s-char)
+                        'face 'efrit-agent-section-header
                         'efrit-agent-section 'tasks))
     ;; Task count
     (when efrit-agent--todos
@@ -536,7 +642,7 @@ avoiding full buffer re-render which causes cursor flicker."
                                     efrit-agent--todos)))
         (insert (propertize (format "(%d/%d complete) " complete total)
                             'face 'efrit-agent-section-header))))
-    (insert (propertize (make-string (max 1 (- 60 (- (point) start))) ?━)
+    (insert (propertize (make-string (max 1 (- 60 (- (point) start))) s-char)
                         'face 'efrit-agent-section-header))
     (insert "\n")
 
@@ -547,10 +653,10 @@ avoiding full buffer re-render which causes cursor flicker."
             (let* ((status (plist-get todo :status))
                    (content (plist-get todo :content))
                    (indicator (pcase status
-                                ('completed "  ✓ ")
-                                ('in_progress "  ▶ ")
-                                ('pending "  ○ ")
-                                (_ "  ○ ")))
+                                ('completed (format "  %s " (efrit-agent--char 'task-complete)))
+                                ('in_progress (format "  %s " (efrit-agent--char 'task-in-progress)))
+                                ('pending (format "  %s " (efrit-agent--char 'task-pending)))
+                                (_ (format "  %s " (efrit-agent--char 'task-pending)))))
                    (face (pcase status
                            ('completed 'efrit-agent-task-complete)
                            ('in_progress 'efrit-agent-task-current)
@@ -558,17 +664,19 @@ avoiding full buffer re-render which causes cursor flicker."
               (insert (propertize indicator 'face face))
               (insert (propertize (or content "") 'face face))
               (when (eq status 'in_progress)
-                (insert (propertize " ← current" 'face 'efrit-agent-timestamp)))
+                (insert (propertize " <- current" 'face 'efrit-agent-timestamp)))
               (insert "\n"))))
       (insert (propertize "  No tasks yet\n" 'face 'efrit-agent-timestamp)))
     (insert "\n")))
 
 (defun efrit-agent--render-activity ()
   "Render the activity section."
-  (let ((start (point)))
-    (insert (propertize "━━━ Activity " 'face 'efrit-agent-section-header
+  (let ((start (point))
+        (s-char (efrit-agent--char 'section-line)))
+    (insert (propertize (format "%c%c%c Activity " s-char s-char s-char)
+                        'face 'efrit-agent-section-header
                         'efrit-agent-section 'activity))
-    (insert (propertize (make-string (max 1 (- 60 (- (point) start))) ?━)
+    (insert (propertize (make-string (max 1 (- 60 (- (point) start))) s-char)
                         'face 'efrit-agent-section-header))
     (insert "\n")
 
@@ -587,45 +695,132 @@ avoiding full buffer re-render which causes cursor flicker."
                        (format-time-string "[%M:%S]" timestamp)
                      "[--:--]"))
          (item-id (plist-get activity :id))
-         (success (plist-get activity :success)))
+         (success (plist-get activity :success))
+         (elapsed (plist-get activity :elapsed))
+         (expanded (and item-id (gethash item-id efrit-agent--expanded-items)))
+         (line-start (point)))
     (insert (propertize time-str 'face 'efrit-agent-timestamp))
     (insert " ")
     (pcase type
       ('tool
        (let ((tool-name (plist-get activity :tool))
-             (result (plist-get activity :result)))
+             (result (plist-get activity :result))
+             (input (plist-get activity :input)))
+         ;; Show expand/collapse indicator for tool calls with details
+         (when item-id
+           (insert (propertize (format "%s "
+                                       (if expanded
+                                           (efrit-agent--char 'expand-expanded)
+                                         (efrit-agent--char 'expand-collapsed)))
+                               'face 'efrit-agent-timestamp)))
          ;; Show success/failure indicator when result is available
          (if result
-             (insert (if success "✓ " "✗ "))
-           (insert "⟳ "))  ; Running indicator
+             (insert (format "%s " (if success
+                                       (efrit-agent--char 'tool-success)
+                                     (efrit-agent--char 'tool-failure))))
+           ;; Running tool - show elapsed time if available
+           (let ((running-elapsed (and timestamp
+                                       (float-time (time-subtract
+                                                    (current-time) timestamp)))))
+             (if (and running-elapsed (> running-elapsed 0.1))
+                 (insert (format "%s %.1fs "
+                                (efrit-agent--char 'tool-running)
+                                running-elapsed))
+               (insert (format "%s " (efrit-agent--char 'tool-running))))))
          (insert (propertize tool-name 'face 'efrit-agent-tool-name))
+         ;; Show elapsed time for completed tools
+         (when (and result elapsed)
+           (insert (propertize (format " (%.2fs)" elapsed)
+                               'face 'efrit-agent-timestamp)))
+         ;; Summary line based on verbosity (single line, no newlines)
          (when result
-           (insert " → ")
-           (let ((result-face (if success nil 'efrit-agent-error)))
-             (insert (propertize (truncate-string-to-width (format "%s" result) 40)
-                                 'face result-face))))))
+           (insert " -> ")
+           (let* ((result-face (if success nil 'efrit-agent-error))
+                  (max-len (pcase efrit-agent-verbosity
+                             ('minimal 20)
+                             ('normal 40)
+                             ('verbose 80)))
+                  ;; Flatten result to single line for summary
+                  (result-str (replace-regexp-in-string
+                               "[\n\r]+" " "
+                               (format "%s" result))))
+             (insert (propertize (truncate-string-to-width result-str max-len)
+                                 'face result-face))))
+         ;; Mark the line with item-id for toggle functionality
+         (when item-id
+           (put-text-property line-start (point) 'efrit-agent-item-id item-id))
+         (insert "\n")
+         ;; Render expanded details if expanded
+         (when (and expanded (or input result))
+           (efrit-agent--render-tool-details tool-name input result success))))
       ('message
-       (insert "💬 ")
+       (insert (format "%s " (efrit-agent--char 'message-icon)))
        (insert (propertize "Claude: " 'face 'efrit-agent-claude-message))
-       (insert (or (plist-get activity :text) "")))
+       (insert (or (plist-get activity :text) ""))
+       (insert "\n"))
       ('error
-       (insert "❌ ")
+       (insert (format "%s " (efrit-agent--char 'error-icon)))
        (insert (propertize "Error: " 'face 'efrit-agent-error))
-       (insert (propertize (or (plist-get activity :text) "") 'face 'efrit-agent-error))))
+       (insert (propertize (or (plist-get activity :text) "") 'face 'efrit-agent-error))
+       (insert "\n")))))
 
-    ;; Add expand/collapse indicator for tool calls
-    (when (and (eq type 'tool) item-id)
-      (put-text-property (line-beginning-position) (point) 'efrit-agent-item-id item-id))
-
+(defun efrit-agent--render-tool-details (_tool-name input result success)
+  "Render expanded details for a tool call.
+_TOOL-NAME is the tool (unused, shown in summary line), INPUT is the input
+parameters, RESULT is the output, SUCCESS indicates whether the tool succeeded."
+  (let ((indent "       "))  ; Align with content after timestamp and indicator
+    ;; Input section
+    (when input
+      (insert indent)
+      (insert (propertize "Input: " 'face 'efrit-agent-section-header))
+      (insert "\n")
+      (efrit-agent--render-indented-content input (concat indent "  ")))
+    ;; Result section
+    (when result
+      (insert indent)
+      (insert (propertize (if success "Result: " "Error: ")
+                          'face (if success 'efrit-agent-section-header 'efrit-agent-error)))
+      (insert "\n")
+      (efrit-agent--render-indented-content result (concat indent "  ")))
+    ;; Separator
+    (insert indent)
+    (insert (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
+                        'face 'efrit-agent-timestamp))
     (insert "\n")))
+
+(defun efrit-agent--render-indented-content (content indent)
+  "Render CONTENT with INDENT prefix on each line.
+CONTENT can be a string or a complex object (will be pretty-printed)."
+  (let* ((content-str (if (stringp content)
+                          content
+                        (pp-to-string content)))
+         ;; Limit displayed content based on verbosity
+         (max-lines (pcase efrit-agent-verbosity
+                      ('minimal 3)
+                      ('normal 10)
+                      ('verbose 50)))
+         (lines (split-string content-str "\n" t))
+         (truncated (> (length lines) max-lines))
+         (display-lines (seq-take lines max-lines)))
+    (dolist (line display-lines)
+      (insert indent)
+      (insert (propertize line 'face 'efrit-agent-session-id))
+      (insert "\n"))
+    (when truncated
+      (insert indent)
+      (insert (propertize (format "... (%d more lines)" (- (length lines) max-lines))
+                          'face 'efrit-agent-timestamp))
+      (insert "\n"))))
 
 (defun efrit-agent--render-input ()
   "Render the input section."
   (when (eq efrit-agent--status 'waiting)
-    (let ((start (point)))
-      (insert (propertize "━━━ Input " 'face 'efrit-agent-section-header
+    (let ((start (point))
+          (s-char (efrit-agent--char 'section-line)))
+      (insert (propertize (format "%c%c%c Input " s-char s-char s-char)
+                          'face 'efrit-agent-section-header
                           'efrit-agent-section 'input))
-      (insert (propertize (make-string (max 1 (- 60 (- (point) start))) ?━)
+      (insert (propertize (make-string (max 1 (- 60 (- (point) start))) s-char)
                           'face 'efrit-agent-section-header))
       (insert "\n")
       (insert "Type response (C-c C-s to send, C-c C-c to cancel):\n")
@@ -745,18 +940,19 @@ Call this after loading efrit-do to enable real-time TODO updates."
 (defvar efrit-agent--activity-counter 0
   "Counter for generating unique activity IDs.")
 
-(defun efrit-agent--on-tool-start (tool-name _input)
+(defun efrit-agent--on-tool-start (tool-name input)
   "Advice function called when a tool starts.
-TOOL-NAME is the name of the tool being called."
+TOOL-NAME is the name of the tool being called.
+INPUT is the tool's input parameters (preserved for expanded view)."
   (when (get-buffer efrit-agent-buffer-name)
     (efrit-agent-add-activity
      (list :id (format "tool-%d" (cl-incf efrit-agent--activity-counter))
            :type 'tool
            :tool tool-name
+           :input input
            :timestamp (current-time)
            :result nil
-           :success nil
-           :expanded nil))))
+           :success nil))))
 
 (defun efrit-agent--on-tool-result (tool-name result success-p)
   "Advice function called when a tool completes.
@@ -776,9 +972,15 @@ instance of TOOL-NAME, which correctly handles parallel tool calls."
                        (equal (plist-get activity :tool) tool-name)
                        (null (plist-get activity :result)))
               (setq found t)
-              (plist-put activity :result
-                         (truncate-string-to-width (format "%s" result) 100))
-              (plist-put activity :success success-p))))
+              ;; Calculate elapsed time from stored timestamp
+              (let* ((start-time (plist-get activity :timestamp))
+                     (elapsed (when start-time
+                                (float-time (time-subtract (current-time) start-time)))))
+                (plist-put activity :result
+                           (truncate-string-to-width (format "%s" result) 100))
+                (plist-put activity :success success-p)
+                (when elapsed
+                  (plist-put activity :elapsed elapsed))))))
         (efrit-agent--render)))))
 
 (defun efrit-agent--on-message (message &optional type)

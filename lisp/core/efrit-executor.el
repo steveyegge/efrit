@@ -73,9 +73,15 @@
   "Update mode line with MESSAGE."
   (when efrit-executor-show-progress
     (when-let* ((session (efrit-session-active)))
-      (let ((elapsed (float-time (time-since (efrit-session-start-time session)))))
+      (let* ((elapsed (float-time (time-since (efrit-session-start-time session))))
+             (tool-count (efrit-progress-tool-call-count))
+             (current-tool (efrit-progress-current-tool))
+             (tool-info (if current-tool
+                            (format " [%s]" current-tool)
+                          "")))
         (setq efrit-executor-mode-line-string
-              (format "[Efrit: %s (%.1fs)]" message elapsed))
+              (format "[Efrit: %s%s #%d (%.1fs)]"
+                      message tool-info tool-count elapsed))
         (force-mode-line-update t)))))
 
 (defun efrit-executor--clear-mode-line ()
