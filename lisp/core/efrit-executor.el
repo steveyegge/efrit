@@ -525,11 +525,15 @@ Claude remembers previous tool calls and their results."
       (efrit-do--get-current-tools-schema)
     efrit-do--tools-schema))
 
-(defun efrit-executor--build-system-prompt (&optional session-id work-log)
+(defun efrit-executor--build-system-prompt (&optional session-id work-log extra-context)
   "Build system prompt for command execution.
-If SESSION-ID is provided, include session protocol with WORK-LOG."
+If SESSION-ID is provided, include session protocol with WORK-LOG.
+EXTRA-CONTEXT is optional additional text appended to the prompt."
   (require 'efrit-do)
-  (efrit-do--command-system-prompt nil nil nil session-id work-log))
+  (let ((base-prompt (efrit-do--command-system-prompt nil nil nil session-id work-log)))
+    (if extra-context
+        (concat base-prompt extra-context)
+      base-prompt)))
 
 ;;; Main Execution API
 
@@ -537,17 +541,42 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
 (defun efrit-execute (command)
   "Execute natural language COMMAND synchronously.
 This is a blocking call that waits for Claude's complete response,
-including multi-turn tool use conversations."
+including multi-turn tool use conversations.
+
+If `efrit-do--resume-messages' is set, resumes from that conversation
+history instead of starting fresh."
   (interactive (list (read-string "Efrit command: " nil 'efrit-do-history)))
 
-  (let* ((session-id (format "sync-%s" (format-time-string "%Y%m%d%H%M%S")))
+  ;; Check for resume state
+  (let* ((resuming (and (boundp 'efrit-do--resume-messages)
+                        efrit-do--resume-messages))
+         (resume-messages (when resuming
+                           (prog1 efrit-do--resume-messages
+                             (setq efrit-do--resume-messages nil))))
+         (session-id (format "%s-%s"
+                            (if resuming "resume" "sync")
+                            (format-time-string "%Y%m%d%H%M%S")))
          (session (efrit-session-create session-id command))
-         (system-prompt (efrit-executor--build-system-prompt session-id "[]"))
-         (messages (vector `(("role" . "user") ("content" . ,command))))
+         (system-prompt (efrit-executor--build-system-prompt
+                        session-id "[]"
+                        (when resuming
+                          "\n\nNOTE: This is a RESUMED session. The conversation history above contains prior context. Continue naturally from where we left off.")))
+         ;; Build messages: either fresh start or resume with prior history
+         (messages (if resuming
+                      ;; Resume: prior messages + new user message
+                      (vconcat (apply #'vector resume-messages)
+                              (vector `(("role" . "user")
+                                       ("content" . ,command))))
+                    ;; Fresh: just the command
+                    (vector `(("role" . "user") ("content" . ,command)))))
          (final-result nil)
          (accumulated-results "")  ; Accumulate results across all turns
          (continuation-count 0)
          (done nil))
+
+    (when resuming
+      (efrit-log 'info "Resuming session with %d prior messages"
+                (length resume-messages)))
 
     (efrit-session-set-active session)
     (efrit-log 'info "Executing synchronously: %s" command)
