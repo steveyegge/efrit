@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steven Yegge
 
 ;; Author: Steven Yegge
-;; Version: 0.1.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "28.1"))
 
 ;; This file is not part of GNU Emacs.
