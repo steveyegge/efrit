@@ -281,6 +281,189 @@ Format: (question options timestamp) or nil.")
 (defvar-local efrit-agent--input-text ""
   "Current text in the input area.")
 
+;;; Region Markers (Conversation-first architecture)
+;;
+;; The buffer is divided into two regions:
+;; 1. Conversation region: read-only, contains all messages and tool calls
+;; 2. Input region: editable, where user types their input
+;;
+;; Layout:
+;;   (point-min)
+;;   [Conversation content - read-only]
+;;   efrit-agent--conversation-end (marker)
+;;   [Separator line]
+;;   efrit-agent--input-start (marker)
+;;   [Input area - editable]
+;;   (point-max)
+
+(defvar-local efrit-agent--conversation-end nil
+  "Marker at the end of the conversation region.
+All new conversation content is inserted before this marker.")
+
+(defvar-local efrit-agent--input-start nil
+  "Marker at the start of the input region.
+Text after this marker is editable by the user.")
+
+(defun efrit-agent--init-regions ()
+  "Initialize the conversation and input region markers.
+Call this when setting up a new agent buffer."
+  ;; Create markers if they don't exist
+  ;; conversation-end: insertion-type t means marker stays AFTER inserted text
+  ;; So when we insert before this marker, the marker moves forward to stay at the end.
+  (unless efrit-agent--conversation-end
+    (setq efrit-agent--conversation-end (make-marker))
+    (set-marker-insertion-type efrit-agent--conversation-end t))
+  ;; input-start: insertion-type nil means marker stays BEFORE inserted text
+  ;; So when user types at point-max (after the marker), marker stays put.
+  (unless efrit-agent--input-start
+    (setq efrit-agent--input-start (make-marker))
+    (set-marker-insertion-type efrit-agent--input-start nil)))
+
+(defun efrit-agent--setup-regions ()
+  "Set up the initial buffer layout with conversation and input regions.
+Should be called after `efrit-agent--init-regions' when the buffer is empty."
+  (let ((inhibit-read-only t)
+        conversation-end-pos
+        input-start-pos)
+    (erase-buffer)
+    ;; Insert initial conversation area (empty for now)
+    (insert "\n")
+    ;; Remember where conversation ends (before separator)
+    (setq conversation-end-pos (point))
+    ;; Insert separator between conversation and input
+    (insert (propertize (concat (make-string 60 ?─) "\n")
+                        'efrit-agent-separator t
+                        'read-only t
+                        'rear-nonsticky t))
+    ;; Insert input prompt (read-only)
+    (insert (propertize "> " 'efrit-agent-prompt t 'read-only t 'rear-nonsticky t))
+    ;; Mark start of user input (AFTER the prompt)
+    (setq input-start-pos (point))
+    ;; Set markers at the saved positions (after all inserts to avoid insertion-type issues)
+    (set-marker efrit-agent--conversation-end conversation-end-pos)
+    (set-marker efrit-agent--input-start input-start-pos)
+    ;; Make conversation region read-only
+    (add-text-properties (point-min) efrit-agent--conversation-end
+                         '(read-only t))))
+
+(defun efrit-agent--append-to-conversation (text &optional properties)
+  "Append TEXT with optional PROPERTIES to the conversation region.
+Inserts just before the conversation-end marker, preserving read-only."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char efrit-agent--conversation-end)
+      (let ((start (point)))
+        (insert text)
+        ;; Apply any additional properties
+        (when properties
+          (add-text-properties start (point) properties))
+        ;; Make the new text read-only
+        (add-text-properties start (point) '(read-only t))))))
+
+(defun efrit-agent--get-input ()
+  "Get the current user input from the input region.
+Returns the text after the input-start marker (which is positioned after the prompt)."
+  (when (and efrit-agent--input-start
+             (marker-position efrit-agent--input-start))
+    (string-trim-right
+     (buffer-substring-no-properties efrit-agent--input-start (point-max)))))
+
+(defun efrit-agent--clear-input ()
+  "Clear the input region, leaving just the prompt.
+The prompt is before input-start marker, so we just delete from input-start to end."
+  (when (and efrit-agent--input-start
+             (marker-position efrit-agent--input-start))
+    (let ((inhibit-read-only t))
+      (delete-region efrit-agent--input-start (point-max)))))
+
+(defun efrit-agent--in-input-region-p ()
+  "Return non-nil if point is in the input region."
+  (and efrit-agent--input-start
+       (>= (point) efrit-agent--input-start)))
+
+;;; Input Minor Mode
+;;
+;; A minor mode that activates when point is in the input region.
+;; Provides a separate keymap for editing input (RET sends, etc.)
+
+(defvar efrit-agent-input-mode-map
+  (let ((map (make-sparse-keymap)))
+    ;; Sending input
+    (define-key map (kbd "RET") #'efrit-agent-input-send-or-newline)
+    (define-key map (kbd "S-<return>") #'newline)
+    (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
+    (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
+    (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
+    ;; History navigation (placeholder for future)
+    (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
+    (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
+    map)
+  "Keymap for `efrit-agent-input-mode'.")
+
+(define-minor-mode efrit-agent-input-mode
+  "Minor mode for editing input in the efrit-agent buffer.
+Activates when point is in the input region, providing a separate
+keymap for input editing.
+
+\\{efrit-agent-input-mode-map}"
+  :lighter " Input"
+  :keymap efrit-agent-input-mode-map)
+
+(defun efrit-agent-input-send-or-newline ()
+  "Send input if on a single line, otherwise insert newline.
+Use S-RET to always insert a newline."
+  (interactive)
+  (let ((input (efrit-agent--get-input)))
+    (if (and input (not (string-match-p "\n" input)))
+        ;; Single line - send it
+        (efrit-agent-input-send)
+      ;; Multi-line or empty - insert newline
+      (newline))))
+
+(defun efrit-agent-input-send ()
+  "Send the current input."
+  (interactive)
+  (let ((input (efrit-agent--get-input)))
+    (if (or (null input) (string-empty-p (string-trim input)))
+        (message "Nothing to send")
+      ;; Add user message to conversation
+      (efrit-agent--append-to-conversation
+       (concat (propertize "> " 'face 'efrit-agent-input-prompt)
+               input
+               "\n\n"))
+      ;; Clear the input
+      (efrit-agent--clear-input)
+      ;; Move point to input area
+      (goto-char efrit-agent--input-start)
+      ;; TODO: Actually send to the executor when wired up
+      (message "Input sent: %s" (truncate-string-to-width input 50)))))
+
+(defun efrit-agent-input-clear ()
+  "Clear the current input."
+  (interactive)
+  (efrit-agent--clear-input)
+  (goto-char efrit-agent--input-start)
+  (message "Input cleared"))
+
+(defun efrit-agent-input-history-prev ()
+  "Navigate to previous input in history."
+  (interactive)
+  (message "Input history not yet implemented"))
+
+(defun efrit-agent-input-history-next ()
+  "Navigate to next input in history."
+  (interactive)
+  (message "Input history not yet implemented"))
+
+(defun efrit-agent--maybe-enable-input-mode ()
+  "Enable or disable input mode based on point position.
+Called from `post-command-hook'."
+  (if (efrit-agent--in-input-region-p)
+      (unless efrit-agent-input-mode
+        (efrit-agent-input-mode 1))
+    (when efrit-agent-input-mode
+      (efrit-agent-input-mode -1))))
+
 ;;; Keymap
 
 (defvar efrit-agent-mode-map
@@ -317,8 +500,12 @@ Format: (question options timestamp) or nil.")
 (define-derived-mode efrit-agent-mode special-mode "Efrit-Agent"
   "Major mode for Efrit agentic session display.
 
-This buffer provides a structured view of an Efrit agent session,
-showing task progress, activity log, and allowing user interaction.
+This buffer provides a conversation-first view of an Efrit agent session.
+The buffer is divided into:
+- Conversation region (read-only): messages and tool calls
+- Input region (editable): where you type responses
+
+Status is shown in the header-line at top of window.
 
 \\{efrit-agent-mode-map}"
   :group 'efrit-agent
@@ -330,6 +517,12 @@ showing task progress, activity log, and allowing user interaction.
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
+  ;; Initialize region markers
+  (efrit-agent--init-regions)
+  ;; Set up header-line for status display
+  (efrit-agent--setup-header-line)
+  ;; Enable input mode when point moves to input region
+  (add-hook 'post-command-hook #'efrit-agent--maybe-enable-input-mode nil t)
   ;; Clean up timer when buffer is killed (fixes memory leak)
   (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
 
@@ -552,13 +745,18 @@ even when not waiting for explicit input."
       (setq efrit-agent--start-time (current-time))
       (setq efrit-agent--todos nil)
       (setq efrit-agent--activities nil)
+      ;; Set up conversation/input regions
+      (efrit-agent--setup-regions)
       ;; Start elapsed time timer
       (when efrit-agent--elapsed-timer
         (cancel-timer efrit-agent--elapsed-timer))
       (setq efrit-agent--elapsed-timer
             (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
-      ;; Initial render
-      (efrit-agent--render))
+      ;; Add initial user message to conversation
+      (efrit-agent--append-to-conversation
+       (concat (propertize "> " 'face 'efrit-agent-input-prompt)
+               (propertize command 'face 'efrit-agent-command)
+               "\n\n")))
     buffer))
 
 (defun efrit-agent--show-buffer ()
@@ -577,12 +775,13 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
     (setq efrit-agent--elapsed-timer nil)))
 
 (defun efrit-agent--update-elapsed (buffer)
-  "Update the elapsed time display in BUFFER."
+  "Update the elapsed time display in BUFFER.
+Forces a redisplay of the header-line which contains the elapsed time."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (memq efrit-agent--status '(working paused waiting))
-        ;; Only re-render the header section for efficiency
-        (efrit-agent--render-header-only)))))
+        ;; Force header-line redisplay (it uses :eval so this triggers update)
+        (force-mode-line-update)))))
 
 ;;; Rendering
 
@@ -625,6 +824,39 @@ HELP-ECHO is the tooltip text shown on hover."
                 'mouse-face 'efrit-agent-button-hover
                 'keymap map
                 'help-echo (or help-echo (format "Click to %s" (downcase label))))))
+
+;;; Header Line (status bar at top of window)
+
+(defun efrit-agent--format-header-line ()
+  "Format the header-line for display.
+Shows: status │ elapsed │ tool count │ hints"
+  (let* ((status-str (efrit-agent--status-string))
+         (elapsed (efrit-agent--format-elapsed))
+         (tool-count (length (cl-remove-if-not
+                              (lambda (a) (eq (plist-get a :type) 'tool))
+                              efrit-agent--activities)))
+         (sep (propertize " │ " 'face 'efrit-agent-session-id)))
+    (concat
+     " "
+     status-str
+     sep
+     (propertize elapsed 'face 'efrit-agent-timestamp)
+     (when (> tool-count 0)
+       (concat sep (propertize (format "%d tools" tool-count)
+                               'face 'efrit-agent-session-id)))
+     ;; Show action hints based on status
+     (pcase efrit-agent--status
+       ('waiting
+        (concat sep (propertize "Type response, C-c C-s to send"
+                                'face 'efrit-agent-timestamp)))
+       ('working
+        (concat sep (propertize "k:cancel  ?:help"
+                                'face 'efrit-agent-timestamp)))
+       (_ "")))))
+
+(defun efrit-agent--setup-header-line ()
+  "Set up the header-line for the agent buffer."
+  (setq header-line-format '(:eval (efrit-agent--format-header-line))))
 
 (defun efrit-agent--render ()
   "Render the entire buffer."
