@@ -30,6 +30,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'efrit-common)
 (require 'efrit-log)
 (require 'efrit-config)
 
@@ -216,10 +217,10 @@ DATA is an alist of event-specific data."
             (set-window-point window (point))))))))
 
 (defun efrit-progress--truncate (str max-len)
-  "Truncate STR to MAX-LEN characters with ellipsis."
-  (if (and str (> (length str) max-len))
-      (concat (substring str 0 (- max-len 3)) "...")
-    str))
+  "Truncate STR to MAX-LEN characters with ellipsis.
+Uses `efrit-common-truncate-string' with ellipsis counted in max length."
+  (when str
+    (efrit-common-truncate-string str max-len t)))
 
 ;;; Public API - Called from efrit-executor.el
 

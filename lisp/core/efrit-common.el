@@ -211,10 +211,13 @@ Handles both static strings and dynamic functions."
 
 ;;; Utilities
 
-(defun efrit-common-truncate-string (str max-length)
-  "Truncate STR to MAX-LENGTH characters with ellipsis if needed."
+(defun efrit-common-truncate-string (str max-length &optional ellipsis-in-max)
+  "Truncate STR to MAX-LENGTH characters with ellipsis if needed.
+When ELLIPSIS-IN-MAX is non-nil, the returned string including
+ellipsis will be at most MAX-LENGTH characters."
   (if (> (length str) max-length)
-      (concat (substring str 0 max-length) "...")
+      (let ((cut-at (if ellipsis-in-max (- max-length 3) max-length)))
+        (concat (substring str 0 (max 0 cut-at)) "..."))
     str))
 
 (defun efrit-common-escape-json-unicode (json-string)

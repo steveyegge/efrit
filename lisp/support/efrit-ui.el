@@ -1346,10 +1346,9 @@ Longer descriptions will be truncated with ellipsis."
   "Cache of current in-progress task for mode line display.")
 
 (defun efrit-modeline--truncate (text max-length)
-  "Truncate TEXT to MAX-LENGTH characters, adding ellipsis if needed."
-  (if (> (length text) max-length)
-      (concat (substring text 0 (- max-length 3)) "...")
-    text))
+  "Truncate TEXT to MAX-LENGTH characters, adding ellipsis if needed.
+Uses `efrit-common-truncate-string' with ellipsis counted in max length."
+  (efrit-common-truncate-string text max-length t))
 
 (defun efrit-modeline--get-current-task ()
   "Get the current in-progress task content, or nil if none."
