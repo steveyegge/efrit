@@ -36,6 +36,11 @@
 (require 'efrit-config)
 (require 'efrit-chat)
 
+;; Declare coverage functions (loaded on demand)
+(declare-function efrit-coverage-simple-start "efrit-coverage")
+(declare-function efrit-coverage-simple-stop "efrit-coverage")
+(declare-function efrit-coverage-simple-report "efrit-coverage")
+
 ;;; Customization
 
 (defgroup efrit-test-runner nil
@@ -60,6 +65,12 @@
 
 (defcustom efrit-test-verbose t
   "Whether to show verbose output during test execution."
+  :type 'boolean
+  :group 'efrit-test-runner)
+
+(defcustom efrit-test-enable-coverage nil
+  "Whether to enable coverage tracking during test runs.
+When non-nil, uses simple function-level coverage tracking."
   :type 'boolean
   :group 'efrit-test-runner)
 
@@ -424,7 +435,10 @@ Returns t if response completed, nil if timeout."
 
 (defun efrit-test-run-suite (specs &optional output-file)
   "Run a suite of test SPECS, optionally writing results to OUTPUT-FILE.
-Returns a list of test results."
+Returns a list of test results.
+
+If `efrit-test-enable-coverage' is non-nil, coverage tracking is enabled
+and a coverage report is generated at the end of the test run."
   (let* ((results '())
          (output-file (or output-file
                          (expand-file-name
@@ -437,10 +451,17 @@ Returns a list of test results."
          (errors 0)
          (timeouts 0))
 
+    ;; Start coverage if enabled
+    (when efrit-test-enable-coverage
+      (require 'efrit-coverage)
+      (efrit-coverage-simple-start))
+
     (message "")
     (message "========================================")
     (message "EFRIT TEST SUITE")
     (message "Running %d tests" total)
+    (when efrit-test-enable-coverage
+      (message "Coverage: ENABLED"))
     (message "Results: %s" output-file)
     (message "========================================")
     (message "")
@@ -482,6 +503,11 @@ Returns a list of test results."
     (message "")
     (message "Results written to: %s" output-file)
     (message "========================================")
+
+    ;; Generate coverage report if enabled
+    (when efrit-test-enable-coverage
+      (efrit-coverage-simple-report)
+      (efrit-coverage-simple-stop))
 
     (nreverse results)))
 

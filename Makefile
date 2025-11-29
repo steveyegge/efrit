@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check
 
 # Default target
 all: compile
@@ -49,6 +49,11 @@ help:
 	@echo "  mcp-test    - Run MCP server tests"
 	@echo "  mcp-start   - Start MCP server"
 	@echo "  mcp-clean   - Clean MCP server artifacts"
+	@echo ""
+	@echo "Coverage:"
+	@echo "  coverage    - Run tests with coverage tracking"
+	@echo "  coverage-simple - Run simple function-level coverage"
+	@echo "  coverage-report - Generate coverage report (requires prior run)"
 	@echo ""
 	@echo "Development:"
 	@echo "  lint        - Check code style and conventions"
@@ -196,6 +201,46 @@ debug:
 		--eval "(setq byte-compile-debug t)" \
 		--eval "(setq byte-compile-verbose t)" \
 		-f batch-byte-compile $(EL_FILES)
+
+# Coverage targets
+coverage: compile
+	@echo "Running tests with coverage tracking..."
+	@echo "⚠️  WARNING: This BURNS TOKENS!"
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
+		--eval "(require 'efrit-coverage)" \
+		--eval "(require 'efrit-test-runner)" \
+		--eval "(efrit-coverage-start)" \
+		--eval "(efrit-test-register-tier1-samples)" \
+		--eval "(efrit-test-run-tier 1)" \
+		--eval "(efrit-coverage-stop)" \
+		--eval "(efrit-coverage-report)" \
+		--eval "(efrit-coverage-report-lcov)" \
+		--eval "(efrit-coverage-report-json)"
+	@echo "✅ Coverage report generated in ~/.emacs.d/.efrit/coverage/"
+
+coverage-simple: compile
+	@echo "Running simple function-level coverage..."
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
+		--eval "(require 'efrit)" \
+		--eval "(require 'efrit-do)" \
+		--eval "(require 'efrit-chat)" \
+		--eval "(require 'efrit-coverage)" \
+		--eval "(efrit-coverage-simple-start)" \
+		--eval "(efrit-config-data-file \"test\")" \
+		--eval "(efrit-coverage-simple-report)" \
+		--eval "(efrit-coverage-simple-stop)"
+
+coverage-report: compile
+	@echo "Generating coverage report from existing data..."
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
+		--eval "(require 'efrit-coverage)" \
+		--eval "(efrit-coverage-report)"
+
+coverage-check: compile
+	@echo "Checking coverage threshold..."
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
+		--eval "(require 'efrit-coverage)" \
+		--eval "(efrit-coverage-check-threshold $(or $(THRESHOLD),0))"
 
 # MCP Server targets
 mcp-install:
