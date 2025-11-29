@@ -161,10 +161,7 @@ truncated to keep this many recent results."
                  (const :tag "AI-Efrit" "ai-efrit"))
   :group 'efrit-do)
 
-(defcustom efrit-max-tokens 8192
-  "Maximum number of tokens in the response for efrit-do."
-  :type 'integer
-  :group 'efrit-do)
+;; efrit-max-tokens is now aliased in efrit-config.el
 
 ;; Use centralized API URL - legacy variable kept for compatibility
 (defcustom efrit-api-url nil

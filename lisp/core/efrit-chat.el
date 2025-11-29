@@ -48,13 +48,7 @@
 ;; Use centralized model configuration
 (require 'efrit-config)
 (defvaralias 'efrit-model 'efrit-default-model)
-
-(defcustom efrit-max-tokens 8192
-  "Maximum number of tokens in the response.
-Claude 3.5 Sonnet supports up to 8192 tokens with beta headers,
-or 4096 without. This setting uses the higher limit."
-  :type 'integer
-  :group 'efrit)
+;; efrit-max-tokens is now aliased in efrit-config.el
 
 (defcustom efrit-temperature 0.1
   "Temperature setting for response generation (0.0-1.0)."
