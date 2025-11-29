@@ -3,7 +3,7 @@
 **Issue**: ef-w3s
 **Author**: Claude
 **Date**: 2025-11-25
-**Status**: Draft
+**Status**: Implemented (see lisp/core/efrit-budget.el)
 
 ## Problem Statement
 
