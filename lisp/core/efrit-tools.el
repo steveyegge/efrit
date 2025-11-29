@@ -804,7 +804,7 @@ MODE can be a symbol like \\='markdown-mode, \\='org-mode, \\='text-mode, etc."
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert content)
-        (when mode
+        (when (and mode (fboundp mode))
           (funcall mode))
         (goto-char (point-min))
         (setq buffer-read-only t)))
