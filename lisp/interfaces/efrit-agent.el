@@ -291,6 +291,11 @@ Format: (question options timestamp) or nil.")
 (defvar-local efrit-agent--input-text ""
   "Current text in the input area.")
 
+(defvar-local efrit-agent--pending-tools nil
+  "Hash table mapping tool-name to list of pending tool-ids.
+Each tool-name maps to a list of (tool-id . start-time) for in-flight calls.
+Uses a list per tool-name to handle parallel calls to the same tool.")
+
 ;;; Region Markers (Conversation-first architecture)
 ;;
 ;; The buffer is divided into two regions:
@@ -459,8 +464,247 @@ Returns the tool ID for later update with result."
            'efrit-id tool-id
            'efrit-tool-name tool-name
            'efrit-tool-input input
-           'efrit-tool-running t))
+           'efrit-tool-running t
+           'efrit-tool-start-time (current-time)))
     tool-id))
+
+(defun efrit-agent--find-tool-region (tool-id)
+  "Find the buffer region for tool call with TOOL-ID.
+Returns (START . END) or nil if not found."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((start nil)
+          (end nil))
+      ;; Search for the tool-id in text properties
+      (while (and (not start) (< (point) (point-max)))
+        (let ((id (get-text-property (point) 'efrit-id)))
+          (if (equal id tool-id)
+              (setq start (point))
+            (goto-char (or (next-single-property-change (point) 'efrit-id)
+                           (point-max))))))
+      (when start
+        ;; Find where this tool's properties end
+        (setq end (or (next-single-property-change start 'efrit-id)
+                      (point-max)))
+        (cons start end)))))
+
+(defun efrit-agent--update-tool-result (tool-id result success-p &optional elapsed)
+  "Update tool call TOOL-ID with RESULT, SUCCESS-P status, and optional ELAPSED time.
+Finds the tool in the conversation and updates it in-place without full re-render."
+  (let ((region (efrit-agent--find-tool-region tool-id)))
+    (when region
+      (let* ((inhibit-read-only t)
+             (start (car region))
+             (end (cdr region))
+             ;; Get stored properties from the tool call
+             (tool-name (get-text-property start 'efrit-tool-name))
+             (tool-input (get-text-property start 'efrit-tool-input))
+             (start-time (get-text-property start 'efrit-tool-start-time))
+             ;; Calculate elapsed if not provided
+             (elapsed-time (or elapsed
+                               (when start-time
+                                 (float-time (time-subtract (current-time) start-time)))))
+             ;; Format indicators - collapsed by default
+             (expand-char (efrit-agent--char 'expand-collapsed))
+             (status-char (if success-p
+                              (efrit-agent--char 'tool-success)
+                            (efrit-agent--char 'tool-failure)))
+             (status-face (if success-p nil 'efrit-agent-error))
+             ;; Build the updated tool line (collapsed view)
+             (result-summary (truncate-string-to-width
+                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
+                              (pcase efrit-agent-verbosity
+                                ('minimal 20)
+                                ('normal 40)
+                                ('verbose 80))))
+             (new-text
+              (concat
+               "  "
+               (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
+               (propertize (format "%s " status-char)
+                           'face (if success-p 'efrit-agent-timestamp 'efrit-agent-error))
+               (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
+               (when elapsed-time
+                 (propertize (format " (%.2fs)" elapsed-time) 'face 'efrit-agent-timestamp))
+               " -> "
+               (propertize result-summary 'face status-face)
+               "\n")))
+        ;; Replace the tool call region with updated content
+        (save-excursion
+          (goto-char start)
+          (delete-region start end)
+          (insert new-text)
+          ;; Re-apply properties for future reference (collapsed state)
+          (add-text-properties start (point)
+                               (list 'efrit-type 'tool-call
+                                     'efrit-id tool-id
+                                     'efrit-tool-name tool-name
+                                     'efrit-tool-input tool-input
+                                     'efrit-tool-result result
+                                     'efrit-tool-success success-p
+                                     'efrit-tool-elapsed elapsed-time
+                                     'efrit-tool-running nil
+                                     'efrit-tool-expanded nil
+                                     'read-only t)))))))
+
+;;; Tool Call Expansion (collapsed/expanded toggle)
+
+(defun efrit-agent--format-tool-expansion (tool-input result success-p)
+  "Format the expansion content for a tool call.
+TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates status."
+  (let ((indent "       ")
+        (max-lines (pcase efrit-agent-verbosity
+                     ('minimal 3)
+                     ('normal 10)
+                     ('verbose 50))))
+    (concat
+     ;; Input section
+     (when tool-input
+       (concat
+        indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
+        (efrit-agent--format-indented-lines
+         (pp-to-string tool-input) indent max-lines)))
+     ;; Result section
+     (when result
+       (concat
+        indent (propertize (if success-p "Result: " "Error: ")
+                           'face (if success-p 'efrit-agent-section-header 'efrit-agent-error))
+        "\n"
+        (efrit-agent--format-indented-lines
+         (format "%s" result) indent max-lines)))
+     ;; Separator
+     indent (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
+                        'face 'efrit-agent-timestamp) "\n")))
+
+(defun efrit-agent--format-indented-lines (text indent max-lines)
+  "Format TEXT with INDENT prefix, limiting to MAX-LINES."
+  (let* ((lines (split-string text "\n" t))
+         (truncated (> (length lines) max-lines))
+         (display-lines (seq-take lines max-lines))
+         (result ""))
+    (dolist (line display-lines)
+      (setq result (concat result indent "  "
+                           (propertize line 'face 'efrit-agent-session-id) "\n")))
+    (when truncated
+      (setq result (concat result indent "  "
+                           (propertize (format "... (%d more lines)"
+                                               (- (length lines) max-lines))
+                                       'face 'efrit-agent-timestamp) "\n")))
+    result))
+
+(defun efrit-agent--toggle-tool-expansion ()
+  "Toggle expansion of the tool call at point.
+Returns t if toggled, nil if no tool at point."
+  (let* ((tool-id (get-text-property (point) 'efrit-id))
+         (tool-type (get-text-property (point) 'efrit-type)))
+    (when (and tool-id (eq tool-type 'tool-call))
+      (let* ((region (efrit-agent--find-tool-region tool-id))
+             (start (car region))
+             (end (cdr region))
+             (expanded (get-text-property start 'efrit-tool-expanded))
+             (tool-name (get-text-property start 'efrit-tool-name))
+             (tool-input (get-text-property start 'efrit-tool-input))
+             (tool-result (get-text-property start 'efrit-tool-result))
+             (tool-success (get-text-property start 'efrit-tool-success))
+             (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
+             (tool-running (get-text-property start 'efrit-tool-running))
+             (inhibit-read-only t))
+        (if expanded
+            ;; Collapse: remove expansion, update indicator
+            (efrit-agent--collapse-tool tool-id start end tool-name tool-result
+                                        tool-success tool-elapsed tool-running tool-input)
+          ;; Expand: add expansion content, update indicator
+          (efrit-agent--expand-tool tool-id start end tool-name tool-result
+                                    tool-success tool-elapsed tool-running tool-input))
+        t))))
+
+(defun efrit-agent--collapse-tool (tool-id start end tool-name result success-p elapsed running input)
+  "Collapse tool TOOL-ID, removing expansion content."
+  (save-excursion
+    (goto-char start)
+    (delete-region start end)
+    ;; Re-render as collapsed
+    (let* ((expand-char (efrit-agent--char 'expand-collapsed))
+           (status-char (cond (running (efrit-agent--char 'tool-running))
+                              (success-p (efrit-agent--char 'tool-success))
+                              (t (efrit-agent--char 'tool-failure))))
+           (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
+           (result-summary (when result
+                             (truncate-string-to-width
+                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
+                              (pcase efrit-agent-verbosity
+                                ('minimal 20) ('normal 40) ('verbose 80)))))
+           (new-text
+            (concat
+             "  "
+             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
+             (propertize (format "%s " status-char)
+                         'face (or status-face 'efrit-agent-timestamp))
+             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
+             (when elapsed
+               (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp))
+             (if result
+                 (concat " -> " (propertize result-summary 'face status-face))
+               (propertize "..." 'face 'efrit-agent-timestamp))
+             "\n")))
+      (insert new-text)
+      (add-text-properties start (point)
+                           (list 'efrit-type 'tool-call
+                                 'efrit-id tool-id
+                                 'efrit-tool-name tool-name
+                                 'efrit-tool-input input
+                                 'efrit-tool-result result
+                                 'efrit-tool-success success-p
+                                 'efrit-tool-elapsed elapsed
+                                 'efrit-tool-running running
+                                 'efrit-tool-expanded nil
+                                 'read-only t)))))
+
+(defun efrit-agent--expand-tool (tool-id start end tool-name result success-p elapsed running input)
+  "Expand tool TOOL-ID, showing full input and result."
+  (save-excursion
+    (goto-char start)
+    (delete-region start end)
+    ;; Re-render as expanded with expansion content
+    (let* ((expand-char (efrit-agent--char 'expand-expanded))
+           (status-char (cond (running (efrit-agent--char 'tool-running))
+                              (success-p (efrit-agent--char 'tool-success))
+                              (t (efrit-agent--char 'tool-failure))))
+           (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
+           (result-summary (when result
+                             (truncate-string-to-width
+                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
+                              (pcase efrit-agent-verbosity
+                                ('minimal 20) ('normal 40) ('verbose 80)))))
+           ;; Header line
+           (header-text
+            (concat
+             "  "
+             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
+             (propertize (format "%s " status-char)
+                         'face (or status-face 'efrit-agent-timestamp))
+             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
+             (when elapsed
+               (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp))
+             (if result
+                 (concat " -> " (propertize result-summary 'face status-face))
+               (propertize "..." 'face 'efrit-agent-timestamp))
+             "\n"))
+           ;; Expansion content
+           (expansion-text (efrit-agent--format-tool-expansion input result success-p))
+           (new-text (concat header-text expansion-text)))
+      (insert new-text)
+      (add-text-properties start (point)
+                           (list 'efrit-type 'tool-call
+                                 'efrit-id tool-id
+                                 'efrit-tool-name tool-name
+                                 'efrit-tool-input input
+                                 'efrit-tool-result result
+                                 'efrit-tool-success success-p
+                                 'efrit-tool-elapsed elapsed
+                                 'efrit-tool-running running
+                                 'efrit-tool-expanded t
+                                 'read-only t)))))
 
 ;;; Input Minor Mode
 ;;
@@ -669,13 +913,17 @@ If the session is waiting for user input, prompts for a response."
         (goto-char prev)))))
 
 (defun efrit-agent-toggle-expand ()
-  "Toggle expansion of the item at point."
+  "Toggle expansion of the tool call at point.
+In conversation region, expands/collapses tool calls to show input and results."
   (interactive)
-  (when-let* ((item-id (get-text-property (point) 'efrit-agent-item-id)))
-    (if (gethash item-id efrit-agent--expanded-items)
-        (remhash item-id efrit-agent--expanded-items)
-      (puthash item-id t efrit-agent--expanded-items))
-    (efrit-agent--render)))
+  ;; Try new conversation-first tool expansion
+  (unless (efrit-agent--toggle-tool-expansion)
+    ;; Fall back to old behavior for legacy activity items
+    (when-let* ((item-id (get-text-property (point) 'efrit-agent-item-id)))
+      (if (gethash item-id efrit-agent--expanded-items)
+          (remhash item-id efrit-agent--expanded-items)
+        (puthash item-id t efrit-agent--expanded-items))
+      (efrit-agent--render))))
 
 (defun efrit-agent-cycle-verbosity ()
   "Cycle through verbosity levels."
@@ -823,14 +1071,16 @@ even when not waiting for explicit input."
       (setq efrit-agent--start-time (current-time))
       (setq efrit-agent--todos nil)
       (setq efrit-agent--activities nil)
-      ;; Set up conversation/input regions
+      ;; Initialize pending tools hash table for incremental updates
+      (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
+      ;; Set up conversation/input regions (incremental architecture)
       (efrit-agent--setup-regions)
-      ;; Start elapsed time timer
+      ;; Start elapsed time timer (updates header-line only, not buffer)
       (when efrit-agent--elapsed-timer
         (cancel-timer efrit-agent--elapsed-timer))
       (setq efrit-agent--elapsed-timer
             (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
-      ;; Add initial user message to conversation
+      ;; Add initial user message to conversation (incremental append)
       (efrit-agent--add-user-message command))
     buffer))
 
@@ -1351,11 +1601,20 @@ TYPE can be:
 
 (defun efrit-agent-show-tool-start (tool-name &optional input)
   "Show that TOOL-NAME has started with optional INPUT.
-Returns a tool-id that can be used with `efrit-agent-show-tool-result'."
+Returns a tool-id that can be used with `efrit-agent-show-tool-result'.
+Uses incremental update - does not trigger full re-render."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--add-tool-call tool-name input)))))
+
+(defun efrit-agent-show-tool-result (tool-id result success-p &optional elapsed)
+  "Update tool TOOL-ID with RESULT, SUCCESS-P status, and optional ELAPSED time.
+Uses in-place update - does not trigger full re-render."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--update-tool-result tool-id result success-p elapsed)))))
 
 ;;; Integration with efrit-do TODO tracking
 
@@ -1405,52 +1664,56 @@ Call this after loading efrit-do to enable real-time TODO updates."
   (advice-remove 'efrit-do--handle-todo-write #'efrit-agent--on-todo-update))
 
 ;;; Integration with efrit-progress activity tracking
+;;
+;; These hooks connect efrit-progress events to the conversation-first display.
+;; Tools are tracked in efrit-agent--pending-tools hash table to match results.
 
 (defvar efrit-agent--activity-counter 0
   "Counter for generating unique activity IDs.")
 
+(defun efrit-agent--init-pending-tools ()
+  "Initialize the pending tools hash table if needed."
+  (unless efrit-agent--pending-tools
+    (setq efrit-agent--pending-tools (make-hash-table :test 'equal))))
+
 (defun efrit-agent--on-tool-start (tool-name input)
   "Advice function called when a tool starts.
 TOOL-NAME is the name of the tool being called.
-INPUT is the tool's input parameters (preserved for expanded view)."
-  (when (get-buffer efrit-agent-buffer-name)
-    (efrit-agent-add-activity
-     (list :id (format "tool-%d" (cl-incf efrit-agent--activity-counter))
-           :type 'tool
-           :tool tool-name
-           :input input
-           :timestamp (current-time)
-           :result nil
-           :success nil))))
-
-(defun efrit-agent--on-tool-result (tool-name result success-p)
-  "Advice function called when a tool completes.
-Updates the most recent incomplete tool activity with RESULT and SUCCESS-P.
-Uses reverse iteration to find the most recently started (not yet completed)
-instance of TOOL-NAME, which correctly handles parallel tool calls."
+INPUT is the tool's input parameters (preserved for expanded view).
+Uses incremental conversation update instead of activity list."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        ;; Find the most recent incomplete activity for this tool
-        ;; by iterating in reverse (most recent first)
-        (let ((found nil)
-              (activities-rev (reverse efrit-agent--activities)))
-          (dolist (activity activities-rev)
-            (when (and (not found)
-                       (eq (plist-get activity :type) 'tool)
-                       (equal (plist-get activity :tool) tool-name)
-                       (null (plist-get activity :result)))
-              (setq found t)
-              ;; Calculate elapsed time from stored timestamp
-              (let* ((start-time (plist-get activity :timestamp))
-                     (elapsed (when start-time
-                                (float-time (time-subtract (current-time) start-time)))))
-                (plist-put activity :result
-                           (truncate-string-to-width (format "%s" result) 100))
-                (plist-put activity :success success-p)
-                (when elapsed
-                  (plist-put activity :elapsed elapsed))))))
-        (efrit-agent--render)))))
+        (efrit-agent--init-pending-tools)
+        ;; Add tool call to conversation and get the tool-id
+        (let ((tool-id (efrit-agent--add-tool-call tool-name input)))
+          ;; Track the tool-id for later result matching
+          ;; Push to front of list (most recent first)
+          (let ((existing (gethash tool-name efrit-agent--pending-tools)))
+            (puthash tool-name
+                     (cons (cons tool-id (current-time)) existing)
+                     efrit-agent--pending-tools)))))))
+
+(defun efrit-agent--on-tool-result (tool-name result success-p)
+  "Advice function called when a tool completes.
+Updates the most recently started (not yet completed) tool call for TOOL-NAME.
+Uses in-place update instead of full re-render."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--init-pending-tools)
+        ;; Get the first pending tool-id for this tool-name
+        (let ((pending-list (gethash tool-name efrit-agent--pending-tools)))
+          (when pending-list
+            (let* ((entry (car pending-list))
+                   (tool-id (car entry))
+                   (start-time (cdr entry))
+                   (elapsed (when start-time
+                              (float-time (time-subtract (current-time) start-time)))))
+              ;; Update the tool in-place
+              (efrit-agent--update-tool-result tool-id result success-p elapsed)
+              ;; Remove from pending list
+              (puthash tool-name (cdr pending-list) efrit-agent--pending-tools))))))))
 
 (defun efrit-agent--on-message (message &optional type)
   "Advice function called when a message is shown.
