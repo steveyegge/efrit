@@ -71,6 +71,17 @@ Only affects newly generated diffs, not pre-formatted diff output."
   :type 'integer
   :group 'efrit-agent)
 
+(defcustom efrit-agent-history-file
+  (expand-file-name "efrit-agent-history" user-emacs-directory)
+  "File for persisting input history across restarts."
+  :type 'file
+  :group 'efrit-agent)
+
+(defcustom efrit-agent-history-max-size 100
+  "Maximum number of entries to keep in input history."
+  :type 'integer
+  :group 'efrit-agent)
+
 ;;; Display Style Character Tables
 
 (defconst efrit-agent--unicode-chars
@@ -166,6 +177,17 @@ Format: (question options timestamp) or nil.")
 (defvar-local efrit-agent--input-text ""
   "Current text in the input area.")
 
+(defvar-local efrit-agent--input-history nil
+  "Session-local input history (list of strings, most recent first).")
+
+(defvar-local efrit-agent--history-index -1
+  "Current position in input history (-1 means not navigating).
+When navigating, 0 is the most recent entry, 1 is second most recent, etc.")
+
+(defvar-local efrit-agent--history-temp nil
+  "Temporary storage for current input when navigating history.
+Stores what the user was typing before pressing M-p.")
+
 (defvar-local efrit-agent--pending-tools nil
   "Hash table mapping tool-name to list of pending tool-ids.
 Each tool-name maps to a list of (tool-id . start-time) for in-flight calls.
@@ -190,6 +212,10 @@ Each entry is (tool-id . (:name name :input input :item tool-item)).")
 
 (defvar efrit-agent--activity-counter 0
   "Counter for generating unique activity IDs.")
+
+(defvar efrit-agent--global-history nil
+  "Global input history shared across all sessions.
+Persists across restarts via `efrit-agent-history-file'.")
 
 ;;; Region Markers (Conversation-first architecture)
 ;;

@@ -254,6 +254,9 @@ Status is shown in the header-line at top of window.
   (efrit-agent--init-regions)
   ;; Set up header-line for status display
   (efrit-agent--setup-header-line)
+  ;; Load global history on first use
+  (unless efrit-agent--global-history
+    (efrit-agent--load-history))
   ;; Enable input mode when point moves to input region
   (add-hook 'post-command-hook #'efrit-agent--maybe-enable-input-mode nil t)
   ;; Clean up timer when buffer is killed (fixes memory leak)
@@ -380,11 +383,22 @@ Display Style:
   Current: %s
   Set `efrit-agent-display-style' to 'ascii for terminal compatibility
 
-Input (when waiting for response):
-  C-c C-s        Send typed input to Claude
-  C-c C-c        Cancel current operation
+Input (when in input region):
+  RET            Send single-line input (or newline for multi-line)
+  S-RET          Insert newline (for multi-line input)
+  C-c C-c        Send input
+  C-c C-s        Send input
+  C-c C-k        Clear input
+  M-p            Previous input history
+  M-n            Next input history (or restore what you were typing)
   1-4            Select option 1-4 (when options available)
   i              Inject guidance to Claude mid-session
+
+History:
+  Input history is saved per-session and globally.
+  Global history persists across Emacs restarts.
+  Configure with `efrit-agent-history-file' and
+  `efrit-agent-history-max-size'.
 
 Press q to close this help."
                  (make-string 43 ?=)

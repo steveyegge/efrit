@@ -165,6 +165,10 @@ Use S-RET to always insert a newline."
   (let ((input (efrit-agent--get-input)))
     (if (or (null input) (string-empty-p (string-trim input)))
         (message "Nothing to send")
+      ;; Add to history before clearing
+      (efrit-agent--add-to-history input)
+      ;; Reset history navigation state
+      (efrit-agent--reset-history-navigation)
       ;; Add user message to conversation with proper formatting
       (efrit-agent--add-user-message input)
       ;; Clear the input
@@ -181,15 +185,131 @@ Use S-RET to always insert a newline."
   (goto-char efrit-agent--input-start)
   (message "Input cleared"))
 
+;;; Input History
+;;
+;; Input history supports M-p/M-n navigation through previous inputs.
+;; History is maintained both per-session and globally (persisted across restarts).
+
+(defun efrit-agent--combined-history ()
+  "Return combined history list (session + global, deduplicated).
+Session history takes precedence (appears first)."
+  (let ((seen (make-hash-table :test 'equal))
+        (result nil))
+    ;; Add session history first
+    (dolist (item efrit-agent--input-history)
+      (unless (gethash item seen)
+        (puthash item t seen)
+        (push item result)))
+    ;; Add global history (items not already seen)
+    (dolist (item efrit-agent--global-history)
+      (unless (gethash item seen)
+        (puthash item t seen)
+        (push item result)))
+    (nreverse result)))
+
+(defun efrit-agent--set-input (text)
+  "Set the input region to TEXT."
+  (when (and efrit-agent--input-start
+             (marker-position efrit-agent--input-start))
+    (let ((inhibit-read-only t))
+      (efrit-agent--clear-input)
+      (save-excursion
+        (goto-char efrit-agent--input-start)
+        (insert text))
+      (goto-char (point-max)))))
+
 (defun efrit-agent-input-history-prev ()
-  "Navigate to previous input in history."
+  "Navigate to previous input in history.
+First M-p saves current input and shows most recent history.
+Subsequent M-p moves further back in history."
   (interactive)
-  (message "Input history not yet implemented"))
+  (let ((history (efrit-agent--combined-history)))
+    (if (null history)
+        (message "No input history")
+      (let ((max-idx (1- (length history))))
+        ;; If starting navigation, save current input
+        (when (= efrit-agent--history-index -1)
+          (setq efrit-agent--history-temp (efrit-agent--get-input)))
+        ;; Move to previous (older) entry
+        (if (>= efrit-agent--history-index max-idx)
+            (message "End of history")
+          (cl-incf efrit-agent--history-index)
+          (efrit-agent--set-input (nth efrit-agent--history-index history))
+          (message "History: %d/%d" (1+ efrit-agent--history-index) (length history)))))))
 
 (defun efrit-agent-input-history-next ()
-  "Navigate to next input in history."
+  "Navigate to next (more recent) input in history.
+When at the most recent entry, restores what user was typing."
   (interactive)
-  (message "Input history not yet implemented"))
+  (if (< efrit-agent--history-index 0)
+      (message "No more history")
+    (let ((history (efrit-agent--combined-history)))
+      (cl-decf efrit-agent--history-index)
+      (if (< efrit-agent--history-index 0)
+          ;; Restore the original input the user was typing
+          (progn
+            (efrit-agent--set-input (or efrit-agent--history-temp ""))
+            (setq efrit-agent--history-temp nil)
+            (message "End of history (restored input)"))
+        (efrit-agent--set-input (nth efrit-agent--history-index history))
+        (message "History: %d/%d" (1+ efrit-agent--history-index) (length history))))))
+
+(defun efrit-agent--add-to-history (input)
+  "Add INPUT to both session and global history.
+Deduplicates by removing any existing identical entry."
+  (let ((trimmed (string-trim input)))
+    (unless (string-empty-p trimmed)
+      ;; Add to session history (remove duplicates first)
+      (setq efrit-agent--input-history
+            (cons trimmed (delete trimmed efrit-agent--input-history)))
+      ;; Trim session history to max size
+      (when (> (length efrit-agent--input-history) efrit-agent-history-max-size)
+        (setq efrit-agent--input-history
+              (seq-take efrit-agent--input-history efrit-agent-history-max-size)))
+      ;; Add to global history (remove duplicates first)
+      (setq efrit-agent--global-history
+            (cons trimmed (delete trimmed efrit-agent--global-history)))
+      ;; Trim global history to max size
+      (when (> (length efrit-agent--global-history) efrit-agent-history-max-size)
+        (setq efrit-agent--global-history
+              (seq-take efrit-agent--global-history efrit-agent-history-max-size)))
+      ;; Save global history to file
+      (efrit-agent--save-history))))
+
+(defun efrit-agent--reset-history-navigation ()
+  "Reset history navigation state.
+Called after sending input to exit history navigation mode."
+  (setq efrit-agent--history-index -1)
+  (setq efrit-agent--history-temp nil))
+
+;;; History Persistence
+
+(defun efrit-agent--save-history ()
+  "Save global history to `efrit-agent-history-file'."
+  (when (and efrit-agent-history-file efrit-agent--global-history)
+    (condition-case err
+        (with-temp-file efrit-agent-history-file
+          (insert ";; Efrit Agent Input History\n")
+          (insert ";; Do not edit manually\n")
+          (pp efrit-agent--global-history (current-buffer)))
+      (error
+       (message "Failed to save efrit-agent history: %s" (error-message-string err))))))
+
+(defun efrit-agent--load-history ()
+  "Load global history from `efrit-agent-history-file'."
+  (when (and efrit-agent-history-file
+             (file-exists-p efrit-agent-history-file))
+    (condition-case err
+        (with-temp-buffer
+          (insert-file-contents efrit-agent-history-file)
+          (goto-char (point-min))
+          ;; Skip comment lines
+          (while (looking-at "^;")
+            (forward-line 1))
+          (setq efrit-agent--global-history (read (current-buffer))))
+      (error
+       (message "Failed to load efrit-agent history: %s" (error-message-string err))
+       (setq efrit-agent--global-history nil)))))
 
 (defun efrit-agent--maybe-enable-input-mode ()
   "Enable or disable input mode based on point position.
