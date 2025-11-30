@@ -74,6 +74,18 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
                  (const :tag "ASCII (compatible)" ascii))
   :group 'efrit-agent)
 
+(defcustom efrit-agent-show-diff t
+  "Whether to show inline diffs for tool results containing diff content.
+When enabled, unified diff output is syntax-highlighted with diff-mode faces."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defcustom efrit-agent-diff-context-lines 3
+  "Number of context lines to show in diffs.
+Only affects newly generated diffs, not pre-formatted diff output."
+  :type 'integer
+  :group 'efrit-agent)
+
 ;;; Display Style Character Tables
 
 (defconst efrit-agent--unicode-chars
@@ -260,6 +272,32 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
 (defface efrit-agent-thinking
   '((t :foreground "gray60" :slant italic))
   "Face for thinking indicator."
+  :group 'efrit-agent)
+
+;; Diff-related faces (inherit from diff-mode where appropriate)
+(defface efrit-agent-diff-header
+  '((t :inherit diff-file-header))
+  "Face for diff file headers."
+  :group 'efrit-agent)
+
+(defface efrit-agent-diff-hunk-header
+  '((t :inherit diff-hunk-header))
+  "Face for diff hunk headers (@@ ... @@)."
+  :group 'efrit-agent)
+
+(defface efrit-agent-diff-added
+  '((t :inherit diff-added))
+  "Face for added lines in diffs."
+  :group 'efrit-agent)
+
+(defface efrit-agent-diff-removed
+  '((t :inherit diff-removed))
+  "Face for removed lines in diffs."
+  :group 'efrit-agent)
+
+(defface efrit-agent-diff-context
+  '((t :inherit diff-context))
+  "Face for context lines in diffs."
   :group 'efrit-agent)
 
 ;;; Buffer-local State Variables
@@ -809,7 +847,9 @@ Finds the tool in the conversation and updates it in-place without full re-rende
 
 (defun efrit-agent--format-tool-expansion (tool-input result success-p)
   "Format the expansion content for a tool call.
-TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates status."
+TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates status.
+If RESULT contains diff content and `efrit-agent-show-diff' is non-nil,
+the diff is formatted with syntax highlighting."
   (let ((indent "       ")
         (max-lines (pcase efrit-agent-verbosity
                      ('minimal 3)
@@ -822,14 +862,14 @@ TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates st
         indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
         (efrit-agent--format-indented-lines
          (pp-to-string tool-input) indent max-lines)))
-     ;; Result section
+     ;; Result section (with diff detection)
      (when result
        (concat
         indent (propertize (if success-p "Result: " "Error: ")
                            'face (if success-p 'efrit-agent-section-header 'efrit-agent-error))
         "\n"
-        (efrit-agent--format-indented-lines
-         (format "%s" result) indent max-lines)))
+        ;; Use diff-aware formatting for results
+        (efrit-agent--format-tool-result-with-diff result success-p indent max-lines)))
      ;; Separator
      indent (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
                         'face 'efrit-agent-timestamp) "\n")))
@@ -849,6 +889,95 @@ TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates st
                                                (- (length lines) max-lines))
                                        'face 'efrit-agent-timestamp) "\n")))
     result))
+
+;;; Inline Diff Display
+;;
+;; Functions for detecting and formatting unified diff content in tool results.
+
+(defun efrit-agent--diff-content-p (text)
+  "Return non-nil if TEXT appears to contain unified diff content.
+Checks for common diff markers like --- and +++ file headers,
+@@ hunk headers, or lines starting with + or - followed by content."
+  (and (stringp text)
+       (or
+        ;; Check for unified diff file headers
+        (string-match-p "^---\\s-+\\S-+" text)
+        ;; Check for hunk headers
+        (string-match-p "^@@\\s--?[0-9]" text)
+        ;; Check for diff output from vcs_diff tool (has diff field)
+        (string-match-p "^diff --git" text))))
+
+(defun efrit-agent--extract-diff-from-result (result)
+  "Extract diff content from RESULT if present.
+RESULT may be a string containing diff directly, or an alist with a diff field.
+Returns the diff string or nil if no diff content found."
+  (cond
+   ;; Result is an alist with 'diff key (from vcs_diff tool)
+   ((and (listp result) (assoc 'diff result))
+    (cdr (assoc 'diff result)))
+   ;; Result is a string that looks like diff
+   ((and (stringp result) (efrit-agent--diff-content-p result))
+    result)
+   ;; Check if stringified result looks like diff
+   ((let ((str (format "%s" result)))
+      (when (efrit-agent--diff-content-p str)
+        str)))
+   (t nil)))
+
+(defun efrit-agent--format-diff-line (line indent)
+  "Format a single diff LINE with appropriate face and INDENT prefix.
+Returns the formatted line string with text properties."
+  (let* ((line-content (concat indent "  " line "\n"))
+         (face (cond
+                ;; File headers
+                ((string-match-p "^diff --git\\|^---\\|^\\+\\+\\+" line)
+                 'efrit-agent-diff-header)
+                ;; Hunk headers
+                ((string-match-p "^@@" line)
+                 'efrit-agent-diff-hunk-header)
+                ;; Added lines
+                ((string-match-p "^\\+" line)
+                 'efrit-agent-diff-added)
+                ;; Removed lines
+                ((string-match-p "^-" line)
+                 'efrit-agent-diff-removed)
+                ;; Context lines (including empty lines and lines starting with space)
+                (t
+                 'efrit-agent-diff-context))))
+    (propertize line-content 'face face)))
+
+(defun efrit-agent--format-diff-content (diff-text indent max-lines)
+  "Format DIFF-TEXT with syntax highlighting and INDENT prefix.
+Limits output to MAX-LINES. Returns formatted string with faces."
+  (let* ((lines (split-string diff-text "\n"))
+         (truncated (> (length lines) max-lines))
+         (display-lines (seq-take lines max-lines))
+         (result ""))
+    (dolist (line display-lines)
+      (setq result (concat result (efrit-agent--format-diff-line line indent))))
+    (when truncated
+      (setq result (concat result indent "  "
+                           (propertize (format "... (%d more lines)"
+                                               (- (length lines) max-lines))
+                                       'face 'efrit-agent-timestamp) "\n")))
+    result))
+
+(defun efrit-agent--format-tool-result-with-diff (result _success-p indent max-lines)
+  "Format tool RESULT, detecting and highlighting diff content.
+_SUCCESS-P is reserved for future use (error styling).
+INDENT is the prefix for each line.
+MAX-LINES limits the output.
+Returns formatted string with appropriate faces."
+  (if (not efrit-agent-show-diff)
+      ;; Diff display disabled, use regular formatting
+      (efrit-agent--format-indented-lines (format "%s" result) indent max-lines)
+    ;; Try to extract and format diff content
+    (let ((diff-content (efrit-agent--extract-diff-from-result result)))
+      (if diff-content
+          ;; Found diff content - format with syntax highlighting
+          (efrit-agent--format-diff-content diff-content indent max-lines)
+        ;; No diff content - use regular formatting
+        (efrit-agent--format-indented-lines (format "%s" result) indent max-lines)))))
 
 (defun efrit-agent--toggle-tool-expansion ()
   "Toggle expansion of the tool call at point.

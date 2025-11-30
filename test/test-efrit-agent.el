@@ -359,6 +359,74 @@
     (let ((elapsed (efrit-agent--format-elapsed)))
       (should (string-match-p "\\`[0-9]+:[0-9][0-9]\\'" elapsed)))))
 
+;;; Inline diff display tests
+
+(ert-deftest test-efrit-agent-diff-content-detection ()
+  "Test detection of diff content in strings."
+  ;; Git diff format
+  (should (efrit-agent--diff-content-p "diff --git a/test.el b/test.el"))
+  ;; Unified diff headers
+  (should (efrit-agent--diff-content-p "--- a/test.el\n+++ b/test.el"))
+  ;; Hunk headers
+  (should (efrit-agent--diff-content-p "@@ -1,3 +1,4 @@\n context"))
+  ;; Not a diff
+  (should-not (efrit-agent--diff-content-p "This is regular text"))
+  (should-not (efrit-agent--diff-content-p "function returns nil")))
+
+(ert-deftest test-efrit-agent-diff-extraction-from-alist ()
+  "Test extraction of diff content from vcs_diff style results."
+  (let ((vcs-result '((diff . "--- a/test.el\n+++ b/test.el")
+                      (summary . ((files_changed . 1))))))
+    (should (equal (efrit-agent--extract-diff-from-result vcs-result)
+                   "--- a/test.el\n+++ b/test.el"))))
+
+(ert-deftest test-efrit-agent-diff-extraction-from-string ()
+  "Test extraction of diff content from string results."
+  (let ((diff-string "diff --git a/test.el b/test.el\n--- a/test.el"))
+    (should (equal (efrit-agent--extract-diff-from-result diff-string)
+                   diff-string))))
+
+(ert-deftest test-efrit-agent-diff-line-faces ()
+  "Test that diff lines get appropriate faces."
+  (let ((added (efrit-agent--format-diff-line "+new line" ""))
+        (removed (efrit-agent--format-diff-line "-old line" ""))
+        (context (efrit-agent--format-diff-line " same line" ""))
+        (hunk (efrit-agent--format-diff-line "@@ -1,3 +1,4 @@" "")))
+    (should (eq (get-text-property 0 'face added) 'efrit-agent-diff-added))
+    (should (eq (get-text-property 0 'face removed) 'efrit-agent-diff-removed))
+    (should (eq (get-text-property 0 'face context) 'efrit-agent-diff-context))
+    (should (eq (get-text-property 0 'face hunk) 'efrit-agent-diff-hunk-header))))
+
+(ert-deftest test-efrit-agent-diff-formatting-integration ()
+  "Test full diff formatting in tool expansion."
+  (let ((efrit-agent-show-diff t)
+        (efrit-agent-verbosity 'normal)  ; Ensure consistent verbosity
+        (result '((diff . "diff --git a/test.el b/test.el\n--- a/test.el\n+++ b/test.el\n@@ -1 +1 @@\n-old\n+new"))))
+    (let ((formatted (efrit-agent--format-tool-expansion nil result t)))
+      ;; Should contain the diff content
+      (should (string-match-p "diff --git" formatted))
+      ;; Should have diff faces applied
+      (let ((has-added-face nil))
+        (dotimes (i (length formatted))
+          (when (eq (get-text-property i 'face formatted) 'efrit-agent-diff-added)
+            (setq has-added-face t)))
+        (should has-added-face)))))
+
+(ert-deftest test-efrit-agent-diff-disabled ()
+  "Test that diff highlighting can be disabled."
+  (let ((efrit-agent-show-diff nil)
+        (efrit-agent-verbosity 'normal)  ; Ensure consistent verbosity
+        (result '((diff . "diff --git a/test.el b/test.el\n+new"))))
+    (let ((formatted (efrit-agent--format-tool-expansion nil result t)))
+      ;; Should contain diff text but NOT have diff-specific faces
+      (should (string-match-p "diff" formatted))
+      (let ((has-diff-face nil))
+        (dotimes (i (length formatted))
+          (when (memq (get-text-property i 'face formatted)
+                      '(efrit-agent-diff-added efrit-agent-diff-removed))
+            (setq has-diff-face t)))
+        (should-not has-diff-face)))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here
