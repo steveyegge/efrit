@@ -212,6 +212,16 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
   "Face for Claude's messages."
   :group 'efrit-agent)
 
+(defface efrit-agent-user-message
+  '((t :foreground "gray90"))
+  "Face for user messages (excluding the > prefix)."
+  :group 'efrit-agent)
+
+(defface efrit-agent-user-prefix
+  '((t :foreground "gold" :weight bold))
+  "Face for the > prefix on user messages."
+  :group 'efrit-agent)
+
 (defface efrit-agent-error
   '((t :foreground "red3"))
   "Face for error messages."
@@ -381,6 +391,77 @@ The prompt is before input-start marker, so we just delete from input-start to e
   (and efrit-agent--input-start
        (>= (point) efrit-agent--input-start)))
 
+;;; Message Rendering
+;;
+;; Functions to add messages to the conversation region without full re-render.
+;; These use efrit-agent--append-to-conversation for incremental updates.
+
+(defvar-local efrit-agent--message-counter 0
+  "Counter for generating unique message IDs.")
+
+(defun efrit-agent--add-user-message (text)
+  "Add a user message with TEXT to the conversation region.
+User messages are prefixed with `> ' and have proper faces applied.
+Multi-line messages have continuation lines indented."
+  (let* ((msg-id (format "user-msg-%d" (cl-incf efrit-agent--message-counter)))
+         (lines (split-string text "\n"))
+         (first-line (car lines))
+         (rest-lines (cdr lines))
+         (formatted-text
+          (concat
+           ;; First line with > prefix
+           (propertize "> " 'face 'efrit-agent-user-prefix)
+           (propertize first-line 'face 'efrit-agent-user-message)
+           ;; Continuation lines with indentation
+           (when rest-lines
+             (mapconcat
+              (lambda (line)
+                (concat "\n  " (propertize line 'face 'efrit-agent-user-message)))
+              rest-lines
+              ""))
+           "\n\n")))
+    (efrit-agent--append-to-conversation
+     formatted-text
+     (list 'efrit-type 'user-message
+           'efrit-id msg-id))))
+
+(defun efrit-agent--add-claude-message (text)
+  "Add a Claude message with TEXT to the conversation region.
+Claude messages appear inline without a prefix.
+Multi-line messages are preserved as-is."
+  (let* ((msg-id (format "claude-msg-%d" (cl-incf efrit-agent--message-counter)))
+         (formatted-text
+          (concat
+           (propertize text 'face 'efrit-agent-claude-message)
+           "\n\n")))
+    (efrit-agent--append-to-conversation
+     formatted-text
+     (list 'efrit-type 'claude-message
+           'efrit-id msg-id))))
+
+(defun efrit-agent--add-tool-call (tool-name &optional input)
+  "Add a tool call indicator for TOOL-NAME with optional INPUT.
+Tool calls appear inline in the conversation.
+Returns the tool ID for later update with result."
+  (let* ((tool-id (format "tool-%d" (cl-incf efrit-agent--message-counter)))
+         (formatted-text
+          (concat
+           "  "
+           (propertize (format "%s " (efrit-agent--char 'tool-running))
+                       'face 'efrit-agent-timestamp)
+           (propertize tool-name 'face 'efrit-agent-tool-name)
+           (propertize "..." 'face 'efrit-agent-timestamp)
+           "\n")))
+    ;; Store the tool info for later result update
+    (efrit-agent--append-to-conversation
+     formatted-text
+     (list 'efrit-type 'tool-call
+           'efrit-id tool-id
+           'efrit-tool-name tool-name
+           'efrit-tool-input input
+           'efrit-tool-running t))
+    tool-id))
+
 ;;; Input Minor Mode
 ;;
 ;; A minor mode that activates when point is in the input region.
@@ -426,11 +507,8 @@ Use S-RET to always insert a newline."
   (let ((input (efrit-agent--get-input)))
     (if (or (null input) (string-empty-p (string-trim input)))
         (message "Nothing to send")
-      ;; Add user message to conversation
-      (efrit-agent--append-to-conversation
-       (concat (propertize "> " 'face 'efrit-agent-input-prompt)
-               input
-               "\n\n"))
+      ;; Add user message to conversation with proper formatting
+      (efrit-agent--add-user-message input)
       ;; Clear the input
       (efrit-agent--clear-input)
       ;; Move point to input area
@@ -753,10 +831,7 @@ even when not waiting for explicit input."
       (setq efrit-agent--elapsed-timer
             (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
       ;; Add initial user message to conversation
-      (efrit-agent--append-to-conversation
-       (concat (propertize "> " 'face 'efrit-agent-input-prompt)
-               (propertize command 'face 'efrit-agent-command)
-               "\n\n")))
+      (efrit-agent--add-user-message command))
     buffer))
 
 (defun efrit-agent--show-buffer ()
@@ -1250,7 +1325,37 @@ STATUS should be one of: working, paused, waiting, complete, failed."
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--status status)
-        (efrit-agent--render)))))
+        ;; Force header-line update instead of full re-render
+        (force-mode-line-update)))))
+
+(defun efrit-agent-add-message (text &optional type)
+  "Add a message with TEXT to the conversation.
+TYPE can be:
+  nil or `user' - User message with > prefix
+  `claude' - Claude's response
+  `error' - Error message with error styling"
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (pcase type
+          ((or 'nil 'user) (efrit-agent--add-user-message text))
+          ('claude (efrit-agent--add-claude-message text))
+          ('error
+           (efrit-agent--append-to-conversation
+            (concat (propertize (format "%s Error: " (efrit-agent--char 'error-icon))
+                                'face 'efrit-agent-error)
+                    (propertize text 'face 'efrit-agent-error)
+                    "\n\n")
+            (list 'efrit-type 'error-message
+                  'efrit-id (format "err-%d" (cl-incf efrit-agent--message-counter))))))))))
+
+(defun efrit-agent-show-tool-start (tool-name &optional input)
+  "Show that TOOL-NAME has started with optional INPUT.
+Returns a tool-id that can be used with `efrit-agent-show-tool-result'."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--add-tool-call tool-name input)))))
 
 ;;; Integration with efrit-do TODO tracking
 
@@ -1349,17 +1454,28 @@ instance of TOOL-NAME, which correctly handles parallel tool calls."
 
 (defun efrit-agent--on-message (message &optional type)
   "Advice function called when a message is shown.
-MESSAGE is the text, TYPE indicates the message type."
-  (when (get-buffer efrit-agent-buffer-name)
-    (let ((activity-type (pcase type
-                           ('claude 'message)
-                           ('error 'error)
-                           (_ 'message))))
-      (efrit-agent-add-activity
-       (list :id (format "msg-%d" (cl-incf efrit-agent--activity-counter))
-             :type activity-type
-             :text (truncate-string-to-width (or message "") 200)
-             :timestamp (current-time))))))
+MESSAGE is the text, TYPE indicates the message type.
+Claude messages are rendered inline in the conversation.
+Error messages are rendered with error face."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (pcase type
+          ('claude
+           ;; Claude messages go directly to conversation
+           (efrit-agent--add-claude-message (or message "")))
+          ('error
+           ;; Error messages with special formatting
+           (efrit-agent--append-to-conversation
+            (concat (propertize (format "%s Error: " (efrit-agent--char 'error-icon))
+                                'face 'efrit-agent-error)
+                    (propertize (or message "") 'face 'efrit-agent-error)
+                    "\n\n")
+            (list 'efrit-type 'error-message
+                  'efrit-id (format "err-%d" (cl-incf efrit-agent--message-counter)))))
+          (_
+           ;; Other messages (system, info) - also to conversation
+           (efrit-agent--add-claude-message (or message ""))))))))
 
 (defun efrit-agent-setup-progress-integration ()
   "Set up advice to track activities from efrit-progress.
