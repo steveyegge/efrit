@@ -296,6 +296,11 @@ Format: (question options timestamp) or nil.")
 Each tool-name maps to a list of (tool-id . start-time) for in-flight calls.
 Uses a list per tool-name to handle parallel calls to the same tool.")
 
+(defvar-local efrit-agent--streaming-message nil
+  "Info about current streaming Claude message, or nil if not streaming.
+Format: (message-id start-marker end-marker) when active.
+Used to append content to an ongoing message stream.")
+
 ;;; Region Markers (Conversation-first architecture)
 ;;
 ;; The buffer is divided into two regions:
@@ -408,6 +413,8 @@ The prompt is before input-start marker, so we just delete from input-start to e
   "Add a user message with TEXT to the conversation region.
 User messages are prefixed with `> ' and have proper faces applied.
 Multi-line messages have continuation lines indented."
+  ;; End any streaming Claude message first
+  (efrit-agent--stream-end-message)
   (let* ((msg-id (format "user-msg-%d" (cl-incf efrit-agent--message-counter)))
          (lines (split-string text "\n"))
          (first-line (car lines))
@@ -432,22 +439,98 @@ Multi-line messages have continuation lines indented."
 
 (defun efrit-agent--add-claude-message (text)
   "Add a Claude message with TEXT to the conversation region.
-Claude messages appear inline without a prefix.
-Multi-line messages are preserved as-is."
+If there's an active streaming message, append to it.
+Otherwise start a new message.
+Claude messages appear inline without a prefix."
+  (if efrit-agent--streaming-message
+      ;; Append to existing streaming message
+      (efrit-agent--stream-append-text text)
+    ;; Start a new message
+    (efrit-agent--stream-start-message text)))
+
+(defun efrit-agent--stream-start-message (text)
+  "Start a new streaming Claude message with TEXT.
+Creates markers for tracking the message region for future appends."
   (let* ((msg-id (format "claude-msg-%d" (cl-incf efrit-agent--message-counter)))
-         (formatted-text
-          (concat
-           (propertize text 'face 'efrit-agent-claude-message)
-           "\n\n")))
-    (efrit-agent--append-to-conversation
-     formatted-text
-     (list 'efrit-type 'claude-message
-           'efrit-id msg-id))))
+         (inhibit-read-only t)
+         start-marker end-marker)
+    ;; Move to end of conversation region
+    (save-excursion
+      (goto-char (marker-position efrit-agent--conversation-end))
+      (setq start-marker (point-marker))
+      ;; Insert the text
+      (insert (propertize text 'face 'efrit-agent-claude-message))
+      (setq end-marker (point-marker))
+      ;; Set the marker type (insert before for end-marker)
+      (set-marker-insertion-type end-marker t)
+      ;; Apply properties
+      (add-text-properties start-marker end-marker
+                           (list 'efrit-type 'claude-message
+                                 'efrit-id msg-id
+                                 'read-only t))
+      ;; Update conversation end marker
+      (set-marker efrit-agent--conversation-end (point)))
+    ;; Track the streaming message
+    (setq efrit-agent--streaming-message
+          (list msg-id start-marker end-marker))
+    ;; Scroll to show new content
+    (efrit-agent--scroll-to-bottom)))
+
+(defun efrit-agent--stream-append-text (text)
+  "Append TEXT to the current streaming Claude message.
+Updates the message region markers."
+  (when efrit-agent--streaming-message
+    (let* ((msg-id (nth 0 efrit-agent--streaming-message))
+           (end-marker (nth 2 efrit-agent--streaming-message))
+           (inhibit-read-only t))
+      (save-excursion
+        ;; Insert at end marker (before it, due to insertion type)
+        (goto-char (marker-position end-marker))
+        ;; Move back before the marker to insert
+        (let ((insert-pos (1- (point))))
+          (when (> insert-pos (point-min))
+            (goto-char insert-pos)))
+        ;; Insert the new text
+        (insert (propertize text 'face 'efrit-agent-claude-message))
+        ;; Update properties on the new text
+        (add-text-properties (- (point) (length text)) (point)
+                             (list 'efrit-type 'claude-message
+                                   'efrit-id msg-id
+                                   'read-only t))
+        ;; Update conversation end if needed
+        (when (> (point) (marker-position efrit-agent--conversation-end))
+          (set-marker efrit-agent--conversation-end (point))))
+      ;; Scroll to show new content
+      (efrit-agent--scroll-to-bottom))))
+
+(defun efrit-agent--stream-end-message ()
+  "End the current streaming message, adding final newlines.
+Call this when Claude's message is complete."
+  (when efrit-agent--streaming-message
+    (let ((inhibit-read-only t)
+          (end-marker (nth 2 efrit-agent--streaming-message)))
+      (save-excursion
+        (goto-char (marker-position end-marker))
+        ;; Add trailing newlines for spacing
+        (insert "\n\n")
+        ;; Update conversation end
+        (set-marker efrit-agent--conversation-end (point)))
+      ;; Clear streaming state
+      (setq efrit-agent--streaming-message nil))))
+
+(defun efrit-agent--scroll-to-bottom ()
+  "Scroll the agent buffer window to show the latest content."
+  (when-let* ((window (get-buffer-window (current-buffer))))
+    (with-selected-window window
+      (goto-char (point-max))
+      (recenter -3))))
 
 (defun efrit-agent--add-tool-call (tool-name &optional input)
   "Add a tool call indicator for TOOL-NAME with optional INPUT.
 Tool calls appear inline in the conversation.
 Returns the tool ID for later update with result."
+  ;; End any streaming Claude message first
+  (efrit-agent--stream-end-message)
   (let* ((tool-id (format "tool-%d" (cl-incf efrit-agent--message-counter)))
          (formatted-text
           (concat
@@ -472,6 +555,8 @@ Returns the tool ID for later update with result."
   "Add a QUESTION from Claude to the conversation region.
 OPTIONS is an optional list of choices the user can select.
 Returns the question ID for tracking responses."
+  ;; End any streaming Claude message first
+  (efrit-agent--stream-end-message)
   (let* ((q-id (format "question-%d" (cl-incf efrit-agent--message-counter)))
          (formatted-text
           (concat
@@ -1617,6 +1702,8 @@ Called from efrit-executor when an agentic session begins."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        ;; End any streaming message first
+        (efrit-agent--stream-end-message)
         (setq efrit-agent--status (if success-p 'complete 'failed))
         ;; Stop the elapsed timer
         (when efrit-agent--elapsed-timer
@@ -1709,6 +1796,23 @@ Uses incremental update - does not trigger full re-render."
         (setq efrit-agent--status 'waiting)
         ;; Add to conversation incrementally
         (efrit-agent--add-question question options)))))
+
+(defun efrit-agent-stream-content (text)
+  "Stream TEXT content from Claude to the conversation.
+Consecutive calls append to the same message until a non-text event occurs.
+This provides smooth character-by-character or chunk-by-chunk display."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--add-claude-message text)))))
+
+(defun efrit-agent-stream-end ()
+  "End the current streaming message.
+Call this when Claude's text response is complete."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--stream-end-message)))))
 
 ;;; Integration with efrit-do TODO tracking
 
