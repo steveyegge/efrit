@@ -468,6 +468,85 @@ Returns the tool ID for later update with result."
            'efrit-tool-start-time (current-time)))
     tool-id))
 
+(defun efrit-agent--add-question (question &optional options)
+  "Add a QUESTION from Claude to the conversation region.
+OPTIONS is an optional list of choices the user can select.
+Returns the question ID for tracking responses."
+  (let* ((q-id (format "question-%d" (cl-incf efrit-agent--message-counter)))
+         (formatted-text
+          (concat
+           ;; Question indicator
+           (propertize (format "%s " (efrit-agent--char 'status-waiting))
+                       'face 'efrit-agent-timestamp)
+           ;; Question text
+           (propertize question 'face 'efrit-agent-question)
+           "\n"
+           ;; Options (if provided)
+           (when options
+             (concat
+              "   "
+              (mapconcat
+               (lambda (opt-pair)
+                 (let* ((idx (car opt-pair))
+                        (opt (cdr opt-pair)))
+                   (efrit-agent--make-option-button opt idx)))
+               (cl-loop for opt in options
+                        for idx from 1
+                        collect (cons idx opt))
+               " ")
+              "\n"))
+           ;; Hint for keyboard selection
+           (when options
+             (propertize (format "   Press %s or type custom response\n"
+                                 (mapconcat #'number-to-string
+                                            (number-sequence 1 (min 4 (length options)))
+                                            "/"))
+                         'face 'efrit-agent-timestamp))
+           "\n")))
+    (efrit-agent--append-to-conversation
+     formatted-text
+     (list 'efrit-type 'question
+           'efrit-id q-id
+           'efrit-question question
+           'efrit-options options))
+    ;; Update input prompt to indicate we're waiting
+    (efrit-agent--update-input-prompt question options)
+    q-id))
+
+(defun efrit-agent--update-input-prompt (_question options)
+  "Update the input region prompt for question with OPTIONS.
+Shows context about what input is expected."
+  (when (marker-position efrit-agent--input-start)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char efrit-agent--input-start)
+        ;; Clear any existing prompt marker
+        (when (looking-at "^.*\n")
+          (delete-region (point) (match-end 0)))
+        ;; Insert new context-aware prompt
+        (insert
+         (propertize
+          (if options
+              (format "Answer (or %s): "
+                      (mapconcat #'number-to-string
+                                 (number-sequence 1 (min 4 (length options)))
+                                 "/"))
+            "Answer: ")
+          'face 'efrit-agent-input-prompt))))))
+
+(defun efrit-agent--reset-input-prompt ()
+  "Reset the input region prompt to the default state.
+Called after responding to a question."
+  (when (marker-position efrit-agent--input-start)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char efrit-agent--input-start)
+        ;; Clear any existing prompt text on this line
+        (when (looking-at "^[^\n]*")
+          (delete-region (point) (match-end 0)))
+        ;; Insert default prompt
+        (insert (propertize "> " 'face 'efrit-agent-input-prompt))))))
+
 (defun efrit-agent--find-tool-region (tool-id)
   "Find the buffer region for tool call with TOOL-ID.
 Returns (START . END) or nil if not found."
@@ -1616,6 +1695,21 @@ Uses in-place update - does not trigger full re-render."
       (with-current-buffer buffer
         (efrit-agent--update-tool-result tool-id result success-p elapsed)))))
 
+(defun efrit-agent-show-question (question &optional options)
+  "Display a QUESTION from Claude with optional OPTIONS for the user to select.
+OPTIONS is a list of strings representing the available choices.
+Returns a question-id for tracking.
+Uses incremental update - does not trigger full re-render."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        ;; Store for keyboard shortcut handling
+        (setq efrit-agent--pending-question
+              (list question options (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+        (setq efrit-agent--status 'waiting)
+        ;; Add to conversation incrementally
+        (efrit-agent--add-question question options)))))
+
 ;;; Integration with efrit-do TODO tracking
 
 (defun efrit-agent--convert-todo-item (todo)
@@ -1787,28 +1881,36 @@ This makes the agent buffer appear automatically when sessions start."
 
 (defun efrit-agent--on-pending-question (_session question &optional options)
   "Advice function called when a pending question is set.
-Updates the agent buffer with QUESTION and OPTIONS, sets status to waiting."
+Updates the agent buffer with QUESTION and OPTIONS, sets status to waiting.
+Uses incremental conversation update instead of full re-render."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        ;; Store the pending question
-        (setq efrit-agent--pending-question
-              (list question
-                    (when options (if (listp options) options (append options nil)))
-                    (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
-        ;; Set status to waiting
-        (setq efrit-agent--status 'waiting)
-        (efrit-agent--render)))))
+        ;; Normalize options to a list
+        (let ((opts (when options
+                      (if (listp options) options (append options nil)))))
+          ;; Store the pending question for keyboard shortcut handling
+          (setq efrit-agent--pending-question
+                (list question opts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+          ;; Set status to waiting (updates header-line)
+          (setq efrit-agent--status 'waiting)
+          ;; Add question to conversation incrementally (no full re-render)
+          (efrit-agent--add-question question opts))))))
 
-(defun efrit-agent--on-question-response (_session _response)
+(defun efrit-agent--on-question-response (_session response)
   "Advice function called when user responds to a question.
-Clears the pending question and sets status back to working."
+Adds the user's RESPONSE to conversation and sets status back to working."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        ;; Add user's response to conversation
+        (when response
+          (efrit-agent--add-user-message (format "%s" response)))
+        ;; Clear the pending question state
         (setq efrit-agent--pending-question nil)
         (setq efrit-agent--status 'working)
-        (efrit-agent--render)))))
+        ;; Reset input prompt
+        (efrit-agent--reset-input-prompt)))))
 
 (defun efrit-agent-setup-input-integration ()
   "Set up advice to track user input requests from session.
