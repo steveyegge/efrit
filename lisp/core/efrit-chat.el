@@ -24,6 +24,7 @@
 (require 'auth-source)
 (require 'efrit-tools)
 (require 'efrit-session)
+(require 'efrit-chat-persistence)
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -638,7 +639,9 @@ is a list of tool_result blocks for sending back to Claude."
                         efrit--message-history)
                   ;; Also add to unified context
                   (require 'efrit-session)
-                  (efrit-unified-context-add-message 'assistant message-text 'chat))
+                  (efrit-unified-context-add-message 'assistant message-text 'chat)
+                  ;; Auto-save session
+                  (efrit-chat--on-message-sent))
               (error
                ;; Fallback to displaying the raw message if processing fails
                (message "Error processing response: %s"
@@ -655,7 +658,9 @@ is a list of tool_result blocks for sending back to Claude."
                      efrit--message-history)
                ;; Also add to unified context
                (require 'efrit-session)
-               (efrit-unified-context-add-message 'assistant message-text 'chat)))
+               (efrit-unified-context-add-message 'assistant message-text 'chat)
+               ;; Auto-save session
+               (efrit-chat--on-message-sent)))
 
           ;; Just display the text directly if tools are disabled
           (progn
@@ -667,7 +672,9 @@ is a list of tool_result blocks for sending back to Claude."
                   efrit--message-history)
             ;; Also add to unified context
             (require 'efrit-session)
-            (efrit-unified-context-add-message 'assistant message-text 'chat))))
+            (efrit-unified-context-add-message 'assistant message-text 'chat)
+            ;; Auto-save session
+            (efrit-chat--on-message-sent))))
 
       ;; Don't auto-continue in chat mode - insert prompt for next user input
       (efrit--insert-prompt))))
@@ -1219,41 +1226,51 @@ Useful when the previous API call failed."
   (setq-local efrit--input-marker nil)
   (setq-local efrit--response-in-progress nil)
   ;; Enable line wrapping
-  (visual-line-mode 1))
+  (visual-line-mode 1)
+  ;; Set up session persistence
+  (efrit-chat--setup-persistence))
 
 ;;; Main Chat Interface
 
 ;;;###autoload
 (defun efrit-chat ()
-  "Start efrit chat session - interactive buffer like ChatGPT."
+  "Start efrit chat session - interactive buffer like ChatGPT.
+If a previous session exists, offers to restore it."
   (interactive)
   (switch-to-buffer (efrit--setup-buffer))
   (setq buffer-read-only nil)
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (setq-local efrit--message-history nil)
-    (setq-local efrit--response-in-progress nil)
-    (setq-local efrit--conversation-marker nil)
-    (setq-local efrit--input-marker nil)
-    (setq-local efrit--current-conversation nil))
+  ;; Check if we should restore a previous session
+  (unless (efrit-chat-maybe-restore)
+    ;; No restore - start fresh
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (setq-local efrit--message-history nil)
+      (setq-local efrit--response-in-progress nil)
+      (setq-local efrit--conversation-marker nil)
+      (setq-local efrit--input-marker nil)
+      (setq-local efrit--current-conversation nil))
 
-  (setq-local efrit--conversation-marker (make-marker))
-  (set-marker efrit--conversation-marker (point-min))
+    (setq-local efrit--conversation-marker (make-marker))
+    (set-marker efrit--conversation-marker (point-min))
 
-  (efrit--display-message
-   (format "Efrit Chat Ready - Using model: %s" efrit-model)
-   'assistant)
+    (efrit--display-message
+     (format "Efrit Chat Ready - Using model: %s" efrit-model)
+     'assistant)
 
-  (efrit--insert-prompt))
+    (efrit--insert-prompt)))
 
 ;;;###autoload
 (defun efrit-chat-clear ()
-  "Clear the conversation history and start fresh in the current chat buffer."
+  "Clear the conversation history and start fresh in the current chat buffer.
+The previous session is saved before clearing if auto-save is enabled."
   (interactive)
   (if (not (eq major-mode 'efrit-mode))
       (user-error "Not in an Efrit chat buffer")
     (when (or (not efrit--message-history)
               (yes-or-no-p "Clear conversation history and start fresh? "))
+      ;; Save current session before clearing
+      (when efrit--message-history
+        (efrit-chat-save-session))
       (setq buffer-read-only nil)
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -1261,7 +1278,10 @@ Useful when the previous API call failed."
         (setq-local efrit--response-in-progress nil)
         (setq-local efrit--conversation-marker nil)
         (setq-local efrit--input-marker nil)
-        (setq-local efrit--current-conversation nil))
+        (setq-local efrit--current-conversation nil)
+        ;; Start new session
+        (setq-local efrit-chat--session-id (efrit-chat--generate-session-id))
+        (setq-local efrit-chat--session-modified nil))
 
       (setq-local efrit--conversation-marker (make-marker))
       (set-marker efrit--conversation-marker (point-min))
