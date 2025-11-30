@@ -257,6 +257,11 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
   "Face for the input prompt."
   :group 'efrit-agent)
 
+(defface efrit-agent-thinking
+  '((t :foreground "gray60" :slant italic))
+  "Face for thinking indicator."
+  :group 'efrit-agent)
+
 ;;; Buffer-local State Variables
 
 (defvar-local efrit-agent--session-id nil
@@ -300,6 +305,11 @@ Uses a list per tool-name to handle parallel calls to the same tool.")
   "Info about current streaming Claude message, or nil if not streaming.
 Format: (message-id start-marker end-marker) when active.
 Used to append content to an ongoing message stream.")
+
+(defvar-local efrit-agent--thinking-indicator nil
+  "Marker positions for the thinking indicator, or nil if not showing.
+Format: (start-marker . end-marker) when active.
+The indicator is removed when content arrives.")
 
 ;;; Region Markers (Conversation-first architecture)
 ;;
@@ -415,6 +425,8 @@ User messages are prefixed with `> ' and have proper faces applied.
 Multi-line messages have continuation lines indented."
   ;; End any streaming Claude message first
   (efrit-agent--stream-end-message)
+  ;; Hide thinking indicator when user sends message
+  (efrit-agent--hide-thinking)
   (let* ((msg-id (format "user-msg-%d" (cl-incf efrit-agent--message-counter)))
          (lines (split-string text "\n"))
          (first-line (car lines))
@@ -451,6 +463,8 @@ Claude messages appear inline without a prefix."
 (defun efrit-agent--stream-start-message (text)
   "Start a new streaming Claude message with TEXT.
 Creates markers for tracking the message region for future appends."
+  ;; Hide thinking indicator when Claude starts responding
+  (efrit-agent--hide-thinking)
   (let* ((msg-id (format "claude-msg-%d" (cl-incf efrit-agent--message-counter)))
          (inhibit-read-only t)
          start-marker end-marker)
@@ -525,12 +539,92 @@ Call this when Claude's message is complete."
       (goto-char (point-max))
       (recenter -3))))
 
+;;; Thinking Indicator
+;;
+;; Shows when Claude is processing but no tool is running.
+;; Disappears when content starts arriving.
+
+(defun efrit-agent--show-thinking (&optional text)
+  "Show the thinking indicator with optional TEXT description.
+If TEXT is nil, shows just '[thinking...]'.
+The indicator is removed when content arrives or explicitly hidden."
+  (when (and (not efrit-agent--thinking-indicator)
+             efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end))
+    (let ((inhibit-read-only t)
+          start-marker end-marker)
+      (save-excursion
+        (goto-char (marker-position efrit-agent--conversation-end))
+        (setq start-marker (point-marker))
+        ;; Insert the thinking indicator
+        (insert (propertize (format "[%s%s] %s\n"
+                                    (efrit-agent--char 'status-waiting)
+                                    "thinking..."
+                                    (or text ""))
+                            'face 'efrit-agent-thinking
+                            'efrit-type 'thinking-indicator))
+        (setq end-marker (point-marker))
+        ;; Set marker insertion types
+        (set-marker-insertion-type start-marker nil)
+        (set-marker-insertion-type end-marker t)
+        ;; Make it read-only
+        (add-text-properties start-marker end-marker '(read-only t))
+        ;; Update conversation end
+        (set-marker efrit-agent--conversation-end (point)))
+      ;; Track the indicator
+      (setq efrit-agent--thinking-indicator (cons start-marker end-marker))
+      ;; Scroll to show
+      (efrit-agent--scroll-to-bottom))))
+
+(defun efrit-agent--hide-thinking ()
+  "Hide the thinking indicator if currently shown."
+  (when efrit-agent--thinking-indicator
+    (let ((inhibit-read-only t)
+          (start-marker (car efrit-agent--thinking-indicator))
+          (end-marker (cdr efrit-agent--thinking-indicator)))
+      (when (and (marker-position start-marker)
+                 (marker-position end-marker))
+        (delete-region start-marker end-marker)
+        ;; Update conversation end marker if needed
+        (when (> (marker-position efrit-agent--conversation-end)
+                 (marker-position start-marker))
+          (set-marker efrit-agent--conversation-end start-marker)))
+      ;; Clean up markers
+      (set-marker start-marker nil)
+      (set-marker end-marker nil))
+    (setq efrit-agent--thinking-indicator nil)))
+
+(defun efrit-agent--update-thinking (text)
+  "Update the thinking indicator TEXT without removing and re-adding.
+This provides smooth updates for changing thinking status."
+  (if efrit-agent--thinking-indicator
+      (let ((inhibit-read-only t)
+            (start-marker (car efrit-agent--thinking-indicator))
+            (end-marker (cdr efrit-agent--thinking-indicator)))
+        (when (and (marker-position start-marker)
+                   (marker-position end-marker))
+          (save-excursion
+            (goto-char start-marker)
+            (delete-region start-marker end-marker)
+            (insert (propertize (format "[%s%s] %s\n"
+                                        (efrit-agent--char 'status-waiting)
+                                        "thinking..."
+                                        (or text ""))
+                                'face 'efrit-agent-thinking
+                                'efrit-type 'thinking-indicator
+                                'read-only t))
+            (set-marker end-marker (point)))))
+    ;; No indicator yet, show one
+    (efrit-agent--show-thinking text)))
+
 (defun efrit-agent--add-tool-call (tool-name &optional input)
   "Add a tool call indicator for TOOL-NAME with optional INPUT.
 Tool calls appear inline in the conversation.
 Returns the tool ID for later update with result."
   ;; End any streaming Claude message first
   (efrit-agent--stream-end-message)
+  ;; Hide thinking indicator when tool starts
+  (efrit-agent--hide-thinking)
   (let* ((tool-id (format "tool-%d" (cl-incf efrit-agent--message-counter)))
          (formatted-text
           (concat
@@ -1813,6 +1907,31 @@ Call this when Claude's text response is complete."
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--stream-end-message)))))
+
+(defun efrit-agent-show-thinking (&optional text)
+  "Show the thinking indicator with optional TEXT description.
+Call this when Claude is processing but no tool is running.
+The indicator will automatically hide when content starts arriving."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--show-thinking text)))))
+
+(defun efrit-agent-hide-thinking ()
+  "Hide the thinking indicator.
+Usually not needed as it hides automatically when content arrives."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--hide-thinking)))))
+
+(defun efrit-agent-update-thinking (text)
+  "Update the thinking indicator with new TEXT.
+Use this to show progress during thinking, e.g., \"analyzing code...\"."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--update-thinking text)))))
 
 ;;; Integration with efrit-do TODO tracking
 
