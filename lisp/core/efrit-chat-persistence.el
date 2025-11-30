@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'json)
 (require 'efrit-log)
 (require 'efrit-common)
@@ -78,6 +79,9 @@ Older sessions are automatically cleaned up."
 (defvar-local efrit-chat--session-id nil
   "Current chat session ID for persistence.")
 
+(defvar-local efrit-chat--session-created-at nil
+  "Creation timestamp for current session (ISO 8601 format).")
+
 (defvar-local efrit-chat--session-modified nil
   "Non-nil if current session has unsaved changes.")
 
@@ -113,11 +117,15 @@ MESSAGES is the buffer-local `efrit--message-history'."
                         (if (> (length content) 80)
                             (concat (substring content 0 77) "...")
                           content))
-                    "(no messages)")))
+                    "(no messages)"))
+         (now (format-time-string "%Y-%m-%dT%H:%M:%SZ")))
+    ;; Set created_at on first save if not already set
+    (unless efrit-chat--session-created-at
+      (setq efrit-chat--session-created-at now))
     `((id . ,efrit-chat--session-id)
       (type . "chat")
-      (created_at . ,(format-time-string "%Y-%m-%dT%H:%M:%SZ"))
-      (updated_at . ,(format-time-string "%Y-%m-%dT%H:%M:%SZ"))
+      (created_at . ,efrit-chat--session-created-at)
+      (updated_at . ,now)
       (project_dir . ,default-directory)
       (message_count . ,message-count)
       (snippet . ,snippet)
@@ -141,12 +149,15 @@ Only saves if there are messages and auto-save is enabled."
            (session-data (efrit-chat--session-to-alist efrit--message-history)))
       (condition-case err
           (progn
-            (with-temp-file session-file
-              (insert (json-encode session-data)))
+            (let ((coding-system-for-write 'utf-8))
+              (with-temp-file session-file
+                (insert (json-encode session-data))))
             (setq efrit-chat--session-modified nil)
             (efrit-log 'debug "Saved chat session: %s (%d messages)"
                        efrit-chat--session-id
                        (length efrit--message-history))
+            ;; Cleanup old sessions if we exceed max
+            (efrit-chat-cleanup-old-sessions)
             (when (called-interactively-p 'any)
               (message "Chat session saved: %s" efrit-chat--session-id)))
         (error
@@ -206,9 +217,11 @@ Returns list of alists sorted by recency (most recent first)."
 (defun efrit-chat--restore-session-to-buffer (session-data)
   "Restore SESSION-DATA into the current chat buffer."
   (let ((messages (alist-get 'messages session-data))
-        (session-id (alist-get 'id session-data)))
-    ;; Set session ID
+        (session-id (alist-get 'id session-data))
+        (created-at (alist-get 'created_at session-data)))
+    ;; Set session ID and preserve creation timestamp
     (setq efrit-chat--session-id session-id)
+    (setq efrit-chat--session-created-at created-at)
     (setq efrit-chat--session-modified nil)
 
     ;; Clear existing state
