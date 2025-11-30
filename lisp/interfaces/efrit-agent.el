@@ -37,6 +37,7 @@
 (declare-function efrit-session-active "efrit-session")
 (declare-function efrit-session-waiting-for-user-p "efrit-session")
 (declare-function efrit-progress-inject "efrit-progress")
+(declare-function efrit-do--execute-tool "efrit-do")
 
 ;;; Customization
 
@@ -845,9 +846,10 @@ Finds the tool in the conversation and updates it in-place without full re-rende
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 
-(defun efrit-agent--format-tool-expansion (tool-input result success-p)
+(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id)
   "Format the expansion content for a tool call.
 TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates status.
+TOOL-ID is optional; when provided and SUCCESS-P is nil, error recovery buttons are shown.
 If RESULT contains diff content and `efrit-agent-show-diff' is non-nil,
 the diff is formatted with syntax highlighting."
   (let ((indent "       ")
@@ -870,6 +872,9 @@ the diff is formatted with syntax highlighting."
         "\n"
         ;; Use diff-aware formatting for results
         (efrit-agent--format-tool-result-with-diff result success-p indent max-lines)))
+     ;; Error recovery buttons (only when tool failed and tool-id is known)
+     (when (and tool-id (not success-p))
+       (efrit-agent--format-error-recovery-buttons tool-id result tool-input))
      ;; Separator
      indent (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
                         'face 'efrit-agent-timestamp) "\n")))
@@ -979,6 +984,165 @@ Returns formatted string with appropriate faces."
         ;; No diff content - use regular formatting
         (efrit-agent--format-indented-lines (format "%s" result) indent max-lines)))))
 
+;;; Error Recovery Actions
+;;
+;; When a tool fails, provide actionable buttons: [Retry] [Skip] [Abort]
+;; These allow users to recover from errors without restarting the session.
+
+(defvar-local efrit-agent--failed-tools nil
+  "Alist mapping tool-id to tool execution context for retry.
+Each entry is (tool-id . (:name name :input input :item tool-item)).")
+
+(defun efrit-agent--store-failed-tool (tool-id tool-name tool-input tool-item)
+  "Store failed tool context for TOOL-ID with TOOL-NAME, TOOL-INPUT, and TOOL-ITEM.
+This allows the tool to be retried later."
+  (setf (alist-get tool-id efrit-agent--failed-tools nil nil #'equal)
+        (list :name tool-name :input tool-input :item tool-item)))
+
+(defun efrit-agent--get-failed-tool (tool-id)
+  "Get the stored context for failed tool TOOL-ID.
+Returns plist (:name :input :item) or nil if not found."
+  (alist-get tool-id efrit-agent--failed-tools nil nil #'equal))
+
+(defun efrit-agent--make-error-recovery-button (label action tool-id &optional help-echo)
+  "Create an error recovery button with LABEL that runs ACTION for TOOL-ID.
+ACTION is a function that takes TOOL-ID as argument.
+HELP-ECHO is optional tooltip text."
+  (let ((map (make-sparse-keymap))
+        (action-fn (lambda ()
+                     (interactive)
+                     (funcall action tool-id))))
+    (define-key map [mouse-1] action-fn)
+    (define-key map (kbd "RET") action-fn)
+    (propertize (concat "[" label "]")
+                'face 'efrit-agent-button
+                'mouse-face 'efrit-agent-button-hover
+                'keymap map
+                'help-echo (or help-echo (format "Click to %s" (downcase label))))))
+
+(defun efrit-agent--retry-tool (tool-id)
+  "Retry the failed tool identified by TOOL-ID."
+  (interactive)
+  (let ((tool-ctx (efrit-agent--get-failed-tool tool-id)))
+    (if (not tool-ctx)
+        (message "Cannot retry: tool context not found for %s" tool-id)
+      (let ((tool-item (plist-get tool-ctx :item))
+            (tool-name (plist-get tool-ctx :name)))
+        (message "Retrying %s..." tool-name)
+        ;; Execute the tool again through efrit-do
+        (require 'efrit-do)
+        (condition-case err
+            (let ((result (efrit-do--execute-tool tool-item)))
+              ;; Update the display with success
+              (efrit-agent--update-tool-result tool-id result t)
+              ;; Remove from failed tools list
+              (setf (alist-get tool-id efrit-agent--failed-tools nil 'remove #'equal) nil)
+              (message "Retry succeeded: %s" tool-name))
+          (error
+           (message "Retry failed: %s" (error-message-string err))))))))
+
+(defun efrit-agent--skip-tool (tool-id)
+  "Skip the failed tool TOOL-ID and tell Claude to continue.
+Injects a message telling Claude the tool failed and to proceed without it."
+  (interactive)
+  (let ((tool-ctx (efrit-agent--get-failed-tool tool-id)))
+    (when tool-ctx
+      (let ((tool-name (plist-get tool-ctx :name)))
+        ;; Inject guidance to continue
+        (when (and efrit-agent--session-id
+                   (fboundp 'efrit-progress-inject))
+          (efrit-progress-inject
+           efrit-agent--session-id
+           'guidance
+           (format "The %s tool failed. Please continue without this result and find an alternative approach." tool-name)))
+        ;; Remove from failed tools list
+        (setf (alist-get tool-id efrit-agent--failed-tools nil 'remove #'equal) nil)
+        (message "Skipped %s - Claude will continue" tool-name)))))
+
+(defun efrit-agent--abort-session (_tool-id)
+  "Abort the current session due to tool failure.
+TOOL-ID is ignored but required for button callback signature."
+  (interactive)
+  (when (yes-or-no-p "Abort the current session? ")
+    (efrit-executor-cancel)
+    (message "Session aborted")))
+
+(defun efrit-agent--permission-error-p (result)
+  "Return non-nil if RESULT indicates a permission error."
+  (and (stringp result)
+       (or (string-match-p "permission denied" result)
+           (string-match-p "Permission denied" result)
+           (string-match-p "read-only" result)
+           (string-match-p "not writable" result))))
+
+(defun efrit-agent--extract-file-path (tool-input result)
+  "Try to extract a file path from TOOL-INPUT or RESULT.
+Returns the path string or nil."
+  (cond
+   ;; Check tool-input for common file path keys
+   ((and (listp tool-input)
+         (or (alist-get 'path tool-input)
+             (alist-get 'file tool-input)
+             (alist-get 'file_path tool-input)
+             (alist-get :path tool-input)
+             (alist-get :file tool-input))))
+   ;; Try to extract from result string
+   ((and (stringp result)
+         (string-match "\\(/[^ \n\t:]+\\)" result))
+    (match-string 1 result))
+   (t nil)))
+
+(defun efrit-agent--make-writable (tool-id)
+  "Attempt to make a file writable for the failed tool TOOL-ID."
+  (interactive)
+  (let ((tool-ctx (efrit-agent--get-failed-tool tool-id)))
+    (if (not tool-ctx)
+        (message "Cannot find tool context for %s" tool-id)
+      (let* ((tool-input (plist-get tool-ctx :input))
+             (file-path (efrit-agent--extract-file-path tool-input nil)))
+        (if (not file-path)
+            (message "Cannot determine file path from tool input")
+          (if (not (file-exists-p file-path))
+              (message "File does not exist: %s" file-path)
+            (condition-case err
+                (progn
+                  (set-file-modes file-path
+                                  (logior (file-modes file-path) #o200))
+                  (message "Made %s writable. Use [Retry] to try again." file-path))
+              (error
+               (message "Failed to make writable: %s" (error-message-string err))))))))))
+
+(defun efrit-agent--format-error-recovery-buttons (tool-id result _tool-input)
+  "Format error recovery buttons for failed tool TOOL-ID.
+RESULT is the error message, _TOOL-INPUT is reserved for future use."
+  (let ((indent "       ")
+        (buttons nil))
+    ;; Always show Retry
+    (push (efrit-agent--make-error-recovery-button
+           "Retry" #'efrit-agent--retry-tool tool-id
+           "Retry this tool with the same inputs")
+          buttons)
+    ;; Always show Skip
+    (push (efrit-agent--make-error-recovery-button
+           "Skip" #'efrit-agent--skip-tool tool-id
+           "Skip this tool and tell Claude to continue")
+          buttons)
+    ;; Show Make Writable for permission errors
+    (when (efrit-agent--permission-error-p result)
+      (push (efrit-agent--make-error-recovery-button
+             "Make Writable" #'efrit-agent--make-writable tool-id
+             "Make the file writable (chmod +w)")
+            buttons))
+    ;; Always show Abort
+    (push (efrit-agent--make-error-recovery-button
+           "Abort" #'efrit-agent--abort-session tool-id
+           "Abort the entire session")
+          buttons)
+    ;; Format buttons in a row
+    (concat indent
+            (mapconcat #'identity (nreverse buttons) " ")
+            "\n")))
+
 (defun efrit-agent--toggle-tool-expansion ()
   "Toggle expansion of the tool call at point.
 Returns t if toggled, nil if no tool at point."
@@ -1077,8 +1241,8 @@ Returns t if toggled, nil if no tool at point."
                  (concat " -> " (propertize result-summary 'face status-face))
                (propertize "..." 'face 'efrit-agent-timestamp))
              "\n"))
-           ;; Expansion content
-           (expansion-text (efrit-agent--format-tool-expansion input result success-p))
+           ;; Expansion content (pass tool-id for error recovery buttons)
+           (expansion-text (efrit-agent--format-tool-expansion input result success-p tool-id))
            (new-text (concat header-text expansion-text)))
       (insert new-text)
       (add-text-properties start (point)
@@ -2134,30 +2298,42 @@ Uses incremental conversation update instead of activity list."
         ;; Add tool call to conversation and get the tool-id
         (let ((tool-id (efrit-agent--add-tool-call tool-name input)))
           ;; Track the tool-id for later result matching
+          ;; Store: tool-id, start-time, and input for potential retry
           ;; Push to front of list (most recent first)
           (let ((existing (gethash tool-name efrit-agent--pending-tools)))
             (puthash tool-name
-                     (cons (cons tool-id (current-time)) existing)
+                     (cons (list :id tool-id
+                                 :start-time (current-time)
+                                 :input input)
+                           existing)
                      efrit-agent--pending-tools)))))))
 
 (defun efrit-agent--on-tool-result (tool-name result success-p)
   "Advice function called when a tool completes.
 Updates the most recently started (not yet completed) tool call for TOOL-NAME.
-Uses in-place update instead of full re-render."
+Uses in-place update instead of full re-render.
+When a tool fails, stores its context for potential retry."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--init-pending-tools)
-        ;; Get the first pending tool-id for this tool-name
+        ;; Get the first pending tool entry for this tool-name
         (let ((pending-list (gethash tool-name efrit-agent--pending-tools)))
           (when pending-list
             (let* ((entry (car pending-list))
-                   (tool-id (car entry))
-                   (start-time (cdr entry))
+                   (tool-id (plist-get entry :id))
+                   (start-time (plist-get entry :start-time))
+                   (tool-input (plist-get entry :input))
                    (elapsed (when start-time
                               (float-time (time-subtract (current-time) start-time)))))
               ;; Update the tool in-place
               (efrit-agent--update-tool-result tool-id result success-p elapsed)
+              ;; If tool failed, store context for retry
+              (when (not success-p)
+                (let ((tool-item (make-hash-table :test 'equal)))
+                  (puthash "name" tool-name tool-item)
+                  (puthash "input" tool-input tool-item)
+                  (efrit-agent--store-failed-tool tool-id tool-name tool-input tool-item)))
               ;; Remove from pending list
               (puthash tool-name (cdr pending-list) efrit-agent--pending-tools))))))))
 
