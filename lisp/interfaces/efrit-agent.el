@@ -391,8 +391,15 @@ Input (when in input region):
   C-c C-k        Clear input
   M-p            Previous input history
   M-n            Next input history (or restore what you were typing)
+  TAB            Context-aware completion
   1-4            Select option 1-4 (when options available)
   i              Inject guidance to Claude mid-session
+
+Completion:
+  TAB completes based on conversation context:
+  - File paths from tool calls (read_file, write_file, etc.)
+  - Options from pending questions (1, 2, 3, 4 and option text)
+  - Common responses (yes, no, continue, cancel, skip)
 
 History:
   Input history is saved per-session and globally.
@@ -896,6 +903,17 @@ Use this to show progress during thinking, e.g., \"analyzing code...\"."
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (efrit-agent--update-thinking text)))))
+
+(defun efrit-agent-show-todos (todos)
+  "Display or update TODOS inline in the conversation.
+TODOS is a list of plists with :status, :content, :id.
+Status can be: pending, in_progress, completed.
+Updates in-place if TODOs already exist in the conversation."
+  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq efrit-agent--todos todos)
+        (efrit-agent--add-todos-inline todos)))))
 
 (provide 'efrit-agent)
 

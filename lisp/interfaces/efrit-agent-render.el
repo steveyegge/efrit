@@ -288,6 +288,108 @@ HELP-ECHO is the tooltip text shown on hover."
 ;; Forward declaration for option selection
 (declare-function efrit-agent--select-option "efrit-agent-input")
 
+;;; Inline TODO Display
+;;
+;; TODOs are displayed inline in the conversation as a checklist block.
+;; The block is tracked with markers and updated in-place when TODOs change.
+
+(defvar-local efrit-agent--todos-region nil
+  "Marker pair (start . end) for the inline TODO block, or nil if none.
+Used to update TODOs in-place without full re-render.")
+
+(defun efrit-agent--format-todo-item (todo)
+  "Format a single TODO item for display.
+TODO is a plist with :status, :content, and optionally :id."
+  (let* ((status (plist-get todo :status))
+         (content (or (plist-get todo :content) ""))
+         (indicator (pcase status
+                      ('completed (efrit-agent--char 'task-complete))
+                      ('in_progress (efrit-agent--char 'task-in-progress))
+                      (_ (efrit-agent--char 'task-pending))))
+         (face (pcase status
+                 ('completed 'efrit-agent-task-complete)
+                 ('in_progress 'efrit-agent-task-current)
+                 (_ 'efrit-agent-task-pending))))
+    (concat
+     "  "
+     (propertize (format "%s " indicator) 'face face)
+     (propertize content 'face face)
+     (when (eq status 'in_progress)
+       (propertize " ← current" 'face 'efrit-agent-timestamp))
+     "\n")))
+
+(defun efrit-agent--format-todos-block (todos)
+  "Format the entire TODO block for TODOS list.
+Returns a propertized string ready for insertion."
+  (if (null todos)
+      ""  ; Don't show anything when no TODOs
+    (let* ((total (length todos))
+           (complete (cl-count-if (lambda (item) (eq (plist-get item :status) 'completed))
+                                  todos))
+           (header (propertize (format "Tasks (%d/%d):\n" complete total)
+                               'face 'efrit-agent-section-header)))
+      (concat
+       header
+       (mapconcat #'efrit-agent--format-todo-item todos "")
+       "\n"))))
+
+(defun efrit-agent--add-todos-inline (todos)
+  "Add or update the inline TODO block in the conversation.
+TODOS is a list of plists with :status, :content, :id.
+If a TODO block already exists, updates it in-place.
+If no block exists, inserts one."
+  ;; End any streaming message first (so Claude's text is finalized before TODOs)
+  (efrit-agent--stream-end-message)
+  (let ((inhibit-read-only t)
+        (formatted (efrit-agent--format-todos-block todos)))
+    (if efrit-agent--todos-region
+        ;; Update existing block in-place
+        (let ((start-marker (car efrit-agent--todos-region))
+              (end-marker (cdr efrit-agent--todos-region)))
+          (when (and (marker-position start-marker)
+                     (marker-position end-marker))
+            (save-excursion
+              (delete-region start-marker end-marker)
+              (goto-char start-marker)
+              (when (> (length formatted) 0)
+                (insert (propertize formatted
+                                    'efrit-type 'todos-block
+                                    'read-only t))
+                (set-marker end-marker (point))))))
+      ;; Insert new block (if there are todos)
+      (when (> (length formatted) 0)
+        (let (start-marker end-marker)
+          (save-excursion
+            (goto-char (marker-position efrit-agent--conversation-end))
+            (setq start-marker (point-marker))
+            (insert (propertize formatted
+                                'efrit-type 'todos-block
+                                'read-only t))
+            (setq end-marker (point-marker))
+            ;; Set marker types
+            ;; start-marker: nil = insertions go after (marker stays at start)
+            ;; end-marker: nil = insertions go after (marker stays at end, doesn't capture new content)
+            (set-marker-insertion-type start-marker nil)
+            (set-marker-insertion-type end-marker nil)
+            ;; Update conversation end
+            (set-marker efrit-agent--conversation-end (point)))
+          ;; Track the region
+          (setq efrit-agent--todos-region (cons start-marker end-marker)))))))
+
+(defun efrit-agent--clear-todos-inline ()
+  "Remove the inline TODO block if present."
+  (when efrit-agent--todos-region
+    (let ((inhibit-read-only t)
+          (start-marker (car efrit-agent--todos-region))
+          (end-marker (cdr efrit-agent--todos-region)))
+      (when (and (marker-position start-marker)
+                 (marker-position end-marker))
+        (delete-region start-marker end-marker))
+      ;; Clean up markers
+      (set-marker start-marker nil)
+      (set-marker end-marker nil))
+    (setq efrit-agent--todos-region nil)))
+
 (provide 'efrit-agent-render)
 
 ;;; efrit-agent-render.el ends here

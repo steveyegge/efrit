@@ -133,9 +133,11 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
-    ;; History navigation (placeholder for future)
+    ;; History navigation
     (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
+    ;; Completion
+    (define-key map (kbd "TAB") #'completion-at-point)
     map)
   "Keymap for `efrit-agent-input-mode'.")
 
@@ -144,9 +146,13 @@ Returns nil if no options or N is out of range."
 Activates when point is in the input region, providing a separate
 keymap for input editing.
 
+Key bindings:
 \\{efrit-agent-input-mode-map}"
   :lighter " Input"
-  :keymap efrit-agent-input-mode-map)
+  :keymap efrit-agent-input-mode-map
+  (when efrit-agent-input-mode
+    ;; Set up completion when mode is enabled
+    (efrit-agent--setup-completion)))
 
 (defun efrit-agent-input-send-or-newline ()
   "Send input if on a single line, otherwise insert newline.
@@ -319,6 +325,105 @@ Called from `post-command-hook'."
         (efrit-agent-input-mode 1))
     (when efrit-agent-input-mode
       (efrit-agent-input-mode -1))))
+
+;;; Context-Aware Completion
+;;
+;; Provides intelligent completion in the input region based on conversation context:
+;; - File paths mentioned in the conversation
+;; - Options from pending questions (1, 2, 3, 4)
+;; - Common response patterns
+
+(defvar-local efrit-agent--context-files nil
+  "List of file paths extracted from the conversation.
+Updated when new tool calls reference files.")
+
+(defun efrit-agent--extract-path-from-input (input)
+  "Extract file path from tool INPUT if present.
+INPUT can be a plist or alist with :path, path, :file_path, or file_path keys."
+  (when input
+    (or (plist-get input :path)
+        (plist-get input :file_path)
+        (and (listp input)
+             (or (cdr (assoc 'path input))
+                 (cdr (assoc :path input))
+                 (cdr (assoc 'file_path input))
+                 (cdr (assoc :file_path input)))))))
+
+(defun efrit-agent--extract-file-paths ()
+  "Extract file paths mentioned in the conversation.
+Returns a list of file path strings found in tool calls."
+  (let ((files nil)
+        (seen-ids (make-hash-table :test 'equal)))
+    ;; Scan buffer for tool-call text properties with input containing paths
+    (save-excursion
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (let ((id (get-text-property (point) 'efrit-id))
+              (type (get-text-property (point) 'efrit-type))
+              (input (get-text-property (point) 'efrit-tool-input)))
+          ;; Only process each unique ID once
+          (when (and id (not (gethash id seen-ids)))
+            (puthash id t seen-ids)
+            (when (and (eq type 'tool-call) input)
+              (when-let* ((path (efrit-agent--extract-path-from-input input)))
+                (push path files)))))
+        ;; Move to next property change (by ID to catch all tool calls)
+        (goto-char (or (next-single-property-change (point) 'efrit-id)
+                       (point-max)))))
+    ;; Remove duplicates, return most recent first
+    (delete-dups (nreverse files))))
+
+(defun efrit-agent--get-completion-candidates ()
+  "Get all completion candidates based on current context.
+Returns a list of strings for completion."
+  (let ((candidates nil))
+    ;; Option numbers if waiting for question response
+    (when (and (eq efrit-agent--status 'waiting)
+               efrit-agent--pending-question)
+      (let ((options (cadr efrit-agent--pending-question)))
+        (when options
+          ;; Add option numbers
+          (dotimes (i (min 4 (length options)))
+            (push (number-to-string (1+ i)) candidates))
+          ;; Add actual option text
+          (dolist (opt options)
+            (push opt candidates)))))
+    ;; File paths from conversation
+    (dolist (path (efrit-agent--extract-file-paths))
+      (push path candidates))
+    ;; Common response patterns
+    (push "yes" candidates)
+    (push "no" candidates)
+    (push "continue" candidates)
+    (push "cancel" candidates)
+    (push "skip" candidates)
+    ;; Return unique candidates
+    (delete-dups candidates)))
+
+(defun efrit-agent--completion-at-point ()
+  "Completion-at-point function for efrit-agent input.
+Provides context-aware completions based on conversation."
+  (when (efrit-agent--in-input-region-p)
+    (let* ((end (point))
+           (start (save-excursion
+                    (skip-chars-backward "^ \t\n")
+                    (point)))
+           (prefix (buffer-substring-no-properties start end))
+           (candidates (efrit-agent--get-completion-candidates)))
+      (when (and candidates (>= (length prefix) 0))
+        (list start end
+              (completion-table-dynamic
+               (lambda (_)
+                 (cl-remove-if-not
+                  (lambda (c) (string-prefix-p prefix c t))
+                  candidates)))
+              :exclusive 'no)))))
+
+(defun efrit-agent--setup-completion ()
+  "Set up completion for the input region."
+  (add-hook 'completion-at-point-functions
+            #'efrit-agent--completion-at-point
+            nil t))
 
 (provide 'efrit-agent-input)
 

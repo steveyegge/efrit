@@ -268,15 +268,18 @@ Call this after loading efrit-do and efrit-progress."
 ;;; Public API wrappers (for use by other modules)
 
 (declare-function efrit-agent--render "efrit-agent")
+(declare-function efrit-agent--add-todos-inline "efrit-agent-render")
 
 (defun efrit-agent-update-todos (todos)
   "Update the TODO list display with TODOS.
-TODOS should be a list of plists with :status, :content, :activeForm."
+TODOS should be a list of plists with :status, :content, :activeForm.
+Uses incremental inline update instead of full re-render."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--todos todos)
-        (efrit-agent--render)))))
+        ;; Use incremental inline update instead of full re-render
+        (efrit-agent--add-todos-inline todos)))))
 
 (defun efrit-agent-start-session (session-id command)
   "Start tracking a new session with SESSION-ID and COMMAND.
