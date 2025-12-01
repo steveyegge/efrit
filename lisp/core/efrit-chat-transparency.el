@@ -56,6 +56,12 @@
   :type 'boolean
   :group 'efrit)
 
+(defcustom efrit-show-thinking t
+  "Show Claude's thinking/reasoning (extended thinking models only).
+When enabled, thinking content blocks are displayed to the user."
+  :type 'boolean
+  :group 'efrit)
+
 (defcustom efrit-incremental-responses t
   "Whether to display responses incrementally (streaming-like).
 When nil, responses appear all at once as before."
@@ -200,20 +206,25 @@ If `efrit-incremental-responses' is nil, displays all at once."
               (set-marker efrit--conversation-marker (point)))))))))
 
 (defun efrit-transparency--display-thinking (thinking-text)
-  "Display THINKING-TEXT as visible reasoning/thinking process."
-  (require 'efrit-chat-buffer)
-  (with-current-buffer (efrit--setup-buffer)
-    (setq buffer-read-only nil)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (unless (bobp) (insert "\n"))
-      
-      (let ((start (point)))
-        (insert (format "💭 Thinking: %s\n" thinking-text))
-        (add-text-properties start (- (point) 1) '(face efrit-thinking-face)))
-      
-      (when (boundp 'efrit--conversation-marker)
-        (set-marker efrit--conversation-marker (point))))))
+  "Display THINKING-TEXT as visible reasoning/thinking process.
+Only displays if `efrit-show-thinking' is non-nil."
+  (when efrit-show-thinking
+    (require 'efrit-chat-buffer)
+    (with-current-buffer (efrit--setup-buffer)
+      (setq buffer-read-only nil)
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (unless (bobp) (insert "\n"))
+        
+        ;; Display thinking with special formatting
+        (insert (format "💭 Thinking: "))
+        (let ((start (point)))
+          (insert thinking-text)
+          (add-text-properties start (point) '(face efrit-thinking-face)))
+        (insert "\n")
+        
+        (when (boundp 'efrit--conversation-marker)
+          (set-marker efrit--conversation-marker (point)))))))
 
 (provide 'efrit-chat-transparency)
 

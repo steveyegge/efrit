@@ -155,6 +155,38 @@
   (should (facep 'efrit-tool-result-face))
   (should (facep 'efrit-thinking-face)))
 
+;;; Tests for Thinking Display
+
+(ert-deftest test-chat-transparency-thinking-display ()
+  "Test that thinking is displayed when enabled."
+  (let ((test-buffer (test-chat-transparency--create-test-buffer))
+        (original-func (test-chat-transparency--mock-setup-buffer
+                       (test-chat-transparency--create-test-buffer))))
+    (unwind-protect
+        (progn
+          (setq efrit-show-thinking t)
+          (efrit-transparency--display-thinking "This is my reasoning")
+          (with-current-buffer test-buffer
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "Thinking" content))
+              (should (string-match-p "reasoning" content)))))
+      (test-chat-transparency--restore-setup-buffer original-func))))
+
+(ert-deftest test-chat-transparency-thinking-hidden-when-disabled ()
+  "Test that thinking is not displayed when disabled."
+  (let ((test-buffer (test-chat-transparency--create-test-buffer))
+        (original-func (test-chat-transparency--mock-setup-buffer
+                       (test-chat-transparency--create-test-buffer))))
+    (unwind-protect
+        (progn
+          (setq efrit-show-thinking nil)
+          (with-current-buffer test-buffer
+            (let ((initial-size (buffer-size)))
+              (efrit-transparency--display-thinking "This is my reasoning")
+              ;; Buffer should not have changed
+              (should (= initial-size (buffer-size))))))
+      (test-chat-transparency--restore-setup-buffer original-func))))
+
 (provide 'test-chat-transparency)
 
 ;;; test-chat-transparency.el ends here

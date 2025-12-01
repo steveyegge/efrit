@@ -387,9 +387,15 @@ is a list of tool_result blocks for sending back to Claude."
         (let* ((item (aref content i))
                (type (gethash "type" item)))
 
+          ;; Handle thinking content (from extended thinking models)
+          (when (string= type "thinking")
+            (let ((thinking-text (gethash "thinking" item)))
+              (when thinking-text
+                (efrit-log-debug "Processing thinking block: %d chars" (length thinking-text))
+                (efrit-transparency--display-thinking thinking-text))))
 
           ;; Handle text content
-          (when (string= type "text")
+           (when (string= type "text")
             (let ((text (gethash "text" item)))
               (when text
 

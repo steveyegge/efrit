@@ -14,7 +14,21 @@ These features make conversations feel more natural and help users understand wh
 
 ## Features
 
-### 1. Tool Call Visibility
+### 1. Visible Thinking/Reasoning (Extended Thinking Models)
+
+When using extended thinking models (Claude Opus, Claude Sonnet with extended thinking enabled), Claude's thinking process is displayed to you in the chat. This provides transparency into Claude's reasoning before tool execution and response formulation.
+
+Example display:
+```
+💭 Thinking: Let me analyze this request carefully. The user is asking for
+a solution that involves multiple steps. First, I should check the current
+state of the system...
+```
+
+**Configuration:**
+- `efrit-show-thinking` (default: `t`) - Enable/disable thinking display
+
+### 2. Tool Call Visibility
 
 When enabled, efrit displays each tool call as Claude makes it, showing:
 - The tool name (e.g., `eval_sexp`, `read_buffer`)
@@ -32,7 +46,7 @@ Example display:
 - `efrit-show-tool-calls` (default: `t`) - Enable/disable tool call display
 - `efrit-show-tool-results` (default: `t`) - Enable/disable tool result display
 
-### 2. Incremental Response Display
+### 3. Incremental Response Display
 
 Responses are displayed incrementally, character by character, similar to streaming chat interfaces. This makes the response feel more alive and allows you to start reading before the entire response is ready.
 
@@ -57,7 +71,7 @@ Example:
 (setq efrit-incremental-delay 0.05)
 ```
 
-### 3. Visual Hierarchy
+### 4. Visual Hierarchy
 
 Different types of content are displayed with different faces (colors/styles):
 
