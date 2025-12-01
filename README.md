@@ -237,7 +237,7 @@ make compile  # Byte-compile elisp
 make test     # Run test suite
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor guidelines.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for contributor guidelines.
 
 ## Architecture
 
