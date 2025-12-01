@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.4.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
@@ -191,7 +191,7 @@ Shows version, installation status, and basic connectivity."
   (interactive)
   (require 'efrit-config)
   (require 'efrit-common)
-  (let* ((version "0.4.0")
+  (let* ((version "0.4.1")
          (api-key (condition-case nil
                       (efrit-common-get-api-key)
                     (error nil)))

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, help
-;; Version: 0.4.0
+;; Version: 0.4.1
 
 ;;; Commentary:
 ;;

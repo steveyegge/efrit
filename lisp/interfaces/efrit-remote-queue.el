@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.4.1
 ;; Package-Requires: ((emacs "28.1") (filenotify "0.2"))
 ;; Keywords: tools, convenience, ai, queue
 ;; URL: https://github.com/stevey/efrit
