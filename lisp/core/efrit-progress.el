@@ -33,6 +33,7 @@
 (require 'efrit-common)
 (require 'efrit-log)
 (require 'efrit-config)
+(require 'efrit-event)
 
 ;;; Customization
 
@@ -666,72 +667,44 @@ Returns the path to the inject queue directory."
     (nreverse sessions)))
 
 (defun efrit-progress--parse-jsonl-line (line)
-  "Parse a JSONL LINE and return alist."
+  "Parse a JSONL LINE and return as efrit-event object or nil if invalid."
   (condition-case nil
       (let ((json-object-type 'alist)
             (json-array-type 'vector)
-            (json-key-type 'string))
-        (json-read-from-string line))
+            (json-key-type 'string)
+            (alist (json-read-from-string line)))
+        (efrit-event-from-alist alist))
     (error nil)))
 
 (defun efrit-progress--format-event (event)
-  "Format EVENT alist for display in inspector buffer."
-  (let* ((event-type (cdr (assoc "type" event)))
-         (timestamp (cdr (assoc "timestamp" event)))
-         (time-str (if timestamp
-                       (replace-regexp-in-string ".*T\\([0-9:]+\\).*" "\\1" timestamp)
-                     "??:??:??")))
-    (pcase event-type
-      ("session-start"
-       (let ((command (cdr (assoc "command" event))))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize "═══ SESSION START ═══\n" 'face 'efrit-progress-section-header)
-                 (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (format "Command: %s\n" command))))
-      ("session-end"
-       (let ((success (cdr (assoc "success" event))))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize (format "═══ SESSION %s ═══\n"
-                                    (if success "COMPLETE" "FAILED"))
-                            'face (if success 'efrit-progress-success 'efrit-progress-error)))))
-      ("tool-start"
-       (let ((tool (cdr (assoc "tool" event)))
-             (repeat (cdr (assoc "repeat_count" event))))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize (format "▶ %s" tool) 'face 'efrit-progress-tool-name)
-                 (if (and repeat (> repeat 1))
-                     (format " (repeat #%d)" repeat)
-                   "")
-                 "\n")))
-      ("tool-result"
-       (let ((tool (cdr (assoc "tool" event)))
-             (success (cdr (assoc "success" event))))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize (format "◀ %s %s\n" tool (if success "✓" "✗"))
-                            'face (if success 'efrit-progress-success 'efrit-progress-error)))))
-      ("text"
-       (let ((message (cdr (assoc "message" event)))
-             (msg-type (cdr (assoc "message_type" event))))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize (efrit-progress--truncate message 200)
-                            'face (pcase msg-type
-                                    ("claude" 'efrit-progress-claude-message)
-                                    ("error" 'efrit-progress-error)
-                                    (_ nil)))
-                 "\n")))
-      ("injection-received"
-       (let* ((content (cdr (assoc "content" event)))
-              (inject-type (if content (cdr (assoc "type" content)) "?"))
-              (inject-msg (if content (cdr (assoc "message" content)) "?")))
-         (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-                 (propertize (format "📥 INJECTION [%s]: %s\n"
-                                    inject-type
-                                    (efrit-progress--truncate inject-msg 100))
-                            'face 'efrit-progress-section-header))))
-      (_
-       (concat (propertize (format "[%s] " time-str) 'face 'efrit-progress-timestamp)
-               (format "%s\n" event-type))))))
-
+  "Format EVENT (alist or efrit-event) for display in inspector buffer."
+  (cond
+   ;; Handle efrit-event objects using their format method
+   ((eieio-object-p event)
+    (condition-case nil
+        (efrit-event-format event)
+      (error
+       ;; Fallback for formatting errors
+       (propertize (format "[unknown] %s\n" (eieio-object-class-name event))
+                  'face 'efrit-progress-error))))
+   ;; Fallback: handle raw alists (for backward compatibility)
+   ((consp event)
+    (let ((event-type (alist-get "type" event nil nil 'string-equal))
+          (timestamp (alist-get "timestamp" event nil nil 'string-equal)))
+      (if (and event-type timestamp)
+          ;; Convert alist to object and format
+          (condition-case nil
+              (let ((event-obj (efrit-event-from-alist event)))
+                (if event-obj
+                    (efrit-event-format event-obj)
+                  (propertize (format "[%s] Unknown event type\n" event-type)
+                             'face 'efrit-progress-error)))
+            (error
+             (propertize (format "[unknown] Error parsing event\n")
+                        'face 'efrit-progress-error)))
+        (propertize "[?] Invalid event\n" 'face 'efrit-progress-error))))
+   (t
+    (propertize "[?] Invalid event format\n" 'face 'efrit-progress-error))))
 (defvar efrit-watch--session-id nil
   "Session ID being watched in current buffer.")
 
