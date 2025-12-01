@@ -34,7 +34,7 @@
 
 ;; Declare variables from other modules
 (defvar efrit-mode-map)
-(defvar efrit-model "claude-3-5-sonnet-20241022" "Model to use for API calls")
+(defvar efrit-model nil "Model to use for API calls. When nil, uses efrit-default-model from efrit-config")
 
 ;;; User Interface Commands - Classic Chat Mode
 
@@ -157,7 +157,7 @@ Useful when the previous API call failed."
   (set-marker efrit--conversation-marker (point-min))
   (efrit--display-message
    (format "Efrit initialized. Enter your message below and press Enter to send.\nUse Shift+Enter for newlines. Using model: %s"
-           efrit-model)
+           (or efrit-model (require 'efrit-config) efrit-default-model))
    'assistant)
   (efrit--insert-prompt))
 
@@ -200,7 +200,7 @@ Returns the chat buffer for programmatic use."
       (set-marker efrit--conversation-marker (point-min))
 
       (efrit--display-message
-       (format "Efrit Chat Ready - Using model: %s" efrit-model)
+       (format "Efrit Chat Ready - Using model: %s" (or efrit-model (require 'efrit-config) efrit-default-model))
        'assistant)
 
       (efrit--insert-prompt))
@@ -234,7 +234,7 @@ The previous session is saved before clearing if auto-save is enabled."
       (set-marker efrit--conversation-marker (point-min))
 
       (efrit--display-message
-       (format "Conversation cleared - Using model: %s" efrit-model)
+       (format "Conversation cleared - Using model: %s" (or efrit-model (require 'efrit-config) efrit-default-model))
        'assistant)
 
       (efrit--insert-prompt)

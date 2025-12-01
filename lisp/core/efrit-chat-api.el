@@ -21,6 +21,7 @@
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-chat-buffer)
+(require 'efrit-common)
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -28,14 +29,16 @@
 (declare-function efrit-tools-system-prompt "efrit-tools")
 (declare-function efrit-tools-get-context "efrit-tools")
 (declare-function efrit-common-get-api-url "efrit-common")
+(declare-function efrit-common-escape-json-unicode "efrit-common")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
 (declare-function efrit-tools-eval-sexp "efrit-tools")
 (declare-function efrit-unified-context-add-message "efrit-session")
 (declare-function efrit-chat--on-message-sent "efrit-chat-persistence")
 
 ;; Declare variables from other modules
-(defvar efrit-model "claude-3-5-sonnet-20241022" "Model to use for API calls")
+(defvar efrit-model nil "Model to use for API calls. When nil, uses efrit-default-model from efrit-config")
 (defvar efrit-max-tokens 4096 "Maximum tokens in API response")
+(defvar efrit-default-model nil "Default model for API calls")
 
 ;;; Internal variables - Classic Chat Mode
 
@@ -198,8 +201,9 @@ For text results:
          (url-request-method "POST")
          (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
+         (model (or efrit-model (require 'efrit-config) efrit-default-model))
          (request-data
-         `(("model" . ,efrit-model)
+         `(("model" . ,model)
          ("max_tokens" . ,efrit-max-tokens)
          ("temperature" . ,efrit-temperature)
          ,@(when system-prompt
@@ -248,11 +252,7 @@ For text results:
                                   ))
          (json-string (json-encode request-data))
          ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-         (escaped-json (replace-regexp-in-string
-                        "[^\x00-\x7F]"
-                        (lambda (char)
-                          (format "\\\\u%04X" (string-to-char char)))
-                        json-string))
+         (escaped-json (efrit-common-escape-json-unicode json-string))
          (url-request-data (encode-coding-string escaped-json 'utf-8)))
     ;; Send request
     (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit--handle-api-response nil t t)))
@@ -599,8 +599,9 @@ is a list of tool_result blocks for sending back to Claude."
                                                            (substring-no-properties content)
                                                          content)))))
                                    messages))
+         (model (or efrit-model (require 'efrit-config) efrit-default-model))
          (request-data
-          `(("model" . ,efrit-model)
+          `(("model" . ,model)
             ("max_tokens" . ,efrit-max-tokens)
             ("temperature" . ,efrit-temperature)
             ("system" . ,system-prompt)
@@ -627,16 +628,12 @@ is a list of tool_result blocks for sending back to Claude."
                                                   ("required" . ["path"]))))
                               ])))
             ))
-         (json-string (json-encode request-data))
-         ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-         (escaped-json (replace-regexp-in-string
-                        "[^\x00-\x7F]"
-                        (lambda (char)
-                          (format "\\\\u%04X" (string-to-char char)))
-                        json-string))
-         (url-request-data (encode-coding-string escaped-json 'utf-8)))
+            (json-string (json-encode request-data))
+            ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
+            (escaped-json (efrit-common-escape-json-unicode json-string))
+            (url-request-data (encode-coding-string escaped-json 'utf-8)))
 
-    ;; Log request details to work buffer
+            ;; Log request details to work buffer
     (efrit-streamlined--log-to-work
      (format "Request: %s characters, %s tools enabled"
              (length url-request-data)
