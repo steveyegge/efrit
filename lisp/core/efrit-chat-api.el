@@ -209,7 +209,7 @@ In interactive mode, uses async request with callbacks."
          (url-request-method "POST")
          (url-request-extra-headers (efrit--build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
-         (model (or efrit-model (require 'efrit-config) efrit-default-model))
+         (model (or efrit-model efrit-default-model))
          (request-data
          `(("model" . ,model)
          ("max_tokens" . ,efrit-max-tokens)
