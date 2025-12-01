@@ -65,25 +65,24 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
+compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc $(ELC_FILES)
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
 lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
-lisp/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+lisp/core/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Core module dependencies
-lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc lisp/interfaces/efrit-multi-turn.elc
+lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc lisp/interfaces/efrit-agent.elc
 lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
-lisp/core/efrit-common.elc: lisp/core/efrit-log.elc
+lisp/core/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Support module dependencies
 lisp/support/efrit-ui.elc: lisp/core/efrit-common.elc lisp/core/efrit-log.elc
 # Interface module dependencies
-lisp/interfaces/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
-lisp/interfaces/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
-lisp/interfaces/efrit-do.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
+lisp/interfaces/efrit-remote-queue.elc: lisp/core/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-agent.elc: lisp/core/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-do.elc: lisp/core/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
 # Root module dependencies
-lisp/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
-lisp/efrit.elc: lisp/core/efrit-config.elc lisp/efrit-tools.elc
+lisp/efrit.elc: lisp/core/efrit-config.elc lisp/core/efrit-tools.elc
 
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
