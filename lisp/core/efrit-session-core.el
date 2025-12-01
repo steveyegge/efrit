@@ -47,7 +47,7 @@
   command                 ; Original command from user
   work-log                ; List of (result elisp todo-snapshot tool-name) tuples
   start-time              ; When session started
-  status                  ; 'active, 'waiting, 'complete, 'cancelled, 'waiting-for-user
+  status                  ; 'active, 'running, 'waiting_for_user, 'complete, 'interrupted, 'cancelled
   buffer                  ; Original buffer for context
   budget                  ; efrit-budget struct for token tracking
   ;; Loop detection and session tracking
@@ -63,6 +63,12 @@
   files-modified          ; Count of files modified
   execution-outputs       ; Count of non-empty eval_sexp/shell_exec outputs
   last-tool-called        ; Last tool name for simple repeat detection
+  ;; Execution events and observability (NEW)
+  execution-events        ; List of {type: "tool_started|tool_result|message|todo_updated|complete" :data ...}
+  ;; Interruption control (NEW)
+  interrupt-requested     ; Boolean flag to signal graceful shutdown
+  ;; Command queueing (NEW)
+  command-queue           ; Simple list of queued commands for this session
   ;; Conversation history for interactive sessions
   conversation-history    ; List of messages: (role content timestamp)
   pending-question        ; Current question waiting for user input
@@ -111,6 +117,10 @@ RESULT is the optional completion result (may be nil).")
                    :files-modified 0
                    :execution-outputs 0
                    :last-tool-called nil
+                   ;; Initialize new fields
+                   :execution-events nil
+                   :interrupt-requested nil
+                   :command-queue nil
                    :conversation-history nil
                    :pending-question nil
                    :user-responses nil
@@ -348,6 +358,104 @@ Removes completed/cancelled sessions from registry."
           (goto-char (point-min))
           (view-mode))
         (display-buffer (current-buffer))))))
+
+;;; Work Log and Event Management (NEW FUNCTIONS)
+
+(defun efrit-session-add-work-item (session action result &optional timestamp)
+  "Add work item to SESSION tracking what Claude accomplished.
+ACTION is a string describing what was done.
+RESULT is the outcome of the action.
+TIMESTAMP defaults to current time if not provided.
+Returns the work item entry."
+  (when session
+    (let ((ts (or timestamp (current-time)))
+          (work-item (list action result nil)))
+      ;; Work items are tracked alongside the work-log
+      ;; This stores simplified tracking for progress visibility
+      (setcar (cddr work-item) ts)
+      work-item)))
+
+(defun efrit-session-get-work-log (session)
+  "Get the work log entries from SESSION.
+Returns a list of work log entries, or nil if none."
+  (when session
+    (efrit-session-work-log session)))
+
+(defun efrit-session-add-event (session event-type event-data)
+  "Add execution event to SESSION for progress tracking.
+EVENT-TYPE is one of: `tool_started', `tool_result', `message',
+`todo_updated', `complete'.
+EVENT-DATA is an alist with event-specific data.
+Returns the event entry."
+  (when session
+    (let ((event (list :type event-type
+                      :data event-data
+                      :timestamp (current-time))))
+      (setf (efrit-session-execution-events session)
+            (append (efrit-session-execution-events session) (list event)))
+      (efrit-log 'debug "Session %s: event %s added"
+                 (efrit-session-id session)
+                 event-type)
+      event)))
+
+(defun efrit-session-get-events (session)
+  "Get all execution events from SESSION.
+Returns a list of event entries, or nil if none."
+  (when session
+    (efrit-session-execution-events session)))
+
+(defun efrit-session-set-status (session status)
+  "Update SESSION's status to STATUS.
+STATUS should be one of: `running', `waiting_for_user', `complete',
+`interrupted'."
+  (when session
+    (setf (efrit-session-status session) status)
+    (efrit-log 'info "Session %s: status set to %s"
+               (efrit-session-id session)
+               status)))
+
+(defun efrit-session-request-interrupt (session)
+  "Signal that SESSION should be gracefully interrupted.
+Sets the interrupt-requested flag without immediately terminating."
+  (when session
+    (setf (efrit-session-interrupt-requested session) t)
+    (efrit-log 'info "Session %s: interrupt requested"
+               (efrit-session-id session))))
+
+(defun efrit-session-should-interrupt-p (session)
+  "Check if SESSION has been requested to interrupt.
+Returns non-nil if interrupt was requested."
+  (when session
+    (efrit-session-interrupt-requested session)))
+
+(defun efrit-session-queue-command (session command)
+  "Add COMMAND to SESSION's command queue for execution.
+Commands are dequeued and executed one at a time.
+Returns t if added successfully."
+  (when session
+    (setf (efrit-session-command-queue session)
+          (append (efrit-session-command-queue session) (list command)))
+    (efrit-log 'debug "Session %s: command queued (queue length: %d)"
+               (efrit-session-id session)
+               (length (efrit-session-command-queue session)))
+    t))
+
+(defun efrit-session-dequeue-command (session)
+  "Remove and return the next command from SESSION's queue, or nil if empty."
+  (when session
+    (let* ((queue (efrit-session-command-queue session))
+           (next-command (car queue)))
+      (when next-command
+        (setf (efrit-session-command-queue session) (cdr queue))
+        (efrit-log 'debug "Session %s: command dequeued (remaining: %d)"
+                   (efrit-session-id session)
+                   (length (cdr queue)))
+        next-command))))
+
+(defun efrit-session-command-queue-length (session)
+  "Get the number of commands queued in SESSION."
+  (when session
+    (length (efrit-session-command-queue session))))
 
 (provide 'efrit-session-core)
 

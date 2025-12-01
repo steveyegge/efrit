@@ -125,13 +125,13 @@ This is called automatically when the data directory is initialized."
   :type 'string
   :group 'efrit)
 
+;; Backwards compatibility alias - declare it before the variable
+(defvaralias 'efrit-max-tokens 'efrit-default-max-tokens)
+
 (defcustom efrit-default-max-tokens 8192
   "Default maximum tokens for responses.
 Claude 3.5 Sonnet supports up to 8192 tokens with beta headers."
   :type 'integer
   :group 'efrit)
-
-;; Backwards compatibility alias - both names access the same value
-(defvaralias 'efrit-max-tokens 'efrit-default-max-tokens)
 
 ;;; efrit-config.el ends here

@@ -353,10 +353,10 @@ This signals that a multi-step session is complete."
   "Handle glob_files tool to list files matching pattern.
 Includes safety limits to prevent hanging on large directories."
   ;; Validate input - must be a hash table with required 'pattern' field
-  (let* ((input (efrit-glob-files-input-create tool-input))
-         (validation (efrit-glob-files-input-is-valid input)))
-    (if (not (car validation))
-        (format "\n[Error: %s]" (cdr validation))
+   (let* ((input (efrit-glob-files-input-create tool-input))
+          (validation (efrit-glob-files-input-is-valid input)))
+     (if (not (car validation))
+         (format "\n[Error: %s]" (cdr validation))
       (let* ((pattern (efrit-glob-files-input-get-pattern input))
              (extension (efrit-glob-files-input-get-extension input))
              (recursive (efrit-glob-files-input-get-recursive input)))

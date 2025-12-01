@@ -46,7 +46,7 @@
 ;; This is done at load time to ensure subdirectories are accessible
 ;; for both package.el and manual installations without additional configuration.
 (let ((lisp-dir (file-name-directory (or load-file-name buffer-file-name))))
-  (dolist (subdir '("core" "interfaces" "support" "dev"))
+  (dolist (subdir '("core" "interfaces" "support" "dev" "tools"))
     (let ((full-path (expand-file-name subdir lisp-dir)))
       (when (file-directory-p full-path)
         (add-to-list 'load-path full-path)))))

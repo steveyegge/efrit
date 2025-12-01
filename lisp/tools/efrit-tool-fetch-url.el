@@ -29,6 +29,10 @@
 (require 'dom)
 (require 'cl-lib)
 
+;; Declare url-http-target-url which is set during URL fetching
+(defvar url-http-target-url nil
+  "The URL being fetched in url-http.")
+
 ;;; Customization
 
 (defcustom efrit-fetch-url-security-level 'allowlist
@@ -53,7 +57,7 @@ Options:
     "orgmode.org"
     "www.emacswiki.org" "emacswiki.org")
   "List of allowed domains for URL fetching.
-Only used when `efrit-fetch-url-security-level' is 'allowlist."
+Only used when `efrit-fetch-url-security-level' is \\='allowlist."
   :type '(repeat string)
   :group 'efrit-tool-utils)
 
@@ -257,10 +261,10 @@ Currently supports simple selectors: tag, #id, .class"
   "Retrieve content from a specific URL.
 
 ARGS is an alist with:
-  url - page to fetch (required)
-  selector - optional CSS selector to extract specific content
-  format - 'text', 'markdown', or 'html' (default: markdown)
-  max_length - truncate if longer (default: 50000)
+   url - page to fetch (required)
+   selector - optional CSS selector to extract specific content
+   format - \\='text\\=', \\='markdown\\=', or \\='html\\=' (default: markdown)
+   max_length - truncate if longer (default: 50000)
 
 Returns standard tool response with:
   content - the page content in requested format
