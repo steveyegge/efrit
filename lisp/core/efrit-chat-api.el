@@ -23,6 +23,7 @@
 (require 'efrit-chat-buffer)
 (require 'efrit-common)
 (require 'efrit-tool-edit-buffer)
+(require 'efrit-chat-transparency)
 
 ;; Declare functions from other modules to avoid warnings
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -395,14 +396,17 @@ is a list of tool_result blocks for sending back to Claude."
                 (setq message-text (concat message-text text)))))
 
           ;; Handle tool calls
-          (when (string= type "tool_use")
-            (let* ((tool-name (gethash "name" item))
-                   (tool-id (gethash "id" item))  ; Captured for use in tool_result messages (ef-5af)
-                   (input (gethash "input" item)))
+           (when (string= type "tool_use")
+             (let* ((tool-name (gethash "name" item))
+                    (tool-id (gethash "id" item))  ; Captured for use in tool_result messages (ef-5af)
+                    (input (gethash "input" item)))
 
-              ;; Execute tool call
-              (let ((result (condition-case tool-err
-                                (cond
+               ;; Display the tool call for transparency
+               (efrit-transparency--display-tool-call tool-name input)
+
+               ;; Execute tool call
+               (let ((result (condition-case tool-err
+                                 (cond
                                  ;; Handle eval_sexp tool call
                                  ((string= tool-name "eval_sexp")
                                  (let ((expr (gethash "expr" input)))
@@ -477,15 +481,18 @@ is a list of tool_result blocks for sending back to Claude."
                                                    (efrit--safe-error-message tool-err)
                                                  "Unknown error"))))))
 
-                ;; Collect ALL tool results for sending back to Claude
-                (push (efrit--build-tool-result tool-id result) tool-results)
+                ;; Display the tool result for transparency
+                 (efrit-transparency--display-tool-result tool-name result)
 
-                ;; In chat mode, don't display tool results inline
-                ;; Only show errors (buffer objects and nil results are suppressed)
-                ;; For image results (alists), just skip display
-                (when (and (stringp result)
-                           (string-match-p "^Error:" result))
-                  (setq message-text (concat message-text "\n" result))))))))
+                 ;; Collect ALL tool results for sending back to Claude
+                 (push (efrit--build-tool-result tool-id result) tool-results)
+
+                 ;; In chat mode, don't display tool results inline
+                 ;; Only show errors (buffer objects and nil results are suppressed)
+                 ;; For image results (alists), just skip display
+                 (when (and (stringp result)
+                            (string-match-p "^Error:" result))
+                   (setq message-text (concat message-text "\n" result))))))))
 
       ;; Check if we should delegate to efrit-do
       (when (efrit--detect-incomplete-task content message-text)
@@ -520,8 +527,8 @@ is a list of tool_result blocks for sending back to Claude."
             ;; Tools already executed in efrit--extract-content-and-tools, just display the result
             (condition-case-unless-debug process-err
                 (let ((highlighted-text (efrit--sanitize-chat-text message-text)))
-                  ;; Display the message with tool results
-                  (efrit--display-message highlighted-text 'assistant)
+                  ;; Display the message with incremental/transparency features
+                  (efrit-transparency--display-incremental highlighted-text)
 
                   ;; Add to conversation history
                   (push `((role . "assistant")
@@ -537,11 +544,10 @@ is a list of tool_result blocks for sending back to Claude."
                ;; Fallback to displaying the raw message if processing fails
                (message "Error processing response: %s"
                        (efrit--safe-error-message process-err))
-               (efrit--display-message
+               (efrit-transparency--display-incremental
                 (concat message-text
                        "\n\n[Error processing response: "
-                       (efrit--safe-error-message process-err) "]")
-                'assistant)
+                       (efrit--safe-error-message process-err) "]"))
 
                ;; Add original message to history
                (push `((role . "assistant")
@@ -556,7 +562,7 @@ is a list of tool_result blocks for sending back to Claude."
 
           ;; Just display the text directly if tools are disabled
           (progn
-            (efrit--display-message message-text 'assistant)
+            (efrit-transparency--display-incremental message-text)
 
             ;; Add to conversation history
             (push `((role . "assistant")
