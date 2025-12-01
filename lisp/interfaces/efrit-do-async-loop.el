@@ -31,6 +31,12 @@
 (require 'efrit-session)
 (require 'efrit-progress-buffer)
 (require 'efrit-chat-response)
+(require 'efrit-executor)
+
+(declare-function efrit-do--execute-tool "efrit-do")
+(declare-function efrit-do--command-system-prompt "efrit-do")
+(declare-function efrit-do--get-current-tools-schema "efrit-do")
+(defvar efrit-default-model)
 
 ;;; Customization
 
@@ -109,23 +115,34 @@ Returns the session ID."
   "Send request to Claude API for SESSION.
 Async operation with callback for response handling."
   (let* ((messages (efrit-session-get-api-messages-for-continuation session)))
-    ;; This would delegate to the executor's async API call
-    ;; For now, we define the callback structure
     (efrit-do-async--api-call
+     session
      messages
      (lambda (response error)
        (if error
            (efrit-do-async--on-api-error session error)
          (efrit-do-async--on-api-response session response))))))
 
-(defun efrit-do-async--api-call (messages _callback)
-  "Make async API call to Claude with MESSAGES.
-_CALLBACK is (lambda (response error) ...) - reserved for future integration.
-Placeholder for integration with actual executor."
-  (efrit-log 'debug "API call would send %d messages" (length messages))
-  ;; This would use efrit-executor--api-request
-  ;; For now, just log
-  nil)
+(defun efrit-do-async--api-call (session messages callback)
+  "Make async API call to Claude with MESSAGES for SESSION.
+CALLBACK is (lambda (response error) ...) called when complete."
+  (efrit-log 'debug "API call sending %d messages" (length messages))
+  (require 'efrit-do)
+  (let* ((session-id (efrit-session-id session))
+         (system-prompt (efrit-do--command-system-prompt nil nil nil session-id nil))
+         (request-data
+          `(("model" . ,efrit-default-model)
+            ("max_tokens" . 8192)
+            ("temperature" . 0.0)
+            ("messages" . ,messages)
+            ("system" . ,system-prompt)
+            ("tools" . ,(efrit-do--get-current-tools-schema)))))
+    (efrit-executor--api-request
+     request-data
+     (lambda (response)
+       (if (and response (efrit-response-error response))
+           (funcall callback nil (efrit-error-message (efrit-response-error response)))
+         (funcall callback response nil))))))
 
 (defun efrit-do-async--on-api-response (session response)
   "Handle API RESPONSE for SESSION.
@@ -162,6 +179,10 @@ CONTENT is a vector of content blocks from Claude API response."
   (let ((session-id (efrit-session-id session))
         (results nil))
     
+    ;; CRITICAL: Store Claude's full response BEFORE executing tools
+    ;; This maintains proper message order for API continuation
+    (efrit-session-add-assistant-response session content)
+    
     ;; Process each content item from the vector
     (dotimes (i (length content))
       (let* ((item (aref content i))
@@ -179,9 +200,9 @@ CONTENT is a vector of content blocks from Claude API response."
             (efrit-progress-insert-event session-id 'tool_started
               `((:tool . ,tool-name) (:input . ,input)))
             
-            ;; Execute tool (would integrate with actual executor)
+            ;; Execute tool via the real executor
             (let ((tool-result (efrit-do-async--execute-single-tool
-                               session tool-name input)))
+                               session tool-id tool-name input)))
               ;; Fire result event
               (efrit-progress-insert-event session-id 'tool_result
                 `((:tool . ,tool-name) (:result . ,tool-result)))
@@ -200,15 +221,25 @@ CONTENT is a vector of content blocks from Claude API response."
     ;; Continue loop
     (efrit-do-async--continue-iteration session)))
 
-(defun efrit-do-async--execute-single-tool (session tool-name _input)
-  "Execute single TOOL-NAME with _INPUT for SESSION.
+(defun efrit-do-async--execute-single-tool (session tool-id tool-name input)
+  "Execute single TOOL-NAME with INPUT for SESSION.
+TOOL-ID is the tool use ID from Claude's response.
 Returns tool result or error message."
   (let ((session-id (efrit-session-id session)))
-    (efrit-log 'debug "Session %s: executing tool %s" session-id tool-name)
-    
-    ;; This would delegate to actual tool executor
-    ;; For now, return placeholder result
-    (format "Tool %s executed with result" tool-name)))
+    (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
+               session-id tool-name tool-id)
+    (require 'efrit-do)
+    (condition-case err
+        (let ((tool-item (make-hash-table :test 'equal)))
+          (puthash "id" tool-id tool-item)
+          (puthash "name" tool-name tool-item)
+          (puthash "input" input tool-item)
+          (efrit-do--execute-tool tool-item))
+      (error
+       (let ((error-msg (format "Error executing %s: %s"
+                                tool-name (error-message-string err))))
+         (efrit-log 'error "Session %s: %s" session-id error-msg)
+         error-msg)))))
 
 (defun efrit-do-async--on-api-error (session error)
   "Handle API ERROR for SESSION."
