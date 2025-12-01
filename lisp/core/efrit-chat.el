@@ -179,29 +179,32 @@ Useful when the previous API call failed."
 ;;;###autoload
 (defun efrit-chat ()
   "Start efrit chat session - interactive buffer like ChatGPT.
-If a previous session exists, offers to restore it."
+If a previous session exists, offers to restore it.
+Returns the chat buffer for programmatic use."
   (interactive)
-  (switch-to-buffer (efrit--setup-buffer))
-  (setq buffer-read-only nil)
-  ;; Check if we should restore a previous session
-  (unless (efrit-chat-maybe-restore)
-    ;; No restore - start fresh
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (setq-local efrit--message-history nil)
-      (setq-local efrit--response-in-progress nil)
-      (setq-local efrit--conversation-marker nil)
-      (setq-local efrit--input-marker nil)
-      (setq-local efrit--current-conversation nil))
+  (let ((buffer (efrit--setup-buffer)))
+    (switch-to-buffer buffer)
+    (setq buffer-read-only nil)
+    ;; Check if we should restore a previous session
+    (unless (efrit-chat-maybe-restore)
+      ;; No restore - start fresh
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (setq-local efrit--message-history nil)
+        (setq-local efrit--response-in-progress nil)
+        (setq-local efrit--conversation-marker nil)
+        (setq-local efrit--input-marker nil)
+        (setq-local efrit--current-conversation nil))
 
-    (setq-local efrit--conversation-marker (make-marker))
-    (set-marker efrit--conversation-marker (point-min))
+      (setq-local efrit--conversation-marker (make-marker))
+      (set-marker efrit--conversation-marker (point-min))
 
-    (efrit--display-message
-     (format "Efrit Chat Ready - Using model: %s" efrit-model)
-     'assistant)
+      (efrit--display-message
+       (format "Efrit Chat Ready - Using model: %s" efrit-model)
+       'assistant)
 
-    (efrit--insert-prompt)))
+      (efrit--insert-prompt))
+    buffer))
 
 ;;;###autoload
 (defun efrit-chat-clear ()

@@ -77,6 +77,7 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
     (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
+    (define-key map (kbd "a") 'efrit-agent)   ; 'a' for agent buffer
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (sync)
     (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
@@ -134,6 +135,7 @@
       (insert "  M-x efrit-setup-keybindings\n\n")
       (insert "  Then use C-c C-e prefix:\n")
       (insert "    C-c C-e c  - efrit-chat\n")
+      (insert "    C-c C-e a  - efrit-agent (agentic session buffer)\n")
       (insert "    C-c C-e d  - efrit-do\n")
       (insert "    C-c C-e D  - efrit-do-async\n")
       (insert "    C-c C-e q  - Start remote queue\n")
@@ -161,6 +163,9 @@
 
 ;;;###autoload
 (autoload 'efrit-do-async "efrit-do" "Execute natural language command in Emacs asynchronously" t)
+
+;;;###autoload
+(autoload 'efrit-agent "efrit-agent" "Open or switch to the Efrit agent buffer" t)
 
 ;;;###autoload
 (autoload 'efrit-remote-queue-start "efrit-remote-queue" "Start the remote queue system" t)
