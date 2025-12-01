@@ -26,6 +26,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'efrit-tools)
+(require 'efrit-tool-inputs)
 
 ;; Forward declarations
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
@@ -237,8 +238,8 @@ Each todo has content, status, and activeForm.
 
 This is a Pure Executor implementation - it simply stores what
 Claude sends without validation or state machine logic."
-  (let* ((todos-array (when (hash-table-p tool-input)
-                        (gethash "todos" tool-input)))
+  (let* ((input (efrit-todo-write-input-create tool-input))
+         (todos-array (efrit-todo-write-input-get-todos input))
          (new-todos nil))
     ;; Convert the input array to our internal TODO item format
     (when (and todos-array (> (length todos-array) 0))
@@ -296,15 +297,10 @@ Claude sends without validation or state machine logic."
 
 (defun efrit-do--handle-buffer-create (tool-input input-str)
   "Handle buffer creation."
-  (let* ((name (if (hash-table-p tool-input)
-                  (gethash "name" tool-input)
-                ""))
-         (content (if (hash-table-p tool-input)
-                     (gethash "content" tool-input)
-                   input-str))
-         (mode (when (hash-table-p tool-input)
-                 (let ((mode-str (gethash "mode" tool-input)))
-                   (when mode-str (intern mode-str))))))
+  (let* ((input (efrit-buffer-create-input-create tool-input))
+         (name (efrit-buffer-create-input-get-name input))
+         (content (or (efrit-buffer-create-input-get-content input) input-str))
+         (mode (efrit-buffer-create-input-get-mode input)))
     (condition-case err
         (let ((result (efrit-tools-create-buffer name content mode)))
           (format "\n[%s]" result))
@@ -321,9 +317,8 @@ Claude sends without validation or state machine logic."
 
 (defun efrit-do--handle-format-todo-list (tool-input)
   "Handle TODO list formatting."
-  (let ((sort-by (when (hash-table-p tool-input)
-                   (let ((sort-str (gethash "sort_by" tool-input)))
-                     (when sort-str (intern sort-str))))))
+  (let* ((input (efrit-format-todo-list-input-create tool-input))
+         (sort-by (efrit-format-todo-list-input-get-sort-by input)))
     (condition-case err
         (let ((result (efrit-tools-format-todo-list efrit-do--current-todos sort-by)))
           (format "\n[Formatted TODO list]\n%s" result))
@@ -333,7 +328,8 @@ Claude sends without validation or state machine logic."
 (defun efrit-do--handle-session-complete (tool-input)
   "Handle session_complete tool with TOOL-INPUT hash table.
 This signals that a multi-step session is complete."
-  (let ((message (gethash "message" tool-input)))
+  (let* ((input (efrit-session-complete-input-create tool-input))
+         (message (efrit-session-complete-input-get-message input)))
     ;; Return a special marker that the async handler can detect
     (format "\n[SESSION-COMPLETE: %s]" (or message "Task completed"))))
 
@@ -357,11 +353,13 @@ This signals that a multi-step session is complete."
   "Handle glob_files tool to list files matching pattern.
 Includes safety limits to prevent hanging on large directories."
   ;; Validate input - must be a hash table with required 'pattern' field
-  (if (not (hash-table-p tool-input))
-      "\n[Error: glob_files requires a hash table input with 'pattern' and 'extension' fields]"
-    (let* ((pattern (gethash "pattern" tool-input))
-           (extension (gethash "extension" tool-input))
-           (recursive (gethash "recursive" tool-input t)))
+  (let* ((input (efrit-glob-files-input-create tool-input))
+         (validation (efrit-glob-files-input-is-valid input)))
+    (if (not (car validation))
+        (format "\n[Error: %s]" (cdr validation))
+      (let* ((pattern (efrit-glob-files-input-get-pattern input))
+             (extension (efrit-glob-files-input-get-extension input))
+             (recursive (efrit-glob-files-input-get-recursive input)))
 
       ;; Validate required fields
       (cond
@@ -433,35 +431,31 @@ Includes safety limits to prevent hanging on large directories."
 Sets the session to waiting-for-user state and emits a progress event."
   (require 'efrit-session)
   (require 'efrit-progress)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: request_user_input requires a hash table input with 'question' field]"
-    (let* ((question (gethash "question" tool-input))
-           (options (gethash "options" tool-input))
-           (session (efrit-session-active)))
-      (cond
-       ((or (null question) (string-empty-p question))
-        "\n[Error: request_user_input requires 'question' field]")
+  (let* ((input (efrit-request-user-input-input-create tool-input))
+         (validation (efrit-request-user-input-input-is-valid input)))
+    (if (not (car validation))
+        (format "\n[Error: %s]" (cdr validation))
+      (let* ((question (efrit-request-user-input-input-get-question input))
+             (options (efrit-request-user-input-input-get-options input))
+             (session (efrit-session-active)))
+        (if (not session)
+            "\n[Error: request_user_input requires an active session]"
+          ;; Set pending question on session
+          (efrit-session-set-pending-question
+           session question
+           (when options options))
 
-       ((not session)
-        "\n[Error: request_user_input requires an active session]")
+          ;; Emit progress event
+          (efrit-progress-show-message
+           (format "Question for user: %s" question)
+           'claude)
 
-       (t
-        ;; Set pending question on session
-        (efrit-session-set-pending-question
-         session question
-         (when options (append options nil)))  ; Convert vector to list
-
-        ;; Emit progress event
-        (efrit-progress-show-message
-         (format "Question for user: %s" question)
-         'claude)
-
-        ;; Return a special marker that the executor can recognize
-        (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
-                question
-                (if options
-                    (format "\nOptions: %s" (mapconcat #'identity options ", "))
-                  "")))))))
+          ;; Return a special marker that the executor can recognize
+          (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
+                  question
+                  (if options
+                      (format "\nOptions: %s" (mapconcat #'identity options ", "))
+                    ""))))))))
 
 (defun efrit-do--handle-confirm-action (tool-input)
   "Handle confirm_action tool to get user confirmation for destructive operations.
