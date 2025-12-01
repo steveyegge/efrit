@@ -399,18 +399,21 @@ Creates a new session ID if needed."
 
 (defun efrit-chat-maybe-restore ()
   "Check for recent sessions and offer to restore.
-Returns t if a session was restored, nil otherwise."
+Returns t if a session was restored, nil otherwise.
+In batch mode (noninteractive), skips restoration to avoid prompting for input."
   (when efrit-chat-auto-restore
-    (let ((sessions (efrit-chat-list-sessions)))
-      (when (and sessions
-                 (yes-or-no-p
-                  (format "Restore previous chat? (%s, %d msgs) "
-                          (efrit-chat--format-time-ago
-                           (alist-get 'updated_at (car sessions)))
-                          (or (alist-get 'message_count (car sessions)) 0))))
-        (efrit-chat--restore-session-to-buffer
-         (efrit-chat-load-session (alist-get 'id (car sessions))))
-        t))))
+    ;; Skip restoration prompts in batch/noninteractive mode
+    (unless noninteractive
+      (let ((sessions (efrit-chat-list-sessions)))
+        (when (and sessions
+                   (yes-or-no-p
+                    (format "Restore previous chat? (%s, %d msgs) "
+                            (efrit-chat--format-time-ago
+                             (alist-get 'updated_at (car sessions)))
+                            (or (alist-get 'message_count (car sessions)) 0))))
+          (efrit-chat--restore-session-to-buffer
+           (efrit-chat-load-session (alist-get 'id (car sessions))))
+          t)))))
 
 (provide 'efrit-chat-persistence)
 
