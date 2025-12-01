@@ -29,6 +29,7 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-progress)
+(require 'efrit-chat-response)
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--execute-tool "efrit-do")
 (declare-function efrit-do--get-current-tools-schema "efrit-do")
@@ -249,11 +250,11 @@ Returns a plist with keys:
     ;; Process each content item
     (dotimes (i (length content))
       (let* ((item (aref content i))
-             (type (gethash "type" item)))
+             (type (efrit-content-item-type item)))
         (cond
          ;; Handle text content
          ((string= type "text")
-          (when-let* ((text (gethash "text" item)))
+          (when-let* ((text (efrit-content-item-text item)))
             (setq result-text (concat result-text text))
             (efrit-progress-show-message text 'claude)))
 
@@ -346,15 +347,15 @@ CRITICAL: This function maintains proper Claude API message format by:
           (efrit-executor--handle-error "No response from API" callback)
 
         ;; Check for API errors
-        (if-let* ((error-obj (gethash "error" response)))
-            (let* ((error-type (gethash "type" error-obj))
-                   (error-message (gethash "message" error-obj))
+        (if-let* ((error-obj (efrit-response-error response)))
+            (let* ((error-type (efrit-error-type error-obj))
+                   (error-message (efrit-error-message error-obj))
                    (error-str (format "API Error (%s): %s" error-type error-message)))
               (efrit-executor--handle-error error-str callback))
 
           ;; Process successful response
-          (let* ((content (gethash "content" response))
-                 (stop-reason (gethash "stop_reason" response))
+          (let* ((content (efrit-response-content response))
+                 (stop-reason (efrit-response-stop-reason response))
                  (session (efrit-session-active))
                  (session-complete-p (string= stop-reason "end_turn")))
 
@@ -633,13 +634,13 @@ Returns a plist with:
         (tool-result-blocks '()))
     (dotimes (i (length content))
       (let* ((item (aref content i))
-             (type (gethash "type" item)))
+             (type (efrit-content-item-type item)))
         (cond
          ((string= type "text")
-          (setq result-text (concat result-text (gethash "text" item))))
+          (setq result-text (concat result-text (or (efrit-content-item-text item) ""))))
 
          ((string= type "tool_use")
-          (let* ((tool-id (gethash "id" item))
+          (let* ((tool-id (efrit-tool-use-id item))
                  (tool-result
                   (condition-case tool-err
                       (efrit-executor--execute-tool item session)
@@ -676,8 +677,8 @@ Returns the final result string."
                 ("system" . ,system-prompt)
                 ("tools" . ,(efrit-executor--get-tools-schema))))
              (response (efrit-executor--sync-api-call request-data))
-             (stop-reason (gethash "stop_reason" response))
-             (content (gethash "content" response)))
+             (stop-reason (efrit-response-stop-reason response))
+             (content (efrit-response-content response)))
 
         ;; Process response content
         (when content
