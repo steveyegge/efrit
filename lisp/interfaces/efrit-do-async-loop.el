@@ -30,6 +30,7 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-progress-buffer)
+(require 'efrit-chat-response)
 
 ;;; Customization
 
@@ -127,13 +128,14 @@ Placeholder for integration with actual executor."
   nil)
 
 (defun efrit-do-async--on-api-response (session response)
-  "Handle API RESPONSE for SESSION."
+  "Handle API RESPONSE for SESSION.
+RESPONSE is a hash table from Claude API with \"content\" and \"stop_reason\" fields."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'debug "Session %s: received response" session-id)
     
-    ;; Extract content and stop_reason from response
-    (let* ((content (alist-get 'content response))
-           (stop-reason (alist-get 'stop_reason response)))
+    ;; Extract content and stop_reason from response using proper accessors
+    (let* ((content (efrit-response-content response))
+           (stop-reason (efrit-response-stop-reason response)))
       
       ;; Fire progress event for message
       (when content
@@ -155,41 +157,48 @@ Placeholder for integration with actual executor."
          (efrit-do-async--stop-loop session "unknown-stop-reason"))))))
 
 (defun efrit-do-async--execute-tools (session content)
-  "Execute tools requested in Claude's CONTENT for SESSION."
+  "Execute tools requested in Claude's CONTENT for SESSION.
+CONTENT is a vector of content blocks from Claude API response."
   (let ((session-id (efrit-session-id session))
-        (tool-uses (seq-filter
-                   (lambda (block)
-                     (string= (alist-get 'type block) "tool_use"))
-                   content)))
-    (efrit-log 'info "Session %s: executing %d tools"
-               session-id (length tool-uses))
+        (results nil))
     
-    ;; Execute tools and collect results
-    (let ((results nil))
-      (dolist (tool-use tool-uses)
-        (let* ((tool-id (alist-get 'id tool-use))
-               (tool-name (alist-get 'name tool-use))
-               (input (alist-get 'input tool-use)))
-          ;; Fire progress event
-          (efrit-progress-insert-event session-id 'tool_started
-            `((:tool . ,tool-name) (:input . ,input)))
-          
-          ;; Execute tool (would integrate with actual executor)
-          (let ((tool-result (efrit-do-async--execute-single-tool
-                             session tool-name input)))
-            ;; Fire result event
-            (efrit-progress-insert-event session-id 'tool_result
-              `((:tool . ,tool-name) (:result . ,tool-result)))
+    ;; Process each content item from the vector
+    (dotimes (i (length content))
+      (let* ((item (aref content i))
+             (tool-use-info (efrit-content-item-as-tool-use item)))
+        ;; Execute tool_use blocks only (returns nil if not a tool_use)
+        (when tool-use-info
+          (let* ((tool-id (nth 0 tool-use-info))
+                 (tool-name (nth 1 tool-use-info))
+                 (input (nth 2 tool-use-info)))
             
-            ;; Collect result for API call
-            (push (efrit-session-build-tool-result tool-id tool-result)
-                  results))))
-      
-      ;; Send results back to Claude
-      (efrit-session-add-tool-results session (nreverse results))
-      
-      ;; Continue loop
-      (efrit-do-async--continue-iteration session))))
+            (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
+                       session-id tool-name tool-id)
+            
+            ;; Fire progress event
+            (efrit-progress-insert-event session-id 'tool_started
+              `((:tool . ,tool-name) (:input . ,input)))
+            
+            ;; Execute tool (would integrate with actual executor)
+            (let ((tool-result (efrit-do-async--execute-single-tool
+                               session tool-name input)))
+              ;; Fire result event
+              (efrit-progress-insert-event session-id 'tool_result
+                `((:tool . ,tool-name) (:result . ,tool-result)))
+              
+              ;; Collect result for API call
+              (push (efrit-session-build-tool-result tool-id tool-result)
+                    results))))))
+    
+    (efrit-log 'info "Session %s: executed %d tools"
+               session-id (length results))
+    
+    ;; Send results back to Claude if any tools were executed
+    (when results
+      (efrit-session-add-tool-results session (nreverse results)))
+    
+    ;; Continue loop
+    (efrit-do-async--continue-iteration session)))
 
 (defun efrit-do-async--execute-single-tool (session tool-name _input)
   "Execute single TOOL-NAME with _INPUT for SESSION.

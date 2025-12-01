@@ -68,6 +68,24 @@ Older content is archived when this limit is exceeded."
 (defvar efrit-progress-buffer-count 0
   "Counter for archiving timestamp uniqueness.")
 
+;;; Forward declarations for formatter functions
+;;; (These are defined later but used in efrit-progress-insert-event)
+
+(declare-function efrit-progress--format-message "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-tool-started "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-tool-result "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-todo-updated "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-status-changed "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-error "efrit-progress-buffer"
+                  (data))
+(declare-function efrit-progress--format-complete "efrit-progress-buffer"
+                  (data))
+
 ;;; Core Progress Buffer Functions
 
 (defun efrit-progress-create-buffer (session-id)

@@ -38,6 +38,26 @@
 ;; Initialize the context system on load
 (efrit-context-init)
 
+;;; Public API: Session Continuation (from efrit-session-worklog)
+;;
+;; These functions are part of the public session API and are used by the
+;; async execution loop to maintain session state across multiple Claude API
+;; calls. Applications should use only these functions, not the implementation
+;; details in efrit-session-worklog.el.
+
+;; Declare public session API functions for external visibility
+(declare-function efrit-session-add-tool-results
+                  "efrit-session-worklog"
+                  (session tool-results))
+
+(declare-function efrit-session-build-tool-result
+                  "efrit-session-worklog"
+                  (tool-id result &optional is-error))
+
+(declare-function efrit-session-get-api-messages-for-continuation
+                  "efrit-session-worklog"
+                  (session))
+
 (provide 'efrit-session)
 
 ;;; efrit-session.el ends here
