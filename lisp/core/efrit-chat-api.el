@@ -202,7 +202,9 @@ For text results:
 ;;; API functions - Classic Chat Mode
 
 (defun efrit--send-api-request (messages)
-  "Send MESSAGES to the Claude API and handle the response."
+  "Send MESSAGES to the Claude API and handle the response.
+In batch mode (non-interactive), uses synchronous request with timeout.
+In interactive mode, uses async request with callbacks."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers (efrit--build-headers api-key))
@@ -218,103 +220,134 @@ For text results:
          ;; Add the conversation history
          (mapcar (lambda (msg)
                `(("role" . ,(alist-get 'role msg))
-                     ("content" . ,(alist-get 'content msg))))
-                 messages)))
-             ,@(when efrit-enable-tools
-                 '(("tools" . [
-                                  ;; Primary tool: Elisp evaluation
-                                  (("name" . "eval_sexp")
-                                  ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("expr" . (("type" . "string")
-                                                                                  ("description" . "The Elisp expression to evaluate")))))
-                                                      ("required" . ["expr"]))))
+                      ("content" . ,(alist-get 'content msg))))
+                  messages)))
+              ,@(when efrit-enable-tools
+                  '(("tools" . [
+                                   ;; Primary tool: Elisp evaluation
+                                   (("name" . "eval_sexp")
+                                   ("description" . "Evaluate a Lisp expression and return the result. This is the primary tool for interacting with Emacs.")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("expr" . (("type" . "string")
+                                                                                   ("description" . "The Elisp expression to evaluate")))))
+                                                       ("required" . ["expr"]))))
 
-                                  ;; Context gathering
-                                  (("name" . "get_context")
-                                  ("description" . "Get comprehensive context information about the Emacs environment")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("request" . (("type" . "string")
-                                                                                     ("description" . "Optional context request")))))
-                                                      ("required" . []))))
+                                   ;; Context gathering
+                                   (("name" . "get_context")
+                                   ("description" . "Get comprehensive context information about the Emacs environment")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("request" . (("type" . "string")
+                                                                                      ("description" . "Optional context request")))))
+                                                       ("required" . []))))
 
-                                  ;; Path resolution (useful helper)
-                                  (("name" . "resolve_path")
-                                  ("description" . "Resolve a path from natural language description")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("path_description" . (("type" . "string")
-                                                                                             ("description" . "Natural language path description")))))
-                                                      ("required" . ["path_description"]))))
+                                   ;; Path resolution (useful helper)
+                                   (("name" . "resolve_path")
+                                   ("description" . "Resolve a path from natural language description")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("path_description" . (("type" . "string")
+                                                                                              ("description" . "Natural language path description")))))
+                                                       ("required" . ["path_description"]))))
 
-                                  ;; Image reading - THIS IS HOW CLAUDE SEES IMAGES
-                                  (("name" . "read_image")
-                                  ("description" . "View an image file so that YOU (Claude) can see its visual contents. This is the ONLY way you can see images - opening a file in Emacs with find-file does NOT give you vision access, it only displays the image to the user. When a user asks you to look at, describe, analyze, or examine an image, you MUST use this tool. Supports PNG, JPEG, GIF, and WebP formats.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("path" . (("type" . "string")
-                                                                                  ("description" . "Path to the image file")))))
-                                                      ("required" . ["path"]))))
+                                   ;; Image reading - THIS IS HOW CLAUDE SEES IMAGES
+                                   (("name" . "read_image")
+                                   ("description" . "View an image file so that YOU (Claude) can see its visual contents. This is the ONLY way you can see images - opening a file in Emacs with find-file does NOT give you vision access, it only displays the image to the user. When a user asks you to look at, describe, analyze, or examine an image, you MUST use this tool. Supports PNG, JPEG, GIF, and WebP formats.")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("path" . (("type" . "string")
+                                                                                   ("description" . "Path to the image file")))))
+                                                       ("required" . ["path"]))))
 
-                                  ;; Buffer creation and editing tools
-                                  (("name" . "create_buffer")
-                                  ("description" . "Create a new buffer with optional initial content and major mode. High-level tool for common buffer creation tasks.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("name" . (("type" . "string")
-                                                                                  ("description" . "Buffer name (required)")))
-                                                                      ("content" . (("type" . "string")
-                                                                                   ("description" . "Initial content to insert (optional)")))
-                                                                      ("mode" . (("type" . "string")
-                                                                                ("description" . "Major mode to enable, e.g. 'org-mode' or 'markdown-mode' (optional)")))
-                                                                      ("read-only" . (("type" . "boolean")
-                                                                                     ("description" . "Whether buffer should be read-only (optional, default false)")))))
-                                                      ("required" . ["name"]))))
+                                   ;; Buffer creation and editing tools
+                                   (("name" . "create_buffer")
+                                   ("description" . "Create a new buffer with optional initial content and major mode. High-level tool for common buffer creation tasks.")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("name" . (("type" . "string")
+                                                                                   ("description" . "Buffer name (required)")))
+                                                                       ("content" . (("type" . "string")
+                                                                                    ("description" . "Initial content to insert (optional)")))
+                                                                       ("mode" . (("type" . "string")
+                                                                                 ("description" . "Major mode to enable, e.g. 'org-mode' or 'markdown-mode' (optional)")))
+                                                                       ("read-only" . (("type" . "boolean")
+                                                                                      ("description" . "Whether buffer should be read-only (optional, default false)")))))
+                                                       ("required" . ["name"]))))
 
-                                  (("name" . "edit_buffer")
-                                  ("description" . "Insert or replace text in an existing buffer. High-level tool for buffer editing without needing complex Elisp.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("buffer" . (("type" . "string")
-                                                                                    ("description" . "Buffer name or buffer object (required)")))
-                                                                      ("text" . (("type" . "string")
-                                                                                ("description" . "Text to insert or replace (required)")))
-                                                                      ("position" . (("type" . "string")
-                                                                                    ("description" . "Where to insert ('start', 'end', 'point', or line number, default 'end')")))
-                                                                      ("replace" . (("type" . "boolean")
-                                                                                   ("description" . "If true, replace region between from-pos and to-pos (optional)")))
-                                                                      ("from-pos" . (("type" . "integer")
-                                                                                    ("description" . "Start position for replacement (required if replace=true)")))
-                                                                      ("to-pos" . (("type" . "integer")
-                                                                                  ("description" . "End position for replacement (required if replace=true)")))))
-                                                      ("required" . ["buffer" "text"]))))
+                                   (("name" . "edit_buffer")
+                                   ("description" . "Insert or replace text in an existing buffer. High-level tool for buffer editing without needing complex Elisp.")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("buffer" . (("type" . "string")
+                                                                                     ("description" . "Buffer name or buffer object (required)")))
+                                                                       ("text" . (("type" . "string")
+                                                                                 ("description" . "Text to insert or replace (required)")))
+                                                                       ("position" . (("type" . "string")
+                                                                                     ("description" . "Where to insert ('start', 'end', 'point', or line number, default 'end')")))
+                                                                       ("replace" . (("type" . "boolean")
+                                                                                    ("description" . "If true, replace region between from-pos and to-pos (optional)")))
+                                                                       ("from-pos" . (("type" . "integer")
+                                                                                     ("description" . "Start position for replacement (required if replace=true)")))
+                                                                       ("to-pos" . (("type" . "integer")
+                                                                                   ("description" . "End position for replacement (required if replace=true)")))))
+                                                       ("required" . ["buffer" "text"]))))
 
-                                  (("name" . "read_buffer")
-                                  ("description" . "Read contents of a buffer, optionally between specific positions.")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("buffer" . (("type" . "string")
-                                                                                    ("description" . "Buffer name or buffer object (required)")))
-                                                                      ("start" . (("type" . "integer")
-                                                                                 ("description" . "Start position (optional, default beginning)")))
-                                                                      ("end" . (("type" . "integer")
-                                                                               ("description" . "End position (optional, default end)")))))
-                                                      ("required" . ["buffer"]))))
+                                   (("name" . "read_buffer")
+                                   ("description" . "Read contents of a buffer, optionally between specific positions.")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("buffer" . (("type" . "string")
+                                                                                     ("description" . "Buffer name or buffer object (required)")))
+                                                                       ("start" . (("type" . "integer")
+                                                                                  ("description" . "Start position (optional, default beginning)")))
+                                                                       ("end" . (("type" . "integer")
+                                                                                ("description" . "End position (optional, default end)")))))
+                                                       ("required" . ["buffer"]))))
 
-                                  (("name" . "buffer_info")
-                                  ("description" . "Get information about a buffer (name, size, mode, modified status, etc.)")
-                                  ("input_schema" . (("type" . "object")
-                                                      ("properties" . (("buffer" . (("type" . "string")
-                                                                                    ("description" . "Buffer name or buffer object (required)")))))
-                                                      ("required" . ["buffer"]))))
+                                   (("name" . "buffer_info")
+                                   ("description" . "Get information about a buffer (name, size, mode, modified status, etc.)")
+                                   ("input_schema" . (("type" . "object")
+                                                       ("properties" . (("buffer" . (("type" . "string")
+                                                                                     ("description" . "Buffer name or buffer object (required)")))))
+                                                       ("required" . ["buffer"]))))
 
-                                  ])))
-                                  ))
+                                   ])))
+                                   ))
          (json-string (json-encode request-data))
          ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
          (escaped-json (efrit-common-escape-json-unicode json-string))
          (url-request-data (encode-coding-string escaped-json 'utf-8)))
-    ;; Send request
-    (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit--handle-api-response nil t t)))
+     ;; In batch mode, use synchronous request (async callbacks don't work)
+     ;; In interactive mode, use async request
+     (if noninteractive
+         ;; Batch mode: synchronous request with immediate response handling
+         (condition-case err
+             (let ((response-buffer (url-retrieve-synchronously (or efrit-api-url (efrit-common-get-api-url)) t t 30)))
+               (if response-buffer
+                   (unwind-protect
+                       (with-current-buffer response-buffer
+                         ;; The status is passed as nil for sync requests when successful
+                         ;; Simulate the url-retrieve callback with success status
+                         (efrit--handle-api-response nil))
+                     ;; Clean up the response buffer after handling
+                     (when (buffer-live-p response-buffer)
+                       (kill-buffer response-buffer)))
+                 (with-current-buffer (efrit--setup-buffer)
+                   (setq buffer-read-only nil)
+                   (let ((inhibit-read-only t))
+                     (setq-local efrit--response-in-progress nil)
+                     (efrit--display-message "Connection timeout: Could not reach API" 'system)
+                     (efrit--insert-prompt)))))
+           (error
+            (with-current-buffer (efrit--setup-buffer)
+              (setq buffer-read-only nil)
+              (let ((inhibit-read-only t))
+                (setq-local efrit--response-in-progress nil)
+                (efrit--display-message 
+                 (format "API connection error: %s" (error-message-string err))
+                 'system)
+                (efrit--insert-prompt)))))
+       ;; Interactive mode: async request with callback
+       (url-retrieve (or efrit-api-url (efrit-common-get-api-url)) 'efrit--handle-api-response nil t t))))
 
 (defun efrit--parse-api-response ()
-  "Parse JSON response from current buffer and return content.
-Returns the content hash-table from the API response, or nil if parsing fails."
+  "Parse JSON response from current buffer and return content, or signal API error.
+Returns the content hash-table from the API response.
+Throws an error if the response contains an API error object."
   (goto-char (point-min))
   (when (search-forward-regexp "^$" nil t)
     (let* ((json-object-type 'hash-table)
@@ -322,10 +355,23 @@ Returns the content hash-table from the API response, or nil if parsing fails."
            (json-key-type 'string)
            ;; Ensure proper UTF-8 decoding
            (coding-system-for-read 'utf-8)
-           (raw-response (decode-coding-region (point) (point-max) 'utf-8 t))
-           (response (json-read-from-string raw-response))
-           (content (gethash "content" response)))
-      content)))
+           (raw-response (decode-coding-region (point) (point-max) 'utf-8 t)))
+      (condition-case parse-err
+          (let ((response (json-read-from-string raw-response)))
+            ;; Check if the API returned an error object
+            (if-let* ((error-obj (gethash "error" response)))
+                (let ((error-type (gethash "type" error-obj))
+                      (error-msg (gethash "message" error-obj)))
+                  (efrit-log-error "API error response: type=%s message=%s" error-type error-msg)
+                  ;; Throw an error so it gets caught and displayed properly
+                  (error "API Error (%s): %s" error-type error-msg))
+              ;; Success - return the content
+              (gethash "content" response)))
+        (error
+         (efrit-log-error "Failed to parse API response JSON: %s" parse-err)
+         (efrit-log-debug "Raw response was: %s" (substring raw-response 0 (min 500 (length raw-response))))
+         (error "Failed to parse API response: %s" (error-message-string parse-err)))))))
+
 
 (defun efrit--process-http-status (status)
   "Process HTTP status and return non-nil if there's an error.
@@ -337,31 +383,101 @@ If there's an error, handle it and clean up the buffer."
       (kill-buffer (current-buffer)))
     t)) ; Return t to indicate error was handled
 
+(defun efrit--classify-error (error-details)
+  "Classify an error and return (type description recommendation).
+Analyzes error details to determine if it's rate limiting, auth, network, or other."
+  (let ((error-str (format "%s" error-details)))
+    (cond
+     ;; Rate limiting errors
+     ((or (string-match-p "429" error-str)
+          (string-match-p "rate" error-str)
+          (string-match-p "too.*many.*request" error-str))
+      '("rate-limit" 
+        "Rate limit exceeded" 
+        "Please wait before retrying. Use M-x efrit-retry-last-message after a short delay."))
+     ;; Authentication errors
+     ((or (string-match-p "401" error-str)
+          (string-match-p "unauthorized" error-str)
+          (string-match-p "API.*key" error-str)
+          (string-match-p "authentication" error-str))
+      '("auth-error"
+        "Authentication failed" 
+        "Check your ANTHROPIC_API_KEY environment variable or Emacs keyring."))
+     ;; Permission/quota errors
+     ((or (string-match-p "403" error-str)
+          (string-match-p "forbidden" error-str)
+          (string-match-p "quota" error-str))
+      '("permission-error"
+        "Permission or quota exceeded"
+        "Check your API account status or quota limits."))
+     ;; Bad request errors
+     ((or (string-match-p "400" error-str)
+          (string-match-p "bad.*request" error-str)
+          (string-match-p "invalid" error-str))
+      '("bad-request"
+        "Invalid request"
+        "There may be an issue with how the request was formatted. Try sending a simpler message."))
+     ;; Server errors
+     ((or (string-match-p "500" error-str)
+          (string-match-p "502" error-str)
+          (string-match-p "503" error-str)
+          (string-match-p "internal.*error" error-str))
+      '("server-error"
+        "API server error"
+        "The API service is temporarily unavailable. Try again in a moment."))
+     ;; Network/connection errors
+     ((or (string-match-p "nodename.*provided" error-str)
+          (string-match-p "connection.*refused" error-str)
+          (string-match-p "timeout" error-str)
+          (string-match-p "network" error-str))
+      '("network-error"
+        "Network connection error"
+        "Check your internet connection and firewall settings."))
+     ;; Default unknown error
+     (t
+      '("unknown-error"
+        "Unknown error"
+        "Unexpected error occurred. Check the logs for more details.")))))
+
 (defun efrit--handle-http-error (error-details)
-  "Handle HTTP error with ERROR-DETAILS."
+  "Handle HTTP error with ERROR-DETAILS, providing better classification and guidance."
   (require 'efrit-log)
   (efrit-log-error "[efrit-chat] API Error: %s" error-details)
-  (with-current-buffer (efrit--setup-buffer)
-    (setq buffer-read-only nil)
-    (let ((inhibit-read-only t))
-      ;; Remove "thinking" indicator if present
-      (when efrit--response-in-progress
-        (save-excursion
-          (goto-char (point-max))
-          (when (search-backward "System: Thinking..." nil t)
-            (let ((start (match-beginning 0)))
-              (when (search-forward "Thinking..." nil t)
-                (delete-region start (point)))))))
+  
+  (let ((error-info (efrit--classify-error error-details)))
+    (let ((error-type (nth 0 error-info))
+          (error-description (nth 1 error-info))
+          (recommendation (nth 2 error-info)))
+      
+      (efrit-log-error "[efrit-chat] Error type: %s" error-type)
+      
+      (with-current-buffer (efrit--setup-buffer)
+        (setq buffer-read-only nil)
+        (let ((inhibit-read-only t))
+          ;; Remove "thinking" indicator if present
+          (when efrit--response-in-progress
+            (save-excursion
+              (goto-char (point-max))
+              (when (search-backward "System: Thinking..." nil t)
+                (let ((start (match-beginning 0)))
+                  (when (search-forward "Thinking..." nil t)
+                    (delete-region start (point)))))))
 
-      ;; Clear in-progress flag
-      (setq-local efrit--response-in-progress nil)
+          ;; Clear in-progress flag
+          (setq-local efrit--response-in-progress nil)
 
-      ;; Display error with retry hint
-      (efrit--display-message
-       (format "API Error: %s\n(Use M-x efrit-retry-last-message to retry, or M-x efrit-show-errors for all errors)" error-details) 'system)
+          ;; Display detailed error message with classification and recommendations
+          (efrit--display-message
+           (concat
+            (format "⚠️ %s (%s)\n" error-description error-type)
+            (format "\nDetails: %s\n" error-details)
+            (format "\nWhat to do: %s\n" recommendation)
+            "\nOptions: M-x efrit-retry-last-message (retry)  |  M-x efrit-chat-clear (start fresh)")
+           'system)
 
-      ;; Insert prompt for next message
-      (efrit--insert-prompt))))
+          ;; Insert prompt for next message
+          (efrit--insert-prompt))))))
+
 
 (defun efrit--detect-incomplete-task (_content _message-text)
   "Detect if CONTENT represents an incomplete multi-step task.
@@ -614,7 +730,7 @@ is a list of tool_result blocks for sending back to Claude."
 
   (unless (efrit--process-http-status status)
     ;; Only proceed if there was no HTTP error
-    (condition-case _api-err
+    (condition-case api-err
         (let ((content (efrit--parse-api-response)))
           (if content
               ;; Execute tool processing in the chat buffer context
@@ -646,10 +762,17 @@ is a list of tool_result blocks for sending back to Claude."
                    ;; Normal response handling (no tools, just text)
                    (t
                     (efrit--update-ui-with-response message-text)))))
-            ;; Handle case where content is nil
-            (efrit--handle-parse-error)))
-      ;; Handle any errors during parsing
-      (error (efrit--handle-parse-error)))
+             ;; Handle case where content is nil
+             (efrit--handle-parse-error)))
+       ;; Handle parsing errors or API error responses
+       (error
+        (let ((error-msg (error-message-string api-err)))
+          (if (string-match-p "^API Error" error-msg)
+              ;; This is an API error response (e.g., authentication failure)
+              ;; Treat it like an HTTP error with detailed classification
+              (efrit--handle-http-error error-msg)
+            ;; This is a JSON parsing error
+            (efrit--handle-parse-error)))))
     ;; Note: Let url-retrieve handle its own buffer cleanup
     ;; Manual cleanup here causes format-message(nil) errors
     ))
