@@ -7,7 +7,7 @@ PACKAGE_NAME = efrit
 VERSION = 0.3.0
 
 # Source files
-EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el)
+EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el lisp/tools/*.el)
 ELC_FILES = $(EL_FILES:.el=.elc)
 
 # Test files
@@ -92,6 +92,7 @@ lisp/%.elc: lisp/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -103,6 +104,7 @@ lisp/core/%.elc: lisp/core/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -114,6 +116,7 @@ lisp/support/%.elc: lisp/support/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
@@ -125,6 +128,19 @@ lisp/interfaces/%.elc: lisp/interfaces/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/tools/%.elc: lisp/tools/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
