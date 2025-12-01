@@ -136,11 +136,10 @@ Potential improvements to transparency features:
 5. **Token usage** - Display token count for each message
 6. **Conversation history** - Visual timeline of multi-turn conversations
 
-## Related Issues
+## Related Documentation
 
-- [ef-4iy](https://beads.local/ef-4iy) - Missing conversation flow and transparency features
-- [ef-gcq](https://beads.local/ef-gcq) - Async response handling in batch mode
-- [ef-z8d](https://beads.local/ef-z8d) - Error recovery and rate limiting display
+- [ARCHITECTURE.md](../ARCHITECTURE.md) - Core design principles
+- [README.md](../README.md) - User documentation
 
 ## See Also
 
