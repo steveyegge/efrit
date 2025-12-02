@@ -182,9 +182,11 @@ RESPONSE is a hash table from Claude API with \"content\" and \"stop_reason\" fi
 
 (defun efrit-do-async--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for SESSION.
-CONTENT is a vector of content blocks from Claude API response."
+CONTENT is a vector of content blocks from Claude API response.
+Handles: tool execution, error recovery, session state updates, and session_complete signals."
   (let ((session-id (efrit-session-id session))
-        (results nil))
+        (results nil)
+        (session-complete-requested nil))
     
     ;; CRITICAL: Store Claude's full response BEFORE executing tools
     ;; This maintains proper message order for API continuation
@@ -207,16 +209,34 @@ CONTENT is a vector of content blocks from Claude API response."
             (efrit-progress-insert-event session-id 'tool_started
               `((:tool . ,tool-name) (:input . ,input)))
             
-            ;; Execute tool via the real executor
-            (let ((tool-result (efrit-do-async--execute-single-tool
-                               session tool-id tool-name input)))
-              ;; Fire result event
+            ;; Execute tool and capture both result and error state
+            (let* ((tool-result (efrit-do-async--execute-single-tool
+                                session tool-id tool-name input))
+                   ;; Check if result contains session_complete signal
+                   (is-session-complete (string-match-p "\\[SESSION-COMPLETE:" tool-result))
+                   ;; Check if result indicates an error
+                   (is-error (string-match-p "^Error " tool-result)))
+              
+              ;; Fire result event with status
               (efrit-progress-insert-event session-id 'tool_result
-                `((:tool . ,tool-name) (:result . ,tool-result)))
+                `((:tool . ,tool-name) 
+                  (:result . ,tool-result)
+                  (:success . ,(not is-error))))
+              
+              ;; Update session work log with tool execution details
+              ;; Tool name is tool_name for compression awareness
+              (efrit-session-add-work session tool-result 
+                                      (format "(execute-tool %S)" tool-name)
+                                      nil
+                                      tool-name)
               
               ;; Collect result for API call
               (push (efrit-session-build-tool-result tool-id tool-result)
-                    results))))))
+                    results)
+              
+              ;; Mark if session_complete was requested
+              (when is-session-complete
+                (setq session-complete-requested t))))))
     
     (efrit-log 'info "Session %s: executed %d tools"
                session-id (length results))
@@ -225,28 +245,64 @@ CONTENT is a vector of content blocks from Claude API response."
     (when results
       (efrit-session-add-tool-results session (nreverse results)))
     
-    ;; Continue loop
-    (efrit-do-async--continue-iteration session)))
+    ;; Check if session_complete was signaled by a tool
+    (if session-complete-requested
+        (progn
+          (efrit-log 'info "Session %s: session_complete signal detected, stopping loop"
+                     session-id)
+          (efrit-do-async--stop-loop session "session-complete"))
+      ;; Normal path: continue the loop
+      (efrit-do-async--continue-iteration session))))
 
 (defun efrit-do-async--execute-single-tool (session tool-id tool-name input)
   "Execute single TOOL-NAME with INPUT for SESSION.
 TOOL-ID is the tool use ID from Claude's response.
-Returns tool result or error message."
+Wraps execution with error handling, validation, and detailed logging.
+Returns tool result (success or error message).
+Error messages start with 'Error ' for easy detection by caller."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
                session-id tool-name tool-id)
     (require 'efrit-do)
     (condition-case err
-        (let ((tool-item (make-hash-table :test 'equal)))
-          (puthash "id" tool-id tool-item)
-          (puthash "name" tool-name tool-item)
-          (puthash "input" input tool-item)
-          (efrit-do--execute-tool tool-item))
+        (progn
+          ;; Validate input structure
+          (unless (hash-table-p input)
+            (error "Tool input must be a hash table, got %s" (type-of input)))
+          
+          ;; Create tool item for execution
+          (let ((tool-item (make-hash-table :test 'equal)))
+            (puthash "id" tool-id tool-item)
+            (puthash "name" tool-name tool-item)
+            (puthash "input" input tool-item)
+            
+            ;; Execute the tool
+            (let ((result (efrit-do--execute-tool tool-item)))
+              ;; Validate result is a string
+              (unless (stringp result)
+                (setq result (format "%S" result)))
+              
+              ;; Log successful execution
+              (efrit-log 'debug "Session %s: tool %s returned %d chars"
+                         session-id tool-name (length result))
+              result)))
+      
+      ;; Handle execution errors with detailed context
       (error
-       (let ((error-msg (format "Error executing %s: %s"
-                                tool-name (error-message-string err))))
-         (efrit-log 'error "Session %s: %s" session-id error-msg)
-         error-msg)))))
+       (let* ((error-data (cdr err))
+              (error-msg (cond
+                          ((stringp error-data) error-data)
+                          ((listp error-data) (mapconcat #'prin1-to-string error-data " "))
+                          (t (format "%S" error-data))))
+              ;; Detect specific error conditions
+              (is-interrupt (string-match-p "Quit" error-msg))
+              (formatted-error (format "Error executing %s: %s"
+                                      tool-name error-msg)))
+         ;; Log with appropriate level
+         (if is-interrupt
+             (efrit-log 'warn "Session %s: user interrupted tool execution" session-id)
+           (efrit-log 'error "Session %s: %s" session-id formatted-error))
+         formatted-error))))))
 
 (defun efrit-do-async--on-api-error (session error)
   "Handle API ERROR for SESSION."
