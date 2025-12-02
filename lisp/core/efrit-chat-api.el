@@ -116,7 +116,8 @@ When nil, uses the centralized configuration."
 ;;; Helper Functions
 
 (defun efrit--get-api-key ()
-  "Get the Anthropic API key from .authinfo file."
+  "Get the Anthropic API key.
+Supports multiple sources: environment variable, authinfo, or config file."
   (require 'efrit-common)
   (efrit-common-get-api-key))
 

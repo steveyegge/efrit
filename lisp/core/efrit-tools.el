@@ -156,10 +156,6 @@ Signals an error if rate limit would be exceeded."
       ""
     (format "%S" result)))
 
-(defun efrit--get-api-key ()
-  "Get the Anthropic API key from .authinfo file."
-  (efrit-common-get-api-key))
-
 ;;; Core Elisp Evaluation
 
 (defun efrit-tools--safe-read (string)
