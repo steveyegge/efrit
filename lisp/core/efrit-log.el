@@ -75,7 +75,23 @@ Levels in order: debug, info, warn, error, none"
         (let ((safe-message (replace-regexp-in-string "%" "%%" message)))
           (message "%s%s" prefix safe-message))))))
 
-;;; Convenience functions
+        (defun efrit-log-safe (level format-string &rest args)
+          "Log message with automatic API key and sensitive data sanitization.
+        Scans all ARGS for strings that look like API keys and sanitizes them.
+        LEVEL is the log level (debug, info, warn, error).
+        FORMAT-STRING and ARGS are as in efrit-log."
+          (let ((sanitized-args 
+                 (mapcar (lambda (arg)
+                           (if (and (stringp arg) 
+                                    (>= (length arg) 20)
+                                    (string-prefix-p "sk-" arg))
+                               ;; Sanitize API key-like strings
+                               (concat (substring arg 0 6) "..." (substring arg -4))
+                             arg))
+                         args)))
+            (apply #'efrit-log level format-string sanitized-args)))
+
+        ;;; Convenience functions
 
 (defsubst efrit-log-debug (format-string &rest args)
   "Log debug message."

@@ -72,18 +72,8 @@ Shows only first 6 and last 4 characters."
       (concat (substring key 0 6) "..." (substring key -4))
     "[INVALID-KEY]"))
 
-(defun efrit-common-safe-log (level format-string &rest args)
-  "Log message with automatic API key sanitization.
-Scans all ARGS for strings that look like API keys and sanitizes them."
-  (let ((sanitized-args 
-         (mapcar (lambda (arg)
-                   (if (and (stringp arg) 
-                            (>= (length arg) 20)
-                            (string-prefix-p "sk-" arg))
-                       (efrit-common--sanitize-key-for-logging arg)
-                     arg))
-                 args)))
-    (efrit-log level format-string sanitized-args)))
+(define-obsolete-function-alias 'efrit-common-safe-log 'efrit-log-safe "0.4.2"
+  "Use efrit-log-safe from efrit-log.el instead.")
 
     ;;; Error Message Formatting
 
