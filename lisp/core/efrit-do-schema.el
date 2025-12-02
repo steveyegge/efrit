@@ -452,20 +452,20 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                                      ("description" . "Max bytes to read (default: 100000)")))))
                       ("required" . ["path"]))))
    (("name" . "edit_file")
-    ("description" . "Make surgical edits to a file using find-and-replace. This is the PRIMARY tool for editing files - prefer this over eval_sexp for file modifications.
+     ("description" . "Make surgical edits to a file using find-and-replace. This is the PRIMARY tool for editing files - prefer this over eval_sexp for file modifications.
 
-EXAMPLES:
-- Simple replace: edit_file path=\"config.el\" old_str=\"old text\" new_str=\"new text\"
-- Replace all: edit_file path=\"code.el\" old_str=\"foo\" new_str=\"bar\" replace_all=true
-- Add context for uniqueness: Include surrounding lines in old_str if the text isn't unique
+   EXAMPLES:
+   - Simple replace: edit_file path=\"config.el\" old_str=\"old text\" new_str=\"new text\"
+   - Replace all: edit_file path=\"code.el\" old_str=\"foo\" new_str=\"bar\" replace_all=true
+   - Add context for uniqueness: Include surrounding lines in old_str if the text isn't unique
 
-IMPORTANT:
-- old_str must match EXACTLY (including whitespace and newlines)
-- By default, old_str must be unique in the file (use replace_all for multiple matches)
-- The file is saved automatically after editing
-- Returns a git-style diff showing the changes made
+   IMPORTANT:
+   - old_str must match EXACTLY (including whitespace and newlines)
+   - By default, old_str must be unique in the file (use replace_all for multiple matches)
+   - The file is saved automatically after editing
+   - Returns a git-style diff showing the changes made
 
-USE THIS TOOL INSTEAD OF eval_sexp for file edits - it's safer and shows diffs.")
+   USE THIS TOOL INSTEAD OF eval_sexp for file edits - it's safer and shows diffs.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
                                                   ("description" . "Absolute path to the file to edit (required)")))
@@ -476,6 +476,28 @@ USE THIS TOOL INSTEAD OF eval_sexp for file edits - it's safer and shows diffs."
                                       ("replace_all" . (("type" . "boolean")
                                                         ("description" . "If true, replace all occurrences. Otherwise old_str must be unique (default: false)")))))
                       ("required" . ["path" "old_str" "new_str"]))))
+   (("name" . "create_file")
+    ("description" . "Create a new file with the given content. This is the PRIMARY tool for creating new files - prefer this over eval_sexp for file creation.
+
+   EXAMPLES:
+   - Create new file: create_file path=\"/path/to/new.el\" content=\"(provide 'new)\"
+   - Overwrite existing: create_file path=\"config.el\" content=\"...\" overwrite=true
+
+   IMPORTANT:
+   - Path must be absolute
+   - Parent directories are created automatically if needed
+   - By default, will NOT overwrite existing files (use overwrite=true)
+   - Returns a git-style diff showing the new content
+
+   USE THIS TOOL INSTEAD OF eval_sexp for file creation - it's atomic and shows diffs.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Absolute path to the file to create (required)")))
+                                      ("content" . (("type" . "string")
+                                                    ("description" . "Content to write to the file (required)")))
+                                      ("overwrite" . (("type" . "boolean")
+                                                      ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))))
+                      ("required" . ["path" "content"]))))
    (("name" . "file_info")
     ("description" . "Get metadata about files without reading contents. Useful for checking existence, size, type before reading.
 

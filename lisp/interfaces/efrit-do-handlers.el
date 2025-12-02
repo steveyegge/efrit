@@ -66,6 +66,7 @@
 (declare-function efrit-tool-search-content "efrit-tool-search-content")
 (declare-function efrit-tool-read-file "efrit-tool-read-file")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
+(declare-function efrit-tool-create-file "efrit-tool-create-file")
 (declare-function efrit-tool-file-info "efrit-tool-file-info")
 (declare-function efrit-tool-vcs-status "efrit-tool-vcs-status")
 (declare-function efrit-tool-vcs-diff "efrit-tool-vcs-diff")
@@ -632,6 +633,17 @@ Returns JSON-encoded list of checkpoint metadata."
                     tool-input '("path" "old_str" "new_str" "replace_all")))
              (result (efrit-tool-edit-file args)))
         (efrit-do--format-tool-result result "Edit File Result"))))
+
+(defun efrit-do--handle-create-file (tool-input)
+  "Handle create_file tool to atomically create a file with content."
+  (require 'efrit-tool-create-file)
+  (or (efrit-do--validate-hash-table tool-input "create_file")
+      (efrit-do--validate-required tool-input "create_file" "path")
+      (efrit-do--validate-required tool-input "create_file" "content")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("path" "content" "overwrite")))
+             (result (efrit-tool-create-file args)))
+        (efrit-do--format-tool-result result "Create File Result"))))
 
 (defun efrit-do--handle-file-info (tool-input)
   "Handle file_info tool to get metadata about files."

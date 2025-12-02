@@ -151,14 +151,17 @@ If PATH is nil or empty, return project root.
 When `efrit-project-sandbox' is non-nil and ALLOW-OUTSIDE is nil,
 signals an error if the resolved path is outside project root.
 
+Symlinks are resolved via `file-truename' for sandbox enforcement,
+preventing escape via symlinks pointing outside the project.
+
 Returns a plist with:
-  :path - the absolute resolved path
+  :path - the absolute resolved path (symlinks resolved)
   :path-relative - path relative to project root (or nil if outside)
   :project-root - the project root directory
   :is-sensitive - t if path matches sensitive file patterns
   :outside-project - t if path is outside project root"
   (let* ((project-root (efrit-tool--get-project-root))
-         (resolved (cond
+         (expanded (cond
                     ;; Empty or nil path -> project root
                     ((or (null path) (string-empty-p path))
                      project-root)
@@ -168,6 +171,10 @@ Returns a plist with:
                     ;; Relative path -> resolve against project root
                     (t
                      (expand-file-name path project-root))))
+         ;; Resolve symlinks for sandbox enforcement
+         (resolved (if (file-exists-p expanded)
+                       (file-truename expanded)
+                     expanded))
          (in-project (efrit-tool--path-in-directory-p resolved project-root))
          (relative-path (when in-project
                           (file-relative-name resolved project-root))))
@@ -400,6 +407,14 @@ in the first CHECK-BYTES of the file."
           (goto-char (point-min))
           (search-forward "\0" nil t)))))
 
+;;; JSON Boolean Handling
+
+(defun efrit-json-bool (value)
+  "Normalize a JSON boolean VALUE to Elisp boolean.
+JSON decoders may represent `false` as `:json-false' or `nil'.
+This function returns t only for truthy, non-:json-false values."
+  (and value (not (eq value :json-false))))
+
 ;;; Timestamp Formatting
 
 (defun efrit-tool-format-time (time)
@@ -595,29 +610,76 @@ ARGS are passed to `format'."
     (efrit-log level (format "[%s] %s" tool-name (apply #'format message args)))))
 
 
-;;; Word Counting Utility
 
-(defun efrit-utils-count-words (text)
-  "Count words in TEXT.
-Returns the number of words, where a word is defined as a sequence
-of non-whitespace characters separated by whitespace.
+;;; Project Agent Instructions (AGENTS.md/CLAUDE.md)
 
-Example:
-  (efrit-utils-count-words \"Hello world\") => 2
-  (efrit-utils-count-words \"  foo   bar  baz  \") => 3"
-  (if (or (null text) (string-empty-p text))
-      0
-    (let ((count 0)
-          (in-word nil))
-      (dotimes (i (length text))
-        (let ((char (aref text i)))
-          (if (memq char '(?  ?	 ?
- ?))
-              (setq in-word nil)
-            (unless in-word
-              (setq count (1+ count))
-              (setq in-word t)))))
-      count)))
+(defcustom efrit-agent-instructions-files
+  '(".efrit/AGENTS.md" "AGENTS.md" "AGENT.md" "CLAUDE.md" ".efrit/CLAUDE.md")
+  "List of filenames to search for project-specific agent instructions.
+Files are checked in order; the first one found is used."
+  :type '(repeat string)
+  :group 'efrit-tool-utils)
+
+(defcustom efrit-agent-instructions-max-size 50000
+  "Maximum size in bytes for agent instructions file.
+Larger files are truncated with a warning."
+  :type 'integer
+  :group 'efrit-tool-utils)
+
+(defun efrit-tool--find-agent-instructions-file ()
+  "Find the first agent instructions file in project root.
+Searches for files listed in `efrit-agent-instructions-files'.
+Returns the absolute path if found, nil otherwise."
+  (let ((project-root (efrit-tool--get-project-root)))
+    (cl-some (lambda (filename)
+               (let ((path (expand-file-name filename project-root)))
+                 (when (file-readable-p path)
+                   path)))
+             efrit-agent-instructions-files)))
+
+(defun efrit-tool--read-agent-instructions ()
+  "Read and return project-specific agent instructions.
+Returns a plist with:
+  :content - the file contents (possibly truncated)
+  :file - the file path that was read
+  :truncated - t if content was truncated
+Returns nil if no instructions file found."
+  (when-let* ((file (efrit-tool--find-agent-instructions-file)))
+    (condition-case err
+        (let* ((attrs (file-attributes file))
+               (size (file-attribute-size attrs))
+               (truncated (> size efrit-agent-instructions-max-size))
+               (content (with-temp-buffer
+                          (insert-file-contents file nil 0
+                                                (min size efrit-agent-instructions-max-size))
+                          (buffer-string))))
+          (list :content content
+                :file file
+                :truncated truncated))
+      (error
+       (efrit-tool-log 'warn "agent-instructions"
+                       "Failed to read %s: %s" file (error-message-string err))
+       nil))))
+
+(defun efrit-tool--format-agent-instructions-for-prompt ()
+  "Format agent instructions for inclusion in system prompt.
+Returns a formatted string, or empty string if no instructions found."
+  (if-let* ((instructions (efrit-tool--read-agent-instructions)))
+      (let ((content (plist-get instructions :content))
+            (file (plist-get instructions :file))
+            (truncated (plist-get instructions :truncated)))
+        (concat "\n\nPROJECT-SPECIFIC INSTRUCTIONS:\n"
+                (format "(from %s%s)\n\n"
+                        (file-name-nondirectory file)
+                        (if truncated " [truncated]" ""))
+                content
+                "\n\n"))
+    ""))
+
+;;; Deprecated - moved to efrit-common.el
+
+(define-obsolete-function-alias 'efrit-utils-count-words 'efrit-common-count-words "0.4.2"
+  "Use efrit-common-count-words instead.")
 
 (provide 'efrit-tool-utils)
 

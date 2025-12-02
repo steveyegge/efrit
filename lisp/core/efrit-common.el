@@ -281,6 +281,27 @@ Returns truncated string with ellipsis (...) if needed."
 (define-obsolete-function-alias 'efrit-common-truncate-string 'efrit-truncate-string "0.4.2"
   "Use efrit-truncate-string instead.")
 
+(defun efrit-common-count-words (text)
+  "Count words in TEXT.
+Returns the number of words, where a word is defined as a sequence
+of non-whitespace characters separated by whitespace.
+
+Example:
+  (efrit-common-count-words \"Hello world\") => 2
+  (efrit-common-count-words \"  foo   bar  baz  \") => 3"
+  (if (or (null text) (string-empty-p text))
+      0
+    (let ((count 0)
+          (in-word nil))
+      (dotimes (i (length text))
+        (let ((char (aref text i)))
+          (if (memq char '(?  ?\t ?\n ?\r))
+              (setq in-word nil)
+            (unless in-word
+              (setq count (1+ count))
+              (setq in-word t)))))
+      count)))
+
 (defun efrit-common-escape-json-unicode (json-string)
   "Escape unicode characters in JSON-STRING for HTTP transmission.
 This prevents multibyte encoding errors when sending to APIs.

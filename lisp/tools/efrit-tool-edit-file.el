@@ -77,7 +77,7 @@ Returns a standard tool response with diff showing changes."
     (let* ((path-input (or (alist-get 'path args) ""))
            (old-str (alist-get 'old_str args))
            (new-str (alist-get 'new_str args))
-           (replace-all (alist-get 'replace_all args))
+           (replace-all (efrit-json-bool (alist-get 'replace_all args)))
            (warnings '()))
 
       ;; Validate required inputs
@@ -85,6 +85,8 @@ Returns a standard tool response with diff showing changes."
         (signal 'user-error (list "Path is required")))
       (unless old-str
         (signal 'user-error (list "old_str is required")))
+      (when (string-empty-p old-str)
+        (signal 'user-error (list "old_str must be a non-empty string")))
       (unless new-str
         (signal 'user-error (list "new_str is required")))
 

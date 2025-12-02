@@ -59,6 +59,7 @@
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 (declare-function efrit-set-project-root "efrit-tool-utils")
 (declare-function efrit-clear-project-root "efrit-tool-utils")
+(declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tool-utils")
 (defvar efrit-project-root)
 
 (require 'efrit-tools)
@@ -224,6 +225,7 @@ truncated to keep this many recent results."
     ("search_content"     . (efrit-do--handle-search-content . :tool-input))
     ("read_file"          . (efrit-do--handle-read-file . :tool-input))
     ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
+    ("create_file"        . (efrit-do--handle-create-file . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))
     ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
     ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))
@@ -820,6 +822,9 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           (efrit-do--command-examples)
           
           session-info
+          
+          ;; Include project-specific agent instructions (AGENTS.md/CLAUDE.md)
+          (efrit-tool--format-agent-instructions-for-prompt)
           
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
