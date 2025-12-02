@@ -34,7 +34,7 @@
   :type 'directory
   :group 'efrit-tool-utils)
 
-(defcustom efrit-undo-edit-max-versions 10
+(defcustom efrit-undo-edit-max-versions 5
   "Maximum number of undo versions to keep per file."
   :type 'integer
   :group 'efrit-tool-utils)
