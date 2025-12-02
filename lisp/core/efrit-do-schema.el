@@ -451,6 +451,33 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                       ("max_size" . (("type" . "number")
                                                      ("description" . "Max bytes to read (default: 100000)")))))
                       ("required" . ["path"]))))
+   (("name" . "undo_edit")
+     ("description" . "Undo the most recent edit to a specific file. Complementary to checkpoint/restore (which work at session level).
+
+   WHEN TO USE:
+   - You edited a file and want to revert just that file
+   - After running tests and finding that a specific file's change broke things
+   - You want to keep other files' changes but undo one file
+
+   EXAMPLES:
+   - Simple undo: undo_edit path=\"lisp/config.el\"
+
+   IMPORTANT:
+   - Reverts only the most recent edit to this file (not all changes in session)
+   - Each undo_edit removes one version, so you can call it multiple times
+   - Only works for files edited during this session
+   - Returns remaining undo versions available
+
+   WORKFLOW:
+   1. Edit file with edit_file
+   2. Run tests
+   3. If this file's change failed: undo_edit path=\"file.el\"
+   4. Try a different approach
+   5. Edit file again if needed")
+     ("input_schema" . (("type" . "object")
+                       ("properties" . (("path" . (("type" . "string")
+                                                   ("description" . "File path to undo (required)")))))
+                       ("required" . ["path"]))))
    (("name" . "edit_file")
      ("description" . "Make surgical edits to a file using find-and-replace. This is the PRIMARY tool for editing files - prefer this over eval_sexp for file modifications.
 
@@ -464,6 +491,7 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
    - By default, old_str must be unique in the file (use replace_all for multiple matches)
    - The file is saved automatically after editing
    - Returns a git-style diff showing the changes made
+   - Automatically tracked for undo_edit - can revert edits if tests fail
 
    USE THIS TOOL INSTEAD OF eval_sexp for file edits - it's safer and shows diffs.")
     ("input_schema" . (("type" . "object")

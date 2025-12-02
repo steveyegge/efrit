@@ -23,6 +23,7 @@
 (require 'efrit-tool-utils)
 (require 'cl-lib)
 (require 'diff)
+(require 'efrit-tool-undo-edit)
 
 ;;; Customization
 
@@ -170,18 +171,21 @@ Returns a standard tool response with diff showing changes."
                                 original-content new-content path)))
 
               ;; Write the new content
-              (with-temp-file path
-                (insert new-content))
+               (with-temp-file path
+                 (insert new-content))
 
-              ;; Return success with diff
-              (efrit-tool-success
-               `((path . ,path)
-                 (path_relative . ,path-relative)
-                 (replacements . ,match-count)
-                 (diff . ,diff-output)
-                 (old_size . ,(length original-content))
-                 (new_size . ,(length new-content)))
-               warnings))))))))
+               ;; Register with undo system
+               (efrit-undo-edit--register-edit path original-content)
+
+               ;; Return success with diff
+               (efrit-tool-success
+                `((path . ,path)
+                  (path_relative . ,path-relative)
+                  (replacements . ,match-count)
+                  (diff . ,diff-output)
+                  (old_size . ,(length original-content))
+                  (new_size . ,(length new-content)))
+                warnings))))))))
 
 (provide 'efrit-tool-edit-file)
 

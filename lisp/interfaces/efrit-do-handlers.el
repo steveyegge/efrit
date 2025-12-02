@@ -65,6 +65,7 @@
 (declare-function efrit-tool-project-files "efrit-tool-project-files")
 (declare-function efrit-tool-search-content "efrit-tool-search-content")
 (declare-function efrit-tool-read-file "efrit-tool-read-file")
+(declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
 (declare-function efrit-tool-file-info "efrit-tool-file-info")
@@ -638,6 +639,15 @@ Returns JSON-encoded list of checkpoint metadata."
                     tool-input '("path" "start_line" "end_line" "encoding" "max_size")))
              (result (efrit-tool-read-file args)))
         (efrit-do--format-tool-result result "Read File Result"))))
+
+(defun efrit-do--handle-undo-edit (tool-input)
+  "Handle undo_edit tool to revert the most recent edit to a file."
+  (require 'efrit-tool-undo-edit)
+  (or (efrit-do--validate-hash-table tool-input "undo_edit")
+      (efrit-do--validate-required tool-input "undo_edit" "path")
+      (let* ((args (efrit-do--extract-fields tool-input '("path")))
+             (result (efrit-tool-undo-edit args)))
+        (efrit-do--format-tool-result result "Undo Edit Result"))))
 
 (defun efrit-do--handle-edit-file (tool-input)
   "Handle edit_file tool to make surgical edits to a file."

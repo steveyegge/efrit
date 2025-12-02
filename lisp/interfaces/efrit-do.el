@@ -224,6 +224,7 @@ truncated to keep this many recent results."
     ("project_files"      . (efrit-do--handle-project-files . :tool-input))
     ("search_content"     . (efrit-do--handle-search-content . :tool-input))
     ("read_file"          . (efrit-do--handle-read-file . :tool-input))
+    ("undo_edit"          . (efrit-do--handle-undo-edit . :tool-input))
     ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
     ("create_file"        . (efrit-do--handle-create-file . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))

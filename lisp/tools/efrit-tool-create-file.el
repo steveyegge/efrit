@@ -22,6 +22,7 @@
 
 (require 'efrit-tool-utils)
 (require 'cl-lib)
+(require 'efrit-tool-undo-edit)
 
 ;;; Customization
 
@@ -89,6 +90,9 @@ Returns a standard tool response with creation details."
         ;; Write the file
         (with-temp-file path
           (insert content))
+
+        ;; Register with undo system (empty string for new files)
+        (efrit-undo-edit--register-edit path "")
 
         ;; Generate a diff-like output for new files
         (let* ((line-count (with-temp-buffer
