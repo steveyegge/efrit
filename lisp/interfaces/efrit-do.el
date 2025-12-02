@@ -1221,6 +1221,10 @@ Returns the session object for programmatic use."
   (interactive
    (list (read-string "Command: " nil 'efrit-do-history)))
   
+  ;; Validate command is not empty or whitespace-only
+  (when (string-empty-p (string-trim command))
+    (user-error "Command cannot be empty"))
+  
   ;; Check if there's already an active session
   (if (efrit-session-active)
       ;; Queue this command for later
@@ -1267,6 +1271,10 @@ Use \\[keyboard-quit] (C-g) to cancel execution during API calls.
 Returns the result string for programmatic use."
   (interactive
    (list (read-string "Command (sync): " nil 'efrit-do-history)))
+
+  ;; Validate command is not empty or whitespace-only
+  (when (string-empty-p (string-trim command))
+    (user-error "Command cannot be empty"))
 
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)
