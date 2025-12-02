@@ -149,6 +149,11 @@ RESULT is the optional completion result (may be nil).")
   (when session
     (efrit-log 'debug "Active session: %s" (efrit-session-id session))))
 
+(defun efrit-session-clear-active ()
+  "Clear the active multi-step session."
+  (setq efrit-session--active nil)
+  (efrit-log 'debug "Active session cleared"))
+
 (defun efrit-session-complete (session &optional result)
   "Mark multi-step SESSION as complete with optional final RESULT."
   (when session
