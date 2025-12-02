@@ -20,11 +20,11 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
+(require 'efrit-do)
 
 ;; Forward declarations
 (declare-function efrit-executor-cancel "efrit-executor")
 (declare-function efrit-progress-inject "efrit-progress")
-(declare-function efrit-do--execute-tool "efrit-do")
 
 ;;; Tool Call Display
 
@@ -317,7 +317,6 @@ HELP-ECHO is optional tooltip text."
             (tool-name (plist-get tool-ctx :name)))
         (message "Retrying %s..." tool-name)
         ;; Execute the tool again through efrit-do
-        (require 'efrit-do)
         (condition-case err
             (let ((result (efrit-do--execute-tool tool-item)))
               ;; Update the display with success

@@ -20,13 +20,6 @@
 ;; efrit-config for data directory in health check
 (defvar efrit-data-directory)
 
-;;; Core Group Definition
-
-(defgroup efrit nil
-  "Efrit AI coding assistant for Emacs."
-  :group 'tools
-  :prefix "efrit-")
-
 ;;; API Configuration
 
 (defcustom efrit-api-key nil
@@ -92,7 +85,44 @@ Scans all ARGS for strings that look like API keys and sanitizes them."
                  args)))
     (efrit-log level format-string sanitized-args)))
 
-;;; File System Security
+    ;;; Error Message Formatting
+
+    ;; All error messages returned to Claude should use these helpers for consistency.
+    ;; This ensures Claude can reliably parse and understand errors across all tools.
+    ;; Format: [Error: CATEGORY] message or 🚫 SECURITY: message for security issues.
+
+    (defun efrit-format-error (category message &rest args)
+    "Format an error message with consistent structure.
+    CATEGORY is a brief category name (e.g., 'API', 'Security', 'Validation').
+    MESSAGE is the error message (can contain format specifiers).
+    ARGS are format arguments for MESSAGE.
+
+    Returns a formatted string suitable for returning to Claude as a tool result."
+    (let ((formatted-msg (if args (apply #'format message args) message)))
+    (format "\n[Error: %s] %s" category formatted-msg)))
+
+    (defun efrit-format-validation-error (field-name &optional details)
+    "Format a validation error for missing or invalid field.
+    FIELD-NAME is the name of the field that failed validation.
+    DETAILS is optional additional context."
+    (if details
+     (format "\n[Error: Validation] Field '%s' is invalid: %s" field-name details)
+    (format "\n[Error: Validation] Field '%s' is required" field-name)))
+
+    (defun efrit-format-security-error (message &rest args)
+    "Format a security error with warning marker.
+    MESSAGE is the error message (can contain format specifiers).
+    ARGS are format arguments for MESSAGE."
+    (let ((formatted-msg (if args (apply #'format message args) message)))
+    (format "🚫 SECURITY: %s" formatted-msg)))
+
+    (defun efrit-format-tool-error (tool-name message)
+    "Format an error from tool execution.
+    TOOL-NAME is the name of the tool that failed.
+    MESSAGE is the error message."
+    (format "\n[Error: %s] %s" tool-name message))
+
+    ;;; File System Security
 
 (defun efrit-common--validate-path (path allowed-base-paths)
   "Validate that PATH is within one of ALLOWED-BASE-PATHS.
@@ -103,8 +133,8 @@ stays within allowed directories."
                        (let ((resolved-base (expand-file-name base)))
                          (string-prefix-p resolved-base resolved-path)))
                      allowed-base-paths)
-      (error "🚫 SECURITY: Path '%s' not within allowed directories: %s" 
-             path allowed-base-paths))
+      (error "%s" (efrit-format-security-error "Path '%s' not within allowed directories: %s"
+                                               path allowed-base-paths)))
     resolved-path))
 
 (defun efrit-common--validate-filename (filename)
@@ -112,7 +142,7 @@ stays within allowed directories."
 Returns the validated filename or signals an error."
   (when (or (string-match-p "[<>:\"|?*]" filename)
             (> (length filename) 255))
-    (error "🚫 SECURITY: Unsafe filename '%s'" filename))
+    (error "%s" (efrit-format-security-error "Unsafe filename '%s'" filename)))
   filename)
 
 (defun efrit-common-safe-expand-file-name (filename directory)
@@ -122,7 +152,7 @@ Ensures the result stays within DIRECTORY."
          (candidate (expand-file-name filename base-dir)))
     ;; Check for path traversal first (before filename validation)
     (unless (string-prefix-p base-dir candidate)
-      (error "🚫 SECURITY: Path traversal attempt blocked: %s" filename))
+      (error "%s" (efrit-format-security-error "Path traversal attempt blocked: %s" filename)))
     ;; Then validate the filename itself
     (efrit-common--validate-filename (file-name-nondirectory candidate))
     candidate))

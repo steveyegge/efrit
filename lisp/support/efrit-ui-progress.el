@@ -16,10 +16,8 @@
 
 (require 'efrit-common)
 (require 'efrit-ui-faces)
+(require 'efrit-do)
 (require 'ansi-color)
-
-(declare-function efrit-do-todo-item-status "efrit-do")
-(declare-function efrit-do-todo-item-content "efrit-do")
 
 ;;; Customization
 
@@ -289,7 +287,6 @@ SUCCESS-P indicates if the execution was successful."
 
 (defun efrit-progress-show-todos ()
   "Display current TODOs in progress buffer."
-  (require 'efrit-do)
   (when (bound-and-true-p efrit-do--current-todos)
     (let ((buffer (efrit-progress--get-buffer)))
       (with-current-buffer buffer

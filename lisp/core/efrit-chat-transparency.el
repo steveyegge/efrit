@@ -18,9 +18,7 @@
 ;;; Code:
 
 (require 'efrit-config)
-
-;; Declare functions to avoid warnings
-(declare-function efrit--setup-buffer "efrit-chat-buffer")
+(require 'efrit-chat-buffer)
 
 ;; Faces for different content types
 
@@ -87,7 +85,6 @@ Set to 0 for instant display with incremental splitting."
 TOOL-NAME is the name of the tool.
 TOOL-INPUT is the input parameters (as alist)."
   (when efrit-show-tool-calls
-    (require 'efrit-chat-buffer)
     (let ((input-str (format "%S" tool-input)))
       (with-current-buffer (efrit--setup-buffer)
         (setq buffer-read-only nil)
@@ -110,7 +107,6 @@ TOOL-INPUT is the input parameters (as alist)."
             (insert (format "    Input: %s\n" display-input)))
           
           ;; Update conversation marker
-          (require 'efrit-chat-buffer)
           (when (boundp 'efrit--conversation-marker)
             (set-marker efrit--conversation-marker (point))))))))
 
@@ -119,7 +115,6 @@ TOOL-INPUT is the input parameters (as alist)."
 _TOOL-NAME is the name of the tool that was executed (unused).
 RESULT is the result returned by the tool."
   (when efrit-show-tool-results
-    (require 'efrit-chat-buffer)
     (with-current-buffer (efrit--setup-buffer)
       (setq buffer-read-only nil)
       (let ((inhibit-read-only t))
@@ -151,7 +146,6 @@ If `efrit-incremental-responses' is nil, displays all at once."
   (if (not efrit-incremental-responses)
       ;; Display all at once (legacy behavior)
       (progn
-        (require 'efrit-chat-buffer)
         (with-current-buffer (efrit--setup-buffer)
           (setq buffer-read-only nil)
           (let ((inhibit-read-only t))
@@ -166,7 +160,6 @@ If `efrit-incremental-responses' is nil, displays all at once."
               (set-marker efrit--conversation-marker (point))))))
     
     ;; Incremental display (new streaming-like behavior)
-    (require 'efrit-chat-buffer)
     (let ((pos 0)
           (total-len (length text)))
       (with-current-buffer (efrit--setup-buffer)
@@ -209,7 +202,6 @@ If `efrit-incremental-responses' is nil, displays all at once."
   "Display THINKING-TEXT as visible reasoning/thinking process.
 Only displays if `efrit-show-thinking' is non-nil."
   (when efrit-show-thinking
-    (require 'efrit-chat-buffer)
     (with-current-buffer (efrit--setup-buffer)
       (setq buffer-read-only nil)
       (let ((inhibit-read-only t))

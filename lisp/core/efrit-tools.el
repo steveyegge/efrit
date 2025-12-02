@@ -33,6 +33,8 @@
 ;; 2. Rich context gathering about the Emacs environment
 ;; 3. Path resolution and project information
 ;; 4. A simplified tool dispatching system
+
+(require 'efrit-common)
 ;; 5. Support for both <elisp>...</elisp> syntax and traditional tools
 ;;
 ;; The design follows the principle that Emacs is already designed for
@@ -156,7 +158,6 @@ Signals an error if rate limit would be exceeded."
 
 (defun efrit--get-api-key ()
   "Get the Anthropic API key from .authinfo file."
-  (require 'efrit-common)
   (efrit-common-get-api-key))
 
 ;;; Core Elisp Evaluation
@@ -261,11 +262,9 @@ Handles parsing, evaluation, error handling, and result formatting."
     ;; Return formatted result
     (if (plist-get result-data :success)
         (format "%s" (plist-get result-data :result))
-      (progn
-        (require 'efrit-common)
-        (format "Error evaluating %s: %s"
-                (efrit-common-truncate-string (plist-get result-data :input) 30)
-                (plist-get result-data :error))))))
+      (format "Error evaluating %s: %s"
+              (efrit-common-truncate-string (plist-get result-data :input) 30)
+              (plist-get result-data :error)))))
 
 ;;; Safe Text Manipulation Functions
 

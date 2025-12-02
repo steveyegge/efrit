@@ -27,6 +27,9 @@
 (require 'json)
 (require 'efrit-tools)
 (require 'efrit-tool-inputs)
+(require 'efrit-session)
+(require 'efrit-progress)
+(require 'efrit-common)
 
 ;; Forward declarations
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
@@ -156,14 +159,14 @@ Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
   "Validate TOOL-INPUT is a hash-table for TOOL-NAME.
 Returns error string if invalid, nil if valid."
   (unless (hash-table-p tool-input)
-    (format "\n[Error: %s requires a hash table input]" tool-name)))
+    (efrit-format-error tool-name "requires a hash table input")))
 
 (defun efrit-do--validate-required (tool-input tool-name field)
   "Validate required FIELD exists in TOOL-INPUT for TOOL-NAME.
 Returns error string if invalid, nil if valid."
   (let ((val (gethash field tool-input)))
     (when (or (null val) (and (stringp val) (string-empty-p val)))
-      (format "\n[Error: %s requires '%s' field]" tool-name field))))
+      (efrit-format-validation-error field (format "required by %s" tool-name)))))
 
 (defun efrit-do--extract-fields (tool-input field-specs)
   "Extract fields from TOOL-INPUT according to FIELD-SPECS.
@@ -429,8 +432,6 @@ Includes safety limits to prevent hanging on large directories."
 (defun efrit-do--handle-request-user-input (tool-input)
   "Handle request_user_input tool to pause and ask user a question.
 Sets the session to waiting-for-user state and emits a progress event."
-  (require 'efrit-session)
-  (require 'efrit-progress)
   (let* ((input (efrit-request-user-input-input-create tool-input))
          (validation (efrit-request-user-input-input-is-valid input)))
     (if (not (car validation))

@@ -14,10 +14,6 @@
 
 ;;; Code:
 
-(defgroup efrit-progress nil
-  "Progress display for Efrit."
-  :group 'efrit)
-
 ;;; Progress Faces
 
 (defface efrit-progress-timestamp

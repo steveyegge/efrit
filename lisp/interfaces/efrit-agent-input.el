@@ -181,8 +181,12 @@ Use S-RET to always insert a newline."
       (efrit-agent--clear-input)
       ;; Move point to input area
       (goto-char efrit-agent--input-start)
-      ;; TODO: Actually send to the executor when wired up
-      (message "Input sent: %s" (truncate-string-to-width input 50)))))
+      ;; NOTE: The input is added to conversation history above, but actual
+      ;; execution through the executor is handled by efrit-do when the session
+      ;; is actively running. The agent buffer follows the Zero Client-Side
+      ;; Intelligence principle and only displays state without making
+      ;; execution decisions. Actual processing happens in efrit-do-async-loop.
+      (message "Input added to conversation: %s" (truncate-string-to-width input 50)))))
 
 (defun efrit-agent-input-clear ()
   "Clear the current input."

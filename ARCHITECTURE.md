@@ -49,6 +49,34 @@ session_history  - Log all tool calls and results
 dynamic_schemas  - Provide different tool sets per phase
 ```
 
+## 📦 **MODULE ORGANIZATION & LOAD ORDER**
+
+### Directory Structure
+```
+lisp/
+├── core/           - Low-level dependencies, non-UI modules
+├── interfaces/     - High-level tools, execution, commands
+├── support/        - UI, progress, helper utilities
+└── tools/          - Individual tool implementations
+```
+
+### Load Order Dependencies
+**Intentional Circular Dependencies** (use lazy requires):
+- `efrit-do` ↔ `efrit-do-async-loop` - Sync/async execution
+- `efrit-executor` → `efrit-do` (requires `efrit-do`)
+- `efrit-session` ↔ user input handlers (e.g., in `efrit-do-handlers`)
+
+**Non-circular Dependencies** (use top-level requires):
+- `efrit-do-handlers` requires `efrit-session`, `efrit-progress` (moved from lazy)
+- `efrit-agent-tools` requires `efrit-do` (moved from lazy)  
+- `efrit-ui-progress` requires `efrit-do` (moved from lazy)
+- `efrit-chat-transparency` requires `efrit-chat-buffer` (moved from lazy)
+
+### Lazy vs Top-Level Requires
+- **Top-level**: Standard pattern, declare functions that are called in function bodies
+- **Lazy (only when circular)**: Use `require` inside function body when module A needs module B, and module B needs module A
+- **Forward declarations**: Use `declare-function` for functions, `defvar` for variables to avoid circular deps
+
 ## 🔄 **REQUEST-RESPONSE CYCLE**
 
 ```
