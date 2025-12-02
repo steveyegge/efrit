@@ -749,6 +749,23 @@ Returns JSON-encoded list of checkpoint metadata."
          (result (efrit-tool-get-diagnostics args)))
     (efrit-do--format-tool-result result "Diagnostics Result")))
 
+(defun efrit-do--handle-read-image (tool-input)
+  "Handle read_image tool to read and return image data for Claude vision.
+Returns the image as base64-encoded data that Claude can analyze visually."
+  (require 'efrit-tool-read-image)
+  (or (efrit-do--validate-hash-table tool-input "read_image")
+      (efrit-do--validate-required tool-input "read_image" "path")
+      (let* ((args (efrit-do--extract-fields tool-input '("path")))
+             (result (efrit-tool-read-image args)))
+        (if (and (listp result) (alist-get 'success result))
+            (let* ((metadata (alist-get 'metadata result))
+                   (path (alist-get 'path metadata))
+                   (size (alist-get 'size metadata))
+                   (mime (alist-get 'mime_type metadata)))
+              (format "\n[Read Image Result]\n{\"success\":true,\"path\":\"%s\",\"size\":%d,\"mime_type\":\"%s\",\"note\":\"Image data loaded. Claude can now analyze this image visually.\"}"
+                      path size mime))
+          (efrit-do--format-tool-result result "Read Image Result")))))
+
 (provide 'efrit-do-handlers)
 
 ;;; efrit-do-handlers.el ends here

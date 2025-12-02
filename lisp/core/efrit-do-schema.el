@@ -639,7 +639,23 @@ Use after making edits to check what errors remain.")
                                       ("severity" . (("type" . "string")
                                                     ("enum" . ["error" "warning" "info"])
                                                     ("description" . "Minimum severity to include (default: all)")))))
-                      ("required" . []))))]
+                      ("required" . []))))
+   (("name" . "read_image")
+    ("description" . "Read an image file for visual analysis. Use this to see and analyze image contents.
+
+EXAMPLES:
+- View screenshot: read_image path=\"~/Desktop/screenshot.png\"
+- Analyze diagram: read_image path=\"/tmp/architecture.jpg\"
+- Check image: read_image path=\"./assets/logo.webp\"
+
+Supported formats: PNG, JPEG, GIF, WebP
+Maximum size: 5MB (recommended under 1MB for best performance)
+
+IMPORTANT: This is the ONLY way to actually SEE image contents. Do NOT use find-file or other methods to view images - they won't let you analyze the visual content.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Path to the image file (required)")))))
+                      ("required" . ["path"]))))]
   "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-current-tools-schema (&optional budget)
