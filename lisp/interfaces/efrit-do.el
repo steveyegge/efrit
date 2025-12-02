@@ -71,6 +71,8 @@
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-do-schema)
 (require 'efrit-do-handlers)
+(require 'efrit-do-async-loop)
+(require 'efrit-do-queue)
 (require 'cl-lib)
 (require 'seq)
 (require 'ring)
@@ -1045,13 +1047,15 @@ Returns RESULT for programmatic use."
       (user-error "%s" fallback-error))))
 
 ;;;###autoload
-(defun efrit-do-async (command)
-  "Execute natural language COMMAND in Emacs asynchronously.
-The command is sent to Claude using async infrastructure, providing
-non-blocking execution with progress feedback. Results are displayed
-when the command completes."
+(defun efrit-do-async-legacy (command)
+  "Execute natural language COMMAND using legacy async executor.
+DEPRECATED: Use `efrit-do' instead, which provides proper async
+execution with progress buffer, queueing, and interruption support.
+
+This function uses the older `efrit-execute-async' path which lacks
+the full agentic loop infrastructure."
   (interactive
-   (list (read-string "Command (async): " nil 'efrit-do-history)))
+   (list (read-string "Command (legacy async): " nil 'efrit-do-history)))
 
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)
@@ -1080,9 +1084,106 @@ when the command completes."
            (message "Async command failed: %s" (cdr error-info))
          (message "Async command completed successfully"))))))
 
+;;; Async Infrastructure Integration
+
+(defun efrit-do--create-session-for-command (command)
+  "Create and initialize an Efrit session for COMMAND.
+Returns the session object, ready for async loop execution."
+  (let* ((session-id (format "efrit-do-%s" (format-time-string "%Y%m%d%H%M%S")))
+         (session (efrit-session-create session-id command)))
+    ;; Set as active session
+    (efrit-session-set-active session)
+    ;; Reset circuit breaker for new command session
+    (efrit-do--circuit-breaker-reset)
+    ;; Reset TODO list for new session
+    (setq efrit-do--current-todos nil)
+    (setq efrit-do--todo-counter 0)
+    session))
+
+(defun efrit-do--on-async-complete (session stop-reason)
+  "Handle completion of async efrit-do SESSION with STOP-REASON.
+Displays final results and processes queued commands."
+  (let* ((session-id (efrit-session-id session))
+         (command (efrit-session-command session))
+         ;; Build a result summary from session state
+         (work-log (efrit-session-work-log session))
+         (result (if work-log
+                     (format "Completed %d steps" (length work-log))
+                   "Completed")))
+    ;; Store result
+    (setq efrit-do--last-result result)
+    (efrit-do--capture-context command result)
+    
+    ;; Display result based on stop reason
+    (let ((is-error (member stop-reason '("api-error" "interrupted"))))
+      (when is-error
+        (setq result (format "Session ended: %s" stop-reason)))
+      (efrit-do--display-result command result is-error))
+    
+    ;; Show completion message
+    (message "Efrit: %s (session %s)"
+             (pcase stop-reason
+               ("end_turn" "completed")
+               ("interrupted" "interrupted by user")
+               ("api-error" "failed with API error")
+               ("iteration-limit-exceeded" "hit iteration limit")
+               (_ stop-reason))
+             session-id)
+    
+    ;; Process next queued command if available (on normal completion)
+    (when (string= stop-reason "end_turn")
+      (when-let* ((next-cmd (efrit-do-queue-pop-command)))
+        (message "Efrit: starting queued command...")
+        ;; Use run-at-time to avoid deep recursion
+        (run-at-time 0.1 nil #'efrit-do next-cmd)))))
+
 ;;;###autoload
 (defun efrit-do (command)
-  "Execute natural language COMMAND in Emacs.
+  "Execute natural language COMMAND in Emacs asynchronously.
+The command is sent to Claude via the async agentic loop, which
+provides non-blocking execution with real-time progress visibility.
+
+A progress buffer is automatically displayed showing Claude's work.
+Results are displayed when the command completes.
+
+Use \\[keyboard-quit] (C-g) to interrupt execution.
+
+If a command is already running, this command is queued for later
+execution. Use `efrit-do-show-queue' to view queued commands.
+
+Returns the session object for programmatic use."
+  (interactive
+   (list (read-string "Command: " nil 'efrit-do-history)))
+  
+  ;; Check if there's already an active session
+  (if (efrit-session-active)
+      ;; Queue this command for later
+      (progn
+        (if (efrit-do-queue-add-command command)
+            (message "Efrit: command queued (position %d)"
+                     (efrit-do-queue-size))
+          (message "Efrit: queue full, command not added"))
+        nil)
+    
+    ;; No active session - start async execution
+    ;; Add to history
+    (add-to-history 'efrit-do-history command efrit-do-history-max)
+    
+    ;; Track command execution
+    (efrit-session-track-command command)
+    
+    ;; Create session and start async loop
+    (let ((session (efrit-do--create-session-for-command command)))
+      (message "Efrit: starting async execution...")
+      (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
+      session)))
+
+;;;###autoload
+(defun efrit-do-sync (command)
+  "Execute natural language COMMAND in Emacs synchronously.
+This is the legacy blocking execution path. Prefer `efrit-do' for
+non-blocking async execution with progress visibility.
+
 The command is sent to Claude, which translates it into Elisp
 and executes it immediately. Results are displayed in a dedicated
 buffer if `efrit-do-show-results' is non-nil.
@@ -1090,12 +1191,9 @@ buffer if `efrit-do-show-results' is non-nil.
 Progress feedback shows elapsed time and tool executions.
 Use \\[keyboard-quit] (C-g) to cancel execution during API calls.
 
-This uses the proper agentic loop that continues the conversation
-until Claude calls session_complete or returns with stop_reason end_turn.
-
 Returns the result string for programmatic use."
   (interactive
-   (list (read-string "Command: " nil 'efrit-do-history)))
+   (list (read-string "Command (sync): " nil 'efrit-do-history)))
 
   ;; Add to history
   (add-to-history 'efrit-do-history command efrit-do-history-max)

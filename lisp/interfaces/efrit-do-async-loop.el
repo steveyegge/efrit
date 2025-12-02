@@ -259,8 +259,8 @@ Returns tool result or error message."
          (loop-state (gethash session-id efrit-do-async--loops))
          (on-complete (nth 1 loop-state)))
     
-    ;; Update session status
-    (efrit-session-set-status session 'complete)
+    ;; Complete session (this clears active session state)
+    (efrit-session-complete session stop-reason)
     
     ;; Fire completion event
     (let ((elapsed (float-time

@@ -68,24 +68,6 @@ Older content is archived when this limit is exceeded."
 (defvar efrit-progress-buffer-count 0
   "Counter for archiving timestamp uniqueness.")
 
-;;; Forward declarations for formatter functions
-;;; (These are defined later but used in efrit-progress-insert-event)
-
-(declare-function efrit-progress--format-message "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-tool-started "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-tool-result "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-todo-updated "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-status-changed "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-error "efrit-progress-buffer"
-                  (data))
-(declare-function efrit-progress--format-complete "efrit-progress-buffer"
-                  (data))
-
 ;;; Core Progress Buffer Functions
 
 (defun efrit-progress-create-buffer (session-id)
@@ -210,7 +192,7 @@ Returns character count inserted."
                                    (efrit-common-truncate-string (format "%S" input) 80))))
             (insert input-line)
             (cl-incf total (length input-line))))
-        total)))
+        total))))
 
 (defun efrit-progress--format-tool-result (data)
   "Format a tool result event.
@@ -302,7 +284,7 @@ Creates buffer if it doesn't exist."
           (goto-char (point-max))
           (insert (format "[%s] %s\n"
                          (format-time-string efrit-progress-timestamp-format)
-                         message))))))))
+                         message)))))))
 
 (defun efrit-progress-archive-buffer (session-id)
   "Archive SESSION-ID's progress buffer with timestamp.
