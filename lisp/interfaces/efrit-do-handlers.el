@@ -427,7 +427,7 @@ Includes safety limits to prevent hanging on large directories."
                         pattern
                         (mapconcat #'identity preview "\n"))))
           (error
-           (format "\n[Error finding files: %s]" (error-message-string err)))))))))
+           (format "\n[Error finding files: %s]" (error-message-string err))))))))))
 
 (defun efrit-do--handle-request-user-input (tool-input)
   "Handle request_user_input tool to pause and ask user a question.
@@ -456,7 +456,7 @@ Sets the session to waiting-for-user state and emits a progress event."
                   question
                   (if options
                       (format "\nOptions: %s" (mapconcat #'identity options ", "))
-                    ""))))))))
+                    "")))))))
 
 (defun efrit-do--handle-confirm-action (tool-input)
   "Handle confirm_action tool to get user confirmation for destructive operations.
