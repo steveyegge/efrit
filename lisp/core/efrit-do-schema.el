@@ -451,6 +451,31 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                       ("max_size" . (("type" . "number")
                                                      ("description" . "Max bytes to read (default: 100000)")))))
                       ("required" . ["path"]))))
+   (("name" . "edit_file")
+    ("description" . "Make surgical edits to a file using find-and-replace. This is the PRIMARY tool for editing files - prefer this over eval_sexp for file modifications.
+
+EXAMPLES:
+- Simple replace: edit_file path=\"config.el\" old_str=\"old text\" new_str=\"new text\"
+- Replace all: edit_file path=\"code.el\" old_str=\"foo\" new_str=\"bar\" replace_all=true
+- Add context for uniqueness: Include surrounding lines in old_str if the text isn't unique
+
+IMPORTANT:
+- old_str must match EXACTLY (including whitespace and newlines)
+- By default, old_str must be unique in the file (use replace_all for multiple matches)
+- The file is saved automatically after editing
+- Returns a git-style diff showing the changes made
+
+USE THIS TOOL INSTEAD OF eval_sexp for file edits - it's safer and shows diffs.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "Absolute path to the file to edit (required)")))
+                                      ("old_str" . (("type" . "string")
+                                                    ("description" . "Exact text to find and replace (required)")))
+                                      ("new_str" . (("type" . "string")
+                                                    ("description" . "Text to replace old_str with (required)")))
+                                      ("replace_all" . (("type" . "boolean")
+                                                        ("description" . "If true, replace all occurrences. Otherwise old_str must be unique (default: false)")))))
+                      ("required" . ["path" "old_str" "new_str"]))))
    (("name" . "file_info")
     ("description" . "Get metadata about files without reading contents. Useful for checking existence, size, type before reading.
 

@@ -223,6 +223,7 @@ truncated to keep this many recent results."
     ("project_files"      . (efrit-do--handle-project-files . :tool-input))
     ("search_content"     . (efrit-do--handle-search-content . :tool-input))
     ("read_file"          . (efrit-do--handle-read-file . :tool-input))
+    ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))
     ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
     ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))
@@ -790,7 +791,7 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "NAMING CONVENTIONS:\n"
           "- When user specifies a function name exactly, use that EXACT name\n"
           "- When creating code for a file like 'foo-bar.el', use 'foo-bar-' prefix for functions\n"
-          "- Example: 'efrit-utils.el with word-count' -> name it 'efrit-utils-word-count' or 'efrit-utils-count-words'\n"
+          "- Example: 'efrit-utils.el with word-count' -> name it 'efrit-utils-word-count' or 'efrit-common-count-words'\n"
           "- Follow Emacs Lisp conventions: package-prefix-descriptive-name\n"
           "- NEVER ignore naming guidance from the user or implied by file location\n\n"
 
