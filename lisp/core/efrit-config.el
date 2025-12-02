@@ -16,6 +16,13 @@
 
 (require 'files)
 
+;;; Version Management
+
+(defconst efrit-version "0.4.1"
+  "Version number of Efrit.
+This is the canonical version used throughout the project.
+Update this when releasing new versions.")
+
 ;;; Customization
 
 (defgroup efrit nil
