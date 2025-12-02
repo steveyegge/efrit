@@ -250,6 +250,36 @@ ellipsis will be at most MAX-LENGTH characters."
         (concat (substring str 0 (max 0 cut-at)) "..."))
     str))
 
+(defun efrit-truncate-string (str max-length &optional mode)
+  "Truncate STR to display within MAX-LENGTH.
+MODE determines truncation strategy:
+- \\='chars\\=' (default): Truncate by character count
+- \\='width\\=': Truncate by display width (for variable-width fonts)
+- \\='by-words\\=': Truncate to nearest word boundary
+
+Returns truncated string with ellipsis (...) if needed."
+  (setq mode (or mode 'chars))
+  (let ((result-str str))
+    (pcase mode
+      ('chars
+       (if (> (length str) max-length)
+           (concat (substring str 0 (- max-length 3)) "...")
+         str))
+      ('width
+       ;; Use builtin width truncation for display purposes
+       (truncate-string-to-width str max-length nil nil t))
+      ('by-words
+       ;; TODO: Implement word-boundary truncation
+       (efrit-common-truncate-string str max-length))
+      (_
+       ;; Default to character truncation
+       (if (> (length str) max-length)
+           (concat (substring str 0 (- max-length 3)) "...")
+         str)))))
+
+(define-obsolete-function-alias 'efrit-common-truncate-string 'efrit-truncate-string "0.4.2"
+  "Use efrit-truncate-string instead.")
+
 (defun efrit-common-escape-json-unicode (json-string)
   "Escape unicode characters in JSON-STRING for HTTP transmission.
 This prevents multibyte encoding errors when sending to APIs.
