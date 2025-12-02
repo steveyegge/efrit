@@ -30,6 +30,7 @@
 (require 'cl-lib)
 (require 'efrit-log)
 (require 'efrit-common)
+(require 'efrit-session-core)
 
 ;;; Customization
 
@@ -68,7 +69,28 @@ Older content is archived when this limit is exceeded."
 (defvar efrit-progress-buffer-count 0
   "Counter for archiving timestamp uniqueness.")
 
+;;; Interrupt Handling
+
+(defun efrit-progress--interrupt ()
+  "Handle C-g interrupt in progress buffer.
+Signals the associated session to stop execution gracefully."
+  (interactive)
+  (when-let* ((session-id (and (boundp 'efrit-progress-session-id)
+                               efrit-progress-session-id)))
+    (let ((session (efrit-session-get session-id)))
+      (if session
+          (progn
+            (efrit-session-request-interrupt session)
+            (message "Efrit: interrupt requested (execution will stop after current tool completes)"))
+        (message "Efrit: no active session to interrupt")))))
+
 ;;; Core Progress Buffer Functions
+
+(defvar efrit-progress-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-g") #'efrit-progress--interrupt)
+    map)
+  "Keymap for progress buffer with interrupt handling.")
 
 (defun efrit-progress-create-buffer (session-id)
   "Create or retrieve progress buffer for SESSION-ID.
@@ -89,7 +111,11 @@ Buffer is read-only and set up for real-time event display."
         (insert "====================\n\n")
         (insert (format "Session: %s\n" session-id))
         (insert (format "Started: %s\n\n" (format-time-string "%Y-%m-%d %H:%M:%S")))
-        (insert "--- Events ---\n\n"))
+        (insert "--- Events ---\n")
+        (insert "Press C-g to interrupt execution\n\n"))
+      
+      ;; Set up interrupt handler with local keymap
+      (use-local-map efrit-progress-mode-map)
       
       ;; Make read-only by default (will be toggled during inserts)
       (setq-local buffer-read-only t)

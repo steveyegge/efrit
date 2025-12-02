@@ -78,8 +78,10 @@
     (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
     (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
     (define-key map (kbd "a") 'efrit-agent)   ; 'a' for agent buffer
-    (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (sync)
-    (define-key map (kbd "D") 'efrit-do-async) ; 'D' for async do/execute
+    (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (async by default)
+    (define-key map (kbd "w") 'efrit-do-silently) ; 'w' for background work
+    (define-key map (kbd "p") 'efrit-do-show-progress) ; 'p' for progress buffer
+    (define-key map (kbd "D") 'efrit-do-sync) ; 'D' for sync do/execute (legacy)
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
     map)
@@ -118,10 +120,12 @@
       (insert "Main Commands:\n\n")
       (insert "  M-x efrit-chat         - Interactive multi-turn chat mode\n")
       (insert "                           Use for back-and-forth conversations\n\n")
-      (insert "  M-x efrit-do           - Execute single command synchronously\n")
+      (insert "  M-x efrit-do           - Execute command asynchronously (default)\n")
+      (insert "                           Shows progress buffer, non-blocking\n\n")
+      (insert "  M-x efrit-do-silently  - Execute command in background\n")
+      (insert "                           No progress buffer by default\n\n")
+      (insert "  M-x efrit-do-sync      - Execute command synchronously (legacy)\n")
       (insert "                           Blocks until complete, shows result\n\n")
-      (insert "  M-x efrit-do-async     - Execute command asynchronously\n")
-      (insert "                           Non-blocking, queues multiple commands\n\n")
 
       (insert "Utility Commands:\n\n")
       (insert "  M-x efrit-doctor       - Check configuration and health\n")
@@ -136,8 +140,10 @@
       (insert "  Then use C-c C-e prefix:\n")
       (insert "    C-c C-e c  - efrit-chat\n")
       (insert "    C-c C-e a  - efrit-agent (agentic session buffer)\n")
-      (insert "    C-c C-e d  - efrit-do\n")
-      (insert "    C-c C-e D  - efrit-do-async\n")
+      (insert "    C-c C-e d  - efrit-do (async, progress buffer)\n")
+      (insert "    C-c C-e w  - efrit-do-silently (async, background)\n")
+      (insert "    C-c C-e p  - efrit-do-show-progress\n")
+      (insert "    C-c C-e D  - efrit-do-sync (legacy, blocking)\n")
       (insert "    C-c C-e q  - Start remote queue\n")
       (insert "    C-c C-e Q  - Queue status\n\n")
 

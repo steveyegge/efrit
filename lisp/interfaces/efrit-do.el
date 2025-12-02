@@ -1230,6 +1230,77 @@ Returns the result string for programmatic use."
         (cancel-timer progress-timer)))))
 
 ;;;###autoload
+(defun efrit-do-silently (command)
+  "Execute natural language COMMAND asynchronously without showing progress buffer.
+Unlike `efrit-do', this command does not automatically open the progress buffer.
+Progress updates are shown in the modeline and messages only.
+User can manually open progress buffer with \\[efrit-do-show-progress].
+
+Use \\[keyboard-quit] (C-g) to interrupt execution.
+
+If a command is already running, this command is queued for later execution.
+Use `efrit-do-show-queue' to view queued commands.
+
+Returns the session object for programmatic use."
+  (interactive
+   (list (read-string "Command (silent): " nil 'efrit-do-history)))
+  
+  ;; Check if there's already an active session
+  (if (efrit-session-active)
+      ;; Queue this command for later
+      (progn
+        (if (efrit-do-queue-add-command command)
+            (message "Efrit: command queued (position %d)"
+                     (efrit-do-queue-size))
+          (message "Efrit: queue full, command not added"))
+        nil)
+    
+    ;; No active session - start async execution
+    ;; Add to history
+    (add-to-history 'efrit-do-history command efrit-do-history-max)
+    
+    ;; Track command execution
+    (efrit-session-track-command command)
+    
+    ;; Create session and start async loop WITHOUT showing progress buffer
+    (let ((session (efrit-do--create-session-for-command command))
+          (original-show efrit-do-async-show-progress-buffer))
+      (unwind-protect
+          (progn
+            (setq efrit-do-async-show-progress-buffer nil)
+            (message "Efrit: starting async execution (background)...")
+            (efrit-do-async-loop session nil #'efrit-do--on-async-complete))
+        (setq efrit-do-async-show-progress-buffer original-show))
+      session)))
+
+;;;###autoload
+(defun efrit-do-show-progress (&optional session-id)
+  "Show the progress buffer for SESSION-ID or the current session.
+If called interactively without SESSION-ID, uses the active session.
+If SESSION-ID is provided, shows the progress buffer for that session."
+  (interactive)
+  (let* ((session-id (or session-id
+                        (when (efrit-session-active)
+                          (efrit-session-id (efrit-session-active)))))
+         (buffer (when session-id
+                   (efrit-progress-get-buffer session-id))))
+    (cond
+     (buffer
+      (display-buffer buffer)
+      (message "Showing progress buffer for session %s" session-id))
+     (session-id
+      (message "Progress buffer not found for session %s" session-id))
+     (t
+      (message "No active session. Use M-x efrit-do to start a command.")))))
+
+;;;###autoload
+(defun efrit-do-show-queue ()
+  "Show the current command queue.
+Displays queued commands with their positions and status."
+  (interactive)
+  (efrit-session-show-queue))
+
+;;;###autoload
 (defun efrit-do-repeat ()
   "Repeat the last efrit-do command."
   (interactive)

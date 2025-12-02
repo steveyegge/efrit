@@ -95,6 +95,10 @@ Returns the session ID."
         (progn
           (efrit-log 'info "Session %s interrupt requested, stopping loop"
                      session-id)
+          ;; Clear interrupt flag and send completion message to Claude
+          (setf (efrit-session-interrupt-requested session) nil)
+          (efrit-session-add-tool-results session
+            (list (efrit-session-build-tool-result "system" "User interrupted execution")))
           (efrit-do-async--stop-loop session "interrupted"))
       ;; Continue with normal flow
       (let* ((loop-state (gethash session-id efrit-do-async--loops))
@@ -105,10 +109,13 @@ Returns the session ID."
               (efrit-log 'warn "Session %s hit iteration limit (%d)"
                          session-id efrit-do-async-max-iterations)
               (efrit-do-async--stop-loop session "iteration-limit-exceeded"))
-          ;; Send request to Claude asynchronously
+          ;; Increment iteration count and send request
           (progn
+            ;; Update loop state with new iteration count
+            (let ((new-state (list session (nth 1 loop-state) (1+ iteration-count) (nth 3 loop-state))))
+              (puthash session-id new-state efrit-do-async--loops))
             (efrit-log 'debug "Session %s: sending request (iteration %d)"
-                       session-id iteration-count)
+                       session-id (1+ iteration-count))
             (efrit-do-async--send-request session)))))))
 
 (defun efrit-do-async--send-request (session)
@@ -257,16 +264,27 @@ Returns tool result or error message."
   "Stop async loop for SESSION with STOP-REASON."
   (let* ((session-id (efrit-session-id session))
          (loop-state (gethash session-id efrit-do-async--loops))
-         (on-complete (nth 1 loop-state)))
+         (on-complete (nth 1 loop-state))
+         (iteration-count (nth 2 loop-state)))
     
     ;; Complete session (this clears active session state)
     (efrit-session-complete session stop-reason)
     
-    ;; Fire completion event
+    ;; Fire appropriate event based on stop reason
     (let ((elapsed (float-time
-                   (time-since (efrit-session-start-time session)))))
-      (efrit-progress-insert-event session-id 'complete
-        `((:result . ,stop-reason) (:elapsed . ,elapsed))))
+                   (time-since (efrit-session-start-time session))))
+          (tool-count (efrit-progress-tool-call-count)))
+      (cond
+       ((eq stop-reason 'interrupted)
+        (efrit-progress-insert-event session-id 'error
+          `((:message . ,(format "Execution interrupted after %d tool calls"
+                               (max 0 (1- tool-count))))
+            (:level . "INTERRUPTED")))
+        (efrit-progress-insert-event session-id 'complete
+          `((:result . "interrupted") (:elapsed . ,elapsed))))
+       (t
+        (efrit-progress-insert-event session-id 'complete
+          `((:result . ,stop-reason) (:elapsed . ,elapsed))))))
     
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)
@@ -278,8 +296,8 @@ Returns tool result or error message."
     (when on-complete
       (funcall on-complete session stop-reason))
     
-    (efrit-log 'info "Session %s: loop stopped (%s)"
-               session-id stop-reason)))
+    (efrit-log 'info "Session %s: loop stopped (%s, %d iterations)"
+               session-id stop-reason iteration-count)))
 
 (provide 'efrit-do-async-loop)
 
