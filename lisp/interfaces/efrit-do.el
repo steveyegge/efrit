@@ -701,6 +701,47 @@ Applies circuit breaker limits to prevent infinite loops."
    "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
    "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
 
+(defun efrit-do--command-project-workflow ()
+  "Return project exploration and elisp development workflow guidance."
+  (concat
+   "PROJECT EXPLORATION WORKFLOW:\n"
+   "When working with code or asked to 'help build' something:\n"
+   "1. If working on an EXTERNAL project (not the user's default-directory):\n"
+   "   - FIRST call set_project_root with the project path\n"
+   "   - Example: set_project_root path=\"~/src/gastown\"\n"
+   "2. Explore the project structure:\n"
+   "   - project_files pattern=\"*.el\" to see elisp files\n"
+   "   - project_files pattern=\"*\" for all files\n"
+   "3. Understand existing code:\n"
+   "   - search_content pattern=\"defun\" glob=\"*.el\" to find functions\n"
+   "   - search_content pattern=\"provide\" to find package structure\n"
+   "   - read_file to examine specific files\n"
+   "4. Make changes informed by what you found\n\n"
+
+   "ELISP LIBRARY DEVELOPMENT PATTERNS:\n"
+   "When creating or modifying Emacs Lisp libraries (.el files):\n\n"
+   "**File Header:**\n"
+   "  ;;; package-name.el --- Short description -*- lexical-binding: t; -*-\n"
+   "  ;; Author: Name <email>\n"
+   "  ;;; Commentary:\n"
+   "  ;; Extended description\n"
+   "  ;;; Code:\n\n"
+   "**Dependencies:**\n"
+   "  (require 'cl-lib)  ; At top of file\n"
+   "  (declare-function external-fn \"external-lib\")  ; For byte-compiler\n\n"
+   "**Package Suffix:**\n"
+   "  (provide 'package-name)  ; REQUIRED at end of file\n"
+   "  ;;; package-name.el ends here\n\n"
+   "**Naming Conventions:**\n"
+   "  - Public: package-name-function-name\n"
+   "  - Private: package-name--internal-function (double dash)\n"
+   "  - Customization: (defcustom package-name-option ...)\n"
+   "  - Constants: (defconst package-name-constant ...)\n\n"
+   "**Testing Elisp:**\n"
+   "  - eval_sexp: (byte-compile-file \"path.el\") to check for errors\n"
+   "  - eval_sexp: (load-file \"path.el\") to test loading\n"
+   "  - get_diagnostics after editing to check for issues\n\n"))
+
 (defun efrit-do--classify-task-complexity (command)
   "Classify COMMAND as simple or complex based on content analysis.
 Returns \\='simple for single-action tasks, \\='complex for multi-step workflows."
@@ -818,6 +859,7 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "- Only operate on current paragraph/region if explicitly specified\n"
           "- For buffer-wide operations, prefer whole-buffer functions\n\n"
           
+          (efrit-do--command-project-workflow)
           (efrit-do--command-common-tasks)
           (efrit-do--command-formatting-tools)
           (efrit-do--command-examples)

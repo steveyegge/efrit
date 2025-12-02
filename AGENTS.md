@@ -1,0 +1,154 @@
+# Instructions for AI Agents Working on Efrit
+
+> **For humans**: This file contains instructions for AI coding assistants. See [README.md](README.md) for user documentation.
+
+## Project Overview
+
+**Efrit** is an AI-powered Emacs coding assistant built on the **Zero Client-Side Intelligence** principle: Efrit is a pure executor that delegates ALL cognitive computation to Claude.
+
+## Core Architectural Principle
+
+**ZERO CLIENT-SIDE INTELLIGENCE**: Efrit must NEVER contain:
+- Pattern recognition or parsing logic
+- Decision-making heuristics
+- Pre-written solutions or templates
+- Task-specific logic
+- Flow control decisions
+
+Efrit's ONLY job: execute what Claude tells it to do. See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+
+## 🚨 COMMIT AND PUSH AFTER EVERY FIX 🚨
+
+**This is the most important rule.** After completing ANY task:
+
+```bash
+git add -A
+git commit -m "Descriptive message"
+git push
+```
+
+Do NOT batch multiple fixes. Do NOT wait until "end of session". Push immediately after each completed task.
+
+## Issue Tracking with Beads
+
+This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs or other tracking methods.
+
+```bash
+bd ready                              # Find unblocked work
+bd create "Title" -t bug|feature|task -p 0-4
+bd update <id> --status in_progress
+bd close <id> --reason "Done"
+bd sync                               # Export to JSONL (auto-commits)
+```
+
+**Issue Types**: bug, feature, task, epic, chore  
+**Priorities**: 0=Critical, 1=High, 2=Medium, 3=Low, 4=Backlog
+
+## Development Workflow
+
+### Before Making Changes
+1. Check ready work: `bd ready`
+2. Claim task: `bd update <id> --status in_progress`
+
+### After Each Fix
+1. Compile: `make compile`
+2. Commit and push immediately
+3. Close issue: `bd close <id> --reason "Done"`
+
+### Verification Requirements
+
+**YOU MUST VERIFY ALL CHANGES BEFORE REPORTING COMPLETION.**
+
+Acceptable:
+- ✅ `make compile` passes
+- ✅ `emacs --batch` execution without errors
+- ✅ Actual API calls for efrit-chat/efrit-do changes
+
+Unacceptable:
+- ❌ "The code looks correct"
+- ❌ "This should work"
+- ❌ Reading code and assuming it works
+
+## Code Standards
+
+- Use `lexical-binding: t` in all elisp files
+- Use `efrit-` prefix for public functions
+- Use `efrit--` (double dash) for private functions
+- Docstrings required for all functions
+- NO client-side intelligence
+
+## Project Structure
+
+```
+efrit/
+├── lisp/
+│   ├── efrit.el              # Main entry point
+│   ├── core/                 # Core functionality
+│   │   ├── efrit-chat.el     # Chat interface
+│   │   ├── efrit-tools.el    # Tool implementations
+│   │   ├── efrit-session.el  # Session management
+│   │   └── efrit-do-schema.el # Tool schemas
+│   ├── interfaces/           # User-facing interfaces
+│   │   ├── efrit-do.el       # Command execution
+│   │   ├── efrit-agent.el    # Agent mode
+│   │   └── efrit-remote-queue.el # AI-to-AI queue
+│   ├── tools/                # Individual tool implementations
+│   └── support/              # UI helpers (dashboard, todos)
+├── test/                     # Test files
+├── docs/                     # Documentation
+├── mcp/                      # MCP server (TypeScript/Node)
+├── .beads/                   # Issue tracker database
+└── ARCHITECTURE.md           # Core design principles
+```
+
+## Key Files
+
+- **ARCHITECTURE.md** - Pure Executor principle (READ FIRST)
+- **lisp/interfaces/efrit-do.el** - Main command execution
+- **lisp/core/efrit-do-schema.el** - Tool definitions
+- **lisp/core/efrit-tools.el** - Tool system prompt and utilities
+
+## Common Tasks
+
+**Adding a new tool**:
+1. Add handler to `lisp/tools/efrit-tool-*.el`
+2. Add schema to `lisp/core/efrit-do-schema.el`
+3. Add dispatch entry in `lisp/interfaces/efrit-do.el`
+
+**Fixing a bug**:
+1. `bd create "Bug: description" -t bug -p 1`
+2. Fix the bug
+3. `make compile`
+4. Commit and push
+5. `bd close <id> --reason "Fixed"`
+
+## Testing
+
+```bash
+# Compile all elisp
+make compile
+
+# Run tests (if available)
+make test
+
+# Quick elisp check
+emacs --batch --eval "(progn (require 'efrit) (message \"OK\"))"
+```
+
+## Rules Summary
+
+### ✅ DO:
+- Commit and push after EVERY fix
+- Use bd for all task tracking
+- Verify changes compile before reporting done
+- Keep changes minimal and focused
+
+### ❌ DO NOT:
+- Batch commits until end of session
+- Add client-side intelligence
+- Create files without reading existing code first
+- Skip compilation verification
+
+---
+
+**Remember**: Efrit is a Pure Executor. Claude thinks, Efrit executes.
