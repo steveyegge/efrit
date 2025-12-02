@@ -611,7 +611,35 @@ Returns: The normalized project root path, or error if path doesn't exist.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
                                                   ("description" . "Absolute path to project root, or empty string to clear and auto-detect")))))
-                      ("required" . ["path"]))))]
+                      ("required" . ["path"]))))
+   (("name" . "get_diagnostics")
+    ("description" . "Get compiler/linter errors from IDE diagnostic systems. CRITICAL for the edit-compile-fix loop.
+
+Collects diagnostics from:
+- Flymake (built-in checker)
+- Flycheck (popular third-party checker)
+- LSP-mode (language server diagnostics)
+- Compilation buffer (make/gcc/etc. errors)
+
+EXAMPLES:
+- Current buffer: get_diagnostics
+- Specific file: get_diagnostics path=\"src/main.el\"
+- Only errors: get_diagnostics severity=\"error\"
+- From compilation: get_diagnostics sources=[\"compilation\"]
+
+Returns: Array of diagnostics with source, severity, message, line, column.
+Use after making edits to check what errors remain.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File path to get diagnostics for (default: current buffer)")))
+                                      ("sources" . (("type" . "array")
+                                                   ("items" . (("type" . "string")
+                                                              ("enum" . ["flymake" "flycheck" "lsp" "compilation" "all"])))
+                                                   ("description" . "Which diagnostic sources to query (default: all)")))
+                                      ("severity" . (("type" . "string")
+                                                    ("enum" . ["error" "warning" "info"])
+                                                    ("description" . "Minimum severity to include (default: all)")))))
+                      ("required" . []))))]
   "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-current-tools-schema (&optional budget)

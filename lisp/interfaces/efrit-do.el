@@ -232,7 +232,8 @@ truncated to keep this many recent results."
     ("vcs_log"            . (efrit-do--handle-vcs-log . :tool-input))
     ("vcs_blame"          . (efrit-do--handle-vcs-blame . :tool-input))
     ("elisp_docs"         . (efrit-do--handle-elisp-docs . :tool-input))
-    ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input)))
+    ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
+    ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input)))
   "Dispatch table mapping tool names to handlers and argument types.")
 
 ;; Budget hints, tool schemas -> efrit-do-schema.el

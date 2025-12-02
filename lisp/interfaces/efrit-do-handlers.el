@@ -738,6 +738,17 @@ Returns JSON-encoded list of checkpoint metadata."
              (result (efrit-tool-elisp-docs args)))
         (efrit-do--format-tool-result result "Elisp Docs Result"))))
 
+(defun efrit-do--handle-get-diagnostics (tool-input)
+  "Handle get_diagnostics tool to retrieve compiler/linter errors."
+  (require 'efrit-tool-get-diagnostics)
+  (let* ((args (when (hash-table-p tool-input)
+                 (efrit-do--extract-fields
+                  tool-input `("path"
+                               ("sources" . ,#'efrit-do--vector-to-list)
+                               "severity"))))
+         (result (efrit-tool-get-diagnostics args)))
+    (efrit-do--format-tool-result result "Diagnostics Result")))
+
 (provide 'efrit-do-handlers)
 
 ;;; efrit-do-handlers.el ends here
