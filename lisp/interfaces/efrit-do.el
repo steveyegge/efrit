@@ -166,13 +166,7 @@ truncated to keep this many recent results."
 
 ;; efrit-max-tokens is now aliased in efrit-config.el
 
-;; Use centralized API URL - legacy variable kept for compatibility
-(defcustom efrit-api-url nil
-  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
-When nil, uses the centralized configuration."
-  :type '(choice (const :tag "Use centralized config" nil)
-                 (string :tag "Legacy URL override"))
-  :group 'efrit-do)
+;; efrit-api-url is defined in efrit-common.el (legacy, deprecated)
 
 ;;; Internal variables
 

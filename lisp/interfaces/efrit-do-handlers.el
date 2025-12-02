@@ -20,6 +20,28 @@
 ;; 4. Format and return the result
 ;;
 ;; The dispatch table in efrit-do.el maps tool names to these handlers.
+;;
+;; FIELD ACCESS PATTERNS:
+;;
+;; Two patterns are used for extracting fields from tool-input hash tables:
+;;
+;; 1. Input Structs (efrit-tool-inputs.el) - for complex tools:
+;;    (let* ((input (efrit-foo-input-create tool-input))
+;;           (field (efrit-foo-input-get-field input)))
+;;      ...)
+;;    Use when: Tool has complex validation, type coercion, default values,
+;;    or multiple validation rules (e.g., todo_write, glob_files).
+;;
+;; 2. Extract-fields helper - for simple tools:
+;;    (or (efrit-do--validate-hash-table tool-input "tool-name")
+;;        (efrit-do--validate-required tool-input "tool-name" "field")
+;;        (let* ((args (efrit-do--extract-fields tool-input '("f1" "f2")))
+;;               (result (tool-fn args)))
+;;          (efrit-do--format-tool-result result "Label")))
+;;    Use when: Tool just needs to extract values and pass them through
+;;    (e.g., web_search, vcs_diff, read_file).
+;;
+;; Choose the simpler pattern when possible; use structs for validation.
 
 ;;; Code:
 
@@ -195,7 +217,9 @@ Nil values and nil results from transforms are filtered out."
 ;;; Core tool handlers
 
 (defun efrit-do--handle-eval-sexp (input-str)
-  "Handle elisp evaluation with validation."
+  "Handle eval_sexp tool to evaluate Emacs Lisp code.
+INPUT-STR is the elisp expression to evaluate.
+Validates syntax before execution and returns the result or error."
   (let ((validation (efrit-do--validate-elisp input-str)))
     (if (car validation)
         ;; Valid elisp - proceed with execution
@@ -212,7 +236,10 @@ Nil values and nil results from transforms are filtered out."
               input-str (cdr validation)))))
 
 (defun efrit-do--handle-shell-exec (input-str)
-  "Handle shell command execution with security validation."
+  "Handle shell_exec tool to execute a shell command.
+INPUT-STR is the shell command to execute.
+Validates against security whitelist before execution.
+Returns output or security error."
   (let ((validation (efrit-do--validate-shell-command input-str)))
     (if (car validation)
         ;; Command is safe, execute it
@@ -299,7 +326,9 @@ Claude sends without validation or state machine logic."
                 "")))))
 
 (defun efrit-do--handle-buffer-create (tool-input input-str)
-  "Handle buffer creation."
+  "Handle buffer_create tool to create or update a buffer with content.
+TOOL-INPUT is a hash table with name, content, and optional mode fields.
+INPUT-STR is fallback content if not specified in tool-input."
   (let* ((input (efrit-buffer-create-input-create tool-input))
          (name (efrit-buffer-create-input-get-name input))
          (content (or (efrit-buffer-create-input-get-content input) input-str))
@@ -311,7 +340,8 @@ Claude sends without validation or state machine logic."
        (format "\n[Error creating buffer: %s]" (error-message-string err))))))
 
 (defun efrit-do--handle-format-file-list (input-str)
-  "Handle file list formatting."
+  "Handle format_file_list tool to format a file listing for display.
+INPUT-STR is a newline-separated list of file paths."
   (condition-case err
       (let ((result (efrit-tools-format-file-list input-str)))
         (format "\n[Formatted file list]\n%s" result))
@@ -319,7 +349,8 @@ Claude sends without validation or state machine logic."
      (format "\n[Error formatting file list: %s]" (error-message-string err)))))
 
 (defun efrit-do--handle-format-todo-list (tool-input)
-  "Handle TODO list formatting."
+  "Handle format_todo_list tool to format current TODOs for display.
+TOOL-INPUT is a hash table with optional sort-by field."
   (let* ((input (efrit-format-todo-list-input-create tool-input))
          (sort-by (efrit-format-todo-list-input-get-sort-by input)))
     (condition-case err
@@ -337,7 +368,9 @@ This signals that a multi-step session is complete."
     (format "\n[SESSION-COMPLETE: %s]" (or message "Task completed"))))
 
 (defun efrit-do--handle-display-in-buffer (tool-input input-str)
-  "Handle display in buffer."
+  "Handle display_in_buffer tool to show content in an Emacs buffer.
+TOOL-INPUT has buffer_name, content, and optional window_height.
+INPUT-STR is fallback content if not in tool-input."
   (let* ((buffer-name (if (hash-table-p tool-input)
                          (gethash "buffer_name" tool-input)
                        "*efrit-display*"))
@@ -462,57 +495,38 @@ Sets the session to waiting-for-user state and emits a progress event."
   "Handle confirm_action tool to get user confirmation for destructive operations.
 Prompts user synchronously and returns confirmation result as JSON."
   (require 'efrit-tool-confirm-action)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: confirm_action requires a hash table input with 'action' field]"
-    (let* ((action (gethash "action" tool-input))
-           (details (gethash "details" tool-input))
-           (severity (gethash "severity" tool-input))
-           (options (gethash "options" tool-input))
-           (timeout (gethash "timeout_seconds" tool-input)))
-      (cond
-       ((or (null action) (string-empty-p action))
-        "\n[Error: confirm_action requires 'action' field]")
-       (t
-        ;; Build args alist for the tool function
-        (let* ((args `((action . ,action)
-                       ,@(when details `((details . ,details)))
-                       ,@(when severity `((severity . ,severity)))
-                       ,@(when options `((options . ,options)))
-                       ,@(when timeout `((timeout_seconds . ,timeout)))))
-               (result (efrit-tool-confirm-action args)))
-          ;; Return JSON-encoded result for Claude to process
-          (format "\n[Confirmation Result]\n%s" (json-encode result))))))))
+  (or (efrit-do--validate-hash-table tool-input "confirm_action")
+      (efrit-do--validate-required tool-input "confirm_action" "action")
+      (let* ((args (efrit-do--extract-fields
+                    tool-input '("action" "details" "severity"
+                                 ("options" . efrit-do--vector-to-list)
+                                 "timeout_seconds")))
+             (result (efrit-tool-confirm-action args)))
+        (efrit-do--format-tool-result result "Confirmation Result"))))
 
 ;;; Checkpoint Tool Handlers - Phase 3: Workflow Enhancement
 
 (defun efrit-do--handle-checkpoint (tool-input)
   "Handle checkpoint tool to create a restore point before risky operations."
   (require 'efrit-tool-checkpoint)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: checkpoint requires a hash table input with 'description' field]"
-    (let ((description (gethash "description" tool-input)))
-      (if (or (null description) (string-empty-p description))
-          "\n[Error: checkpoint requires 'description' field]"
-        (let* ((args `((description . ,description)))
-               (result (efrit-tool-checkpoint args)))
-          (format "\n[Checkpoint Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "checkpoint")
+      (efrit-do--validate-required tool-input "checkpoint" "description")
+      (let* ((args (efrit-do--extract-fields tool-input '("description")))
+             (result (efrit-tool-checkpoint args)))
+        (efrit-do--format-tool-result result "Checkpoint Result"))))
 
 (defun efrit-do--handle-restore-checkpoint (tool-input)
   "Handle restore_checkpoint tool to restore from a previous checkpoint."
   (require 'efrit-tool-checkpoint)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: restore_checkpoint requires a hash table input with 'checkpoint_id' field]"
-    (let ((checkpoint-id (gethash "checkpoint_id" tool-input))
-          (keep-checkpoint (gethash "keep_checkpoint" tool-input)))
-      (if (or (null checkpoint-id) (string-empty-p checkpoint-id))
-          "\n[Error: restore_checkpoint requires 'checkpoint_id' field]"
-        (let* ((args `((checkpoint_id . ,checkpoint-id)
-                       ,@(when keep-checkpoint `((keep_checkpoint . ,keep-checkpoint)))))
-               (result (efrit-tool-restore-checkpoint args)))
-          (format "\n[Restore Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "restore_checkpoint")
+      (efrit-do--validate-required tool-input "restore_checkpoint" "checkpoint_id")
+      (let* ((args (efrit-do--extract-fields tool-input '("checkpoint_id" "keep_checkpoint")))
+             (result (efrit-tool-restore-checkpoint args)))
+        (efrit-do--format-tool-result result "Restore Result"))))
 
 (defun efrit-do--handle-list-checkpoints ()
-  "Handle list_checkpoints tool to list all available checkpoints."
+  "Handle list_checkpoints tool to list all available checkpoints.
+Returns JSON-encoded list of checkpoint metadata."
   (require 'efrit-tool-checkpoint)
   (let ((result (efrit-tool-list-checkpoints nil)))
     (format "\n[Checkpoints]\n%s" (json-encode result))))
@@ -520,39 +534,36 @@ Prompts user synchronously and returns confirmation result as JSON."
 (defun efrit-do--handle-delete-checkpoint (tool-input)
   "Handle delete_checkpoint tool to delete a checkpoint without restoring."
   (require 'efrit-tool-checkpoint)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: delete_checkpoint requires a hash table input with 'checkpoint_id' field]"
-    (let ((checkpoint-id (gethash "checkpoint_id" tool-input)))
-      (if (or (null checkpoint-id) (string-empty-p checkpoint-id))
-          "\n[Error: delete_checkpoint requires 'checkpoint_id' field]"
-        (let* ((args `((checkpoint_id . ,checkpoint-id)))
-               (result (efrit-tool-delete-checkpoint args)))
-          (format "\n[Delete Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "delete_checkpoint")
+      (efrit-do--validate-required tool-input "delete_checkpoint" "checkpoint_id")
+      (let* ((args (efrit-do--extract-fields tool-input '("checkpoint_id")))
+             (result (efrit-tool-delete-checkpoint args)))
+        (efrit-do--format-tool-result result "Delete Result"))))
+
+(defun efrit-do--convert-changes-array (changes)
+  "Convert CHANGES array from hash tables to alists for tool functions."
+  (mapcar (lambda (change)
+            (if (hash-table-p change)
+                `((file . ,(gethash "file" change))
+                  (old_content . ,(gethash "old_content" change))
+                  (new_content . ,(gethash "new_content" change)))
+              change))
+          (efrit-do--vector-to-list changes)))
 
 (defun efrit-do--handle-show-diff-preview (tool-input)
   "Handle show_diff_preview tool to show proposed changes in a diff view."
   (require 'efrit-tool-show-diff-preview)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: show_diff_preview requires a hash table input with 'changes' field]"
-    (let ((changes (gethash "changes" tool-input))
-          (description (gethash "description" tool-input))
-          (apply-mode (gethash "apply_mode" tool-input)))
-      (if (or (null changes) (zerop (length changes)))
-          "\n[Error: show_diff_preview requires non-empty 'changes' array]"
-        ;; Convert hash tables in changes array to alists for the tool
-        (let* ((changes-list
-                (mapcar (lambda (change)
-                          (if (hash-table-p change)
-                              `((file . ,(gethash "file" change))
-                                (old_content . ,(gethash "old_content" change))
-                                (new_content . ,(gethash "new_content" change)))
-                            change))
-                        (append changes nil)))  ; Convert vector to list
-               (args `((changes . ,changes-list)
-                       ,@(when description `((description . ,description)))
-                       ,@(when apply-mode `((apply_mode . ,apply-mode)))))
-               (result (efrit-tool-show-diff-preview args)))
-          (format "\n[Diff Preview Result]\n%s" (json-encode result)))))))
+  (or (efrit-do--validate-hash-table tool-input "show_diff_preview")
+      (efrit-do--validate-required tool-input "show_diff_preview" "changes")
+      (let ((changes (gethash "changes" tool-input)))
+        (if (zerop (length changes))
+            (efrit-format-validation-error "changes" "must be non-empty")
+          (let* ((args (efrit-do--extract-fields
+                        tool-input '("description" "apply_mode")))
+                 (args-with-changes (cons `(changes . ,(efrit-do--convert-changes-array changes))
+                                          args))
+                 (result (efrit-tool-show-diff-preview args-with-changes)))
+            (efrit-do--format-tool-result result "Diff Preview Result"))))))
 
 ;;; Web Search Tool Handler - Phase 4: External Knowledge
 
@@ -658,21 +669,21 @@ Prompts user synchronously and returns confirmation result as JSON."
 (defun efrit-do--handle-set-project-root (tool-input)
   "Handle set_project_root tool to set the project context."
   (require 'efrit-tool-utils)
-  (if (not (hash-table-p tool-input))
-      "\n[Error: set_project_root requires a hash table input with 'path' field]"
-    (let ((path (gethash "path" tool-input)))
-      (cond
-       ;; Empty path means clear and auto-detect
-       ((or (null path) (string-empty-p path))
-        (efrit-clear-project-root)
-        (format "\n[Project root cleared. Now using auto-detection: %s]"
-                (efrit-tool--get-project-root)))
-       ;; Set explicit path
-       (t
-        (let ((result (efrit-set-project-root path)))
-          (if result
-              (format "\n[Project root set to: %s]" result)
-            (format "\n[Error: Path does not exist: %s]" path))))))))
+  (or (efrit-do--validate-hash-table tool-input "set_project_root")
+      (let ((path (gethash "path" tool-input)))
+        (cond
+         ;; Empty path means clear and auto-detect
+         ((or (null path) (string-empty-p path))
+          (efrit-clear-project-root)
+          (format "\n[Project root cleared. Now using auto-detection: %s]"
+                  (efrit-tool--get-project-root)))
+         ;; Set explicit path
+         (t
+          (let ((result (efrit-set-project-root path)))
+            (if result
+                (format "\n[Project root set to: %s]" result)
+              (efrit-format-error "set_project_root"
+                                  (format "Path does not exist: %s" path)))))))))
 
 (defun efrit-do--handle-elisp-docs (tool-input)
   "Handle elisp_docs tool to look up Emacs Lisp documentation."

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-sync`: Use `efrit-do` for async or if blocking is needed use `efrit-do-sync` explicitly
 - `efrit-do-async-legacy`: Use `efrit-do-sync` if blocking behavior is required
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
+- `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
 ## [0.4.1] - 2025-11-30
 

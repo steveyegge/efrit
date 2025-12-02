@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint checkdoc
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun checkdoc
 
 # Default target
 all: compile
@@ -37,6 +37,7 @@ help:
 	@echo "Code Quality:"
 	@echo "  check       - Check syntax and compilation"
 	@echo "  lint        - Full linting (checkdoc + byte-compile + style)"
+	@echo "  lint-defun  - Check for nested defun forms (paren mismatch detection)"
 	@echo "  checkdoc    - Check docstring quality"
 	@echo ""
 	@echo "Testing:"
@@ -174,7 +175,7 @@ checkdoc:
 	@echo "✅ Docstring checks passed"
 
 # Linting (code style + byte-compile warnings + docstrings)
-lint: checkdoc
+lint: checkdoc lint-defun
 	@echo "Checking code style..."
 	@for file in $(EL_FILES); do \
 		echo "Linting $$file..."; \
@@ -194,6 +195,45 @@ lint: checkdoc
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $(EL_FILES)
 	@echo "✅ Code style and warnings checks passed"
+
+# Check for nested/indented defun forms (catches paren mismatches)
+# Uses Emacs to properly detect nested forms (not inside condition-case/cl-eval-when)
+lint-defun:
+	@echo "Checking for nested defun forms..."
+	@$(EMACS_BATCH) --eval " \
+	  (defun lint--check-enclosing-form (pos allowed-forms) \
+	    \"Check if POS is inside one of ALLOWED-FORMS (up to 3 levels).\" \
+	    (save-excursion \
+	      (goto-char pos) \
+	      (catch 'found \
+	        (dotimes (_ 3) \
+	          (ignore-errors \
+	            (backward-up-list 1 t t) \
+	            (when (looking-at \"(\") \
+	              (forward-char 1) \
+	              (let ((sym (intern-soft (thing-at-point 'symbol t)))) \
+	                (when (member sym allowed-forms) \
+	                  (throw 'found t))))))))) \
+	  (let ((errors nil) \
+	        (allowed '(condition-case cl-eval-when eval-when-compile))) \
+	    (dolist (file (directory-files-recursively \"lisp\" \"\\\\.el$$\")) \
+	      (with-temp-buffer \
+	        (insert-file-contents file) \
+	        (goto-char (point-min)) \
+	        (while (re-search-forward \"^[ \\t]+[ \\t]*(defun \" nil t) \
+	          (let* ((defun-pos (match-beginning 0)) \
+	                 (line-num (line-number-at-pos defun-pos))) \
+	            (unless (lint--check-enclosing-form defun-pos allowed) \
+	              (push (format \"%s:%d\" (file-name-nondirectory file) line-num) errors)))))) \
+	    (if errors \
+	        (progn \
+	          (message \"❌ Found nested defun forms:\") \
+	          (dolist (e (nreverse errors)) (message \"  %s\" e)) \
+	          (message \"\") \
+	          (message \"defun should start at column 0. Indented defun usually means\") \
+	          (message \"mismatched parens caused one function to be nested inside another.\") \
+	          (kill-emacs 1)) \
+	      (message \"✅ No unexpected nested defun forms found\")))"
 
 # Testing
 test: compile

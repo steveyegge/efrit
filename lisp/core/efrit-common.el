@@ -45,6 +45,17 @@ Useful for corporate proxies or alternative API endpoints."
                  (function :tag "Function returning base URL"))
   :group 'efrit)
 
+(defcustom efrit-api-url nil
+  "DEPRECATED: Legacy full API URL override.
+Use `efrit-api-base-url' instead.
+
+When non-nil, this takes precedence over `efrit-api-base-url'.
+This is kept for backwards compatibility with existing configurations.
+Set to nil (the default) to use the centralized configuration."
+  :type '(choice (const :tag "Use efrit-api-base-url" nil)
+                 (string :tag "Legacy full URL override"))
+  :group 'efrit)
+
 (defcustom efrit-api-auth-source-host "api.anthropic.com"
   "Host to use for auth-source lookup of API key."
   :type 'string
@@ -75,44 +86,44 @@ Shows only first 6 and last 4 characters."
 (define-obsolete-function-alias 'efrit-common-safe-log 'efrit-log-safe "0.4.2"
   "Use efrit-log-safe from efrit-log.el instead.")
 
-    ;;; Error Message Formatting
+;;; Error Message Formatting
 
-    ;; All error messages returned to Claude should use these helpers for consistency.
-    ;; This ensures Claude can reliably parse and understand errors across all tools.
-    ;; Format: [Error: CATEGORY] message or 🚫 SECURITY: message for security issues.
+;; All error messages returned to Claude should use these helpers for consistency.
+;; This ensures Claude can reliably parse and understand errors across all tools.
+;; Format: [Error: CATEGORY] message or 🚫 SECURITY: message for security issues.
 
-    (defun efrit-format-error (category message &rest args)
-    "Format an error message with consistent structure.
-    CATEGORY is a brief category name (e.g., `API', `Security', `Validation').
-    MESSAGE is the error message (can contain format specifiers).
-    ARGS are format arguments for MESSAGE.
+(defun efrit-format-error (category message &rest args)
+  "Format an error message with consistent structure.
+CATEGORY is a brief category name (e.g., `API', `Security', `Validation').
+MESSAGE is the error message (can contain format specifiers).
+ARGS are format arguments for MESSAGE.
 
-    Returns a formatted string for returning to Claude as a tool result."
-    (let ((formatted-msg (if args (apply #'format message args) message)))
+Returns a formatted string for returning to Claude as a tool result."
+  (let ((formatted-msg (if args (apply #'format message args) message)))
     (format "\n[Error: %s] %s" category formatted-msg)))
 
-    (defun efrit-format-validation-error (field-name &optional details)
-    "Format a validation error for missing or invalid field.
-    FIELD-NAME is the name of the field that failed validation.
-    DETAILS is optional additional context."
-    (if details
-     (format "\n[Error: Validation] Field '%s' is invalid: %s" field-name details)
+(defun efrit-format-validation-error (field-name &optional details)
+  "Format a validation error for missing or invalid field.
+FIELD-NAME is the name of the field that failed validation.
+DETAILS is optional additional context."
+  (if details
+      (format "\n[Error: Validation] Field '%s' is invalid: %s" field-name details)
     (format "\n[Error: Validation] Field '%s' is required" field-name)))
 
-    (defun efrit-format-security-error (message &rest args)
-    "Format a security error with warning marker.
-    MESSAGE is the error message (can contain format specifiers).
-    ARGS are format arguments for MESSAGE."
-    (let ((formatted-msg (if args (apply #'format message args) message)))
+(defun efrit-format-security-error (message &rest args)
+  "Format a security error with warning marker.
+MESSAGE is the error message (can contain format specifiers).
+ARGS are format arguments for MESSAGE."
+  (let ((formatted-msg (if args (apply #'format message args) message)))
     (format "🚫 SECURITY: %s" formatted-msg)))
 
-    (defun efrit-format-tool-error (tool-name message)
-    "Format an error from tool execution.
-    TOOL-NAME is the name of the tool that failed.
-    MESSAGE is the error message."
-    (format "\n[Error: %s] %s" tool-name message))
+(defun efrit-format-tool-error (tool-name message)
+  "Format an error from tool execution.
+TOOL-NAME is the name of the tool that failed.
+MESSAGE is the error message."
+  (format "\n[Error: %s] %s" tool-name message))
 
-    ;;; File System Security
+;;; File System Security
 
 (defun efrit-common--validate-path (path allowed-base-paths)
   "Validate that PATH is within one of ALLOWED-BASE-PATHS.

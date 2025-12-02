@@ -101,12 +101,7 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
   :type '(repeat string)
   :group 'efrit)
 
-(defcustom efrit-api-url nil
-  "Legacy API URL setting. Use efrit-api-base-url in efrit-common instead.
-When nil, uses the centralized configuration."
-  :type '(choice (const :tag "Use centralized config" nil)
-                 (string :tag "Legacy URL override"))
-  :group 'efrit)
+;; efrit-api-url is defined in efrit-common.el (legacy, deprecated)
 
 (defcustom efrit-max-turns 2
   "Maximum number of turns in a conversation for streamlined interface."
