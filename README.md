@@ -91,8 +91,11 @@ Verify with `M-x efrit-doctor`.
 | Command | Description |
 |---------|-------------|
 | `M-x efrit-chat` | Multi-turn conversational interface |
-| `M-x efrit-do` | Execute natural language command (sync) |
-| `M-x efrit-do-async` | Execute command asynchronously |
+| `M-x efrit-do` | Execute natural language command asynchronously with progress buffer |
+| `M-x efrit-do-sync` | Execute natural language command synchronously (blocking) |
+| `M-x efrit-do-silently` | Execute command asynchronously without showing progress buffer |
+| `M-x efrit-do-show-progress` | Show the progress buffer for the active command |
+| `M-x efrit-do-show-queue` | Show commands queued for execution |
 | `M-x efrit-doctor` | Run diagnostics |
 | `M-x efrit-help` | Show help |
 
@@ -130,6 +133,47 @@ Assistant: [analyzes current buffer and explains]
 You: Can you refactor it to use condition-case-unless-debug instead?
 ```
 
+### Async Execution (Default Behavior)
+
+By default, `efrit-do` executes asynchronously:
+
+```
+M-x efrit-do RET
+> create a buffer with a function to reverse strings
+```
+
+Efrit automatically:
+1. Displays a **progress buffer** with real-time updates on Claude's thinking and tool execution
+2. Supports **interruption** with `C-g` (keyboard-quit)
+3. **Queues commands** if another command is already running (use `efrit-do-show-queue` to view)
+4. Shows **session status** in the minibuffer and modeline
+
+The progress buffer shows:
+- Claude's reasoning and tool calls
+- Results from each step
+- Time elapsed
+
+### Synchronous Execution (Legacy)
+
+For simpler tasks or scripting, use `efrit-do-sync` for blocking execution:
+
+```elisp
+(efrit-do-sync "list all python files in current directory")
+```
+
+This is the older API that waits for completion before returning.
+
+### Background Execution
+
+To run a command without showing the progress buffer:
+
+```
+M-x efrit-do-silently RET
+> long running task...
+```
+
+Progress is visible in the minibuffer. Show the buffer later with `M-x efrit-do-show-progress`.
+
 ### Key Bindings
 
 Enable the global keymap:
@@ -139,8 +183,8 @@ Enable the global keymap:
 
 Then use:
 - `C-c C-e c` - Chat interface
-- `C-c C-e d` - Sync command
-- `C-c C-e D` - Async command
+- `C-c C-e d` - Async command with progress buffer
+- `C-c C-e D` - Async command in background
 - `C-c C-e q` - Start remote queue
 - `C-c C-e Q` - Queue status
 
@@ -178,6 +222,36 @@ Types: `eval` (elisp), `command` (natural language), `chat` (conversation), `sta
 
 See [mcp/README.md](mcp/README.md) for MCP server setup.
 
+## Migration Guide
+
+If you have existing keybindings or configurations using older Efrit APIs:
+
+**Old name** → **New name** | **Status**
+--- | --- | ---
+`efrit-do` (sync) | `efrit-do-sync` | Deprecated
+`efrit-do-async` | `efrit-do` | Primary interface
+`efrit-do-async-legacy` | — | Do not use
+
+If you have in your `init.el`:
+```elisp
+;; OLD: sync command (blocking)
+(global-set-key (kbd "C-c C-e d") 'efrit-do)
+
+;; NEW: use async command with progress buffer
+(global-set-key (kbd "C-c C-e d") 'efrit-do)
+```
+
+Or if you have code calling `efrit-do-async`:
+```elisp
+;; OLD: explicit async
+(efrit-do-async "your command")
+
+;; NEW: efrit-do is async by default
+(efrit-do "your command")
+```
+
+The async API is now recommended for all use cases. Use `efrit-do-sync` only if you need blocking behavior (e.g., in scripts where waiting for completion is required).
+
 ## Configuration
 
 ```elisp
@@ -192,6 +266,10 @@ See [mcp/README.md](mcp/README.md) for MCP server setup.
 
 ;; Enable debug logging
 (setq efrit-log-level 'debug)
+
+;; Progress buffer configuration
+(setq efrit-do-show-progress-buffer t)  ; Show progress buffer automatically
+(setq efrit-do-queue-max-size 10)       ; Max commands to queue
 ```
 
 ## Data Directory

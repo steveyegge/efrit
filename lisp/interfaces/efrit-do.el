@@ -1049,11 +1049,15 @@ Returns RESULT for programmatic use."
 ;;;###autoload
 (defun efrit-do-async-legacy (command)
   "Execute natural language COMMAND using legacy async executor.
-DEPRECATED: Use `efrit-do' instead, which provides proper async
-execution with progress buffer, queueing, and interruption support.
+
+DEPRECATED: This function is deprecated and should not be used.
+Use `efrit-do' instead, which provides proper async execution with
+progress buffer, queueing, and interruption support, or use
+`efrit-do-sync' for synchronous blocking execution.
 
 This function uses the older `efrit-execute-async' path which lacks
-the full agentic loop infrastructure."
+the full agentic loop infrastructure. It is kept for backward
+compatibility only."
   (interactive
    (list (read-string "Command (legacy async): " nil 'efrit-do-history)))
 
@@ -1139,17 +1143,33 @@ Displays final results and processes queued commands."
 
 ;;;###autoload
 (defun efrit-do (command)
-  "Execute natural language COMMAND in Emacs asynchronously.
-The command is sent to Claude via the async agentic loop, which
-provides non-blocking execution with real-time progress visibility.
+  "Execute natural language COMMAND in Emacs asynchronously (recommended).
 
-A progress buffer is automatically displayed showing Claude's work.
-Results are displayed when the command completes.
+This is the PRIMARY interface for Efrit command execution. It provides
+non-blocking execution with a real-time progress buffer showing:
+- Claude's reasoning and decision-making
+- Tool invocations and results
+- Session status and progress
 
-Use \\[keyboard-quit] (C-g) to interrupt execution.
+FEATURES:
+- Progress buffer with real-time updates (automatic display)
+- Interruption support with \\[keyboard-quit] (C-g)
+- Command queuing if a session is already running
+- Non-blocking execution keeps Emacs responsive
+- Session state tracking and restoration
+
+USAGE:
+```
+M-x efrit-do RET
+> create a buffer with today's date
+```
 
 If a command is already running, this command is queued for later
 execution. Use `efrit-do-show-queue' to view queued commands.
+
+For silent execution without showing the progress buffer, use
+`efrit-do-silently' instead. For synchronous/blocking execution,
+use `efrit-do-sync'.
 
 Returns the session object for programmatic use."
   (interactive
@@ -1180,9 +1200,16 @@ Returns the session object for programmatic use."
 
 ;;;###autoload
 (defun efrit-do-sync (command)
-  "Execute natural language COMMAND in Emacs synchronously.
-This is the legacy blocking execution path. Prefer `efrit-do' for
-non-blocking async execution with progress visibility.
+  "Execute natural language COMMAND in Emacs synchronously (blocking).
+
+This is the synchronous/blocking execution path. Most users should
+prefer `efrit-do' for non-blocking async execution with real-time
+progress visibility, command queueing, and proper interruption handling.
+
+Use `efrit-do-sync' only when you need blocking behavior, such as:
+- Scripts where waiting for completion is required
+- Scripting contexts that cannot handle async execution
+- One-off commands where blocking is acceptable
 
 The command is sent to Claude, which translates it into Elisp
 and executes it immediately. Results are displayed in a dedicated
@@ -1231,14 +1258,22 @@ Returns the result string for programmatic use."
 
 ;;;###autoload
 (defun efrit-do-silently (command)
-  "Execute natural language COMMAND asynchronously without showing progress buffer.
-Unlike `efrit-do', this command does not automatically open the progress buffer.
-Progress updates are shown in the modeline and messages only.
-User can manually open progress buffer with \\[efrit-do-show-progress].
+  "Execute COMMAND asynchronously in background without progress buffer.
 
+Like `efrit-do', but without automatically displaying the progress buffer.
+Progress is visible only in:
+- Modeline status indicator
+- Minibuffer messages
+
+WHEN TO USE:
+- Long-running commands where you want to continue editing
+- Commands where you don't need to see detailed progress
+- Background tasks that shouldn't interrupt your workflow
+
+Show progress buffer manually with \\[efrit-do-show-progress].
 Use \\[keyboard-quit] (C-g) to interrupt execution.
 
-If a command is already running, this command is queued for later execution.
+If a command is running, this command is queued for later execution.
 Use `efrit-do-show-queue' to view queued commands.
 
 Returns the session object for programmatic use."

@@ -5,6 +5,27 @@ All notable changes to Efrit will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **API Simplification**: `efrit-do` is now the primary async interface (non-blocking execution with progress buffer)
+  - Old `efrit-do` (sync) renamed to `efrit-do-sync`
+  - Old `efrit-do-async` renamed to `efrit-do`
+  - Old `efrit-do-async-legacy` deprecated (use `efrit-do-sync` instead)
+- **Documentation**: Added migration guide in README for users upgrading from previous versions
+- **Key bindings**: Updated default keybinding documentation to reflect new async-first approach
+
+### Added
+- **Progress buffer integration**: Async commands now show real-time progress with thinking and tool execution
+- **Command queuing**: Support for queuing commands while another is running
+- **Background execution**: `efrit-do-silently` for non-blocking execution without visible progress buffer
+- **Progress visualization**: Interactive progress buffer with session status updates
+
+### Deprecated
+- `efrit-do-sync`: Use `efrit-do` for async or if blocking is needed use `efrit-do-sync` explicitly
+- `efrit-do-async-legacy`: Use `efrit-do-sync` if blocking behavior is required
+- `efrit-do-async`: Use `efrit-do` (now the primary interface)
+
 ## [0.4.1] - 2025-11-30
 
 ### Added
