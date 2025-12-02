@@ -93,11 +93,11 @@ Scans all ARGS for strings that look like API keys and sanitizes them."
 
     (defun efrit-format-error (category message &rest args)
     "Format an error message with consistent structure.
-    CATEGORY is a brief category name (e.g., 'API', 'Security', 'Validation').
+    CATEGORY is a brief category name (e.g., `API', `Security', `Validation').
     MESSAGE is the error message (can contain format specifiers).
     ARGS are format arguments for MESSAGE.
 
-    Returns a formatted string suitable for returning to Claude as a tool result."
+    Returns a formatted string for returning to Claude as a tool result."
     (let ((formatted-msg (if args (apply #'format message args) message)))
     (format "\n[Error: %s] %s" category formatted-msg)))
 

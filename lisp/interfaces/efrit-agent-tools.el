@@ -77,8 +77,9 @@ Returns (START . END) or nil if not found."
         (cons start end)))))
 
 (defun efrit-agent--update-tool-result (tool-id result success-p &optional elapsed)
-  "Update tool call TOOL-ID with RESULT, SUCCESS-P status, and optional ELAPSED time.
-Finds the tool in the conversation and updates it in-place without full re-render."
+  "Update tool call with result and status.
+TOOL-ID identifies the tool. RESULT is the result value.
+SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
   (let ((region (efrit-agent--find-tool-region tool-id)))
     (when region
       (let* ((inhibit-read-only t)
@@ -139,10 +140,9 @@ Finds the tool in the conversation and updates it in-place without full re-rende
 
 (defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id)
   "Format the expansion content for a tool call.
-TOOL-INPUT is the input parameters, RESULT is the output, SUCCESS-P indicates status.
-TOOL-ID is optional; when provided and SUCCESS-P is nil, error recovery buttons are shown.
-If RESULT contains diff content and `efrit-agent-show-diff' is non-nil,
-the diff is formatted with syntax highlighting."
+TOOL-INPUT is the input parameters, RESULT is the output.
+SUCCESS-P indicates status. TOOL-ID enables error recovery buttons.
+Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
   (let ((indent "       ")
         (max-lines (pcase efrit-agent-verbosity
                      ('minimal 3)

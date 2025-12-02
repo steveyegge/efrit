@@ -385,7 +385,7 @@ If there's an error, handle it and clean up the buffer."
 
 (defun efrit--classify-error (error-details)
   "Classify an error and return (type description recommendation).
-Analyzes error details to determine if it's rate limiting, auth, network, or other."
+Analyzes error details to determine if it's rate-limiting, auth, network, etc."
   (let ((error-str (format "%s" error-details)))
     (cond
      ;; Rate limiting errors
@@ -440,7 +440,8 @@ Analyzes error details to determine if it's rate limiting, auth, network, or oth
         "Unexpected error occurred. Check the logs for more details.")))))
 
 (defun efrit--handle-http-error (error-details)
-  "Handle HTTP error with ERROR-DETAILS, providing better classification and guidance."
+  "Handle HTTP error, providing classification and guidance.
+ERROR-DETAILS contains the error information."
   (require 'efrit-log)
   (efrit-log-error "[efrit-chat] API Error: %s" error-details)
   

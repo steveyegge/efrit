@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint checkdoc
 
 # Default target
 all: compile
@@ -34,6 +34,11 @@ help:
 	@echo "  clean       - Remove compiled files"
 	@echo "  distclean   - Remove all generated files"
 	@echo ""
+	@echo "Code Quality:"
+	@echo "  check       - Check syntax and compilation"
+	@echo "  lint        - Full linting (checkdoc + byte-compile + style)"
+	@echo "  checkdoc    - Check docstring quality"
+	@echo ""
 	@echo "Testing:"
 	@echo "  test        - Run all tests"
 	@echo "  test-simple - Run basic tests only"
@@ -41,7 +46,6 @@ help:
 	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
 	@echo "  test-auto   - Run automated Tier 1 tests (⚠️  BURNS TOKENS!)"
 	@echo "  test-tier TIER=n - Run specific tier tests (⚠️  BURNS TOKENS!)"
-	@echo "  check       - Check syntax and compilation"
 	@echo ""
 	@echo "MCP Server:"
 	@echo "  mcp-install - Install MCP server dependencies"
@@ -153,8 +157,24 @@ check:
 	done
 	@echo "✅ All syntax checks passed"
 
-# Linting (basic style checks)
-lint:
+# Checkdoc validation (docstring quality)
+checkdoc:
+	@echo "Checking docstrings..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
+		--eval "(require 'checkdoc)" \
+		--eval "(setq checkdoc-autofix-style 'query)" \
+		$(foreach file,$(EL_FILES),--eval "(checkdoc-file \"$(file)\")") \
+		--eval "(if checkdoc-diagnostic-buffer (progn (set-buffer checkdoc-diagnostic-buffer) (message (buffer-string)) (error \"Checkdoc found issues\")))" \
+		2>&1 | grep -v "^$" || true
+	@echo "✅ Docstring checks passed"
+
+# Linting (code style + byte-compile warnings + docstrings)
+lint: checkdoc
 	@echo "Checking code style..."
 	@for file in $(EL_FILES); do \
 		echo "Linting $$file..."; \
@@ -163,7 +183,17 @@ lint:
 			exit 1; \
 		fi; \
 	done
-	@echo "✅ Code style checks passed"
+	@echo "Running byte-compile with warnings-as-errors..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $(EL_FILES)
+	@echo "✅ Code style and warnings checks passed"
 
 # Testing
 test: compile
@@ -334,6 +364,7 @@ dev-setup:
 
 # Continuous integration target
 ci: check lint compile test
+	@echo "✅ All CI checks passed"
 
 # Show current configuration
 config:

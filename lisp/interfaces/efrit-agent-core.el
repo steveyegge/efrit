@@ -53,8 +53,8 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
 
 (defcustom efrit-agent-display-style 'unicode
   "Display style for the agent buffer.
-- unicode: Use Unicode box-drawing characters and symbols (requires font support)
-- ascii: Use plain ASCII characters for maximum terminal compatibility"
+- unicode: Use Unicode box-drawing characters and symbols
+- ascii: Use plain ASCII characters for terminal compatibility"
   :type '(choice (const :tag "Unicode (modern)" unicode)
                  (const :tag "ASCII (compatible)" ascii))
   :group 'efrit-agent)
@@ -298,7 +298,7 @@ Inserts just before the conversation-end marker, preserving read-only."
 
 (defun efrit-agent--get-input ()
   "Get the current user input from the input region.
-Returns the text after the input-start marker (which is positioned after the prompt)."
+Returns the text after the input-start marker."
   (when (and efrit-agent--input-start
              (marker-position efrit-agent--input-start))
     (string-trim-right
@@ -306,7 +306,7 @@ Returns the text after the input-start marker (which is positioned after the pro
 
 (defun efrit-agent--clear-input ()
   "Clear the input region, leaving just the prompt.
-The prompt is before input-start marker, so we just delete from input-start to end."
+Deletes from input-start marker to end of buffer."
   (when (and efrit-agent--input-start
              (marker-position efrit-agent--input-start))
     (let ((inhibit-read-only t))

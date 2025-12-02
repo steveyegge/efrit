@@ -36,6 +36,7 @@
 (declare-function efrit-do--execute-tool "efrit-do")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--get-current-tools-schema "efrit-do")
+(declare-function efrit-do-async--execute-single-tool "efrit-do-async-loop")
 (defvar efrit-default-model)
 
 ;;; Customization
@@ -153,7 +154,7 @@ CALLBACK is (lambda (response error) ...) called when complete."
 
 (defun efrit-do-async--on-api-response (session response)
   "Handle API RESPONSE for SESSION.
-RESPONSE is a hash table from Claude API with \"content\" and \"stop_reason\" fields."
+RESPONSE contains content and stop_reason fields."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'debug "Session %s: received response" session-id)
     
@@ -182,8 +183,8 @@ RESPONSE is a hash table from Claude API with \"content\" and \"stop_reason\" fi
 
 (defun efrit-do-async--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for SESSION.
-CONTENT is a vector of content blocks from Claude API response.
-Handles: tool execution, error recovery, session state updates, and session_complete signals."
+CONTENT is a vector of content blocks.
+Handles: tool execution, error recovery, session state updates."
   (let ((session-id (efrit-session-id session))
         (results nil)
         (session-complete-requested nil))
@@ -259,7 +260,7 @@ Handles: tool execution, error recovery, session state updates, and session_comp
 TOOL-ID is the tool use ID from Claude's response.
 Wraps execution with error handling, validation, and detailed logging.
 Returns tool result (success or error message).
-Error messages start with 'Error ' for easy detection by caller."
+Error messages start with `Error ' for easy detection by caller."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
                session-id tool-name tool-id)

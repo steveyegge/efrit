@@ -36,8 +36,8 @@
 ARGS is an alist with the following keys:
   - name (required): Buffer name (string)
   - content (optional): Initial content to insert
-  - mode (optional): Major mode to enable (symbol or string, e.g., 'org-mode)
-  - read-only (optional): Whether buffer should be read-only (boolean, default false)
+  - mode (optional): Major mode to enable (symbol or string)
+  - read-only (optional): Whether buffer should be read-only (boolean)
 
 Returns a string describing what was created."
   (condition-case err

@@ -359,13 +359,13 @@ Includes safety limits to prevent hanging on large directories."
    (let* ((input (efrit-glob-files-input-create tool-input))
           (validation (efrit-glob-files-input-is-valid input)))
      (if (not (car validation))
-         (format "\n[Error: %s]" (cdr validation))
-      (let* ((pattern (efrit-glob-files-input-get-pattern input))
-             (extension (efrit-glob-files-input-get-extension input))
-             (recursive (efrit-glob-files-input-get-recursive input)))
+        (format "\n[Error: %s]" (cdr validation))
+        (let* ((pattern (efrit-glob-files-input-get-pattern input))
+               (extension (efrit-glob-files-input-get-extension input))
+               (recursive (efrit-glob-files-input-get-recursive input)))
 
-      ;; Validate required fields
-      (cond
+          ;; Validate required fields
+          (cond
        ((or (null pattern) (string-empty-p pattern))
         "\n[Error: glob_files requires 'pattern' field (directory path)]")
 

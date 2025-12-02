@@ -33,8 +33,8 @@ Returns: error object hash-table or nil."
 
 (defun efrit-error-type (error-obj)
   "Get the type string from ERROR-OBJ.
-Common types: `invalid_request_error', `authentication_error', `rate_limit_error'.
-Returns type string or `unknown'."
+Common types: `invalid_request_error', `authentication_error',
+`rate_limit_error'. Returns type string or `unknown'."
   (if (hash-table-p error-obj)
       (or (gethash "type" error-obj) "unknown")
     "unknown"))
