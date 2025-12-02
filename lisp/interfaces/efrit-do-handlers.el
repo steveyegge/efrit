@@ -766,6 +766,15 @@ Returns the image as base64-encoded data that Claude can analyze visually."
                       path size mime))
           (efrit-do--format-tool-result result "Read Image Result")))))
 
+(defun efrit-do--handle-format-file (tool-input)
+  "Handle format_file tool to auto-format a file."
+  (require 'efrit-tool-format-file)
+  (or (efrit-do--validate-hash-table tool-input "format_file")
+      (efrit-do--validate-required tool-input "format_file" "path")
+      (let* ((args (efrit-do--extract-fields tool-input '("path")))
+             (result (efrit-tool-format-file args)))
+        (efrit-do--format-tool-result result "Format File Result"))))
+
 (provide 'efrit-do-handlers)
 
 ;;; efrit-do-handlers.el ends here

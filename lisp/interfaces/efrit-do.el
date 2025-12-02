@@ -234,7 +234,8 @@ truncated to keep this many recent results."
     ("elisp_docs"         . (efrit-do--handle-elisp-docs . :tool-input))
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
     ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input))
-    ("read_image"         . (efrit-do--handle-read-image . :tool-input)))
+    ("read_image"         . (efrit-do--handle-read-image . :tool-input))
+    ("format_file"        . (efrit-do--handle-format-file . :tool-input)))
   "Dispatch table mapping tool names to handlers and argument types.")
 
 ;; Budget hints, tool schemas -> efrit-do-schema.el

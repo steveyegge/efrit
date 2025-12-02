@@ -655,6 +655,30 @@ IMPORTANT: This is the ONLY way to actually SEE image contents. Do NOT use find-
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
                                                   ("description" . "Path to the image file (required)")))))
+                      ("required" . ["path"]))))
+   (("name" . "format_file")
+    ("description" . "Auto-format a file using the appropriate formatter. Use after making edits to ensure consistent code style.
+
+EXAMPLES:
+- Format elisp: format_file path=\"lisp/efrit.el\" (uses emacs-lisp-mode indentation)
+- Format JS/TS: format_file path=\"src/app.ts\" (uses prettier)
+- Format Go: format_file path=\"main.go\" (uses gofmt)
+- Format Python: format_file path=\"script.py\" (uses black)
+
+SUPPORTED FORMATTERS:
+- Elisp: Built-in emacs-lisp-mode indentation
+- JS/TS/JSON/CSS/HTML/YAML/MD: prettier
+- Go: gofmt
+- Rust: rustfmt
+- Python: black
+- Ruby: rubocop
+- Shell: shfmt
+- C/C++: clang-format
+
+Returns a diff showing formatting changes, or a message if file was already formatted.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string")
+                                                  ("description" . "File path to format (required)")))))
                       ("required" . ["path"]))))]
   "Schema definition for all available tools in efrit-do mode.")
 
