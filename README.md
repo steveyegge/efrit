@@ -272,6 +272,26 @@ The async API is now recommended for all use cases. Use `efrit-do-sync` only if 
 (setq efrit-do-queue-max-size 10)       ; Max commands to queue
 ```
 
+### Shell Command Security
+
+Efrit restricts which shell commands Claude can execute. By default, a wide range of development tools are allowed (git, npm, cargo, go, python, etc.).
+
+```elisp
+;; Disable all shell security checks (trust Claude completely)
+(setq efrit-do-shell-security-enabled nil)
+
+;; OR allow all commands but keep forbidden pattern checks
+(setq efrit-do-allowed-shell-commands '("*"))
+
+;; Add additional allowed commands
+(add-to-list 'efrit-do-allowed-shell-commands "mycustomtool")
+
+;; Disable forbidden pattern checking
+(setq efrit-do-forbidden-shell-patterns nil)
+```
+
+The default forbidden patterns block truly dangerous commands like `sudo`, `shutdown`, and shell command injection via `$(...)` or backticks.
+
 ## Data Directory
 
 All data lives under `~/.emacs.d/.efrit/`:

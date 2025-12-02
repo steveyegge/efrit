@@ -108,25 +108,46 @@ Prevents runaway searches from overwhelming the system."
 
 ;;; Shell command security
 
-(defvar efrit-do-allowed-shell-commands
+(defcustom efrit-do-allowed-shell-commands
   '("ls" "pwd" "date" "whoami" "uname" "df" "ps" "top"
     "cat" "head" "tail" "wc" "grep" "find" "which"
     "echo" "printf" "basename" "dirname" "realpath"
-    "git" "make" "emacs" "python" "node" "npm"
-    "curl" "wget")
-  "List of shell commands considered safe for AI execution.")
+    "git" "make" "emacs" "python" "python3" "pip" "pip3"
+    "node" "npm" "npx" "pnpm" "yarn" "bun"
+    "cargo" "rustc" "rustup"
+    "go" "gofmt"
+    "java" "javac" "mvn" "gradle"
+    "ruby" "gem" "bundle" "rake"
+    "php" "composer"
+    "dotnet" "nuget"
+    "zig" "cmake" "ninja"
+    "docker" "docker-compose"
+    "kubectl" "helm"
+    "terraform" "ansible"
+    "curl" "wget" "jq" "yq"
+    "rg" "fd" "ag" "ack" "sed" "awk" "sort" "uniq" "tr" "cut"
+    "diff" "patch" "file" "stat" "du" "tree"
+    "tar" "gzip" "gunzip" "zip" "unzip"
+    "ssh" "scp" "rsync"
+    "test" "[")
+  "List of shell commands considered safe for AI execution.
+Use \"*\" as the sole element to allow ALL commands (disables command whitelist).
+Example: (setq efrit-do-allowed-shell-commands \\='(\"*\"))"
+  :type '(repeat string)
+  :group 'efrit-do)
 
-(defvar efrit-do-forbidden-shell-patterns
-  '("\\brm\\b" "rmdir" "mkdir" "touch" "\\bmv\\b" "\\bcp\\b"
-    "chmod" "chown" "sudo" "su" "passwd"
-    "kill" "killall" "pkill" "shutdown" "reboot"
-    "\\bdd\\b" "fdisk" "mkfs" "mount" "umount"
-    "export" "unset" "source" "\\berl\\b"
-    "[^a-zA-Z0-9_]>[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]>>[^a-zA-Z0-9_]"
-    "[^a-zA-Z0-9_]<[^a-zA-Z0-9_]" "[^a-zA-Z0-9_]|[^a-zA-Z0-9_]"
-    "[^a-zA-Z0-9_]&[^a-zA-Z0-9_]" "&&" "||" "[^a-zA-Z0-9_];[^a-zA-Z0-9_]"
+(defcustom efrit-do-forbidden-shell-patterns
+  '("sudo" "su" "passwd"
+    "shutdown" "reboot"
+    "fdisk" "mkfs" "mount" "umount"
     "\\$(" "`" "\\${")
-  "Patterns that are forbidden in shell commands.")
+  "Patterns that are forbidden in shell commands.
+Set to nil to disable pattern checking entirely.
+
+By default, only truly dangerous system-level commands are blocked.
+Pipes, redirects, and command chaining are allowed for development workflows."
+  :type '(repeat string)
+  :group 'efrit-do)
 
 ;;; Helper functions
 
@@ -160,21 +181,17 @@ Returns (SAFE-P . ERROR-MESSAGE) where SAFE-P is t if safe."
         ;; Extract the main command (first word)
         (let ((main-command (car (split-string command-clean))))
 
-          ;; Check if main command is in allowed list
-          (unless (member main-command efrit-do-allowed-shell-commands)
+          ;; Check if main command is in allowed list (unless "*" wildcard)
+          (unless (or (member "*" efrit-do-allowed-shell-commands)
+                      (member main-command efrit-do-allowed-shell-commands))
             (cl-return-from validate-shell
               (cons nil (format "Shell command '%s' not in allowed whitelist" main-command))))
 
-          ;; Check for forbidden patterns
+          ;; Check for forbidden patterns (if any)
           (dolist (pattern efrit-do-forbidden-shell-patterns)
             (when (string-match-p pattern command-clean)
               (cl-return-from validate-shell
                 (cons nil (format "Shell command contains forbidden pattern: %s" pattern)))))
-
-          ;; Additional safety checks
-          (when (> (length command-clean) 200)
-            (cl-return-from validate-shell
-              (cons nil "Shell command too long (>200 chars)")))
 
           ;; Command appears safe
           (cons t nil))))))
