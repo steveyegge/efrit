@@ -192,6 +192,25 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
                                        'face 'efrit-agent-timestamp) "\n")))
     result))
 
+(defun efrit-agent--format-code-block (text language indent max-lines)
+  "Format TEXT as a code block with LANGUAGE syntax highlighting.
+TEXT is the code content, LANGUAGE is the mode name (elisp, python, bash, etc).
+INDENT is the prefix for each line, MAX-LINES limits output.
+Returns formatted string with syntax highlighting applied via font-lock."
+  (let* ((mode (intern-soft (concat language "-mode")))
+         (highlighted
+          (if (and mode (fboundp mode))
+              (with-temp-buffer
+                (insert text)
+                ;; Load the mode and ensure font-lock highlighting
+                (funcall mode)
+                (font-lock-ensure)
+                ;; Return the buffer contents with faces preserved
+                (buffer-string))
+            ;; Fallback if mode not available
+            text)))
+    (efrit-agent--format-indented-lines highlighted indent max-lines)))
+
 ;;; Inline Diff Display
 ;;
 ;; Functions for detecting and formatting unified diff content in tool results.
@@ -248,6 +267,16 @@ Returns the formatted line string with text properties."
                  'efrit-agent-diff-context))))
     (propertize line-content 'face face)))
 
+(defun efrit-agent--extract-code-block (text)
+  "Extract a code block from TEXT if present.
+Returns (language . content) or nil if no code block found.
+Looks for markdown-style ```language...``` blocks."
+  (when (string-match "^```\\([a-z-]*\\)\n\\(.*\\)\n```$" text)
+    (let ((language (match-string 1 text))
+          (content (match-string 2 text)))
+      ;; Use language if specified, default to text
+      (cons (or (and (> (length language) 0) language) "text") content))))
+
 (defun efrit-agent--format-diff-content (diff-text indent max-lines)
   "Format DIFF-TEXT with syntax highlighting and INDENT prefix.
 Limits output to MAX-LINES. Returns formatted string with faces."
@@ -265,21 +294,28 @@ Limits output to MAX-LINES. Returns formatted string with faces."
     result))
 
 (defun efrit-agent--format-tool-result-with-diff (result _success-p indent max-lines)
-  "Format tool RESULT, detecting and highlighting diff content.
+  "Format tool RESULT, detecting and highlighting diff/code block content.
 _SUCCESS-P is reserved for future use (error styling).
 INDENT is the prefix for each line.
 MAX-LINES limits the output.
 Returns formatted string with appropriate faces."
-  (if (not efrit-agent-show-diff)
-      ;; Diff display disabled, use regular formatting
-      (efrit-agent--format-indented-lines (format "%s" result) indent max-lines)
-    ;; Try to extract and format diff content
-    (let ((diff-content (efrit-agent--extract-diff-from-result result)))
-      (if diff-content
-          ;; Found diff content - format with syntax highlighting
-          (efrit-agent--format-diff-content diff-content indent max-lines)
-        ;; No diff content - use regular formatting
-        (efrit-agent--format-indented-lines (format "%s" result) indent max-lines)))))
+  (let ((result-str (format "%s" result)))
+    ;; Try to detect and format code blocks first
+    (let ((code-block (efrit-agent--extract-code-block result-str)))
+      (if code-block
+          ;; Found code block - format with syntax highlighting
+          (efrit-agent--format-code-block (cdr code-block) (car code-block) indent max-lines)
+        ;; No code block - check for diff
+        (if (not efrit-agent-show-diff)
+            ;; Diff display disabled, use regular formatting
+            (efrit-agent--format-indented-lines result-str indent max-lines)
+          ;; Try to extract and format diff content
+          (let ((diff-content (efrit-agent--extract-diff-from-result result)))
+            (if diff-content
+                ;; Found diff content - format with syntax highlighting
+                (efrit-agent--format-diff-content diff-content indent max-lines)
+              ;; No diff content - use regular formatting
+              (efrit-agent--format-indented-lines result-str indent max-lines))))))))
 
 ;;; Error Recovery Actions
 ;;
