@@ -79,15 +79,33 @@ Configure with `efrit-do-forbidden-shell-patterns`.
 The `eval_sexp` tool executes arbitrary Elisp with no sandbox.
 
 ### Risks
-- Infinite loops can freeze Emacs (use `C-g` to interrupt)
+- Infinite loops or slow code can freeze Emacs
 - Destructive operations (deleting buffers, files)
 - Network access via `url-retrieve`
 
 ### Mitigations
+
+**Timeout protection (default: 30 seconds)**
+
+Elisp evaluations automatically timeout after 30 seconds to prevent runaway code:
+
 ```elisp
-;; Disable Elisp evaluation entirely
+;; Adjust timeout (seconds)
+(setq efrit-tools-eval-timeout 60)  ; Increase to 60s for slow operations
+
+;; Disable timeout (not recommended)
+(setq efrit-tools-eval-timeout nil)
+```
+
+If an eval hangs despite the timeout, use `C-g` to manually interrupt.
+
+**Disable Elisp evaluation entirely**
+
+```elisp
 (setq efrit-tools-sexp-evaluation-enabled nil)
 ```
+
+This completely prevents Claude from running arbitrary Elisp. Claude can still use the predefined tools (file operations, shell commands, etc.), but cannot evaluate custom expressions.
 
 ## Recommended Practices
 

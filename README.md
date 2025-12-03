@@ -299,6 +299,20 @@ The async API is now recommended for all use cases. Use `efrit-do-sync` only if 
 (setq efrit-do-queue-max-size 10)       ; Max commands to queue
 ```
 
+### Elisp Evaluation Safety
+
+Efrit includes safety controls for `eval_sexp`:
+
+```elisp
+;; Timeout for elisp evaluation (default: 30 seconds)
+(setq efrit-tools-eval-timeout 30)
+
+;; Disable elisp evaluation entirely (Claude uses predefined tools only)
+(setq efrit-tools-sexp-evaluation-enabled nil)
+```
+
+See [SECURITY.md](SECURITY.md) for full security configuration.
+
 ### Shell Command Security
 
 Efrit restricts which shell commands Claude can execute. By default, a wide range of development tools are allowed (git, npm, cargo, go, python, etc.).

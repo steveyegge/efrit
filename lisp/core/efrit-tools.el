@@ -89,6 +89,15 @@
   :type 'boolean
   :group 'efrit-tools)
 
+(defcustom efrit-tools-eval-timeout 30
+  "Timeout in seconds for eval_sexp calls.
+If an evaluation takes longer than this, it will be interrupted.
+Set to 0 or nil to disable timeout (not recommended).
+Use C-g to manually interrupt if an eval hangs."
+  :type '(choice (integer :tag "Timeout in seconds")
+                 (const :tag "No timeout (dangerous)" nil))
+  :group 'efrit-tools)
+
 (defcustom efrit-tools-sexp-max-output-length 4000
   "Maximum length of output from evaluated expressions."
   :type 'integer
@@ -110,6 +119,10 @@ Set to 0 to disable rate limiting."
 Set to 0 to disable rate limiting."
   :type 'integer
   :group 'efrit-tools)
+
+;;; Error Symbols
+
+(define-error 'efrit-eval-timeout "Elisp evaluation timeout")
 
 ;;; Rate Limiting State
 
@@ -181,8 +194,17 @@ Signals an error if rate limit would be exceeded."
        (error "Invalid Lisp syntax: %s" (error-message-string parse-err))))))
 
 (defun efrit-tools--eval-with-context (sexp)
-  "Evaluate SEXP and return result data with context."
-  (let* ((result (eval sexp t))
+  "Evaluate SEXP and return result data with context.
+Applies `efrit-tools-eval-timeout' if set."
+  (let* ((timeout (and efrit-tools-eval-timeout
+                       (> efrit-tools-eval-timeout 0)
+                       efrit-tools-eval-timeout))
+         (result (if timeout
+                     (with-timeout (timeout
+                                    (signal 'efrit-eval-timeout
+                                            (list (format "Evaluation timed out after %d seconds" timeout))))
+                       (eval sexp t))
+                   (eval sexp t)))
          (result-string (format "%S" result)))
     ;; Truncate if result is too long
     (when (and result-string 
@@ -203,6 +225,7 @@ Signals an error if rate limit would be exceeded."
   (list :success nil
         :error (format "%s: %s" 
                       (pcase (car err)
+                        (`efrit-eval-timeout "Timeout")
                         (`void-function "Function not defined")
                         (`wrong-number-of-arguments "Wrong number of arguments") 
                         (`wrong-type-argument "Wrong type of argument")
