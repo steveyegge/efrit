@@ -166,9 +166,18 @@ RESPONSE contains content and stop_reason fields."
            (stop-reason (efrit-response-stop-reason response)))
       
       ;; Fire progress event for message
-      (when content
-        (efrit-progress-insert-event session-id 'message
-          `((:text . ,(format "%S" content)) (:role . "assistant"))))
+       (when content
+         (efrit-progress-insert-event session-id 'message
+           `((:text . ,(format "%S" content)) (:role . "assistant"))))
+       
+       ;; Stream text content to agent buffer
+       (when content
+         (dotimes (i (length content))
+           (let ((item (aref content i)))
+             (when (and (hash-table-p item)
+                        (string= (gethash "type" item) "text"))
+               (efrit-agent-stream-content (gethash "text" item)))))
+         (efrit-agent-stream-end))
       
       ;; Process based on stop reason
       (pcase stop-reason
