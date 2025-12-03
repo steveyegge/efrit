@@ -22,6 +22,7 @@
 (require 'efrit-config)
 (require 'efrit-chat-buffer)
 (require 'efrit-common)
+(require 'efrit-api)
 (require 'efrit-tool-edit-buffer)
 (require 'efrit-chat-transparency)
 (require 'efrit-do-schema)
@@ -90,19 +91,9 @@
   :type 'boolean
   :group 'efrit)
 
-(defcustom efrit-custom-headers nil
-  "Alist of custom headers to add to API requests.
-Each element should be a cons cell of (HEADER-NAME . HEADER-VALUE).
-Example: \\='((\"authorization\" . \"Bearer your-token\")
-             (\"custom-header\" . \"custom-value\"))"
-  :type '(alist :key-type string :value-type string)
-  :group 'efrit)
-
-(defcustom efrit-excluded-headers nil
-  "List of default header names to exclude from API requests.
-Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
-  :type '(repeat string)
-  :group 'efrit)
+;; Header customization moved to efrit-api.el
+;; efrit-custom-headers -> efrit-api-custom-headers
+;; efrit-excluded-headers -> efrit-api-excluded-headers
 
 ;; efrit-api-url is defined in efrit-common.el (legacy, deprecated)
 
@@ -119,57 +110,15 @@ Supports multiple sources: environment variable, authinfo, or config file."
   (require 'efrit-common)
   (efrit-common-get-api-key))
 
-(defun efrit--build-tool-result (tool-id result)
+;; efrit--build-tool-result moved to efrit-api.el as efrit-api-build-tool-result
+(defalias 'efrit--build-tool-result 'efrit-api-build-tool-result
   "Build a tool_result content block for TOOL-ID with RESULT.
-Returns an alist in the format required by the Anthropic API.
+See `efrit-api-build-tool-result' for details.")
 
-RESULT can be:
-- A string: returned as simple text content
-- An alist with an `image' key: returned as an image content block
-- Anything else: converted to string via `format'
-
-For image results, the content is an array containing the image block:
-  ((type . \"tool_result\")
-   (tool_use_id . TOOL-ID)
-   (content . [((type . \"image\") (source . ...))]))
-
-For text results:
-  ((type . \"tool_result\")
-   (tool_use_id . TOOL-ID)
-   (content . RESULT-STRING))"
-  (let ((content
-         (cond
-          ;; Check for image response format from efrit-tool-read-image
-          ((and (listp result)
-                (alist-get 'image result))
-           ;; Return as array containing the image block
-           (vector (alist-get 'image result)))
-          ;; String result - use as-is
-          ((stringp result)
-           result)
-          ;; Everything else - convert to string
-          (t
-           (format "%s" result)))))
-    `((type . "tool_result")
-      (tool_use_id . ,tool-id)
-      (content . ,content))))
-
-;;; Header customization
-
-(defun efrit--build-headers (api-key)
-  "Build HTTP headers for API requests, respecting customization options."
-  (let ((default-headers `(("x-api-key" . ,api-key)
-                          ("anthropic-version" . "2023-06-01")
-                          ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-                          ("content-type" . "application/json"))))
-    ;; Remove excluded headers
-    (when efrit-excluded-headers
-      (setq default-headers
-            (cl-remove-if (lambda (header)
-                           (member (car header) efrit-excluded-headers))
-                         default-headers)))
-    ;; Add custom headers (custom headers override defaults)
-    (append efrit-custom-headers default-headers)))
+;;; Header customization - now uses efrit-api.el
+(defalias 'efrit--build-headers 'efrit-api-build-headers
+  "Build HTTP headers for API requests.
+See `efrit-api-build-headers' for details.")
 
 ;;; System Prompts
 
@@ -223,10 +172,7 @@ In interactive mode, uses async request with callbacks."
                   messages)))
               ,@(when efrit-enable-tools
                   `(("tools" . ,(efrit-do--get-current-tools-schema))))))
-              (json-string (json-encode request-data))
-         ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-         (escaped-json (efrit-common-escape-json-unicode json-string))
-         (url-request-data (encode-coding-string escaped-json 'utf-8)))
+              (url-request-data (efrit-api-encode-request request-data)))
      ;; In batch mode, use synchronous request (async callbacks don't work)
      ;; In interactive mode, use async request
      (if noninteractive
@@ -767,10 +713,7 @@ is a list of tool_result blocks for sending back to Claude."
             ,@(when efrit-enable-tools
                 `(("tools" . ,(efrit-do--get-current-tools-schema))))
             ))
-            (json-string (json-encode request-data))
-            ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
-            (escaped-json (efrit-common-escape-json-unicode json-string))
-            (url-request-data (encode-coding-string escaped-json 'utf-8)))
+            (url-request-data (efrit-api-encode-request request-data)))
 
             ;; Log request details to work buffer
     (efrit-streamlined--log-to-work

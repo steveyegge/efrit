@@ -27,6 +27,7 @@
 (require 'url)
 (require 'efrit-log)
 (require 'efrit-common)
+(require 'efrit-api)
 (require 'efrit-session)
 (require 'efrit-progress)
 (require 'efrit-chat-response)
@@ -105,25 +106,15 @@ Default is 5 minutes (300 seconds)."
   "Send REQUEST-DATA to Claude API asynchronously.
 Calls CALLBACK with parsed response or error information."
   (efrit-log 'debug "API request starting")
-  (condition-case err
-      (let* ((api-key (efrit-common-get-api-key))
-             (json-string (json-encode request-data))
-             (escaped-json (efrit-common-escape-json-unicode json-string))
-             (url-request-data (encode-coding-string escaped-json 'utf-8))
-             (url-request-method "POST")
-             (url-request-extra-headers (efrit-common-build-headers api-key))
-             (start-time (float-time)))
-
-        (url-retrieve
-         (efrit-common-get-api-url)
-         (lambda (status)
-           (let ((elapsed (- (float-time) start-time)))
-             (efrit-log 'info "API call completed in %.2fs" elapsed)
-             (efrit-executor--handle-url-response status callback)))
-         nil t))
-    (error
-     (efrit-log 'error "API request setup failed: %s" (error-message-string err))
-     (efrit-executor--handle-error err callback))))
+  (let ((start-time (float-time)))
+    (efrit-api-request-async
+     request-data
+     (lambda (response)
+       (efrit-log 'info "API call completed in %.2fs" (- (float-time) start-time))
+       (funcall callback response))
+     (lambda (error-msg)
+       (efrit-log 'error "API request failed: %s" error-msg)
+       (efrit-executor--handle-error error-msg callback)))))
 
 (defun efrit-executor--handle-url-response (status callback)
   "Handle url-retrieve STATUS and call CALLBACK with parsed response."
@@ -604,26 +595,7 @@ EXTRA-CONTEXT is optional additional text appended to the prompt."
 (defun efrit-executor--sync-api-call (request-data)
   "Make synchronous API call with REQUEST-DATA.
 Returns the parsed response hash-table, or signals an error on failure."
-  (let* ((api-key (efrit-common-get-api-key))
-         (json-string (json-encode request-data))
-         (escaped-json (efrit-common-escape-json-unicode json-string))
-         (url-request-method "POST")
-         (url-request-extra-headers (efrit-common-build-headers api-key))
-         (url-request-data (encode-coding-string escaped-json 'utf-8))
-         (response-buffer (url-retrieve-synchronously
-                          (efrit-common-get-api-url) nil t 60)))
-    (unless response-buffer
-      (error "Failed to get response from API"))
-    (with-current-buffer response-buffer
-      (unwind-protect
-          (progn
-            (goto-char (point-min))
-            (re-search-forward "\n\n" nil t)
-            (let* ((json-object-type 'hash-table)
-                   (json-array-type 'vector)
-                   (json-key-type 'string))
-              (json-read)))
-        (kill-buffer)))))
+  (efrit-api-request-sync request-data 60))
 
 (defun efrit-executor--process-sync-content (content session)
   "Process CONTENT items in synchronous execution with SESSION.
