@@ -577,14 +577,18 @@ Sets the session to waiting-for-user state and emits a progress event."
         (if (not session)
             "\n[Error: request_user_input requires an active session]"
           ;; Set pending question on session
-          (efrit-session-set-pending-question
-           session question
-           (when options options))
+           (efrit-session-set-pending-question
+            session question
+            (when options options))
 
-          ;; Emit progress event
-          (efrit-progress-show-message
-           (format "Question for user: %s" question)
-           'claude)
+           ;; Show in agent buffer
+           (when (fboundp 'efrit-agent-show-question)
+             (efrit-agent-show-question question options))
+
+           ;; Emit progress event
+           (efrit-progress-show-message
+            (format "Question for user: %s" question)
+            'claude)
 
           ;; Return a special marker that the executor can recognize
           (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
