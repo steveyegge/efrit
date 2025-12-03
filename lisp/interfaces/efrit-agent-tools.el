@@ -104,6 +104,8 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
                             (efrit-agent--char 'tool-failure)))
              (status-face (if success-p nil 'efrit-agent-error))
              ;; Build the updated tool line (collapsed view)
+             ;; Defensive: stringify result before truncate-string-to-width to handle
+             ;; any malformed results, though tool handlers are contracted to return strings
              (result-summary (truncate-string-to-width
                               (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
                               (pcase efrit-agent-verbosity
