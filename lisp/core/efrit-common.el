@@ -266,7 +266,7 @@ Returns truncated string with ellipsis (...) if needed."
        ;; Default to character truncation
        (if (> (length str) max-length)
            (concat (substring str 0 (- max-length 3)) "...")
-         str)))))
+         str))))
 
 
 
