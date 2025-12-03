@@ -93,8 +93,12 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
              (elapsed-time (or elapsed
                                (when start-time
                                  (float-time (time-subtract (current-time) start-time)))))
-             ;; Format indicators - collapsed by default
-             (expand-char (efrit-agent--char 'expand-collapsed))
+             ;; Auto-expand short results, keep long ones collapsed
+             (auto-expand (and success-p
+                               (< (length result) 200)
+                               (< (cl-count ?\n result) 5)))
+             ;; Format indicators - expanded or collapsed based on size
+             (expand-char (efrit-agent--char (if auto-expand 'expand-expanded 'expand-collapsed)))
              (status-char (if success-p
                               (efrit-agent--char 'tool-success)
                             (efrit-agent--char 'tool-failure)))
@@ -133,7 +137,7 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
                                      'efrit-tool-success success-p
                                      'efrit-tool-elapsed elapsed-time
                                      'efrit-tool-running nil
-                                     'efrit-tool-expanded nil
+                                     'efrit-tool-expanded auto-expand
                                      'read-only t)))))))
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
