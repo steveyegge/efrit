@@ -12,6 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as fs from 'fs/promises';
 import { mkdirSync } from 'fs';
+import { execSync } from 'child_process';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
@@ -368,7 +369,119 @@ export class EfritMcpServer {
       }
     );
 
-    this.logger.info('Registered 3 MCP tools: efrit_execute, efrit_list_instances, efrit_get_queue_stats');
+    // Tool 4: beads_command - Execute beads CLI commands
+    this.server.registerTool(
+      "beads_command",
+      {
+        title: "Execute Beads Command",
+        description: "Execute beads (bd) CLI commands for issue tracking. Supports: ready, create, update, close, list, show. Returns structured JSON results.",
+        inputSchema: {
+          command: z.enum(['ready', 'create', 'update', 'close', 'list', 'show']).describe('Beads command to execute'),
+          args: z.record(z.string(), z.any()).optional().describe('Command arguments as key-value pairs (e.g., {id: "ef-123", status: "in_progress"})')
+        }
+      },
+      async (params: { command: string; args?: Record<string, any> }) => {
+        try {
+          this.logger.info(`Executing beads command: ${params.command}`);
+
+          let cmdLine = `bd ${params.command}`;
+          
+          // Build command-specific arguments
+          if (params.args) {
+            for (const [key, value] of Object.entries(params.args)) {
+              if (value === undefined || value === null) continue;
+              
+              // Handle different value types
+              if (typeof value === 'boolean') {
+                // Boolean flags like --fix
+                if (value) {
+                  cmdLine += ` --${key}`;
+                }
+              } else if (typeof value === 'string') {
+                // String values - quote if contains spaces
+                const needsQuote = value.includes(' ') || value.includes('"');
+                const quotedValue = needsQuote ? `"${value.replace(/"/g, '\\"')}"` : value;
+                cmdLine += ` --${key} ${quotedValue}`;
+              } else if (typeof value === 'number') {
+                // Number values
+                cmdLine += ` --${key} ${value}`;
+              } else if (Array.isArray(value)) {
+                // Array values - repeat flag or comma-separate
+                for (const item of value) {
+                  cmdLine += ` --${key} "${item}"`;
+                }
+              } else if (value && typeof value === 'object') {
+                // Object values - convert to JSON string
+                const json = JSON.stringify(value).replace(/"/g, '\\"');
+                cmdLine += ` --${key} "${json}"`;
+              }
+            }
+          }
+
+          // Execute the command
+          try {
+            const result = execSync(cmdLine, {
+              encoding: 'utf-8',
+              cwd: process.env['HOME'] || '/tmp',
+              maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
+            });
+
+            // Try to parse as JSON if it looks like JSON
+            let parsedResult = result;
+            if (result.trim().startsWith('{') || result.trim().startsWith('[')) {
+              try {
+                parsedResult = JSON.parse(result);
+              } catch {
+                // If JSON parsing fails, return as string
+              }
+            }
+
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  status: 'success',
+                  command: params.command,
+                  result: parsedResult
+                }, null, 2)
+              }]
+            };
+          } catch (execError) {
+            // Command failed - return stderr
+            const error = execError as any;
+            const stderr = error.stderr ? error.stderr.toString() : error.message;
+            
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  status: 'error',
+                  command: params.command,
+                  error: stderr || 'Command failed',
+                  exit_code: error.status
+                }, null, 2)
+              }],
+              isError: true
+            };
+          }
+        } catch (error) {
+          this.logger.error(`Beads command failed: ${error instanceof Error ? error.message : String(error)}`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                status: 'error',
+                error: error instanceof Error ? error.message : String(error),
+                command: params.command
+              }, null, 2)
+            }],
+            isError: true
+          };
+        }
+      }
+    );
+
+    this.logger.info('Registered 4 MCP tools: efrit_execute, efrit_list_instances, efrit_get_queue_stats, beads_command');
   }
 
   /**

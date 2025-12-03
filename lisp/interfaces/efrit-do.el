@@ -236,7 +236,14 @@ truncated to keep this many recent results."
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
     ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input))
     ("read_image"         . (efrit-do--handle-read-image . :tool-input))
-    ("format_file"        . (efrit-do--handle-format-file . :tool-input)))
+    ("format_file"        . (efrit-do--handle-format-file . :tool-input))
+    ;; Issue tracking tools (beads)
+    ("beads_ready"        . (efrit-do--handle-beads-ready . :tool-input))
+    ("beads_create"       . (efrit-do--handle-beads-create . :tool-input))
+    ("beads_update"       . (efrit-do--handle-beads-update . :tool-input))
+    ("beads_close"        . (efrit-do--handle-beads-close . :tool-input))
+    ("beads_list"         . (efrit-do--handle-beads-list . :tool-input))
+    ("beads_show"         . (efrit-do--handle-beads-show . :tool-input)))
   "Dispatch table mapping tool names to handlers and argument types.")
 
 ;; Budget hints, tool schemas -> efrit-do-schema.el
