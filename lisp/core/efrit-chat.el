@@ -65,6 +65,9 @@
       ;; Store message for retry on error
       (setq-local efrit--last-user-message message)
 
+      ;; Reset circuit breaker for new user turn
+      (efrit-chat--reset-circuit-breaker)
+
       ;; Add message to history (at beginning, as we're using push)
       (push `((role . "user")
              (content . ,message))

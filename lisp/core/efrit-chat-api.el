@@ -61,6 +61,53 @@
 (defvar-local efrit--last-user-message nil
   "Last message sent by the user, for retry purposes.")
 
+;;; Circuit Breaker - Tool Call Tracking
+
+(defvar-local efrit-chat--tool-call-count 0
+  "Count of tool calls in current chat session.
+Reset when user sends a new message.")
+
+(defvar-local efrit-chat--consecutive-errors 0
+  "Count of consecutive tool execution errors.
+Reset on successful tool execution.")
+
+(defcustom efrit-chat-max-tool-calls-per-turn 50
+  "Maximum tool calls allowed per user turn in chat mode.
+This is a safety limit to prevent runaway tool loops.
+Lower than efrit-do since chat should be more conversational."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-chat-max-consecutive-errors 5
+  "Maximum consecutive tool errors before stopping.
+Prevents burning tokens retrying the same failing operation."
+  :type 'integer
+  :group 'efrit)
+
+(defun efrit-chat--reset-circuit-breaker ()
+  "Reset circuit breaker counters for new user turn."
+  (setq-local efrit-chat--tool-call-count 0)
+  (setq-local efrit-chat--consecutive-errors 0))
+
+(defun efrit-chat--circuit-breaker-check ()
+  "Check if circuit breaker limits exceeded.
+Returns nil if OK to proceed, or an error message string if limits exceeded."
+  (cond
+   ((>= efrit-chat--tool-call-count efrit-chat-max-tool-calls-per-turn)
+    (format "Circuit breaker: Tool call limit reached (%d/%d). Session stopped to prevent runaway."
+            efrit-chat--tool-call-count efrit-chat-max-tool-calls-per-turn))
+   ((>= efrit-chat--consecutive-errors efrit-chat-max-consecutive-errors)
+    (format "Circuit breaker: Too many consecutive errors (%d). Session stopped."
+            efrit-chat--consecutive-errors))
+   (t nil)))
+
+(defun efrit-chat--record-tool-call (success-p)
+  "Record a tool call. SUCCESS-P indicates if it succeeded."
+  (cl-incf efrit-chat--tool-call-count)
+  (if success-p
+      (setq-local efrit-chat--consecutive-errors 0)
+    (cl-incf efrit-chat--consecutive-errors)))
+
 ;;; Internal variables - Streamlined Mode
 
 (defvar efrit-streamlined--current-messages nil
@@ -367,13 +414,18 @@ is a list of tool_result blocks for sending back to Claude."
            (when (string= type "tool_use")
              (let* ((tool-name (gethash "name" item))
                     (tool-id (gethash "id" item))  ; Captured for use in tool_result messages (ef-5af)
-                    (input (gethash "input" item)))
+                    (input (gethash "input" item))
+                    ;; Check circuit breaker BEFORE executing
+                    (circuit-breaker-msg (efrit-chat--circuit-breaker-check)))
 
                ;; Display the tool call for transparency
                (efrit-transparency--display-tool-call tool-name input)
 
-               ;; Execute tool call
-               (let ((result (condition-case tool-err
+               ;; Execute tool call (or return circuit breaker error)
+               (let ((result (if circuit-breaker-msg
+                                 ;; Circuit breaker tripped - return error without executing
+                                 circuit-breaker-msg
+                               (condition-case tool-err
                                  (cond
                                  ;; Handle eval_sexp tool call
                                  ((string= tool-name "eval_sexp")
@@ -453,7 +505,13 @@ is a list of tool_result blocks for sending back to Claude."
                                (format "Error executing tool %s: %s"
                                       tool-name (if tool-err
                                                    (efrit--safe-error-message tool-err)
-                                                 "Unknown error"))))))
+                                                 "Unknown error")))))))
+
+                 ;; Record tool call for circuit breaker tracking
+                 (let ((is-error (and (stringp result)
+                                      (or (string-match-p "^Error:" result)
+                                          (string-match-p "^Circuit breaker:" result)))))
+                   (efrit-chat--record-tool-call (not is-error)))
 
                 ;; Display the tool result for transparency
                  (efrit-transparency--display-tool-result tool-name result)
@@ -847,12 +905,19 @@ ASSISTANT-CONTENT is the original content array from the assistant response."
     (dolist (tool-use tool-uses)
       (let* ((tool-name (alist-get 'name tool-use))
              (tool-input (alist-get 'input tool-use))
-             (tool-id (alist-get 'id tool-use)))
+             (tool-id (alist-get 'id tool-use))
+             ;; Check circuit breaker before executing
+             (circuit-breaker-msg (efrit-chat--circuit-breaker-check)))
 
         (efrit-streamlined--log-to-work
          (format "Tool: %s (id: %s)" tool-name tool-id))
 
         (let ((result-content
+               (if circuit-breaker-msg
+                   ;; Circuit breaker tripped
+                   (progn
+                     (efrit-streamlined--log-to-work circuit-breaker-msg)
+                     circuit-breaker-msg)
                (cond
                 ((string-equal tool-name "eval_sexp")
                  (let ((expr (alist-get 'expr tool-input)))
@@ -991,7 +1056,13 @@ ASSISTANT-CONTENT is the original content array from the assistant response."
                    (error
                     (let ((error-msg (error-message-string err)))
                       (efrit-streamlined--log-to-work (format "Error: %s" error-msg))
-                      (format "Error executing %s: %s" tool-name error-msg))))))))
+                      (format "Error executing %s: %s" tool-name error-msg)))))))))
+
+          ;; Record tool call for circuit breaker
+          (let ((is-error (and (stringp result-content)
+                               (or (string-match-p "^Error:" result-content)
+                                   (string-match-p "^Circuit breaker:" result-content)))))
+            (efrit-chat--record-tool-call (not is-error)))
 
           ;; Build proper tool_result block using helper
           (push (efrit-api-build-tool-result tool-id result-content) results))))
