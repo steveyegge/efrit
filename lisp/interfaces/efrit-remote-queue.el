@@ -102,13 +102,17 @@ module initialization. When nil (default), manual start is required."
 (defvar efrit-remote-queue--processing (make-hash-table :test 'equal)
   "Hash table of currently processing requests.")
 
+(defvar efrit-remote-queue--pending-timers (make-hash-table :test 'equal)
+  "Hash table tracking pending timers for debouncing file events.
+  Maps file-path -> timer object for deduplication.")
+
 (defvar efrit-remote-queue--stats
-  '((requests-processed . 0)
-    (requests-succeeded . 0)
-    (requests-failed . 0)
-    (total-processing-time . 0.0)
-    (started-at . nil))
-  "Statistics for queue operations.")
+   '((requests-processed . 0)
+     (requests-succeeded . 0)
+     (requests-failed . 0)
+     (total-processing-time . 0.0)
+     (started-at . nil))
+   "Statistics for queue operations.")
 
 ;;; Protocol constants
 
@@ -510,7 +514,8 @@ Returns a JSON-encodable hash table with session and queue status."
 ;;; File monitoring and event handling
 
 (defun efrit-remote-queue--on-file-event (event)
-  "Handle file system EVENT in the requests directory."
+  "Handle file system EVENT in the requests directory.
+Uses debouncing to prevent timer accumulation under heavy file I/O."
   (let* ((event-type (nth 1 event))
          (file-path (nth 2 event))
          (filename (file-name-nondirectory file-path)))
@@ -522,11 +527,23 @@ Returns a JSON-encodable hash table with session and queue status."
       (when efrit-remote-queue-debug
         (message "Queue event: %s on %s" event-type filename))
       
-      ;; Process the request file (with a small delay to ensure file is fully written)
-      (run-at-time 0.1 nil #'efrit-remote-queue--process-file file-path))))
+      ;; Debounce: cancel any existing timer for this file and create a new one
+      (let ((existing-timer (gethash file-path efrit-remote-queue--pending-timers)))
+        (when existing-timer
+          (cancel-timer existing-timer)
+          (when efrit-remote-queue-debug
+            (message "Queue: cancelled duplicate timer for %s" filename))))
+      
+      ;; Create new timer and track it
+      (let ((timer (run-at-time 0.1 nil #'efrit-remote-queue--process-file file-path)))
+        (puthash file-path timer efrit-remote-queue--pending-timers)))))
 
 (defun efrit-remote-queue--process-file (file-path)
-  "Process a single request FILE-PATH."
+  "Process a single request FILE-PATH.
+Removes the timer from tracking when processing begins."
+  ;; Clean up the timer entry for this file (timer is now executing)
+  (remhash file-path efrit-remote-queue--pending-timers)
+  
   (when (and (file-exists-p file-path)
              (< (hash-table-count efrit-remote-queue--processing)
                 efrit-remote-queue-max-concurrent))
@@ -599,8 +616,16 @@ Returns a JSON-encodable hash table with session and queue status."
     (file-notify-rm-watch efrit-remote-queue--watcher)
     (setq efrit-remote-queue--watcher nil))
   
+  ;; Cancel all pending timers
+  (maphash
+   (lambda (file-path timer)
+     (when (timerp timer)
+       (cancel-timer timer)))
+   efrit-remote-queue--pending-timers)
+  
   (setq efrit-remote-queue--active nil)
   (clrhash efrit-remote-queue--processing)
+  (clrhash efrit-remote-queue--pending-timers)
   
   (message "Efrit remote queue stopped"))
 
