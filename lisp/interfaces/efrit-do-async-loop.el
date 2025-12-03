@@ -176,8 +176,10 @@ RESPONSE contains content and stop_reason fields."
            (let ((item (aref content i)))
              (when (and (hash-table-p item)
                         (string= (gethash "type" item) "text"))
-               (efrit-agent-stream-content (gethash "text" item)))))
-         (efrit-agent-stream-end))
+               (when (fboundp 'efrit-agent-stream-content)
+                 (efrit-agent-stream-content (gethash "text" item))))))
+         (when (fboundp 'efrit-agent-stream-end)
+           (efrit-agent-stream-end)))
       
       ;; Process based on stop reason
       (pcase stop-reason
