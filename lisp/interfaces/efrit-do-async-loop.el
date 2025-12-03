@@ -364,6 +364,9 @@ Error messages start with `Error ' for easy detection by caller."
         (efrit-progress-insert-event session-id 'complete
           `((:result . ,stop-reason) (:elapsed . ,elapsed))))))
     
+    ;; Signal session completion to agent buffer
+    (efrit-agent-end-session (string= stop-reason "end_turn"))
+    
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)
     

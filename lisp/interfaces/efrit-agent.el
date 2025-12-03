@@ -810,6 +810,11 @@ STATUS should be one of: working, paused, waiting, complete, failed."
         ;; Force header-line update instead of full re-render
         (force-mode-line-update)))))
 
+(defun efrit-agent-end-session (success-p)
+  "End the current agent session.
+SUCCESS-P determines whether to show complete or failed status."
+  (efrit-agent-set-status (if success-p 'complete 'failed)))
+
 (defun efrit-agent-start-session (session-id command)
   "Start agent buffer for SESSION-ID with COMMAND.
 Creates and displays the agent buffer, initializes session tracking,
