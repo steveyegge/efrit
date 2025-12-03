@@ -810,6 +810,24 @@ STATUS should be one of: working, paused, waiting, complete, failed."
         ;; Force header-line update instead of full re-render
         (force-mode-line-update)))))
 
+(defun efrit-agent-start-session (session-id command)
+  "Start agent buffer for SESSION-ID with COMMAND.
+Creates and displays the agent buffer, initializes session tracking,
+and sets status to working."
+  (let ((buffer (efrit-agent--get-buffer)))
+    ;; Initialize mode if not already done
+    (unless (eq (buffer-local-value 'major-mode buffer) 'efrit-agent-mode)
+      (with-current-buffer buffer
+        (efrit-agent-mode)))
+    ;; Set session context
+    (with-current-buffer buffer
+      (setq efrit-agent--session-id session-id)
+      (setq efrit-agent--command command)
+      (setq efrit-agent--status 'working)
+      (efrit-agent--render))
+    ;; Display the buffer
+    (pop-to-buffer buffer)))
+
 (defun efrit-agent-add-message (text &optional type)
   "Add a message with TEXT to the conversation.
 TYPE can be:

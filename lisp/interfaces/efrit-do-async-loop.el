@@ -32,6 +32,7 @@
 (require 'efrit-progress-buffer)
 (require 'efrit-chat-response)
 (require 'efrit-executor)
+(require 'efrit-agent)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--command-system-prompt "efrit-do-prompt")
@@ -77,10 +78,13 @@ Returns the session ID."
       (efrit-progress-create-buffer session-id)
       (efrit-progress-show-buffer session-id))
     
+    ;; Initialize agent buffer for session
+    (efrit-agent-start-session session-id (efrit-session-command session))
+    
     ;; Store loop state
     (puthash session-id
-            (list session on-complete 0 nil)
-            efrit-do-async--loops)
+             (list session on-complete 0 nil)
+             efrit-do-async--loops)
     
     ;; Start first iteration
     (efrit-do-async--continue-iteration session)
