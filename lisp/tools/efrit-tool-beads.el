@@ -19,12 +19,18 @@
 (defvar efrit-tool-beads-workspace nil
   "Workspace root for beads commands. If nil, uses current default-directory.")
 
-(defun efrit-tool-beads--build-command (command &optional args)
+(defun efrit-tool-beads--build-command (command &optional args positional-args)
   "Build a beads CLI command string.
 COMMAND is the beads command (ready, create, list, etc).
-ARGS is an optional hash table of arguments.
+ARGS is an optional hash table of flag arguments.
+POSITIONAL-ARGS is an optional list of positional arguments (e.g., issue IDs).
 Returns the command string to execute."
   (let ((cmd (format "bd %s" (shell-quote-argument command))))
+    ;; Add positional arguments first (e.g., issue IDs)
+    (when positional-args
+      (dolist (arg positional-args)
+        (setq cmd (concat cmd " " (shell-quote-argument arg)))))
+    ;; Add flag arguments
     (when args
       (maphash
        (lambda (key value)
@@ -42,12 +48,13 @@ Returns the command string to execute."
        args))
     cmd))
 
-(defun efrit-tool-beads--execute (command &optional args)
+(defun efrit-tool-beads--execute (command &optional args positional-args)
   "Execute a beads command and return the result.
 COMMAND is the beads command name (ready, create, list, etc).
-ARGS is an optional hash table of command arguments.
+ARGS is an optional hash table of flag arguments.
+POSITIONAL-ARGS is an optional list of positional arguments (e.g., issue IDs).
 Returns (result . success) where result is the output and success is t/nil."
-  (let* ((cmd (efrit-tool-beads--build-command command args))
+  (let* ((cmd (efrit-tool-beads--build-command command args positional-args))
          (workspace (or efrit-tool-beads-workspace default-directory))
          (result nil))
     (condition-case err
@@ -109,14 +116,13 @@ ARGS is an optional hash table with:
   - priority: 0-4
   - assignee: person to assign to
   - description: new description"
-  (let ((update-args (or args (make-hash-table :test 'equal))))
-    (puthash "issue_id" issue-id update-args)
-    (let* ((result (efrit-tool-beads--execute "update" update-args))
-           (success (cdr result))
-           (output (car result)))
-      (if success
-          (format "[Beads Issue Updated]\n%s" output)
-        (format "[Beads Error]\n%s" output)))))
+  (let* ((update-args (or args (make-hash-table :test 'equal)))
+         (result (efrit-tool-beads--execute "update" update-args (list issue-id)))
+         (success (cdr result))
+         (output (car result)))
+    (if success
+        (format "[Beads Issue Updated]\n%s" output)
+      (format "[Beads Error]\n%s" output))))
 
 ;;;###autoload
 (defun efrit-tool-beads-close (issue-id &optional reason)
@@ -126,7 +132,7 @@ REASON is an optional close reason."
   (let ((close-args (make-hash-table :test 'equal)))
     (when reason
       (puthash "reason" reason close-args))
-    (let* ((result (efrit-tool-beads--execute "close" close-args))
+    (let* ((result (efrit-tool-beads--execute "close" close-args (list issue-id)))
            (success (cdr result))
            (output (car result)))
       (if success
@@ -153,9 +159,7 @@ ARGS is an optional hash table with:
 (defun efrit-tool-beads-show (issue-id)
   "Show detailed information about an issue.
 ISSUE-ID is the issue identifier."
-  (let* ((result (efrit-tool-beads--execute "show" (let ((h (make-hash-table :test 'equal)))
-                                                      (puthash "issue_id" issue-id h)
-                                                      h)))
+  (let* ((result (efrit-tool-beads--execute "show" nil (list issue-id)))
          (success (cdr result))
          (output (car result)))
     (if success
