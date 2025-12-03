@@ -12,6 +12,21 @@
 ;; This file contains the tool schemas (JSON schema definitions) for efrit-do.
 ;; These schemas are sent to Claude to describe available tools.
 ;; Extracted from efrit-do.el for maintainability.
+;;
+;; Tool Naming Convention:
+;;
+;; CANONICAL: object_verb pattern (e.g., buffer_create, file_read, vcs_diff)
+;; ALIASES: verb_object pattern (e.g., create_buffer, read_file) also work
+;;
+;; Both naming patterns are accepted via the dispatch table in efrit-do-dispatch.el.
+;; Use the canonical object_verb pattern for new tools.
+;;
+;; Current aliases (for chat-mode compatibility):
+;;   create_buffer -> buffer_create
+;;   edit_buffer   -> (uses efrit-tool-edit-buffer directly)
+;;   read_buffer   -> (uses efrit-tool-read-buffer directly)
+;;   buffer_info   -> (uses efrit-tool-buffer-info directly)
+;;   get_context   -> (uses efrit-tools-get-context directly)
 
 ;;; Code:
 

@@ -59,6 +59,12 @@
 (declare-function efrit-do--handle-beads-close "efrit-do-handlers")
 (declare-function efrit-do--handle-beads-list "efrit-do-handlers")
 (declare-function efrit-do--handle-beads-show "efrit-do-handlers")
+;; Alias handlers for chat-mode tool names
+(declare-function efrit-do--handle-create-buffer-alias "efrit-do-handlers")
+(declare-function efrit-do--handle-edit-buffer-alias "efrit-do-handlers")
+(declare-function efrit-do--handle-read-buffer-alias "efrit-do-handlers")
+(declare-function efrit-do--handle-buffer-info-alias "efrit-do-handlers")
+(declare-function efrit-do--handle-get-context-alias "efrit-do-handlers")
 
 ;; Forward declarations for session tracking
 (declare-function efrit-session-active "efrit-session")
@@ -122,7 +128,14 @@
     ("beads_update"       . (efrit-do--handle-beads-update . :tool-input))
     ("beads_close"        . (efrit-do--handle-beads-close . :tool-input))
     ("beads_list"         . (efrit-do--handle-beads-list . :tool-input))
-    ("beads_show"         . (efrit-do--handle-beads-show . :tool-input)))
+    ("beads_show"         . (efrit-do--handle-beads-show . :tool-input))
+    ;; Aliases for chat-mode tool names (maps to same handlers)
+    ;; Canonical naming: verb_noun (buffer_create), aliases: noun_verb (create_buffer)
+    ("create_buffer"      . (efrit-do--handle-create-buffer-alias . :tool-input))
+    ("edit_buffer"        . (efrit-do--handle-edit-buffer-alias . :tool-input))
+    ("read_buffer"        . (efrit-do--handle-read-buffer-alias . :tool-input))
+    ("buffer_info"        . (efrit-do--handle-buffer-info-alias . :tool-input))
+    ("get_context"        . (efrit-do--handle-get-context-alias . :tool-input)))
   "Dispatch table mapping tool names to handlers and argument types.")
 
 (defun efrit-do--sanitize-elisp-string (str)

@@ -82,6 +82,21 @@
 (declare-function efrit-session-set-pending-question "efrit-session")
 (declare-function efrit-progress-show-message "efrit-progress")
 (declare-function efrit-log "efrit-log")
+;; Buffer tools (for chat-mode aliases)
+(declare-function efrit-tool-create-buffer "efrit-tool-edit-buffer")
+(declare-function efrit-tool-edit-buffer "efrit-tool-edit-buffer")
+(declare-function efrit-tool-read-buffer "efrit-tool-edit-buffer")
+(declare-function efrit-tool-buffer-info "efrit-tool-edit-buffer")
+;; Other tools with dynamic require
+(declare-function efrit-tool-get-diagnostics "efrit-tool-diagnostics")
+(declare-function efrit-tool-read-image "efrit-tool-read-image")
+(declare-function efrit-tool-format-file "efrit-tool-format-file")
+(declare-function efrit-tool-beads-ready "efrit-tool-beads")
+(declare-function efrit-tool-beads-create "efrit-tool-beads")
+(declare-function efrit-tool-beads-update "efrit-tool-beads")
+(declare-function efrit-tool-beads-close "efrit-tool-beads")
+(declare-function efrit-tool-beads-list "efrit-tool-beads")
+(declare-function efrit-tool-beads-show "efrit-tool-beads")
 
 ;; TODO struct accessors and state now come from efrit-todo.el
 ;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
@@ -882,6 +897,80 @@ Returns the image as base64-encoded data that Claude can analyze visually."
       (efrit-do--validate-required tool-input "beads_show" "id")
       (let* ((id (gethash "id" tool-input)))
         (efrit-tool-beads-show id))))
+
+;;; Tool Name Aliases
+;;
+;; These handlers provide aliases for chat-mode tool names.
+;; Canonical naming uses object_verb pattern (buffer_create, buffer_read).
+;; Aliases accept verb_object pattern (create_buffer, read_buffer).
+;; Both patterns work identically.
+
+(defun efrit-do--handle-create-buffer-alias (tool-input)
+  "Alias handler for create_buffer (canonical: buffer_create).
+TOOL-INPUT contains name, content, and optional mode fields."
+  (require 'efrit-tool-edit-buffer)
+  (or (efrit-do--validate-hash-table tool-input "create_buffer")
+      (efrit-do--validate-required tool-input "create_buffer" "name")
+      (let* ((name (gethash "name" tool-input))
+             (content (gethash "content" tool-input ""))
+             (mode (gethash "mode" tool-input))
+             (read-only (gethash "read-only" tool-input))
+             (args `((name . ,name)
+                     ,@(when content `((content . ,content)))
+                     ,@(when mode `((mode . ,mode)))
+                     ,@(when read-only `((read-only . ,read-only))))))
+        (format "\n[%s]" (efrit-tool-create-buffer args)))))
+
+(defun efrit-do--handle-edit-buffer-alias (tool-input)
+  "Alias handler for edit_buffer.
+TOOL-INPUT contains buffer, text, position, and optional replace fields."
+  (require 'efrit-tool-edit-buffer)
+  (or (efrit-do--validate-hash-table tool-input "edit_buffer")
+      (efrit-do--validate-required tool-input "edit_buffer" "buffer")
+      (let* ((buffer (gethash "buffer" tool-input))
+             (text (gethash "text" tool-input ""))
+             (position (gethash "position" tool-input "end"))
+             (replace (gethash "replace" tool-input))
+             (from-pos (gethash "from-pos" tool-input))
+             (to-pos (gethash "to-pos" tool-input))
+             (args `((buffer . ,buffer)
+                     (text . ,text)
+                     ,@(when position `((position . ,(if (stringp position)
+                                                          (intern position)
+                                                        position))))
+                     ,@(when replace `((replace . ,replace)))
+                     ,@(when from-pos `((from-pos . ,from-pos)))
+                     ,@(when to-pos `((to-pos . ,to-pos))))))
+        (format "\n[%s]" (efrit-tool-edit-buffer args)))))
+
+(defun efrit-do--handle-read-buffer-alias (tool-input)
+  "Alias handler for read_buffer.
+TOOL-INPUT contains buffer and optional start/end fields."
+  (require 'efrit-tool-edit-buffer)
+  (or (efrit-do--validate-hash-table tool-input "read_buffer")
+      (efrit-do--validate-required tool-input "read_buffer" "buffer")
+      (let* ((buffer (gethash "buffer" tool-input))
+             (start (gethash "start" tool-input))
+             (end (gethash "end" tool-input))
+             (args `((buffer . ,buffer)
+                     ,@(when start `((start . ,start)))
+                     ,@(when end `((end . ,end))))))
+        (format "\n[%s]" (efrit-tool-read-buffer args)))))
+
+(defun efrit-do--handle-buffer-info-alias (tool-input)
+  "Alias handler for buffer_info.
+TOOL-INPUT contains buffer name to get info about."
+  (require 'efrit-tool-edit-buffer)
+  (or (efrit-do--validate-hash-table tool-input "buffer_info")
+      (efrit-do--validate-required tool-input "buffer_info" "buffer")
+      (let* ((buffer (gethash "buffer" tool-input))
+             (args `((buffer . ,buffer))))
+        (format "\n[%s]" (efrit-tool-buffer-info args)))))
+
+(defun efrit-do--handle-get-context-alias (_tool-input)
+  "Alias handler for get_context.
+Returns Emacs context information (current buffer, point, etc.)."
+  (format "\n[%s]" (efrit-tools-get-context)))
 
 (provide 'efrit-do-handlers)
 
