@@ -47,6 +47,7 @@
 (require 'cl-lib)
 (require 'auth-source)
 (require 'efrit-tools-prompt)
+(require 'efrit-todo)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
 (declare-function efrit-log "efrit-log")
@@ -57,12 +58,6 @@
      "Fallback logging function when efrit-log is not available."
      (when (memq level '(warn error))
        (message (apply #'format format-string args))))))
-
-;; Declare functions from efrit-do.el to avoid warnings
-(declare-function efrit-do-todo-item-status "efrit-do")
-(declare-function efrit-do-todo-item-priority "efrit-do")
-(declare-function efrit-do-todo-item-content "efrit-do")
-(declare-function efrit-do-todo-item-id "efrit-do")
 
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -651,31 +646,7 @@ This is a pure formatter - no intelligence about what constitutes a file path."
   "Format TODOS list with optional SORT-BY criteria.
 SORT-BY can be \\='status, \\='priority, \\='created, or nil (no sort).
 This provides explicit sorting control to Claude rather than hardcoded logic."
-  (when todos
-    (let ((sorted-todos (cond
-                         ((eq sort-by 'status)
-                          (sort (copy-sequence todos)
-                                (lambda (a b)
-                                  (let ((status-order '(in-progress todo completed)))
-                                    (< (seq-position status-order (efrit-do-todo-item-status a))
-                                       (seq-position status-order (efrit-do-todo-item-status b)))))))
-                         ((eq sort-by 'priority)
-                          (sort (copy-sequence todos)
-                                (lambda (a b)
-                                  (let ((priority-order '(high medium low)))
-                                    (< (seq-position priority-order (efrit-do-todo-item-priority a))
-                                       (seq-position priority-order (efrit-do-todo-item-priority b)))))))
-                         (t todos))))  ; No sorting
-      (mapconcat (lambda (todo)
-                   (format "%s [%s] %s (%s)"
-                           (pcase (efrit-do-todo-item-status todo)
-                             ('todo "☐")
-                             ('in-progress "⟳")
-                             ('completed "☑"))
-                           (upcase (symbol-name (efrit-do-todo-item-priority todo)))
-                           (efrit-do-todo-item-content todo)
-                           (efrit-do-todo-item-id todo)))
-                 sorted-todos "\n"))))
+  (efrit-todo-format-list todos sort-by))
 
 (defun efrit-tools-display-in-buffer (buffer-name content &optional window-height)
   "Display CONTENT in buffer BUFFER-NAME with optional WINDOW-HEIGHT.

@@ -16,10 +16,11 @@
 
 (require 'efrit-common)
 (require 'efrit-ui-faces)
+(require 'efrit-todo)
 (require 'seq)
 
-(declare-function efrit-do-todo-item-status "efrit-do")
-(declare-function efrit-do-todo-item-content "efrit-do")
+;; TODO struct accessors and state now come from efrit-todo.el
+;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
 
 ;;; ========================================================================
 ;;; Live TODO Buffer

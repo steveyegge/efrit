@@ -70,6 +70,7 @@
 (require 'efrit-config)
 (require 'efrit-common)
 (require 'efrit-session)
+(require 'efrit-todo)
 (require 'efrit-chat)
 (require 'efrit-progress)
 (require 'efrit-tool-utils)
@@ -181,11 +182,10 @@ truncated to keep this many recent results."
 (defvar efrit-do--last-result nil
   "Result of the last executed command.")
 
-(defvar efrit-do--current-todos nil
-  "Current TODO list for the active command session.")
-
-(defvar efrit-do--todo-counter 0
-  "Counter for generating unique TODO IDs.")
+;; TODO state is now managed by efrit-todo.el
+;; Keep backward-compatible variable aliases
+(defvaralias 'efrit-do--current-todos 'efrit-todo--current-todos)
+(defvaralias 'efrit-do--todo-counter 'efrit-todo--counter)
 
 (defvar efrit-do--force-complete nil
   "When t, forces session completion on next API response.")
@@ -228,86 +228,20 @@ truncated to keep this many recent results."
   (efrit-context-ring-clear))
 
 ;;; TODO Management
+;; The TODO item struct (efrit-todo-item) and state are defined in efrit-todo.el.
+;; Backward-compatible aliases (efrit-do-todo-item-*) are provided there.
 
-(cl-defstruct (efrit-do-todo-item
-                (:constructor efrit-do-todo-item-create)
-                (:type vector))
-  "TODO item structure."
-  id
-  content
-  status    ; 'todo, 'in-progress, 'completed
-  priority  ; 'low, 'medium, 'high
-  created-at
-  completed-at)
-
-(defun efrit-do--generate-todo-id ()
-  "Generate a unique TODO ID."
-  (setq efrit-do--todo-counter (1+ efrit-do--todo-counter))
-  (format "efrit-todo-%d" efrit-do--todo-counter))
-
-(defun efrit-do--add-todo (content &optional priority)
-  "Add a new TODO item with CONTENT and optional PRIORITY."
-  (unless (and content (stringp content) (not (string= "" (string-trim content))))
-    (error "TODO content must be a non-empty string"))
-  (unless (member priority '(low medium high nil))
-    (error "TODO priority must be one of: low, medium, high"))
-  (let ((todo (efrit-do-todo-item-create
-               :id (efrit-do--generate-todo-id)
-               :content content
-               :status 'todo
-               :priority (or priority 'medium)
-               :created-at (current-time)
-               :completed-at nil)))
-    (push todo efrit-do--current-todos)
-    (efrit-log 'debug "Added TODO: %s (priority: %s)" content (or priority 'medium))
-    todo))
-
-(defun efrit-do--update-todo-status (id new-status)
-  "Update TODO with ID to NEW-STATUS."
-  (unless (and (stringp id) (not (string= "" id)))
-    (error "TODO ID must be a non-empty string"))
-  (unless (member new-status '(todo in-progress completed))
-    (error "TODO status must be one of: todo, in-progress, completed"))
-  (when-let* ((todo (seq-find (lambda (item) 
-                               (string= (efrit-do-todo-item-id item) id))
-                             efrit-do--current-todos)))
-    (setf (efrit-do-todo-item-status todo) new-status)
-    (when (eq new-status 'completed)
-      (setf (efrit-do-todo-item-completed-at todo) (current-time)))
-    (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
-    todo))
-
-(defun efrit-do--find-todo (id)
-  "Find TODO item by ID."
-  (seq-find (lambda (item) 
-              (string= (efrit-do-todo-item-id item) id))
-           efrit-do--current-todos))
-
-(defun efrit-do--format-todos-for-display ()
-  "Format current TODOs for user display in raw order."
-  (if (null efrit-do--current-todos)
-      "No current TODOs"
-    (mapconcat (lambda (todo)
-                 (format "%s [%s] %s (%s)"
-                         (pcase (efrit-do-todo-item-status todo)
-                           ('todo "☐")
-                           ('in-progress "⟳")
-                           ('completed "☑"))
-                         (upcase (symbol-name (efrit-do-todo-item-priority todo)))
-                         (efrit-do-todo-item-content todo)
-                         (efrit-do-todo-item-id todo)))
-               efrit-do--current-todos "\n")))
-
-(defun efrit-do--format-todos-for-prompt ()
-  "Format current TODOs for AI prompt context."
-  (if (null efrit-do--current-todos)
-      ""
-    (concat "\n\nCURRENT TODOs:\n" (efrit-do--format-todos-for-display) "\n")))
+;; Delegate to efrit-todo.el functions
+(defalias 'efrit-do--generate-todo-id 'efrit-todo--generate-id)
+(defalias 'efrit-do--add-todo 'efrit-todo-add)
+(defalias 'efrit-do--update-todo-status 'efrit-todo-update-status)
+(defalias 'efrit-do--find-todo 'efrit-todo-find)
+(defalias 'efrit-do--format-todos-for-display 'efrit-todo-format-for-display)
+(defalias 'efrit-do--format-todos-for-prompt 'efrit-todo-format-for-prompt)
 
 (defun efrit-do--clear-todos ()
   "Clear all current TODOs and reset circuit breaker for new session."
-  (setq efrit-do--current-todos nil)
-  (setq efrit-do--todo-counter 0)
+  (efrit-todo-clear)
   ;; Reset circuit breaker for new session
   (efrit-do--circuit-breaker-reset))
 

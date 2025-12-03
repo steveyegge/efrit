@@ -52,6 +52,7 @@
 (require 'efrit-session)
 (require 'efrit-progress)
 (require 'efrit-common)
+(require 'efrit-todo)
 
 ;; Forward declarations
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
@@ -82,16 +83,11 @@
 (declare-function efrit-progress-show-message "efrit-progress")
 (declare-function efrit-log "efrit-log")
 
-;; Variables from efrit-do that handlers need
+;; TODO struct accessors and state now come from efrit-todo.el
+;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
+;; Declare the aliased variables to silence byte-compiler warnings
 (defvar efrit-do--current-todos)
 (defvar efrit-do--todo-counter)
-
-;; Forward declare the TODO item struct accessors
-(declare-function efrit-do-todo-item-create "efrit-do")
-(declare-function efrit-do-todo-item-id "efrit-do")
-(declare-function efrit-do-todo-item-content "efrit-do")
-(declare-function efrit-do-todo-item-status "efrit-do")
-(declare-function efrit-do-todo-item-priority "efrit-do")
 
 ;;; Customization
 

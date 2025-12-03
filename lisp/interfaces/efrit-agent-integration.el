@@ -22,12 +22,12 @@
 (require 'efrit-agent-render)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
+(require 'efrit-todo)
 
-;; Forward declarations to silence byte-compiler
+;; TODO struct accessors and state now come from efrit-todo.el
+;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
+;; Declare the aliased variable to silence byte-compiler warnings
 (defvar efrit-do--current-todos)
-(declare-function efrit-do-todo-item-id "efrit-do")
-(declare-function efrit-do-todo-item-content "efrit-do")
-(declare-function efrit-do-todo-item-status "efrit-do")
 
 ;;; Integration with efrit-do TODO tracking
 
