@@ -21,6 +21,13 @@ Execute natural language commands that Claude translates to actions:
 - "Search for the function definition of `efrit-execute`"
 - "Run git status and show me the output"
 
+### Agent Session Buffer (`efrit-agent`)
+A structured, real-time view of agentic sessions with:
+- Session status and elapsed time
+- Task progress tracking (TODOs)
+- Activity log with expandable tool calls
+- Interactive input for follow-up commands
+
 ### Rich Tool Suite
 Efrit provides Claude with 15+ tools:
 
@@ -86,12 +93,26 @@ Verify with `M-x efrit-doctor`.
 
 ## Usage
 
+### When to Use Each Mode
+
+| Mode | Use When |
+|------|----------|
+| **`efrit-chat`** | Multi-turn conversations, asking questions, getting explanations. Tools: buffer-centric only (read current buffer, search). |
+| **`efrit-do`** | Single agentic commands, project-wide refactoring, file creation/editing, running tests. Tools: full suite (30+ tools including write_file, shell_exec, vcs). |
+| **`efrit-agent`** | Same as `efrit-do` but with a structured session view showing TODOs, tool calls, and progress. Best for complex multi-step tasks. |
+
+**Quick guide:**
+- Need to ask about code? → `efrit-chat`
+- Need to change code or run commands? → `efrit-do` or `efrit-agent`
+- Long-running task with multiple steps? → `efrit-agent` (better visibility)
+
 ### Commands
 
 | Command | Description |
 |---------|-------------|
 | `M-x efrit-chat` | Multi-turn conversational interface |
 | `M-x efrit-do` | Execute natural language command asynchronously with progress buffer |
+| `M-x efrit-agent` | Open the structured agent session buffer |
 | `M-x efrit-do-sync` | Execute natural language command synchronously (blocking) |
 | `M-x efrit-do-silently` | Execute command asynchronously without showing progress buffer |
 | `M-x efrit-do-show-progress` | Show the progress buffer for the active command |
