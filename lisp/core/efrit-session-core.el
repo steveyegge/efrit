@@ -132,7 +132,7 @@ RESULT is the optional completion result (may be nil).")
                                (efrit-budget-estimate-tokens command))
     (puthash id session efrit-session--registry)
     (efrit-log 'info "Created session %s: %s" id
-               (efrit-common-truncate-string command 60))
+               (efrit-truncate-string command 60))
     session))
 
 (defun efrit-session-get (id)
@@ -163,7 +163,7 @@ RESULT is the optional completion result (may be nil).")
       (efrit-log 'info "Completed session %s: %.1fs, %d steps%s"
                  (efrit-session-id session) elapsed steps
                  (if result
-                     (concat ", result: " (efrit-common-truncate-string
+                     (concat ", result: " (efrit-truncate-string
                                           (format "%s" result) 50))
                    "")))
     ;; Clear active if this was active
@@ -188,12 +188,12 @@ Returns t if added successfully, nil if queue is full."
   (if (>= (length efrit-session--queue) efrit-session-max-queue-size)
       (progn
         (efrit-log 'warn "Session queue full, cannot add: %s"
-                   (efrit-common-truncate-string command 50))
+                   (efrit-truncate-string command 50))
         nil)
     (setq efrit-session--queue (append efrit-session--queue (list command)))
     (efrit-log 'debug "Added to queue (size: %d): %s"
                (length efrit-session--queue)
-               (efrit-common-truncate-string command 50))
+               (efrit-truncate-string command 50))
     t))
 
 (defun efrit-session-queue-pop ()
@@ -203,7 +203,7 @@ Returns t if added successfully, nil if queue is full."
       (setq efrit-session--queue (cdr efrit-session--queue))
       (efrit-log 'debug "Popped from queue (remaining: %d): %s"
                  (length efrit-session--queue)
-                 (efrit-common-truncate-string command 50))
+                 (efrit-truncate-string command 50))
       command)))
 
 (defun efrit-session-queue-clear ()
@@ -272,7 +272,7 @@ Removes completed/cancelled sessions from registry."
 
       (if efrit-session--active
           (insert (format "Active: %s\n\n"
-                         (efrit-common-truncate-string
+                         (efrit-truncate-string
                           (efrit-session-command efrit-session--active) 60)))
         (insert "Active: None\n\n"))
 
@@ -283,7 +283,7 @@ Removes completed/cancelled sessions from registry."
         (cl-loop for cmd in efrit-session--queue
                  for i from 1
                  do (insert (format "%d. %s\n" i
-                                   (efrit-common-truncate-string cmd 70))))))
+                                   (efrit-truncate-string cmd 70))))))
     (switch-to-buffer buffer)))
 
 ;;;###autoload

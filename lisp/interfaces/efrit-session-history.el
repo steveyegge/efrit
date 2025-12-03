@@ -293,7 +293,7 @@ SORT-TYPE can be: date-desc (default), date-asc, duration, success-first."
     (insert (format "%s %s | %s | Duration: %.1fs | Tools: %d | %s\n"
                     (propertize status 'face status-face)
                     (propertize (substring session-id 0 16) 'face 'font-lock-string-face)
-                    (propertize (efrit-common-truncate-string command 40) 'face 'default)
+                    (propertize (efrit-truncate-string command 40) 'face 'default)
                     duration
                     tool-count
                     (propertize (substring timestamp 0 10) 'face 'font-lock-comment-face)))))

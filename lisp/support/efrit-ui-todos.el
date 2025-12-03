@@ -200,8 +200,8 @@ Longer descriptions will be truncated with ellipsis."
 
 (defun efrit-modeline--truncate (text max-length)
   "Truncate TEXT to MAX-LENGTH characters, adding ellipsis if needed.
-Uses `efrit-common-truncate-string' with ellipsis counted in max length."
-  (efrit-common-truncate-string text max-length t))
+Uses `efrit-truncate-string' with ellipsis counted in max length."
+  (efrit-truncate-string text max-length))
 
 (defun efrit-modeline--get-current-task ()
   "Get the current in-progress task content, or nil if none."

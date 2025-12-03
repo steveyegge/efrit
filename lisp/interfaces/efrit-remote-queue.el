@@ -618,7 +618,7 @@ Removes the timer from tracking when processing begins."
   
   ;; Cancel all pending timers
   (maphash
-   (lambda (file-path timer)
+   (lambda (_file-path timer)
      (when (timerp timer)
        (cancel-timer timer)))
    efrit-remote-queue--pending-timers)

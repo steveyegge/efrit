@@ -165,7 +165,7 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
            'font-lock-comment-face))))
      ((eq efrit-progress-verbosity 'verbose)
       (efrit-progress--append
-       (format "  Input: %s" (efrit-common-truncate-string
+       (format "  Input: %s" (efrit-truncate-string
                               (format "%S" input) 200)))))))
 
 (defun efrit-progress-show-tool-result (tool-name result success-p)
@@ -177,7 +177,7 @@ SUCCESS-P indicates if the execution was successful."
      (if success-p 'efrit-progress-success 'efrit-progress-error))
     (when (or (not success-p) (eq efrit-progress-verbosity 'verbose))
       (efrit-progress--append
-       (format "  Result: %s" (efrit-common-truncate-string
+       (format "  Result: %s" (efrit-truncate-string
                                 (format "%S" result) 300))))))
 
 (defun efrit-progress-show-elisp-eval (code result)
@@ -186,7 +186,7 @@ SUCCESS-P indicates if the execution was successful."
     (efrit-progress--append "▶ Evaluating Elisp:" 'efrit-progress-tool-name)
     (efrit-progress--append (format "  %s" code))
     (efrit-progress--append
-     (format "  → %s" (efrit-common-truncate-string
+     (format "  → %s" (efrit-truncate-string
                        (format "%S" result) 200)))))
 
 (defun efrit-progress-show-file-edit (file old-content new-content)

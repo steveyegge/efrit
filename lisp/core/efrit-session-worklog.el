@@ -68,7 +68,7 @@ Updates budget tracking and may evict old entries if history budget exceeded."
            (compressed-result (if (and tool-name result)
                                   (efrit-budget-compress-for-history tool-name result)
                                 (if (stringp result)
-                                    (efrit-common-truncate-string result 500)
+                                    (efrit-truncate-string result 500)
                                   (format "%s" result))))
            (entry (list compressed-result elisp todo-snapshot tool-name))
            (entry-tokens (efrit-budget-estimate-tokens
@@ -238,7 +238,7 @@ Returns a JSON string representation."
     (json-encode
      `((steps . ,total-steps)
        (last_result . ,(if last-result
-                          (efrit-common-truncate-string
+                          (efrit-truncate-string
                            (format "%s" last-result)
                            efrit-session-max-result-length)
                         "none"))))))
@@ -282,7 +282,7 @@ Returns a JSON string representation."
    ((< (length code) 80) code)
    ((string-match "\\(buffer-substring[^[:space:]]*\\|insert\\|delete-region\\)" code)
     (concat "(" (match-string 1 code) " ...)"))
-   (t (efrit-common-truncate-string code 97))))
+   (t (efrit-truncate-string code 97))))
 
 (defun efrit-session--compress-result (result)
   "Compress RESULT for context usage."
@@ -292,7 +292,7 @@ Returns a JSON string representation."
      ((string-match "^#<buffer \\(.+\\)>$" result-str)
       (format "buffer:%s" (match-string 1 result-str)))
      ((> (length result-str) efrit-session-max-result-length)
-      (concat (efrit-common-truncate-string
+      (concat (efrit-truncate-string
                result-str
                (- efrit-session-max-result-length 3))
               "..."))
@@ -373,7 +373,7 @@ OPTIONS is an optional list of choices for the user."
     (setf (efrit-session-status session) 'waiting-for-user)
     (efrit-log 'info "Session %s waiting for user input: %s"
                (efrit-session-id session)
-               (efrit-common-truncate-string question 60))))
+               (efrit-truncate-string question 60))))
 
 (defun efrit-session-get-pending-question (session)
   "Get the pending question from SESSION.

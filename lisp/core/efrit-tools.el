@@ -61,7 +61,7 @@
 
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
-(declare-function efrit-common-truncate-string "efrit-common")
+(declare-function efrit-truncate-string "efrit-common")
 
 ;; efrit-log is loaded above or defined as fallback
 
@@ -273,7 +273,7 @@ Handles parsing, evaluation, error handling, and result formatting."
     (if (plist-get result-data :success)
         (format "%s" (plist-get result-data :result))
       (format "Error evaluating %s: %s"
-              (efrit-common-truncate-string (plist-get result-data :input) 30)
+              (efrit-truncate-string (plist-get result-data :input) 30)
               (plist-get result-data :error)))))
 
 ;;; Safe Text Manipulation Functions

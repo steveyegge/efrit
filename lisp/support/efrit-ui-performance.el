@@ -94,7 +94,7 @@
   "Generate cache key from COMMAND and CONTEXT."
   (secure-hash 'sha256 (format "%s:%s" command
                                 (if context
-                                    (efrit-common-truncate-string
+                                    (efrit-truncate-string
                                      (json-encode
                                      (if (and context (fboundp 'efrit-context-state-buffer-name))
                                      ;; Convert struct to alist for JSON encoding

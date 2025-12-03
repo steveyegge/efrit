@@ -196,7 +196,7 @@ Returns character count inserted."
       (let ((formatted (format "[%s] %s: %s\n"
                               (format-time-string efrit-progress-timestamp-format)
                               role
-                              (efrit-common-truncate-string text 100))))
+                              (efrit-truncate-string text 100))))
         (insert formatted)
         (length formatted)))))
 
@@ -215,7 +215,7 @@ Returns character count inserted."
         (setq total (length formatted))
         (when input
           (let ((input-line (format "      Input: %s\n" 
-                                   (efrit-common-truncate-string (format "%S" input) 80))))
+                                   (efrit-truncate-string (format "%S" input) 80))))
             (insert input-line)
             (cl-incf total (length input-line))))
         total))))
@@ -234,7 +234,7 @@ Returns character count inserted."
         (when result
           (let ((result-str (format "%S" result)))
             (insert (format "      Result: %s\n"
-                           (efrit-common-truncate-string result-str 80)))))
+                           (efrit-truncate-string result-str 80)))))
         (length formatted)))))
 
 (defun efrit-progress--format-todo-updated (data)
@@ -247,7 +247,7 @@ Returns character count inserted."
       (let* ((status-str (format "%s" (or status "open")))
              (formatted (format "[%s] 📋 TODO: %s [%s]\n"
                                (format-time-string efrit-progress-timestamp-format)
-                               (efrit-common-truncate-string title 60)
+                               (efrit-truncate-string title 60)
                                status-str)))
         (insert formatted)
         (length formatted)))))
@@ -274,7 +274,7 @@ Returns character count inserted."
       (let ((formatted (format "[%s] ⚠️  %s: %s\n"
                               (format-time-string efrit-progress-timestamp-format)
                               level
-                              (efrit-common-truncate-string message 100))))
+                              (efrit-truncate-string message 100))))
         (insert formatted)
         (length formatted)))))
 
@@ -293,7 +293,7 @@ Returns character count inserted."
         (insert (format "   Tokens used: %d\n" tokens)))
       (when result
         (insert (format "   Result: %s\n" 
-                       (efrit-common-truncate-string (format "%S" result) 80))))
+                       (efrit-truncate-string (format "%S" result) 80))))
       (length formatted))))
 
 ;;; Buffer Management

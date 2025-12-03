@@ -219,9 +219,9 @@ DATA is an alist of event-specific data."
 
 (defun efrit-progress--truncate (str max-len)
   "Truncate STR to MAX-LEN characters with ellipsis.
-Uses `efrit-common-truncate-string' with ellipsis counted in max length."
+Uses `efrit-truncate-string' with ellipsis counted in max length."
   (when str
-    (efrit-common-truncate-string str max-len t)))
+    (efrit-truncate-string str max-len)))
 
 ;;; Public API - Called from efrit-executor.el
 

@@ -116,7 +116,7 @@ Returns a compressed summary suitable for system prompt context."
                     (format-time-string "%H:%M:%S" timestamp)
                     mode
                     (capitalize (symbol-name role))
-                    (efrit-common-truncate-string content 150))))
+                    (efrit-truncate-string content 150))))
         messages
         "\n")))))
 
@@ -304,7 +304,7 @@ Displays context shared across all Efrit modes."
                           (format-time-string "%Y-%m-%d %H:%M:%S" timestamp)
                           (upcase (symbol-name mode))
                           (capitalize (symbol-name role))
-                          (efrit-common-truncate-string content 500)))))))))
+                          (efrit-truncate-string content 500)))))))))
 
 ;;;###autoload
 (defun efrit-clear-context (&optional mode-filter)

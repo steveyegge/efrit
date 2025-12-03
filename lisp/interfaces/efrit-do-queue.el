@@ -113,7 +113,7 @@ Returns t if added successfully, nil if queue is full."
   (interactive "sCommand: ")
   (if (efrit-do-queue-add-command command)
       (message "Queued: %s (queue size: %d)"
-               (efrit-common-truncate-string command 60)
+               (efrit-truncate-string command 60)
                (efrit-do-queue-size))
     (message "Queue is full, cannot add command")))
 
@@ -135,7 +135,7 @@ Returns t if added successfully, nil if queue is full."
                    for i from 1
                    do (insert (format "%d. %s\n"
                                      i
-                                     (efrit-common-truncate-string cmd 70)))))))
+                                     (efrit-truncate-string cmd 70)))))))
     
     (display-buffer buffer)))
 
@@ -160,7 +160,7 @@ Returns t if added successfully, nil if queue is full."
   (let ((cmd (efrit-do-queue-pop-command)))
     (if cmd
         (progn
-          (message "Executing: %s" (efrit-common-truncate-string cmd 60))
+          (message "Executing: %s" (efrit-truncate-string cmd 60))
           ;; This would integrate with efrit-do to actually execute the command
           ;; For now, we just log
           (efrit-log 'info "Would execute: %s" cmd))
@@ -177,7 +177,7 @@ Returns t if a command was started, nil if queue is empty."
       (if cmd
           (progn
             (efrit-log 'info "Processing queued command: %s"
-                       (efrit-common-truncate-string cmd 60))
+                       (efrit-truncate-string cmd 60))
             ;; This would integrate with efrit-do to execute the command
             ;; The actual execution is deferred to whoever calls this function
             t)

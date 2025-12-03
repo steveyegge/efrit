@@ -89,8 +89,8 @@ If IS-REGEX is nil, escape regex special characters."
 
 (defun efrit-tool-search--truncate-line (line max-length)
   "Truncate LINE if longer than MAX-LENGTH.
-Uses `efrit-common-truncate-string'."
-  (efrit-common-truncate-string line max-length))
+Uses `efrit-truncate-string'."
+  (efrit-truncate-string line max-length))
 
 (defun efrit-tool-search--parse-rg-output (output project-root max-results)
   "Parse ripgrep JSON output into structured results.

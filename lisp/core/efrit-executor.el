@@ -414,7 +414,7 @@ Returns non-nil if session should abort."
   (let ((inject-type (cdr (assoc "type" injection)))
         (inject-msg (cdr (assoc "message" injection))))
     (efrit-log 'info "Processing injection [%s]: %s"
-               inject-type (efrit-common-truncate-string inject-msg 100))
+               inject-type (efrit-truncate-string inject-msg 100))
     (pcase inject-type
       ("abort"
        ;; Add abort reason to work log and signal abort
@@ -550,7 +550,7 @@ Claude remembers previous tool calls and their results."
              (not (efrit-session-active)))
     (when-let* ((next-command (efrit-session-queue-pop)))
       (efrit-log 'info "Processing queued command: %s (%d remaining)"
-                 (efrit-common-truncate-string next-command 50)
+                 (efrit-truncate-string next-command 50)
                  (efrit-session-queue-length))
       (message "Efrit: Processing queued command (%d remaining)"
                (efrit-session-queue-length))
@@ -558,7 +558,7 @@ Claude remembers previous tool calls and their results."
        next-command
        (lambda (result)
          (efrit-log 'debug "Queued command completed: %s"
-                   (efrit-common-truncate-string (format "%s" result) 100)))))))
+                   (efrit-truncate-string (format "%s" result) 100)))))))
 
 ;;; Tools Schema
 
@@ -804,7 +804,7 @@ the response and resumes execution."
 
     ;; Log the response
     (efrit-log 'info "User responded: %s"
-               (efrit-common-truncate-string response 100))
+               (efrit-truncate-string response 100))
 
     ;; Emit progress event
     (efrit-progress-show-message (format "👤 User: %s" response) 'user)

@@ -242,15 +242,6 @@ Handles both static strings and dynamic functions."
 
 ;;; Utilities
 
-(defun efrit-common-truncate-string (str max-length &optional ellipsis-in-max)
-  "Truncate STR to MAX-LENGTH characters with ellipsis if needed.
-When ELLIPSIS-IN-MAX is non-nil, the returned string including
-ellipsis will be at most MAX-LENGTH characters."
-  (if (> (length str) max-length)
-      (let ((cut-at (if ellipsis-in-max (- max-length 3) max-length)))
-        (concat (substring str 0 (max 0 cut-at)) "..."))
-    str))
-
 (defun efrit-truncate-string (str max-length &optional mode)
   "Truncate STR to display within MAX-LENGTH.
 MODE determines truncation strategy:
@@ -260,8 +251,7 @@ MODE determines truncation strategy:
 
 Returns truncated string with ellipsis (...) if needed."
   (setq mode (or mode 'chars))
-  (let ((result-str str))
-    (pcase mode
+  (pcase mode
       ('chars
        (if (> (length str) max-length)
            (concat (substring str 0 (- max-length 3)) "...")
@@ -271,15 +261,14 @@ Returns truncated string with ellipsis (...) if needed."
        (truncate-string-to-width str max-length nil nil t))
       ('by-words
        ;; TODO: Implement word-boundary truncation
-       (efrit-common-truncate-string str max-length))
+       (efrit-truncate-string str max-length 'chars))
       (_
        ;; Default to character truncation
        (if (> (length str) max-length)
            (concat (substring str 0 (- max-length 3)) "...")
          str)))))
 
-(define-obsolete-function-alias 'efrit-common-truncate-string 'efrit-truncate-string "0.4.2"
-  "Use efrit-truncate-string instead.")
+
 
 (defun efrit-common-count-words (text)
   "Count words in TEXT.
