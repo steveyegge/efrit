@@ -42,6 +42,7 @@
 (declare-function efrit-unified-context-add-message "efrit-session")
 (declare-function efrit-chat--on-message-sent "efrit-chat-persistence")
 (declare-function efrit-do--dispatch-tool "efrit-do")
+(declare-function efrit-do--execute-tool "efrit-do")
 
 ;; Declare variables from other modules
 (defvar efrit-model nil "Model to use for API calls. When nil, uses efrit-default-model from efrit-config")
@@ -505,14 +506,20 @@ is a list of tool_result blocks for sending back to Claude."
                                     (efrit-log-debug "Reading buffer: %s" buffer)
                                     (efrit-tool-read-buffer args)))
                                  ;; Handle buffer_info tool call
-                                 ((string= tool-name "buffer_info")
-                                  (let* ((buffer (gethash "buffer" input))
-                                         (args `((buffer . ,buffer))))
-                                    (efrit-log-debug "Getting buffer info: %s" buffer)
-                                    (efrit-tool-buffer-info args)))
-                                 ;; Unknown tool
-                                 (t
-                                  (format "Error: Unknown tool '%s'" tool-name)))
+                                  ((string= tool-name "buffer_info")
+                                   (let* ((buffer (gethash "buffer" input))
+                                          (args `((buffer . ,buffer))))
+                                     (efrit-log-debug "Getting buffer info: %s" buffer)
+                                     (efrit-tool-buffer-info args)))
+                                  ;; Delegate all other tools to efrit-do dispatcher
+                                  (t
+                                   (require 'efrit-do)
+                                   (efrit-log-debug "Delegating tool '%s' to efrit-do dispatcher" tool-name)
+                                   (let ((tool-item (make-hash-table :test 'equal)))
+                                     (puthash "id" tool-id tool-item)
+                                     (puthash "name" tool-name tool-item)
+                                     (puthash "input" input tool-item)
+                                     (efrit-do--execute-tool tool-item))))
                               (error
                                (format "Error executing tool %s: %s"
                                       tool-name (if tool-err
@@ -1037,10 +1044,28 @@ ASSISTANT-CONTENT is the original content array from the assistant response."
                         (efrit-streamlined--log-to-work (format "Error getting buffer info: %s" error-msg))
                         (format "Error getting buffer info: %s" error-msg))))))
 
+                ;; Delegate all other tools to efrit-do dispatcher
                 (t
+                 (require 'efrit-do)
                  (efrit-streamlined--log-to-work
-                  (format "Unknown tool: %s" tool-name))
-                 (format "Error: Unknown tool %s" tool-name)))))
+                  (format "Delegating tool '%s' to efrit-do dispatcher" tool-name))
+                 (condition-case err
+                     (let ((tool-item (make-hash-table :test 'equal))
+                           (input-hash (make-hash-table :test 'equal)))
+                       ;; Convert alist tool-input to hash table
+                       (dolist (pair tool-input)
+                         (puthash (symbol-name (car pair)) (cdr pair) input-hash))
+                       (puthash "id" tool-id tool-item)
+                       (puthash "name" tool-name tool-item)
+                       (puthash "input" input-hash tool-item)
+                       (let ((result (efrit-do--execute-tool tool-item)))
+                         (efrit-streamlined--log-to-work
+                          (format "Tool result: %s" (substring (or result "") 0 (min 100 (length (or result ""))))))
+                         result))
+                   (error
+                    (let ((error-msg (error-message-string err)))
+                      (efrit-streamlined--log-to-work (format "Error: %s" error-msg))
+                      (format "Error executing %s: %s" tool-name error-msg))))))))
 
           ;; Build proper tool_result block using helper
           (push (efrit--build-tool-result tool-id result-content) results))))
