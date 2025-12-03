@@ -103,17 +103,12 @@ Use C-g to manually interrupt if an eval hangs."
   :type 'boolean
   :group 'efrit-tools)
 
-(defcustom efrit-tools-max-eval-per-session 100
-  "Maximum number of eval_sexp calls allowed per session.
-Set to 0 to disable rate limiting."
-  :type 'integer
-  :group 'efrit-tools)
-
-(defcustom efrit-tools-max-total-calls-per-session 500
-  "Maximum total number of tool calls allowed per session.
-Set to 0 to disable rate limiting."
-  :type 'integer
-  :group 'efrit-tools)
+;; efrit-tools-max-eval-per-session and efrit-tools-max-total-calls-per-session
+;; are now aliases to shared config in efrit-config.el for consistency.
+(defvaralias 'efrit-tools-max-eval-per-session 'efrit-max-eval-per-session
+  "Alias to `efrit-max-eval-per-session' in efrit-config.el.")
+(defvaralias 'efrit-tools-max-total-calls-per-session 'efrit-max-tool-calls-per-session
+  "Alias to `efrit-max-tool-calls-per-session' in efrit-config.el.")
 
 ;;; Error Symbols
 

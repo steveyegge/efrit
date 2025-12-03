@@ -81,15 +81,8 @@
   :type 'boolean
   :group 'efrit)
 
-(defcustom efrit-max-retries 3
-  "Maximum number of retry attempts when tool execution fails in chat mode."
-  :type 'integer
-  :group 'efrit)
-
-(defcustom efrit-retry-on-errors t
-  "Whether to automatically retry failed tool executions in chat mode."
-  :type 'boolean
-  :group 'efrit)
+;; efrit-max-retries and efrit-retry-on-errors are now defined in efrit-config.el
+;; as shared defaults for all modes. Legacy local definitions removed.
 
 ;; Header customization moved to efrit-api.el
 ;; efrit-custom-headers -> efrit-api-custom-headers

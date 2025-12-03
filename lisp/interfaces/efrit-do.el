@@ -151,15 +151,12 @@ truncated to keep this many recent results."
 
 ;; Context configuration moved to efrit-context.el
 
-(defcustom efrit-do-max-retries 3
-  "Maximum number of retry attempts when commands fail."
-  :type 'integer
-  :group 'efrit-do)
-
-(defcustom efrit-do-retry-on-errors t
-  "Whether to automatically retry failed commands by sending errors back to Claude."
-  :type 'boolean
-  :group 'efrit-do)
+;; efrit-do-max-retries and efrit-do-retry-on-errors are now aliases
+;; to the shared config in efrit-config.el for backward compatibility.
+(defvaralias 'efrit-do-max-retries 'efrit-max-retries
+  "Alias to `efrit-max-retries' in efrit-config.el.")
+(defvaralias 'efrit-do-retry-on-errors 'efrit-retry-on-errors
+  "Alias to `efrit-retry-on-errors' in efrit-config.el.")
 
 ;; Use centralized model configuration from efrit-config
 (defvar efrit-model)  ;; Forward declaration for efrit-chat's alias

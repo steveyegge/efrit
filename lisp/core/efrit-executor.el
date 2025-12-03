@@ -49,24 +49,13 @@
   :type 'boolean
   :group 'efrit-executor)
 
-(defcustom efrit-executor-max-continuations 50
-  "Maximum API calls per session before emergency stop.
-This is a safety limit to prevent runaway sessions.
-Most tasks complete within 20 API calls; complex exploration may need more."
-  :type 'integer
-  :group 'efrit-executor)
-
-(defcustom efrit-executor-max-tool-calls 100
-  "Maximum tool calls per session (safety limit)."
-  :type 'integer
-  :group 'efrit-executor)
-
-(defcustom efrit-executor-session-timeout 300
-  "Maximum seconds for a session before timeout.
-This prevents runaway sessions from blocking indefinitely.
-Default is 5 minutes (300 seconds)."
-  :type 'integer
-  :group 'efrit-executor)
+;; Executor limits now use shared config from efrit-config.el with backward-compatible aliases.
+(defvaralias 'efrit-executor-max-continuations 'efrit-max-continuations-per-session
+  "Alias to `efrit-max-continuations-per-session' in efrit-config.el.")
+(defvaralias 'efrit-executor-max-tool-calls 'efrit-max-tool-calls-per-session
+  "Alias to `efrit-max-tool-calls-per-session' in efrit-config.el.")
+(defvaralias 'efrit-executor-session-timeout 'efrit-session-timeout
+  "Alias to `efrit-session-timeout' in efrit-config.el.")
 
 ;;; Progress Display
 

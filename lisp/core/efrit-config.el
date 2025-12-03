@@ -125,6 +125,46 @@ This is called automatically when the data directory is initialized."
 
 (provide 'efrit-config)
 
+;;; Session Safety Limits
+;; These are the canonical, shared limits for all Efrit modes (chat, do, executor).
+;; Individual modules may provide local overrides, but these are the defaults.
+
+(defcustom efrit-max-retries 3
+  "Maximum retry attempts when tool execution fails.
+Shared default for chat and do modes."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-retry-on-errors t
+  "Whether to automatically retry failed tool executions.
+When non-nil, errors are sent back to Claude for correction."
+  :type 'boolean
+  :group 'efrit)
+
+(defcustom efrit-max-tool-calls-per-session 100
+  "Maximum tool calls allowed per session (safety limit).
+Prevents runaway sessions from executing indefinitely."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-max-continuations-per-session 50
+  "Maximum API calls (turns) per session before emergency stop.
+Most tasks complete within 20 turns; complex exploration may need more."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-session-timeout 300
+  "Maximum seconds for a session before timeout.
+Default is 5 minutes (300 seconds)."
+  :type 'integer
+  :group 'efrit)
+
+(defcustom efrit-max-eval-per-session 100
+  "Maximum eval_sexp calls allowed per session.
+Set to 0 to disable this specific limit."
+  :type 'integer
+  :group 'efrit)
+
 ;;; Model Configuration
 
 (defcustom efrit-default-model "claude-sonnet-4-5-20250929"
