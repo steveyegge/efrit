@@ -602,15 +602,16 @@ Returns a plist with:
 
          ((string= type "tool_use")
           (let* ((tool-id (efrit-tool-use-id item))
+                 (is-error nil)
                  (tool-result
                   (condition-case tool-err
                       (efrit-executor--execute-tool item session)
                     (error
+                     (setq is-error t)
                      (format "Error: %s" (error-message-string tool-err))))))
             (setq result-text (concat result-text tool-result))
-            (push `(("type" . "tool_result")
-                    ("tool_use_id" . ,tool-id)
-                    ("content" . ,tool-result))
+            ;; Use canonical tool_result builder
+            (push (efrit-api-build-tool-result tool-id tool-result is-error)
                   tool-result-blocks))))))
     (list :result-text result-text
           :tool-result-blocks (nreverse tool-result-blocks))))

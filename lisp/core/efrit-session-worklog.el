@@ -470,22 +470,14 @@ Returns a vector of messages suitable for the messages field."
         (vector `((role . "user")
                   (content . ,(efrit-session-command session))))))))
 
-(defun efrit-session-build-tool-result (tool-id result &optional is-error)
-  "Build a tool_result content block for TOOL-ID with RESULT.
-If IS-ERROR is non-nil, marks the result as an error.
-Returns an alist:
-  ((type . \"tool_result\")
-   (tool_use_id . TOOL-ID)
-   (content . RESULT)
-   [is_error . t])"
-  (let ((block `((type . "tool_result")
-                 (tool_use_id . ,tool-id)
-                 (content . ,(if (stringp result)
-                                result
-                              (format "%S" result))))))
-    (when is-error
-      (setq block (append block '((is_error . t)))))
-    block))
+;; efrit-session-build-tool-result is now an alias to the canonical
+;; efrit-api-build-tool-result in efrit-api.el which handles:
+;; - Text strings
+;; - Image results as ((image . ...)) alists
+;; - Error marking with is_error field
+(require 'efrit-api)
+(defalias 'efrit-session-build-tool-result 'efrit-api-build-tool-result
+  "Alias to `efrit-api-build-tool-result' - the canonical tool_result builder.")
 
 (provide 'efrit-session-worklog)
 
