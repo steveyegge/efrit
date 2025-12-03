@@ -24,7 +24,7 @@
 COMMAND is the beads command (ready, create, list, etc).
 ARGS is an optional hash table of arguments.
 Returns the command string to execute."
-  (let ((cmd (format "bd %s" command)))
+  (let ((cmd (format "bd %s" (shell-quote-argument command))))
     (when args
       (maphash
        (lambda (key value)
@@ -34,10 +34,10 @@ Returns the command string to execute."
            (let ((arg-str 
                   (cond
                    ((eq value t) (format "--%s" key))  ; Boolean flag
-                   ((stringp value) (format "--%s '%s'" key (replace-regexp-in-string "'" "\\\\'" value)))
+                   ((stringp value) (format "--%s %s" key (shell-quote-argument value)))
                    ((numberp value) (format "--%s %d" key value))
-                   ((listp value) (mapconcat (lambda (v) (format "--%s %s" key v)) value " "))
-                   (t (format "--%s %S" key value)))))
+                   ((listp value) (mapconcat (lambda (v) (format "--%s %s" key (shell-quote-argument v))) value " "))
+                   (t (format "--%s %s" key (shell-quote-argument (format "%S" value)))))))
              (setq cmd (concat cmd " " arg-str)))))
        args))
     cmd))
@@ -52,8 +52,8 @@ Returns (result . success) where result is the output and success is t/nil."
          (result nil))
     (condition-case err
         (let ((output (shell-command-to-string 
-                       (format "cd '%s' && %s 2>&1"
-                               (replace-regexp-in-string "'" "\\\\'" workspace)
+                       (format "cd %s && %s 2>&1"
+                               (shell-quote-argument workspace)
                                cmd))))
           (setq result output)
           ;; Try to parse as JSON if it looks like it
