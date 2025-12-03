@@ -36,6 +36,12 @@
 (defvar efrit-mode-map)
 (defvar efrit-model nil "Model to use for API calls. When nil, uses efrit-default-model from efrit-config")
 
+;;; Helper Functions
+
+(defun efrit--get-active-model ()
+  "Get the actual model being used, resolving efrit-model or falling back to default."
+  (or efrit-model efrit-default-model))
+
 ;;; User Interface Commands - Classic Chat Mode
 
 ;;;###autoload
@@ -160,7 +166,7 @@ Useful when the previous API call failed."
   (set-marker efrit--conversation-marker (point-min))
   (efrit--display-message
    (format "Efrit initialized. Enter your message below and press Enter to send.\nUse Shift+Enter for newlines. Using model: %s"
-           (or efrit-model (require 'efrit-config) efrit-default-model))
+           (efrit--get-active-model))
    'assistant)
   (efrit--insert-prompt))
 
