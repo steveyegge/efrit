@@ -222,34 +222,43 @@ Handles: tool execution, error recovery, session state updates."
             (efrit-progress-insert-event session-id 'tool_started
               `((:tool . ,tool-name) (:input . ,input)))
             
-            ;; Execute tool and capture both result and error state
-            (let* ((tool-result (efrit-do-async--execute-single-tool
-                                session tool-id tool-name input))
-                   ;; Check if result contains session_complete signal
-                   (is-session-complete (string-match-p "\\[SESSION-COMPLETE:" tool-result))
-                   ;; Check if result indicates an error
-                   (is-error (string-match-p "^Error " tool-result)))
+            ;; Show tool start in agent buffer and track time
+            (let ((agent-tool-id (efrit-agent-show-tool-start tool-name input))
+                  (tool-start-time (current-time)))
               
-              ;; Fire result event with status
-              (efrit-progress-insert-event session-id 'tool_result
-                `((:tool . ,tool-name) 
-                  (:result . ,tool-result)
-                  (:success . ,(not is-error))))
-              
-              ;; Update session work log with tool execution details
-              ;; Tool name is tool_name for compression awareness
-              (efrit-session-add-work session tool-result 
-                                      (format "(execute-tool %S)" tool-name)
-                                      nil
-                                      tool-name)
-              
-              ;; Collect result for API call with error flag
-              (push (efrit-session-build-tool-result tool-id tool-result is-error)
-                    results)
-              
-              ;; Mark if session_complete was requested
-              (when is-session-complete
-                (setq session-complete-requested t))))))
+              ;; Execute tool and capture both result and error state
+              (let* ((tool-result (efrit-do-async--execute-single-tool
+                                  session tool-id tool-name input))
+                     ;; Check if result contains session_complete signal
+                     (is-session-complete (string-match-p "\\[SESSION-COMPLETE:" tool-result))
+                     ;; Check if result indicates an error
+                     (is-error (string-match-p "^Error " tool-result))
+                     ;; Calculate elapsed time
+                     (elapsed-secs (float-time (time-subtract (current-time) tool-start-time))))
+                
+                ;; Fire result event with status
+                (efrit-progress-insert-event session-id 'tool_result
+                  `((:tool . ,tool-name) 
+                    (:result . ,tool-result)
+                    (:success . ,(not is-error))))
+                
+                ;; Show tool result in agent buffer
+                (efrit-agent-show-tool-result agent-tool-id tool-result (not is-error) elapsed-secs)
+                
+                ;; Update session work log with tool execution details
+                ;; Tool name is tool_name for compression awareness
+                (efrit-session-add-work session tool-result 
+                                        (format "(execute-tool %S)" tool-name)
+                                        nil
+                                        tool-name)
+                
+                ;; Collect result for API call with error flag
+                (push (efrit-session-build-tool-result tool-id tool-result is-error)
+                      results)
+                
+                ;; Mark if session_complete was requested
+                (when is-session-complete
+                  (setq session-complete-requested t)))))))
     
     (efrit-log 'info "Session %s: executed %d tools"
                session-id (length results))
