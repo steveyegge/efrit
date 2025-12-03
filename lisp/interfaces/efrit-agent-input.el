@@ -20,9 +20,12 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
+(require 'efrit-session)
+(require 'efrit-session-worklog)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
+(declare-function efrit-agent-set-status "efrit-agent")
 
 ;;; Question Display
 
@@ -181,11 +184,20 @@ Use S-RET to always insert a newline."
       (efrit-agent--clear-input)
       ;; Move point to input area
       (goto-char efrit-agent--input-start)
-      ;; NOTE: The input is added to conversation history above, but actual
-      ;; execution through the executor is handled by efrit-do when the session
-      ;; is actively running. The agent buffer follows the Zero Client-Side
-      ;; Intelligence principle and only displays state without making
-      ;; execution decisions. Actual processing happens in efrit-do-async-loop.
+      
+      ;; Route to session if active
+      (let ((session (efrit-session-active)))
+        (when session
+          (if (efrit-session-waiting-for-user-p session)
+              ;; Respond to pending question
+              (progn
+                (efrit-session-respond-to-question session input)
+                (setq efrit-agent--pending-question nil)
+                (efrit-agent-set-status 'working))
+            ;; Ad-hoc guidance - inject into session
+            (efrit-session-add-message session 'user input)
+            (message "Guidance injected to session"))))
+      
       (message "Input added to conversation: %s" (truncate-string-to-width input 50)))))
 
 (defun efrit-agent-input-clear ()
