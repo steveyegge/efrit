@@ -353,7 +353,7 @@ Error messages start with `Error ' for easy detection by caller."
                    (time-since (efrit-session-start-time session))))
           (tool-count (efrit-progress-tool-call-count)))
       (cond
-       ((eq stop-reason 'interrupted)
+       ((string= stop-reason "interrupted")
         (efrit-progress-insert-event session-id 'error
           `((:message . ,(format "Execution interrupted after %d tool calls"
                                (max 0 (1- tool-count))))
