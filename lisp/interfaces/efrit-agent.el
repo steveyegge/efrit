@@ -259,7 +259,8 @@ Status is shown in the header-line at top of window.
     (efrit-agent--load-history))
   ;; Enable input mode when point moves to input region
   (add-hook 'post-command-hook #'efrit-agent--maybe-enable-input-mode nil t)
-  ;; Clean up timer when buffer is killed (fixes memory leak)
+  ;; Save session and clean up timer when buffer is killed
+  (add-hook 'kill-buffer-hook #'efrit-agent--save-session-on-kill nil t)
   (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
 
 ;;; Interactive Commands

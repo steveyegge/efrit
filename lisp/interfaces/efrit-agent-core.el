@@ -365,6 +365,28 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
     (cancel-timer efrit-agent--elapsed-timer)
     (setq efrit-agent--elapsed-timer nil)))
 
+(defun efrit-agent--save-session-on-kill ()
+  "Save the current session when the agent buffer is killed.
+Only saves if session has content worth preserving."
+  (when efrit-agent--session-id
+    (condition-case err
+        (progn
+          (require 'efrit-do-async-loop)
+          (require 'efrit-session-transcript)
+          (let* ((session-id efrit-agent--session-id)
+                 ;; Get session from async loop state
+                 (loop-state (gethash session-id efrit-do-async--loops))
+                 (session (and loop-state (car loop-state))))
+            ;; Only save if we have a session object and it has content
+            (when (and session
+                       (> (length (efrit-session-get-api-messages-for-continuation session)) 0))
+              (efrit-transcript-save session)
+              (require 'efrit-log)
+              (efrit-log 'info "Saved agent session %s on buffer kill" session-id))))
+      (error
+       (require 'efrit-log)
+       (efrit-log 'warn "Failed to save session on kill: %s" (error-message-string err))))))
+
 (defun efrit-agent--update-elapsed (buffer)
   "Update the elapsed time display in BUFFER.
 Forces a redisplay of the header-line which contains the elapsed time."
