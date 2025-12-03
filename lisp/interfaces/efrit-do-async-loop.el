@@ -34,9 +34,8 @@
 (require 'efrit-executor)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
-(declare-function efrit-do--command-system-prompt "efrit-do")
-(declare-function efrit-do--get-current-tools-schema "efrit-do")
-(declare-function efrit-do-async--execute-single-tool "efrit-do-async-loop")
+(declare-function efrit-do--command-system-prompt "efrit-do-prompt")
+(declare-function efrit-do--get-current-tools-schema "efrit-do-schema")
 (defvar efrit-default-model)
 
 ;;; Customization
@@ -231,8 +230,8 @@ Handles: tool execution, error recovery, session state updates."
                                       nil
                                       tool-name)
               
-              ;; Collect result for API call
-              (push (efrit-session-build-tool-result tool-id tool-result)
+              ;; Collect result for API call with error flag
+              (push (efrit-session-build-tool-result tool-id tool-result is-error)
                     results)
               
               ;; Mark if session_complete was requested
@@ -322,7 +321,7 @@ Error messages start with `Error ' for easy detection by caller."
   (let* ((session-id (efrit-session-id session))
          (loop-state (gethash session-id efrit-do-async--loops))
          (on-complete (nth 1 loop-state))
-         (iteration-count (nth 2 loop-state)))
+         (iteration-count (or (nth 2 loop-state) 0)))
     
     ;; Complete session (this clears active session state)
     (efrit-session-complete session stop-reason)
