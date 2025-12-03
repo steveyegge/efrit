@@ -6,6 +6,8 @@ Efrit is an AI coding agent that brings Claude's intelligence directly into Emac
 
 **Core principle**: Zero client-side intelligence. Claude makes all decisions, Efrit executes.
 
+> ⚠️ **Security Note**: Efrit executes AI-generated code in your Emacs. See [SECURITY.md](SECURITY.md) for trust model and recommended practices.
+
 ## Features
 
 ### Conversational Chat (`efrit-chat`)
