@@ -110,16 +110,6 @@ Supports multiple sources: environment variable, authinfo, or config file."
   (require 'efrit-common)
   (efrit-common-get-api-key))
 
-;; efrit--build-tool-result moved to efrit-api.el as efrit-api-build-tool-result
-(defalias 'efrit--build-tool-result 'efrit-api-build-tool-result
-  "Build a tool_result content block for TOOL-ID with RESULT.
-See `efrit-api-build-tool-result' for details.")
-
-;;; Header customization - now uses efrit-api.el
-(defalias 'efrit--build-headers 'efrit-api-build-headers
-  "Build HTTP headers for API requests.
-See `efrit-api-build-headers' for details.")
-
 ;;; System Prompts
 
 (defun efrit-streamlined--system-prompt ()
@@ -155,7 +145,7 @@ In batch mode (non-interactive), uses synchronous request with timeout.
 In interactive mode, uses async request with callbacks."
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers (efrit--build-headers api-key))
+         (url-request-extra-headers (efrit-api-build-headers api-key))
          (system-prompt (when efrit-enable-tools (efrit-tools-system-prompt)))
          (model (or efrit-model efrit-default-model))
          (request-data
@@ -476,7 +466,7 @@ is a list of tool_result blocks for sending back to Claude."
                  (efrit-transparency--display-tool-result tool-name result)
 
                  ;; Collect ALL tool results for sending back to Claude
-                 (push (efrit--build-tool-result tool-id result) tool-results)
+                 (push (efrit-api-build-tool-result tool-id result) tool-results)
 
                  ;; In chat mode, don't display tool results inline
                  ;; Only show errors (buffer objects and nil results are suppressed)
@@ -694,7 +684,7 @@ is a list of tool_result blocks for sending back to Claude."
   ;; Use enhanced system prompt
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
-         (url-request-extra-headers (efrit--build-headers api-key))
+         (url-request-extra-headers (efrit-api-build-headers api-key))
          (system-prompt (efrit-streamlined--system-prompt))
          (cleaned-messages (mapcar (lambda (msg)
                                      (let ((content (alist-get 'content msg)))
@@ -811,7 +801,7 @@ is a list of tool_result blocks for sending back to Claude."
 
 (defun efrit-streamlined--continue-with-results (tool-results assistant-content)
   "Continue conversation with TOOL-RESULTS from executed tools.
-TOOL-RESULTS is a list of tool_result blocks from `efrit--build-tool-result'.
+TOOL-RESULTS is a list of tool_result blocks from `efrit-api-build-tool-result'.
 ASSISTANT-CONTENT is the original content array from the assistant response."
   (let ((updated-messages efrit-streamlined--current-messages))
 
@@ -1011,7 +1001,7 @@ ASSISTANT-CONTENT is the original content array from the assistant response."
                       (format "Error executing %s: %s" tool-name error-msg))))))))
 
           ;; Build proper tool_result block using helper
-          (push (efrit--build-tool-result tool-id result-content) results))))
+          (push (efrit-api-build-tool-result tool-id result-content) results))))
 
     (reverse results)))
 

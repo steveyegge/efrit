@@ -23,7 +23,7 @@
 (declare-function efrit--setup-buffer "efrit-chat")
 (declare-function efrit--display-message "efrit-chat")
 (declare-function efrit--insert-prompt "efrit-chat")
-(declare-function efrit--build-headers "efrit-chat")
+(declare-function efrit-api-build-headers "efrit-api")
 
 ;; Declare external functions from efrit-executor
 (declare-function efrit-execute "efrit-executor")
@@ -666,7 +666,7 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
       (let* ((api-key (efrit-common-get-api-key))
              (url-request-method "POST")
-             (url-request-extra-headers (efrit--build-headers api-key))
+             (url-request-extra-headers (efrit-api-build-headers api-key))
              (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
              (request-data
               `(("model" . ,efrit-default-model)
