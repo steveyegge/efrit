@@ -22,6 +22,7 @@
 (require 'efrit-api)
 (require 'efrit-chat-buffer)
 (require 'efrit-do-schema)
+(require 'efrit-spinner)
 
 ;; Forward declarations
 (declare-function efrit-log-debug "efrit-log")
@@ -97,6 +98,10 @@
   (efrit-streamlined--log-to-work
    (format "Sending request with %d messages" (length messages)))
 
+  ;; Start spinner
+  (with-current-buffer (efrit--setup-buffer)
+    (efrit-spinner-start))
+
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers (efrit-api-build-headers api-key))
@@ -131,6 +136,10 @@
 
 (defun efrit-streamlined--handle-response (_status)
   "Handle API response with work buffer logging."
+  ;; Stop the spinner
+  (with-current-buffer (efrit--setup-buffer)
+    (efrit-spinner-stop))
+  
   (efrit-streamlined--log-to-work "Received response")
 
   (goto-char (point-min))

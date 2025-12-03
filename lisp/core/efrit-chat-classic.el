@@ -25,6 +25,7 @@
 (require 'efrit-chat-transparency)
 (require 'efrit-do-schema)
 (require 'efrit-tool-edit-buffer)
+(require 'efrit-spinner)
 
 ;; Forward declarations
 (declare-function efrit-log-debug "efrit-log")
@@ -55,6 +56,11 @@
   "Send MESSAGES to the Claude API and handle the response.
 In batch mode (non-interactive), uses synchronous request with timeout.
 In interactive mode, uses async request with callbacks."
+  ;; Start spinner in interactive mode
+  (unless noninteractive
+    (with-current-buffer (efrit--setup-buffer)
+      (efrit-spinner-start)))
+  
   (let* ((api-key (efrit--get-api-key))
          (url-request-method "POST")
          (url-request-extra-headers (efrit-api-build-headers api-key))
@@ -148,6 +154,10 @@ If there's an error, handle it and clean up the buffer."
 ERROR-DETAILS contains the error information."
   (require 'efrit-log)
   (efrit-log-error "[efrit-chat] API Error: %s" error-details)
+  
+  ;; Stop spinner on error
+  (with-current-buffer (efrit--setup-buffer)
+    (efrit-spinner-stop))
   
   (let ((error-info (efrit--classify-error error-details)))
     (let ((error-type (nth 0 error-info))
@@ -244,6 +254,10 @@ is a list of tool_result blocks for sending back to Claude."
 
 (defun efrit--handle-api-response (status)
   "Handle the API response with STATUS."
+  ;; Stop the spinner regardless of outcome
+  (with-current-buffer (efrit--setup-buffer)
+    (efrit-spinner-stop))
+  
   (unless (efrit--process-http-status status)
     (condition-case api-err
         (let ((content (efrit--parse-api-response)))
