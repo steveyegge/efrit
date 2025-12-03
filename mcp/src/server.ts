@@ -377,10 +377,11 @@ export class EfritMcpServer {
         description: "Execute beads (bd) CLI commands for issue tracking. Supports: ready, create, update, close, list, show. Returns structured JSON results.",
         inputSchema: {
           command: z.enum(['ready', 'create', 'update', 'close', 'list', 'show']).describe('Beads command to execute'),
-          args: z.record(z.string(), z.any()).optional().describe('Command arguments as key-value pairs (e.g., {id: "ef-123", status: "in_progress"})')
+          args: z.record(z.string(), z.any()).optional().describe('Command arguments as key-value pairs (e.g., {id: "ef-123", status: "in_progress"})'),
+          cwd: z.string().optional().describe('Working directory for the bd command (defaults to $HOME)')
         }
       },
-      async (params: { command: string; args?: Record<string, any> }) => {
+      async (params: { command: string; args?: Record<string, any> | undefined; cwd?: string | undefined }) => {
         try {
           this.logger.info(`Executing beads command: ${params.command}`);
 
@@ -422,7 +423,7 @@ export class EfritMcpServer {
           try {
             const result = execSync(cmdLine, {
               encoding: 'utf-8',
-              cwd: process.env['HOME'] || '/tmp',
+              cwd: params.cwd || process.env['HOME'] || '/tmp',
               maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
             });
 
