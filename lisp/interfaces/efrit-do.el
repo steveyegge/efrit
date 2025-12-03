@@ -332,8 +332,8 @@ Returns (error-p . error-msg) where error-p is t if errors found."
      ;; API errors
      ((string-match "API Error" result)
       (cons t result))
-     ;; General errors
-     ((string-match "Error:" result)
+     ;; General errors - match at start of line to avoid false positives
+     ((string-match "^Error:" result)
       (cons t result))
      ;; No error detected
      (t (cons nil nil)))))
