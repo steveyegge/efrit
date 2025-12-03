@@ -20,7 +20,7 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
-(require 'efrit-do)
+(require 'efrit-do-dispatch)
 
 ;; Forward declarations
 (declare-function efrit-executor-cancel "efrit-executor")

@@ -33,7 +33,7 @@
 (require 'efrit-chat-response)
 (require 'efrit-executor)
 
-(declare-function efrit-do--execute-tool "efrit-do")
+(declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--get-current-tools-schema "efrit-do")
 (declare-function efrit-do-async--execute-single-tool "efrit-do-async-loop")

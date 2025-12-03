@@ -42,8 +42,8 @@
 (declare-function efrit-tool-buffer-info "efrit-tool-edit-buffer")
 (declare-function efrit-unified-context-add-message "efrit-session")
 (declare-function efrit-chat--on-message-sent "efrit-chat-persistence")
-(declare-function efrit-do--dispatch-tool "efrit-do")
-(declare-function efrit-do--execute-tool "efrit-do")
+(declare-function efrit-do--dispatch-tool "efrit-do-dispatch")
+(declare-function efrit-do--execute-tool "efrit-do-dispatch")
 
 ;; Declare variables from other modules
 (defvar efrit-model nil "Model to use for API calls. When nil, uses efrit-default-model from efrit-config")

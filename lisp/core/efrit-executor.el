@@ -32,7 +32,7 @@
 (require 'efrit-progress)
 (require 'efrit-chat-response)
 (declare-function efrit-do--command-system-prompt "efrit-do")
-(declare-function efrit-do--execute-tool "efrit-do")
+(declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--get-current-tools-schema "efrit-do")
 (defvar efrit-do--tools-schema)
 (defvar efrit-default-model)
