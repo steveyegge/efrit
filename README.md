@@ -1,6 +1,6 @@
 # Efrit - AI-Powered Emacs Coding Assistant
 
-**Version 0.4.0**
+**Version 0.4.1**
 
 Efrit is an AI coding agent that brings Claude's intelligence directly into Emacs. It can execute natural language commands, explore codebases, run shell commands, and have multi-turn conversations - all while you stay in your editor.
 
@@ -29,16 +29,20 @@ A structured, real-time view of agentic sessions with:
 - Interactive input for follow-up commands
 
 ### Rich Tool Suite
-Efrit provides Claude with 15+ tools:
+Efrit provides Claude with 35+ tools:
 
 | Category | Tools |
 |----------|-------|
 | **Code Execution** | `eval_sexp` (elisp), `shell_exec` (shell commands) |
-| **Codebase Exploration** | `search_content`, `read_file`, `project_files`, `glob_files` |
+| **File Editing** | `edit_file`, `create_file`, `undo_edit`, `format_file` |
+| **Codebase Exploration** | `search_content`, `read_file`, `project_files`, `glob_files`, `file_info` |
 | **Version Control** | `vcs_status`, `vcs_diff`, `vcs_log`, `vcs_blame` |
-| **Buffer Management** | `buffer_create`, `display_in_buffer` |
-| **Safety** | `confirm_action`, `checkpoint`, `restore_checkpoint` |
+| **Task Management** | `todo_write`, `session_complete`, `request_user_input` |
+| **Safety** | `confirm_action`, `checkpoint`, `restore_checkpoint`, `show_diff_preview` |
+| **Diagnostics** | `get_diagnostics`, `elisp_docs` |
+| **Issue Tracking** | `beads_ready`, `beads_create`, `beads_update`, `beads_close`, `beads_list` |
 | **External** | `web_search`, `fetch_url`, `read_image` |
+| **Buffer Management** | `buffer_create`, `display_in_buffer` |
 
 ### Robust Error Handling
 - Circuit breaker prevents infinite loops
