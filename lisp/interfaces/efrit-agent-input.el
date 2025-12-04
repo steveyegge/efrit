@@ -26,6 +26,8 @@
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
 (declare-function efrit-agent-set-status "efrit-agent")
+(declare-function efrit-do--start-async-session "efrit-do")
+(declare-function efrit-session-id "efrit-session")
 
 ;;; Question Display
 
@@ -169,7 +171,10 @@ Use S-RET to always insert a newline."
       (newline))))
 
 (defun efrit-agent-input-send ()
-  "Send the current input."
+  "Send the current input.
+If no session is active, starts a new efrit-do session.
+If a session is active and waiting for input, responds to the question.
+If a session is active but not waiting, injects the input as guidance."
   (interactive)
   (let ((input (efrit-agent--get-input)))
     (if (or (null input) (string-empty-p (string-trim input)))
@@ -186,21 +191,42 @@ Use S-RET to always insert a newline."
       (when (and efrit-agent--input-start
                  (marker-position efrit-agent--input-start))
         (goto-char efrit-agent--input-start))
-      
-      ;; Route to session if active
+
+      ;; Route based on session state
       (let ((session (efrit-session-active)))
-        (when session
-          (if (efrit-session-waiting-for-user-p session)
-              ;; Respond to pending question
-              (progn
-                (efrit-session-respond-to-question session input)
-                (setq efrit-agent--pending-question nil)
-                (efrit-agent-set-status 'working))
-            ;; Ad-hoc guidance - inject into session
-            (efrit-session-add-message session 'user input)
-            (message "Guidance injected to session"))))
-      
-      (message "Input added to conversation: %s" (truncate-string-to-width input 50)))))
+        (cond
+         ;; Active session waiting for user input - respond to question
+         ((and session (efrit-session-waiting-for-user-p session))
+          (efrit-session-respond-to-question session input)
+          (setq efrit-agent--pending-question nil)
+          (efrit-agent-set-status 'working)
+          (message "Response sent"))
+
+         ;; Active session not waiting - inject as guidance
+         (session
+          (efrit-session-add-message session 'user input)
+          (message "Guidance injected to session"))
+
+         ;; No active session - start a new one (REPL behavior)
+         (t
+          (require 'efrit-do)
+          (let ((new-session (efrit-do--start-async-session input)))
+            ;; Attach this buffer's UI state to the new session
+            (setq efrit-agent--session-id (efrit-session-id new-session))
+            (setq efrit-agent--command input)
+            (setq efrit-agent--status 'working)
+            (setq efrit-agent--start-time (current-time))
+            ;; Reset per-session state
+            (setq efrit-agent--todos nil)
+            (setq efrit-agent--activities nil)
+            (setq efrit-agent--pending-question nil)
+            ;; Initialize pending tools hash table
+            (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
+            ;; Start elapsed timer if not running
+            (unless efrit-agent--elapsed-timer
+              (setq efrit-agent--elapsed-timer
+                    (run-at-time 1 1 #'efrit-agent--update-elapsed (current-buffer))))
+            (message "Efrit: started session from agent buffer"))))))))
 
 (defun efrit-agent-input-clear ()
   "Clear the current input."
