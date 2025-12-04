@@ -44,15 +44,6 @@ Each element is (messages session-id) from each call.")
   "Alist mapping tool-name to mock result to return.
 Used to mock tool execution results.")
 
-(defvar test-agent-mock--active nil
-  "Non-nil when mock mode is active.")
-
-(defvar test-agent-mock--original-api-call nil
-  "Saved original API call function.")
-
-(defvar test-agent-mock--original-execute-tools nil
-  "Saved original execute-tools function.")
-
 (defun test-agent-mock--make-response (content stop-reason &optional error-msg)
   "Create a mock API response with CONTENT and STOP-REASON.
 CONTENT should be a vector of content blocks.
@@ -86,13 +77,20 @@ If ERROR-MSG is non-nil, create an error response."
 
 (defun test-agent-mock--api-call-mock (session messages callback)
   "Mock API call handler for testing.
-Pops from `test-agent-mock--responses' and calls CALLBACK."
+Pops from `test-agent-mock--responses' and calls CALLBACK.
+Correctly routes error responses through the error path."
   (push (list messages (efrit-session-id session)) test-agent-mock--api-calls)
-  (if test-agent-mock--responses
-      (let ((response (pop test-agent-mock--responses)))
-        ;; Use run-at-time with a small delay to allow event loop processing
-        (run-at-time 0.01 nil callback response nil))
-    (run-at-time 0.01 nil callback nil "No mock response configured")))
+  (let ((delay 0.01))
+    (if test-agent-mock--responses
+        (let* ((response (pop test-agent-mock--responses))
+               (error-obj (and (hash-table-p response)
+                               (gethash "error" response)))
+               (error-msg (and error-obj (gethash "message" error-obj))))
+          ;; Route error responses through the error callback path
+          (if error-msg
+              (run-at-time delay nil callback nil error-msg)
+            (run-at-time delay nil callback response nil)))
+      (run-at-time delay nil callback nil "No mock response configured"))))
 
 (defun test-agent-mock--execute-tools-mock (session content)
   "Mock tool execution that extracts tools, runs mock results, continues loop.
@@ -120,6 +118,16 @@ SESSION is the session object, CONTENT is the content vector."
                           (mock-result mock-result)
                           (t (format "Mock result for %s" tool-name))))
                  (is-error (string-prefix-p "Error " result)))
+            ;; Add activity to agent buffer for tracking tests
+            (when (fboundp 'efrit-agent-add-activity)
+              (efrit-agent-add-activity
+               (list :id tool-id
+                     :type 'tool
+                     :tool tool-name
+                     :input (format "%S" input)
+                     :result result
+                     :success (not is-error)
+                     :timestamp (current-time))))
             ;; Collect result
             (push (efrit-session-build-tool-result tool-id result is-error) results)))))
     
@@ -143,7 +151,6 @@ Cleans up after execution."
   `(let ((test-agent-mock--responses nil)
          (test-agent-mock--api-calls nil)
          (test-agent-mock--tool-results nil)
-         (test-agent-mock--active t)
          (efrit-agent-auto-show nil)
          (efrit-do-async-show-progress-buffer nil))
      (unwind-protect
@@ -203,12 +210,6 @@ Returns t if completed, nil if timeout."
 (defun test-agent-mock--create-test-session (command)
   "Create a test session with COMMAND."
   (efrit-session-create (format "test-%s" (random 10000)) command))
-
-(defun test-agent-mock--cleanup ()
-  "Clean up test state."
-  (clrhash efrit-do-async--loops)
-  (when (get-buffer "*efrit-agent*")
-    (kill-buffer "*efrit-agent*")))
 
 ;;; Tests: Simple Single-Step Workflows
 
@@ -377,22 +378,27 @@ Returns t if completed, nil if timeout."
 (ert-deftest test-agent-mock-session-interrupt ()
   "Test session interruption during execution."
   (with-agent-mock
-    ;; Queue a tool call that will be interrupted
+    ;; Queue a tool call that would be interrupted
     (test-agent-mock--queue-response
      (test-agent-mock--make-response
       (vector (test-agent-mock--make-tool-use "tool-1" "slow_operation"
                                                '(("seconds" . 60))))
       "tool_use"))
     
-    (let* ((session (test-agent-mock--create-test-session "Long operation"))
-           (session-id (efrit-do-async-loop session nil)))
+    (let* ((stop-reason nil)
+           (session (test-agent-mock--create-test-session "Long operation"))
+           (session-id (efrit-do-async-loop
+                        session nil
+                        (lambda (_s reason)
+                          (setq stop-reason reason)))))
       
-      ;; Wait a bit then interrupt
-      (sleep-for 0.1)
+      ;; Request interrupt immediately before any timer fires
       (efrit-session-request-interrupt session)
       
       ;; Session should stop due to interrupt
-      (should (test-agent-mock--wait-for-completion session-id 5)))))
+      (should (test-agent-mock--wait-for-completion session-id 5))
+      ;; Verify it was actually interrupted, not just error
+      (should (equal stop-reason "interrupted")))))
 
 (ert-deftest test-agent-mock-iteration-limit ()
   "Test that iteration limit is respected."
@@ -421,8 +427,8 @@ Returns t if completed, nil if timeout."
 (ert-deftest test-agent-mock-buffer-status-transitions ()
   "Test agent buffer status updates during execution."
   (with-agent-mock
-    ;; Enable auto-show for this test
-    (let ((efrit-agent-auto-show nil))  ; Keep nil to avoid display issues
+    ;; Keep auto-show nil to avoid display issues in batch mode
+    (let ((efrit-agent-auto-show nil))
       (test-agent-mock--queue-response
        (test-agent-mock--make-response
         (vector (test-agent-mock--make-text-content "Working on it."))
@@ -465,8 +471,8 @@ Returns t if completed, nil if timeout."
       
       ;; Check that agent buffer has activity entries
       (with-current-buffer (efrit-agent--get-buffer)
-        ;; Activities should have been recorded
-        (should (>= (length efrit-agent--activities) 0))))))
+        ;; Activities should have been recorded (at least 1 for tool call)
+        (should (> (length efrit-agent--activities) 0))))))
 
 ;;; Tests: Completion Callback
 
