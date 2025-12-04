@@ -787,8 +787,44 @@ Returns a diff showing formatting changes, or a message if file was already form
     ("input_schema" . (("type" . "object")
                       ("properties" . (("id" . (("type" . "string")
                                                ("description" . "Issue ID (required)")))))
-                      ("required" . ["id"]))))]
-  "Schema definition for all available tools in efrit-do mode.")
+                      ("required" . ["id"]))))
+   (("name" . "display_hint")
+    ("description" . "Control how tool results are displayed in the agent buffer. Use this to provide Claude with fine-grained control over result visualization, including summaries, rendering hints, importance levels, and line annotations.
+    
+   EXAMPLES:
+   - Highlight important output: display_hint tool_use_id=\"toolcall-123\" summary=\"3 files modified\" render_type=\"diff\" importance=\"warning\"
+   - Collapse verbose output: display_hint tool_use_id=\"toolcall-456\" summary=\"Searched 150 files, found 3 matches\" auto_expand=false
+   - Error emphasis: display_hint tool_use_id=\"toolcall-789\" summary=\"Build failed: missing dependency\" render_type=\"error\" importance=\"error\" auto_expand=true
+
+   WHEN TO USE:
+   - After tool execution, to provide a better user experience in the agent buffer
+   - When tool output is verbose but important parts could be summarized
+   - To highlight errors, warnings, or important successes
+   - To control expansion state (show/hide details by default)
+   - To add contextual annotations to specific lines of output")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("tool_use_id" . (("type" . "string")
+                                                        ("description" . "ID of the tool call to apply hint to (required)")))
+                                      ("summary" . (("type" . "string")
+                                                   ("description" . "Summary text to display when collapsed (required)")))
+                                      ("render_type" . (("type" . "string")
+                                                       ("enum" . ["text" "diff" "elisp" "json" "shell" "grep" "markdown" "error"])
+                                                       ("description" . "How to render the output (default: text)")))
+                                      ("auto_expand" . (("type" . "boolean")
+                                                       ("description" . "Whether to auto-expand by default (default: false for verbose, true for errors)")))
+                                      ("importance" . (("type" . "string")
+                                                      ("enum" . ["normal" "success" "warning" "error"])
+                                                      ("description" . "Importance level affects styling (default: normal)")))
+                                      ("annotations" . (("type" . "array")
+                                                       ("items" . (("type" . "object")
+                                                                  ("properties" . (("line" . (("type" . "integer")
+                                                                                             ("description" . "Line number to annotate (1-indexed)")))
+                                                                                  ("note" . (("type" . "string")
+                                                                                            ("description" . "Annotation text")))))
+                                                                  ("required" . ["line" "note"])))
+                                                       ("description" . "Optional line-by-line annotations")))))
+                      ("required" . ["tool_use_id" "summary"]))))]
+   "Schema definition for all available tools in efrit-do mode.")
 
 (defun efrit-do--get-current-tools-schema (&optional budget)
   "Return full tool schema, optionally with budget hints.

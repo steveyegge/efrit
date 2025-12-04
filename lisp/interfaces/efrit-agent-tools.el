@@ -587,6 +587,85 @@ Returns t if toggled, nil if no tool at point."
                                  'efrit-tool-expanded t
                                  'read-only t)))))
 
+;;; Display Hints for Tool Results
+;;
+;; Functions for applying display hints to control how tool results are rendered
+;; in the agent buffer.
+
+(defun efrit-agent--apply-display-hint (tool-use-id summary &optional render-type auto-expand importance annotations)
+  "Apply display hint to control how a tool result is rendered.
+TOOL-USE-ID is the ID of the tool call to modify.
+SUMMARY is the text to show when collapsed.
+RENDER-TYPE (optional) is one of: text, diff, elisp, json, shell, grep, markdown, error.
+AUTO-EXPAND (optional) controls default expansion state.
+IMPORTANCE (optional) is one of: normal, success, warning, error.
+ANNOTATIONS (optional) is a list of (line . note) pairs for line annotations."
+  (let ((region (efrit-agent--find-tool-region tool-use-id)))
+    (unless region
+      (error "Tool call not found: %s" tool-use-id))
+    
+    (let* ((start (car region))
+           (inhibit-read-only t)
+           ;; Get existing properties
+           (tool-name (get-text-property start 'efrit-tool-name))
+           (tool-input (get-text-property start 'efrit-tool-input))
+           (tool-result (get-text-property start 'efrit-tool-result))
+           (tool-success (get-text-property start 'efrit-tool-success))
+           (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
+           (tool-running (get-text-property start 'efrit-tool-running))
+           ;; Determine auto-expand default if not specified
+           (should-expand (if (not (null auto-expand))
+                             auto-expand
+                           ;; Default: expand errors, collapse normal results
+                           (or tool-running (eq importance 'error))))
+           ;; Determine status face based on importance
+           (status-face (pcase importance
+                         ('error 'efrit-agent-error)
+                         ('warning 'efrit-agent-warning)
+                         ('success 'efrit-agent-success)
+                         (_ nil)))
+           ;; Format indicators
+           (expand-char (efrit-agent--char (if should-expand 'expand-expanded 'expand-collapsed)))
+           (status-char (if tool-success
+                           (efrit-agent--char 'tool-success)
+                         (efrit-agent--char 'tool-failure)))
+           ;; Build the updated tool line
+           (new-text
+            (concat
+             "  "
+             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
+             (propertize (format "%s " status-char)
+                         'face (if tool-success 'efrit-agent-timestamp 'efrit-agent-error))
+             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
+             (when tool-elapsed
+               (propertize (format " (%.2fs)" tool-elapsed) 'face 'efrit-agent-timestamp))
+             " -> "
+             (propertize summary 'face status-face)
+             "\n")))
+      ;; Replace the tool display region with new text
+      (save-excursion
+        (goto-char start)
+        (delete-region start (cdr region))
+        (insert new-text)
+        ;; Update properties with display hints
+        (add-text-properties start (point)
+                             (list 'efrit-type 'tool-call
+                                   'efrit-id tool-use-id
+                                   'efrit-tool-name tool-name
+                                   'efrit-tool-input tool-input
+                                   'efrit-tool-result tool-result
+                                   'efrit-tool-success tool-success
+                                   'efrit-tool-elapsed tool-elapsed
+                                   'efrit-tool-running tool-running
+                                   'efrit-tool-expanded should-expand
+                                   'efrit-tool-summary summary
+                                   'efrit-tool-render-type (or render-type "text")
+                                   'efrit-tool-importance (or importance "normal")
+                                   'efrit-tool-annotations annotations
+                                   'read-only t)))
+      ;; Return confirmation message
+      (format "Display hint applied to %s: %s" tool-use-id summary))))
+
 (provide 'efrit-agent-tools)
 
 ;;; efrit-agent-tools.el ends here

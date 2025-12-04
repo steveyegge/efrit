@@ -59,6 +59,7 @@
 (declare-function efrit-do--handle-beads-close "efrit-do-handlers")
 (declare-function efrit-do--handle-beads-list "efrit-do-handlers")
 (declare-function efrit-do--handle-beads-show "efrit-do-handlers")
+(declare-function efrit-do--handle-display-hint "efrit-do-handlers")
 ;; Alias handlers for chat-mode tool names
 (declare-function efrit-do--handle-create-buffer-alias "efrit-do-handlers")
 (declare-function efrit-do--handle-edit-buffer-alias "efrit-do-handlers")
@@ -129,6 +130,8 @@
     ("beads_close"        . (efrit-do--handle-beads-close . :tool-input))
     ("beads_list"         . (efrit-do--handle-beads-list . :tool-input))
     ("beads_show"         . (efrit-do--handle-beads-show . :tool-input))
+    ;; Display hint tool (agent buffer visualization control)
+    ("display_hint"       . (efrit-do--handle-display-hint . :tool-input))
     ;; Aliases for chat-mode tool names (maps to same handlers)
     ;; Canonical naming: verb_noun (buffer_create), aliases: noun_verb (create_buffer)
     ("create_buffer"      . (efrit-do--handle-create-buffer-alias . :tool-input))

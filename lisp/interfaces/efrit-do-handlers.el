@@ -976,6 +976,54 @@ TOOL-INPUT contains buffer name to get info about."
 Returns Emacs context information (current buffer, point, etc.)."
   (format "\n[%s]" (efrit-tools-get-context)))
 
+;;; Display Hint Handler
+;;
+;; Controls how tool results are displayed in the agent buffer.
+
+(defun efrit-do--handle-display-hint (tool-input)
+  "Handle display_hint tool call.
+TOOL-INPUT is a hash table with keys:
+  tool_use_id (required): ID of the tool call to modify
+  summary (required): Summary text to display when collapsed
+  render_type (optional): text, diff, elisp, json, shell, grep, markdown, error
+  auto_expand (optional): whether to auto-expand (boolean)
+  importance (optional): normal, success, warning, error
+  annotations (optional): array of {line, note} objects"
+  (require 'efrit-agent-tools)
+  (require 'efrit-agent-core)
+  
+  (condition-case err
+      (let* ((tool-use-id (gethash "tool_use_id" tool-input))
+             (summary (gethash "summary" tool-input))
+             (render-type (gethash "render_type" tool-input))
+             (auto-expand (gethash "auto_expand" tool-input))
+             (importance (gethash "importance" tool-input))
+             (annotations (gethash "annotations" tool-input))
+             (agent-buffer (and (boundp 'efrit-agent-buffer-name)
+                               (get-buffer efrit-agent-buffer-name))))
+        
+        ;; Validate required parameters
+        (unless tool-use-id
+          (error "display_hint requires tool_use_id parameter"))
+        (unless summary
+          (error "display_hint requires summary parameter"))
+        
+        ;; Convert string parameters to symbols if needed
+        (when (stringp importance)
+          (setq importance (intern importance)))
+        (when (stringp render-type)
+          (setq render-type (intern render-type)))
+        
+        ;; Apply the display hint (only works in agent buffer context)
+        (if (and (fboundp 'efrit-agent--apply-display-hint) agent-buffer)
+            (with-current-buffer agent-buffer
+              (efrit-agent--apply-display-hint tool-use-id summary render-type auto-expand importance annotations))
+          ;; If not in agent buffer context, just return a message
+          (format "\n[Display hint would apply to %s: %s]" tool-use-id summary)))
+    
+    (error
+     (format "\n[Error in display_hint: %s]" (error-message-string err)))))
+
 (provide 'efrit-do-handlers)
 
 ;;; efrit-do-handlers.el ends here
