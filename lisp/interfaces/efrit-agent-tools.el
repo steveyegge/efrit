@@ -26,6 +26,173 @@
 (declare-function efrit-executor-cancel "efrit-executor")
 (declare-function efrit-progress-inject "efrit-progress")
 
+;;; Tool View Struct
+;;
+;; Centralized representation of a tool call for rendering.
+;; All tool display functions build one of these and call the unified renderer.
+
+(cl-defstruct (efrit-agent-tool-view (:constructor efrit-agent-tool-view-create))
+  "Struct representing a tool call for rendering in the agent buffer."
+  id                  ; String: unique tool-call ID (e.g., "tool-3")
+  name                ; String: tool name (e.g., "Read")
+  input               ; Any: input parameters (plist, alist, or string)
+  result              ; Any: tool result (usually string)
+  success-p           ; Bool: did the tool succeed?
+  elapsed             ; Number or nil: seconds elapsed
+  running             ; Bool: is the tool still running?
+  render-type         ; Symbol: text, diff, elisp, json, shell, grep, markdown, error
+  summary             ; String or nil: explicit summary for collapsed view
+  importance          ; Symbol: normal, success, warning, error
+  annotations         ; Plist or nil: structured metadata for smart summaries
+  expanded-p)         ; Bool: is this tool expanded?
+
+;;; Centralized Tool Rendering
+
+(defun efrit-agent--tool-view-summary (tv)
+  "Get the summary text for tool view TV.
+Follows precedence: explicit summary > annotations > truncated result."
+  (or (efrit-agent-tool-view-summary tv)
+      (efrit-agent--summary-from-annotations tv)
+      (efrit-agent--default-summary tv)))
+
+(defun efrit-agent--default-summary (tv)
+  "Generate default summary from TV's result by truncating."
+  (let ((result (efrit-agent-tool-view-result tv)))
+    (when result
+      (truncate-string-to-width
+       (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
+       (pcase efrit-agent-verbosity
+         ('minimal 20)
+         ('normal 40)
+         ('verbose 80))))))
+
+(defun efrit-agent--summary-from-annotations (tv)
+  "Generate summary from TV's structured annotations.
+Returns nil if no annotations or unknown kind."
+  (when-let* ((ann (efrit-agent-tool-view-annotations tv)))
+    (pcase (plist-get ann :kind)
+      ('diff-summary
+       (format "%d files changed (+%d/-%d)%s"
+               (or (plist-get ann :files-changed) 0)
+               (or (plist-get ann :insertions) 0)
+               (or (plist-get ann :deletions) 0)
+               (let ((files (plist-get ann :files)))
+                 (if (and files (listp files) (> (length files) 0))
+                     (format " [%s]"
+                             (mapconcat #'identity (seq-take files 3) ", "))
+                   ""))))
+      ('grep-summary
+       (format "%d matches in %d files for %S"
+               (or (plist-get ann :matches) 0)
+               (or (plist-get ann :files) 0)
+               (plist-get ann :pattern)))
+      ('test-summary
+       (format "%s: %d failed, %d passed, %d skipped (%.2fs)"
+               (or (plist-get ann :framework) "tests")
+               (or (plist-get ann :failed) 0)
+               (or (plist-get ann :passed) 0)
+               (or (plist-get ann :skipped) 0)
+               (or (plist-get ann :duration-seconds) 0.0)))
+      ('shell-summary
+       (format "%s (exit %d, %d lines)"
+               (or (plist-get ann :command) "shell")
+               (or (plist-get ann :exit-code) 0)
+               (or (plist-get ann :lines) 0)))
+      ('fs-read-summary
+       (format "Read %s (%d lines)"
+               (or (plist-get ann :path) "file")
+               (or (plist-get ann :line-count) 0)))
+      ('fs-write-summary
+       (format "Wrote %s (%d bytes)"
+               (or (plist-get ann :path) "file")
+               (or (plist-get ann :bytes-written) 0)))
+      (_ nil))))
+
+(defun efrit-agent--render-tool-call (tv)
+  "Render tool call described by TV (efrit-agent-tool-view) at point.
+Inserts both header line and (if expanded) body content.
+Returns the end position of the inserted content."
+  (let* ((id (efrit-agent-tool-view-id tv))
+         (name (efrit-agent-tool-view-name tv))
+         (input (efrit-agent-tool-view-input tv))
+         (result (efrit-agent-tool-view-result tv))
+         (success-p (efrit-agent-tool-view-success-p tv))
+         (elapsed (efrit-agent-tool-view-elapsed tv))
+         (running (efrit-agent-tool-view-running tv))
+         (render-type (efrit-agent-tool-view-render-type tv))
+         (importance (efrit-agent-tool-view-importance tv))
+         (annotations (efrit-agent-tool-view-annotations tv))
+         (expanded-p (efrit-agent-tool-view-expanded-p tv))
+         ;; Compute display elements
+         (expand-char (efrit-agent--char
+                       (if expanded-p 'expand-expanded 'expand-collapsed)))
+         (status-char (cond
+                       (running (efrit-agent--char 'tool-running))
+                       ((eq importance 'error) (efrit-agent--char 'tool-failure))
+                       (success-p (efrit-agent--char 'tool-success))
+                       (t (efrit-agent--char 'tool-failure))))
+         (status-face (pcase importance
+                        ('error 'efrit-agent-importance-error)
+                        ('warning 'efrit-agent-importance-warning)
+                        ('success 'efrit-agent-importance-success)
+                        (_ (if (and (not running) (not success-p))
+                               'efrit-agent-error
+                             nil))))
+         (summary (efrit-agent--tool-view-summary tv))
+         (start (point)))
+    ;; Insert header line
+    (insert "  ")
+    (insert (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp))
+    (insert (propertize (format "%s " status-char)
+                        'face (or status-face 'efrit-agent-timestamp)))
+    (insert (propertize (or name "tool") 'face 'efrit-agent-tool-name))
+    (when elapsed
+      (insert (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp)))
+    (cond
+     (running
+      (insert (propertize "..." 'face 'efrit-agent-timestamp)))
+     (result
+      (insert " -> ")
+      (insert (propertize (or summary "") 'face status-face))))
+    (insert "\n")
+    ;; Insert expanded body if expanded
+    (when (and expanded-p (or input result))
+      (insert (efrit-agent--format-tool-expansion input result success-p id render-type)))
+    ;; Apply text properties to the entire region
+    (add-text-properties start (point)
+                         (list 'efrit-type 'tool-call
+                               'efrit-id id
+                               'efrit-tool-name name
+                               'efrit-tool-input input
+                               'efrit-tool-result result
+                               'efrit-tool-success success-p
+                               'efrit-tool-elapsed elapsed
+                               'efrit-tool-running running
+                               'efrit-tool-render-type render-type
+                               'efrit-tool-summary (efrit-agent-tool-view-summary tv)
+                               'efrit-tool-importance importance
+                               'efrit-tool-annotations annotations
+                               'efrit-tool-expanded expanded-p
+                               'read-only t))
+    (point)))
+
+(defun efrit-agent--tool-view-from-properties (start)
+  "Create a tool-view from text properties at position START.
+Returns an efrit-agent-tool-view struct."
+  (efrit-agent-tool-view-create
+   :id (get-text-property start 'efrit-id)
+   :name (get-text-property start 'efrit-tool-name)
+   :input (get-text-property start 'efrit-tool-input)
+   :result (get-text-property start 'efrit-tool-result)
+   :success-p (get-text-property start 'efrit-tool-success)
+   :elapsed (get-text-property start 'efrit-tool-elapsed)
+   :running (get-text-property start 'efrit-tool-running)
+   :render-type (get-text-property start 'efrit-tool-render-type)
+   :summary (get-text-property start 'efrit-tool-summary)
+   :importance (get-text-property start 'efrit-tool-importance)
+   :annotations (get-text-property start 'efrit-tool-annotations)
+   :expanded-p (get-text-property start 'efrit-tool-expanded)))
+
 ;;; Tool Call Display
 
 (defun efrit-agent--add-tool-call (tool-name &optional input)
@@ -76,10 +243,32 @@ Returns (START . END) or nil if not found."
                       (point-max)))
         (cons start end)))))
 
+(defun efrit-agent--compute-auto-expand (success-p result user-override)
+  "Compute whether a tool result should auto-expand.
+SUCCESS-P is the tool success status, RESULT is the tool output.
+USER-OVERRIDE is 'not-found or a boolean from user's explicit toggle.
+Returns t if the tool should be expanded by default."
+  ;; If user has explicitly toggled, respect that
+  (if (not (eq user-override 'not-found))
+      user-override
+    ;; Otherwise apply display mode logic
+    (pcase efrit-agent-display-mode
+      ('minimal nil)       ; Always collapsed
+      ('verbose t)         ; Always expanded
+      ('smart
+       ;; Smart mode: expand errors, collapse successes unless short
+       (if (not success-p)
+           t  ; Errors auto-expand
+         ;; Successes: only expand if very short
+         (and (< (length (format "%s" result)) 200)
+              (< (cl-count ?\n (format "%s" result)) 5))))
+      (_ nil))))  ; Fallback to collapsed
+
 (defun efrit-agent--update-tool-result (tool-id result success-p &optional elapsed)
   "Update tool call with result and status.
 TOOL-ID identifies the tool. RESULT is the result value.
-SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
+SUCCESS-P indicates if the call succeeded. ELAPSED is optional time.
+Uses the centralized tool-view renderer for consistent display."
   (let ((region (efrit-agent--find-tool-region tool-id)))
     (when region
       (let* ((inhibit-read-only t)
@@ -93,66 +282,32 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
              (elapsed-time (or elapsed
                                (when start-time
                                  (float-time (time-subtract (current-time) start-time)))))
-             ;; Check for user override first
+             ;; Check for user override
              (user-override (and efrit-agent--expansion-state
                                  (gethash tool-id efrit-agent--expansion-state 'not-found)))
-             ;; Determine expansion based on display mode
-             ;; Default hint: auto-expand short results, collapse long ones
-             (hint-expand (and success-p
-                               (< (length result) 200)
-                               (< (cl-count ?\n result) 5)))
-             ;; Apply display mode override (only if no user override)
-             (auto-expand (if (not (eq user-override 'not-found))
-                              user-override  ; User explicitly set this
-                            (pcase efrit-agent-display-mode
-                              ('minimal nil)       ; Always collapsed
-                              ('smart hint-expand) ; Respect hint
-                              ('verbose t)         ; Always expanded
-                              (_ hint-expand))))   ; Fallback to hint
-             ;; Format indicators - expanded or collapsed based on size
-             (expand-char (efrit-agent--char (if auto-expand 'expand-expanded 'expand-collapsed)))
-             (status-char (if success-p
-                              (efrit-agent--char 'tool-success)
-                            (efrit-agent--char 'tool-failure)))
-             (status-face (if success-p nil 'efrit-agent-error))
-             ;; Build the updated tool line (collapsed view)
-             ;; Defensive: stringify result before truncate-string-to-width to handle
-             ;; any malformed results, though tool handlers are contracted to return strings
-             (result-summary (truncate-string-to-width
-                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
-                              (pcase efrit-agent-verbosity
-                                ('minimal 20)
-                                ('normal 40)
-                                ('verbose 80))))
-             (new-text
-              (concat
-               "  "
-               (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
-               (propertize (format "%s " status-char)
-                           'face (if success-p 'efrit-agent-timestamp 'efrit-agent-error))
-               (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
-               (when elapsed-time
-                 (propertize (format " (%.2fs)" elapsed-time) 'face 'efrit-agent-timestamp))
-               " -> "
-               (propertize result-summary 'face status-face)
-               "\n")))
-        ;; Replace the tool call region with updated content
+             ;; Compute auto-expand with new logic (errors expand, successes collapse)
+             (auto-expand (efrit-agent--compute-auto-expand success-p result user-override))
+             ;; Determine importance based on success
+             (importance (if success-p 'normal 'error))
+             ;; Build tool-view struct
+             (tv (efrit-agent-tool-view-create
+                  :id tool-id
+                  :name tool-name
+                  :input tool-input
+                  :result result
+                  :success-p success-p
+                  :elapsed elapsed-time
+                  :running nil
+                  :render-type nil  ; Will be set by display_hint if needed
+                  :summary nil      ; Use default summary
+                  :importance importance
+                  :annotations nil
+                  :expanded-p auto-expand)))
+        ;; Replace the tool call region using centralized renderer
         (save-excursion
           (goto-char start)
           (delete-region start end)
-          (insert new-text)
-          ;; Re-apply properties for future reference (collapsed state)
-          (add-text-properties start (point)
-                               (list 'efrit-type 'tool-call
-                                     'efrit-id tool-id
-                                     'efrit-tool-name tool-name
-                                     'efrit-tool-input tool-input
-                                     'efrit-tool-result result
-                                     'efrit-tool-success success-p
-                                     'efrit-tool-elapsed elapsed-time
-                                     'efrit-tool-running nil
-                                     'efrit-tool-expanded auto-expand
-                                     'read-only t)))))))
+          (efrit-agent--render-tool-call tv))))))
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 
@@ -530,6 +685,7 @@ RESULT is the error message, _TOOL-INPUT is reserved for future use."
 (defun efrit-agent--toggle-tool-expansion ()
   "Toggle expansion of the tool call at point.
 Records the user's preference to override display-mode and Claude's hints.
+Uses the centralized tool-view renderer for consistent display.
 Returns t if toggled, nil if no tool at point."
   (let* ((tool-id (get-text-property (point) 'efrit-id))
          (tool-type (get-text-property (point) 'efrit-type)))
@@ -537,118 +693,22 @@ Returns t if toggled, nil if no tool at point."
       (let* ((region (efrit-agent--find-tool-region tool-id))
              (start (car region))
              (end (cdr region))
-             (expanded (get-text-property start 'efrit-tool-expanded))
-             (tool-name (get-text-property start 'efrit-tool-name))
-             (tool-input (get-text-property start 'efrit-tool-input))
-             (tool-result (get-text-property start 'efrit-tool-result))
-             (tool-success (get-text-property start 'efrit-tool-success))
-             (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
-             (tool-running (get-text-property start 'efrit-tool-running))
              (inhibit-read-only t)
-             (new-state (not expanded)))
+             ;; Build tool-view from existing properties
+             (tv (efrit-agent--tool-view-from-properties start))
+             ;; Toggle expansion state
+             (new-state (not (efrit-agent-tool-view-expanded-p tv))))
         ;; Record user's explicit preference (overrides display-mode and hints)
         (when efrit-agent--expansion-state
           (puthash tool-id new-state efrit-agent--expansion-state))
-        (if expanded
-            ;; Collapse: remove expansion, update indicator
-            (efrit-agent--collapse-tool tool-id start end tool-name tool-result
-                                        tool-success tool-elapsed tool-running tool-input)
-          ;; Expand: add expansion content, update indicator
-          (efrit-agent--expand-tool tool-id start end tool-name tool-result
-                                    tool-success tool-elapsed tool-running tool-input))
+        ;; Update the tool-view with new expansion state
+        (setf (efrit-agent-tool-view-expanded-p tv) new-state)
+        ;; Re-render using centralized renderer
+        (save-excursion
+          (goto-char start)
+          (delete-region start end)
+          (efrit-agent--render-tool-call tv))
         t))))
-
-(defun efrit-agent--collapse-tool (tool-id start end tool-name result success-p elapsed running input)
-  "Collapse tool TOOL-ID, removing expansion content."
-  (save-excursion
-    (goto-char start)
-    (delete-region start end)
-    ;; Re-render as collapsed
-    (let* ((expand-char (efrit-agent--char 'expand-collapsed))
-           (status-char (cond (running (efrit-agent--char 'tool-running))
-                              (success-p (efrit-agent--char 'tool-success))
-                              (t (efrit-agent--char 'tool-failure))))
-           (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
-           (render-type (get-text-property start 'efrit-tool-render-type))
-           (result-summary (when result
-                             (truncate-string-to-width
-                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
-                              (pcase efrit-agent-verbosity
-                                ('minimal 20) ('normal 40) ('verbose 80)))))
-           (new-text
-            (concat
-             "  "
-             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
-             (propertize (format "%s " status-char)
-                         'face (or status-face 'efrit-agent-timestamp))
-             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
-             (when elapsed
-               (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp))
-             (if result
-                 (concat " -> " (propertize result-summary 'face status-face))
-               (propertize "..." 'face 'efrit-agent-timestamp))
-             "\n")))
-      (insert new-text)
-      (add-text-properties start (point)
-                           (list 'efrit-type 'tool-call
-                                 'efrit-id tool-id
-                                 'efrit-tool-name tool-name
-                                 'efrit-tool-input input
-                                 'efrit-tool-result result
-                                 'efrit-tool-success success-p
-                                 'efrit-tool-elapsed elapsed
-                                 'efrit-tool-running running
-                                 'efrit-tool-render-type render-type
-                                 'efrit-tool-expanded nil
-                                 'read-only t)))))
-
-(defun efrit-agent--expand-tool (tool-id start end tool-name result success-p elapsed running input)
-  "Expand tool TOOL-ID, showing full input and result."
-  (save-excursion
-    (goto-char start)
-    (delete-region start end)
-    ;; Re-render as expanded with expansion content
-    (let* ((expand-char (efrit-agent--char 'expand-expanded))
-           (status-char (cond (running (efrit-agent--char 'tool-running))
-                              (success-p (efrit-agent--char 'tool-success))
-                              (t (efrit-agent--char 'tool-failure))))
-           (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
-           (render-type (get-text-property start 'efrit-tool-render-type))
-           (result-summary (when result
-                             (truncate-string-to-width
-                              (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
-                              (pcase efrit-agent-verbosity
-                                ('minimal 20) ('normal 40) ('verbose 80)))))
-           ;; Header line
-           (header-text
-            (concat
-             "  "
-             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
-             (propertize (format "%s " status-char)
-                         'face (or status-face 'efrit-agent-timestamp))
-             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
-             (when elapsed
-               (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp))
-             (if result
-                 (concat " -> " (propertize result-summary 'face status-face))
-               (propertize "..." 'face 'efrit-agent-timestamp))
-             "\n"))
-           ;; Expansion content (pass tool-id and render-type)
-           (expansion-text (efrit-agent--format-tool-expansion input result success-p tool-id render-type))
-           (new-text (concat header-text expansion-text)))
-      (insert new-text)
-      (add-text-properties start (point)
-                           (list 'efrit-type 'tool-call
-                                 'efrit-id tool-id
-                                 'efrit-tool-name tool-name
-                                 'efrit-tool-input input
-                                 'efrit-tool-result result
-                                 'efrit-tool-success success-p
-                                 'efrit-tool-elapsed elapsed
-                                 'efrit-tool-running running
-                                 'efrit-tool-render-type render-type
-                                 'efrit-tool-expanded t
-                                 'read-only t)))))
 
 ;;; Display Hints for Tool Results
 ;;
@@ -665,28 +725,26 @@ IMPORTANCE (optional) is one of: normal, success, warning, error.
 The actual expansion state is determined by `efrit-agent-display-mode':
   minimal: Always collapsed (ignores auto-expand)
   smart: Respects auto-expand hint
-  verbose: Always expanded (ignores auto-expand)"
+  verbose: Always expanded (ignores auto-expand)
+Uses the centralized tool-view renderer for consistent display."
   (let ((region (efrit-agent--find-tool-region tool-use-id)))
     (unless region
       (error "Tool call not found: %s" tool-use-id))
     
     (let* ((start (car region))
+           (end (cdr region))
            (inhibit-read-only t)
-           ;; Get existing properties
-           (tool-name (get-text-property start 'efrit-tool-name))
-           (tool-input (get-text-property start 'efrit-tool-input))
-           (tool-result (get-text-property start 'efrit-tool-result))
-           (tool-success (get-text-property start 'efrit-tool-success))
-           (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
-           (tool-running (get-text-property start 'efrit-tool-running))
+           ;; Build tool-view from existing properties
+           (tv (efrit-agent--tool-view-from-properties start))
            ;; Check for user override first
            (user-override (and efrit-agent--expansion-state
                                (gethash tool-use-id efrit-agent--expansion-state 'not-found)))
-           ;; Determine expansion based on display mode
+           ;; Determine hint-expand from args or default
            (hint-expand (if (not (null auto-expand))
                             auto-expand
                           ;; Default: expand errors, collapse normal results
-                          (or tool-running (eq importance 'error))))
+                          (or (efrit-agent-tool-view-running tv)
+                              (eq importance 'error))))
            ;; Apply display mode override (only if no user override)
            (should-expand (if (not (eq user-override 'not-found))
                               user-override  ; User explicitly set this
@@ -694,58 +752,18 @@ The actual expansion state is determined by `efrit-agent-display-mode':
                               ('minimal nil)       ; Always collapsed
                               ('smart hint-expand) ; Respect hint
                               ('verbose t)         ; Always expanded
-                              (_ hint-expand))))   ; Fallback to hint
-           ;; Determine status face based on importance
-           (status-face (pcase importance
-                         ('error 'efrit-agent-importance-error)
-                         ('warning 'efrit-agent-importance-warning)
-                         ('success 'efrit-agent-importance-success)
-                         (_ 'efrit-agent-importance-normal)))
-           ;; Format indicators
-           (expand-char (efrit-agent--char (if should-expand 'expand-expanded 'expand-collapsed)))
-           ;; Status char: use error icon if importance is 'error, otherwise use success/failure based on tool-success
-           (status-char (cond
-                         ((eq importance 'error) (efrit-agent--char 'error-icon))
-                         (tool-success (efrit-agent--char 'tool-success))
-                         (t (efrit-agent--char 'tool-failure))))
-           ;; Build the updated tool line
-           (new-text
-            (concat
-             "  "
-             (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
-             (propertize (format "%s " status-char)
-                         'face (pcase importance
-                                 ('error 'efrit-agent-importance-error)
-                                 ('warning 'efrit-agent-importance-warning)
-                                 ('success 'efrit-agent-importance-success)
-                                 (_ (if tool-success 'efrit-agent-timestamp 'efrit-agent-error))))
-             (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
-             (when tool-elapsed
-               (propertize (format " (%.2fs)" tool-elapsed) 'face 'efrit-agent-timestamp))
-             " -> "
-             (propertize summary 'face status-face)
-             "\n")))
-      ;; Replace the tool display region with new text
+                              (_ hint-expand)))))  ; Fallback to hint
+      ;; Update tool-view with display hint values
+      (setf (efrit-agent-tool-view-summary tv) summary)
+      (setf (efrit-agent-tool-view-render-type tv) (or render-type 'text))
+      (setf (efrit-agent-tool-view-importance tv) (or importance 'normal))
+      (setf (efrit-agent-tool-view-annotations tv) annotations)
+      (setf (efrit-agent-tool-view-expanded-p tv) should-expand)
+      ;; Re-render using centralized renderer
       (save-excursion
         (goto-char start)
-        (delete-region start (cdr region))
-        (insert new-text)
-        ;; Update properties with display hints
-        (add-text-properties start (point)
-                             (list 'efrit-type 'tool-call
-                                   'efrit-id tool-use-id
-                                   'efrit-tool-name tool-name
-                                   'efrit-tool-input tool-input
-                                   'efrit-tool-result tool-result
-                                   'efrit-tool-success tool-success
-                                   'efrit-tool-elapsed tool-elapsed
-                                   'efrit-tool-running tool-running
-                                   'efrit-tool-expanded should-expand
-                                   'efrit-tool-summary summary
-                                   'efrit-tool-render-type (or render-type "text")
-                                   'efrit-tool-importance (or importance "normal")
-                                   'efrit-tool-annotations annotations
-                                   'read-only t)))
+        (delete-region start end)
+        (efrit-agent--render-tool-call tv))
       ;; Return confirmation message
       (format "Display hint applied to %s: %s" tool-use-id summary))))
 
