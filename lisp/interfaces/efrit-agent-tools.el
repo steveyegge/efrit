@@ -93,17 +93,22 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
              (elapsed-time (or elapsed
                                (when start-time
                                  (float-time (time-subtract (current-time) start-time)))))
+             ;; Check for user override first
+             (user-override (and efrit-agent--expansion-state
+                                 (gethash tool-id efrit-agent--expansion-state 'not-found)))
              ;; Determine expansion based on display mode
              ;; Default hint: auto-expand short results, collapse long ones
              (hint-expand (and success-p
                                (< (length result) 200)
                                (< (cl-count ?\n result) 5)))
-             ;; Apply display mode override
-             (auto-expand (pcase efrit-agent-display-mode
-                            ('minimal nil)       ; Always collapsed
-                            ('smart hint-expand) ; Respect hint
-                            ('verbose t)         ; Always expanded
-                            (_ hint-expand)))    ; Fallback to hint
+             ;; Apply display mode override (only if no user override)
+             (auto-expand (if (not (eq user-override 'not-found))
+                              user-override  ; User explicitly set this
+                            (pcase efrit-agent-display-mode
+                              ('minimal nil)       ; Always collapsed
+                              ('smart hint-expand) ; Respect hint
+                              ('verbose t)         ; Always expanded
+                              (_ hint-expand))))   ; Fallback to hint
              ;; Format indicators - expanded or collapsed based on size
              (expand-char (efrit-agent--char (if auto-expand 'expand-expanded 'expand-collapsed)))
              (status-char (if success-p
@@ -524,6 +529,7 @@ RESULT is the error message, _TOOL-INPUT is reserved for future use."
 
 (defun efrit-agent--toggle-tool-expansion ()
   "Toggle expansion of the tool call at point.
+Records the user's preference to override display-mode and Claude's hints.
 Returns t if toggled, nil if no tool at point."
   (let* ((tool-id (get-text-property (point) 'efrit-id))
          (tool-type (get-text-property (point) 'efrit-type)))
@@ -538,7 +544,11 @@ Returns t if toggled, nil if no tool at point."
              (tool-success (get-text-property start 'efrit-tool-success))
              (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
              (tool-running (get-text-property start 'efrit-tool-running))
-             (inhibit-read-only t))
+             (inhibit-read-only t)
+             (new-state (not expanded)))
+        ;; Record user's explicit preference (overrides display-mode and hints)
+        (when efrit-agent--expansion-state
+          (puthash tool-id new-state efrit-agent--expansion-state))
         (if expanded
             ;; Collapse: remove expansion, update indicator
             (efrit-agent--collapse-tool tool-id start end tool-name tool-result
@@ -669,17 +679,22 @@ The actual expansion state is determined by `efrit-agent-display-mode':
            (tool-success (get-text-property start 'efrit-tool-success))
            (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
            (tool-running (get-text-property start 'efrit-tool-running))
+           ;; Check for user override first
+           (user-override (and efrit-agent--expansion-state
+                               (gethash tool-use-id efrit-agent--expansion-state 'not-found)))
            ;; Determine expansion based on display mode
            (hint-expand (if (not (null auto-expand))
                             auto-expand
                           ;; Default: expand errors, collapse normal results
                           (or tool-running (eq importance 'error))))
-           ;; Apply display mode override
-           (should-expand (pcase efrit-agent-display-mode
-                            ('minimal nil)       ; Always collapsed
-                            ('smart hint-expand) ; Respect hint
-                            ('verbose t)         ; Always expanded
-                            (_ hint-expand)))    ; Fallback to hint
+           ;; Apply display mode override (only if no user override)
+           (should-expand (if (not (eq user-override 'not-found))
+                              user-override  ; User explicitly set this
+                            (pcase efrit-agent-display-mode
+                              ('minimal nil)       ; Always collapsed
+                              ('smart hint-expand) ; Respect hint
+                              ('verbose t)         ; Always expanded
+                              (_ hint-expand))))   ; Fallback to hint
            ;; Determine status face based on importance
            (status-face (pcase importance
                          ('error 'efrit-agent-importance-error)

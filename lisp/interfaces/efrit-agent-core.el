@@ -220,6 +220,12 @@ The indicator is removed when content arrives.")
   "Alist mapping tool-id to tool execution context for retry.
 Each entry is (tool-id . (:name name :input input :item tool-item)).")
 
+(defvar-local efrit-agent--expansion-state nil
+  "Hash table mapping tool-id to user-specified expansion state.
+When a user explicitly toggles a tool with RET, their preference
+is stored here and overrides both display-mode and Claude's auto_expand hints.
+Values are t (expanded) or nil (collapsed).")
+
 (defvar efrit-agent--activity-counter 0
   "Counter for generating unique activity IDs.")
 

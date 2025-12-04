@@ -244,6 +244,8 @@
     (define-key map (kbd "r") #'efrit-agent-resume)
     (define-key map (kbd "g") #'efrit-agent-refresh)
     (define-key map (kbd "RET") #'efrit-agent-toggle-expand)
+    (define-key map (kbd "E") #'efrit-agent-expand-all)
+    (define-key map (kbd "C") #'efrit-agent-collapse-all)
     (define-key map (kbd "v") #'efrit-agent-cycle-verbosity)
     (define-key map (kbd "M") #'efrit-agent-cycle-display-mode)
     (define-key map (kbd "?") #'efrit-agent-help)
@@ -282,6 +284,9 @@ Status is shown in the header-line at top of window.
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
+  ;; Initialize user expansion state tracking (persists across buffer updates)
+  (unless efrit-agent--expansion-state
+    (setq efrit-agent--expansion-state (make-hash-table :test 'equal)))
   ;; Initialize region markers
   (efrit-agent--init-regions)
   ;; Set up header-line for status display
@@ -372,6 +377,52 @@ In conversation region, expands/collapses tool calls to show input and results."
         (puthash item-id t efrit-agent--expanded-items))
       (efrit-agent--render))))
 
+(defun efrit-agent-expand-all ()
+  "Expand all tool calls in the buffer.
+Sets user expansion state for all tools, overriding display-mode and hints."
+  (interactive)
+  (let ((count 0))
+    (save-excursion
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (let ((tool-id (get-text-property (point) 'efrit-id))
+              (tool-type (get-text-property (point) 'efrit-type))
+              (expanded (get-text-property (point) 'efrit-tool-expanded)))
+          (when (and tool-id (eq tool-type 'tool-call))
+            ;; Record user preference for expansion
+            (when efrit-agent--expansion-state
+              (puthash tool-id t efrit-agent--expansion-state))
+            ;; Expand if not already
+            (unless expanded
+              (efrit-agent--toggle-tool-expansion)
+              (cl-incf count))))
+        (goto-char (or (next-single-property-change (point) 'efrit-id)
+                       (point-max)))))
+    (message "Expanded %d tool call%s" count (if (= count 1) "" "s"))))
+
+(defun efrit-agent-collapse-all ()
+  "Collapse all tool calls in the buffer.
+Sets user expansion state for all tools, overriding display-mode and hints."
+  (interactive)
+  (let ((count 0))
+    (save-excursion
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (let ((tool-id (get-text-property (point) 'efrit-id))
+              (tool-type (get-text-property (point) 'efrit-type))
+              (expanded (get-text-property (point) 'efrit-tool-expanded)))
+          (when (and tool-id (eq tool-type 'tool-call))
+            ;; Record user preference for collapse
+            (when efrit-agent--expansion-state
+              (puthash tool-id nil efrit-agent--expansion-state))
+            ;; Collapse if expanded
+            (when expanded
+              (efrit-agent--toggle-tool-expansion)
+              (cl-incf count))))
+        (goto-char (or (next-single-property-change (point) 'efrit-id)
+                       (point-max)))))
+    (message "Collapsed %d tool call%s" count (if (= count 1) "" "s"))))
+
 (defun efrit-agent-cycle-verbosity ()
   "Cycle through verbosity levels."
   (interactive)
@@ -414,6 +465,8 @@ Actions:
   p              Pause session
   r              Resume paused session
   g              Refresh display
+  E              Expand all tool calls
+  C              Collapse all tool calls
   v              Cycle verbosity (minimal/normal/verbose)
   M              Cycle display mode (minimal/smart/verbose)
 
