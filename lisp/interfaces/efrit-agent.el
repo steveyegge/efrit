@@ -833,9 +833,9 @@ even when not waiting for explicit input."
            (insert " -> ")
            (let* ((result-face (if success nil 'efrit-agent-error))
                   (max-len (pcase efrit-agent-verbosity
-                             ('minimal 20)
-                             ('normal 40)
-                             ('verbose 80)))
+                            ('minimal 30)
+                            ('normal 70)
+                            ('verbose 120)))
                   ;; Flatten result to single line for summary
                   (result-str (replace-regexp-in-string
                                "[\n\r]+" " "
