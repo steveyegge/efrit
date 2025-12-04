@@ -227,18 +227,22 @@ This provides smooth updates for changing thinking status."
 
 (defun efrit-agent--format-header-line ()
   "Format the header-line for display.
-Shows: status │ elapsed │ tool count │ hints"
+Shows: status │ elapsed │ mode │ tool count │ hints"
   (let* ((status-str (efrit-agent--status-string))
          (elapsed (efrit-agent--format-elapsed))
          (tool-count (length (cl-remove-if-not
                               (lambda (a) (eq (plist-get a :type) 'tool))
                               efrit-agent--activities)))
+         (mode-str (propertize (format "[%s]" efrit-agent-display-mode)
+                               'face 'efrit-agent-session-id))
          (sep (propertize " │ " 'face 'efrit-agent-session-id)))
     (concat
      " "
      status-str
      sep
      (propertize elapsed 'face 'efrit-agent-timestamp)
+     sep
+     mode-str
      (when (> tool-count 0)
        (concat sep (propertize (format "%d tools" tool-count)
                                'face 'efrit-agent-session-id)))
@@ -248,7 +252,7 @@ Shows: status │ elapsed │ tool count │ hints"
         (concat sep (propertize "Type response, C-c C-s to send"
                                 'face 'efrit-agent-timestamp)))
        ('working
-        (concat sep (propertize "k:cancel  ?:help"
+        (concat sep (propertize "k:cancel M:mode ?:help"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
 

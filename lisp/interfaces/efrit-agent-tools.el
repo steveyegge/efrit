@@ -93,10 +93,17 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
              (elapsed-time (or elapsed
                                (when start-time
                                  (float-time (time-subtract (current-time) start-time)))))
-             ;; Auto-expand short results, keep long ones collapsed
-             (auto-expand (and success-p
+             ;; Determine expansion based on display mode
+             ;; Default hint: auto-expand short results, collapse long ones
+             (hint-expand (and success-p
                                (< (length result) 200)
                                (< (cl-count ?\n result) 5)))
+             ;; Apply display mode override
+             (auto-expand (pcase efrit-agent-display-mode
+                            ('minimal nil)       ; Always collapsed
+                            ('smart hint-expand) ; Respect hint
+                            ('verbose t)         ; Always expanded
+                            (_ hint-expand)))    ; Fallback to hint
              ;; Format indicators - expanded or collapsed based on size
              (expand-char (efrit-agent--char (if auto-expand 'expand-expanded 'expand-collapsed)))
              (status-char (if success-p
@@ -644,7 +651,11 @@ TOOL-USE-ID is the ID of the tool call to modify.
 SUMMARY is the text to show when collapsed.
 RENDER-TYPE (optional) is one of: text, diff, elisp, json, shell, grep, markdown.
 AUTO-EXPAND (optional) controls default expansion state.
-IMPORTANCE (optional) is one of: normal, success, warning, error."
+IMPORTANCE (optional) is one of: normal, success, warning, error.
+The actual expansion state is determined by `efrit-agent-display-mode':
+  minimal: Always collapsed (ignores auto-expand)
+  smart: Respects auto-expand hint
+  verbose: Always expanded (ignores auto-expand)"
   (let ((region (efrit-agent--find-tool-region tool-use-id)))
     (unless region
       (error "Tool call not found: %s" tool-use-id))
@@ -658,11 +669,17 @@ IMPORTANCE (optional) is one of: normal, success, warning, error."
            (tool-success (get-text-property start 'efrit-tool-success))
            (tool-elapsed (get-text-property start 'efrit-tool-elapsed))
            (tool-running (get-text-property start 'efrit-tool-running))
-           ;; Determine auto-expand default if not specified
-           (should-expand (if (not (null auto-expand))
-                             auto-expand
-                           ;; Default: expand errors, collapse normal results
-                           (or tool-running (eq importance 'error))))
+           ;; Determine expansion based on display mode
+           (hint-expand (if (not (null auto-expand))
+                            auto-expand
+                          ;; Default: expand errors, collapse normal results
+                          (or tool-running (eq importance 'error))))
+           ;; Apply display mode override
+           (should-expand (pcase efrit-agent-display-mode
+                            ('minimal nil)       ; Always collapsed
+                            ('smart hint-expand) ; Respect hint
+                            ('verbose t)         ; Always expanded
+                            (_ hint-expand)))    ; Fallback to hint
            ;; Determine status face based on importance
            (status-face (pcase importance
                          ('error 'efrit-agent-importance-error)

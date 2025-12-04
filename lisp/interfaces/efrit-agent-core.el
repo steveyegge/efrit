@@ -65,6 +65,16 @@ When enabled, unified diff output is syntax-highlighted with diff-mode faces."
   :type 'boolean
   :group 'efrit-agent)
 
+(defcustom efrit-agent-display-mode 'smart
+  "Display mode controlling tool result expansion.
+- minimal: All tool results collapsed, ignore auto_expand hints
+- smart: Respect Claude's auto_expand hints from display_hint tool
+- verbose: All tool results expanded, ignore auto_expand hints"
+  :type '(choice (const :tag "Minimal (all collapsed)" minimal)
+                 (const :tag "Smart (respect hints)" smart)
+                 (const :tag "Verbose (all expanded)" verbose))
+  :group 'efrit-agent)
+
 (defcustom efrit-agent-diff-context-lines 3
   "Number of context lines to show in diffs.
 Only affects newly generated diffs, not pre-formatted diff output."

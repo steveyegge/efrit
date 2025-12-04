@@ -245,6 +245,7 @@
     (define-key map (kbd "g") #'efrit-agent-refresh)
     (define-key map (kbd "RET") #'efrit-agent-toggle-expand)
     (define-key map (kbd "v") #'efrit-agent-cycle-verbosity)
+    (define-key map (kbd "M") #'efrit-agent-cycle-display-mode)
     (define-key map (kbd "?") #'efrit-agent-help)
 
     ;; Input handling
@@ -382,6 +383,20 @@ In conversation region, expands/collapses tool calls to show input and results."
   (message "Verbosity: %s" efrit-agent-verbosity)
   (efrit-agent--render))
 
+(defun efrit-agent-cycle-display-mode ()
+  "Cycle through display modes (minimal/smart/verbose).
+minimal: All tool results collapsed, ignore auto_expand hints.
+smart: Respect Claude's auto_expand hints.
+verbose: All tool results expanded, ignore auto_expand hints."
+  (interactive)
+  (setq efrit-agent-display-mode
+        (pcase efrit-agent-display-mode
+          ('minimal 'smart)
+          ('smart 'verbose)
+          ('verbose 'minimal)))
+  (message "Display mode: %s" efrit-agent-display-mode)
+  (force-mode-line-update))
+
 (defun efrit-agent-help ()
   "Show help for agent buffer key bindings."
   (interactive)
@@ -400,11 +415,17 @@ Actions:
   r              Resume paused session
   g              Refresh display
   v              Cycle verbosity (minimal/normal/verbose)
+  M              Cycle display mode (minimal/smart/verbose)
 
 Verbosity Levels:
   minimal        Show 20 chars result, 3 lines when expanded
   normal         Show 40 chars result, 10 lines when expanded
   verbose        Show 80 chars result, 50 lines when expanded
+
+Display Modes:
+  minimal        All tool results collapsed (ignore hints)
+  smart          Respect Claude's auto_expand hints (default)
+  verbose        All tool results expanded (ignore hints)
 
 Expand/Collapse:
   Tool calls show %s (collapsed) or %s (expanded)
