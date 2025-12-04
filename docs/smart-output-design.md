@@ -2,7 +2,7 @@
 
 **Epic**: ef-3at
 **Design Task**: ef-hy7
-**Status**: Draft v1
+**Status**: Draft v2 (ZCI-Pure)
 
 ## Executive Summary
 
@@ -13,369 +13,356 @@ Transform the agent buffer from linear log display into a sophisticated output m
 - Error emphasis (auto-expand failures)
 - Three display modes: minimal / smart / verbose
 
-## Current State Analysis
+**Key Principle**: Zero Client-Side Intelligence. Claude provides ALL rendering decisions via the `DisplayHint` tool. Efrit is a pure executor that renders what Claude tells it to render.
 
-The agent buffer already has foundational mechanisms:
+## ZCI Architecture
 
-| Feature | Current State | Gap |
-|---------|--------------|-----|
-| Expansion/collapse | ✅ RET toggles `efrit-tool-expanded` | Works but limited |
-| Diff highlighting | ✅ Basic diff face detection | Good foundation |
-| Code blocks | ✅ Markdown fence detection | Needs syntax highlighting |
-| Verbosity levels | ✅ minimal/normal/verbose | Per-item, not global mode |
-| Error recovery | ✅ Retry/Skip/MakeWritable buttons | Good |
-| Streaming | ✅ Character-by-character | Good |
+### The Problem with Client-Side Classification
 
-**Key gaps to address:**
-1. No output type classification system
-2. No type-specific renderers (grep, JSON, file listings)
-3. No smart summarization ("3 files modified")
-4. No auto-expand for errors / auto-collapse for success
-5. No global display mode toggle
-6. No persistent expansion state
-
-## Architecture
-
-### 1. Output Type Registry
+The naive approach has Efrit inspect tool results and decide how to render them:
 
 ```elisp
-(defvar efrit-agent-output-types
-  '((Read       . file-content)
-    (Edit       . diff)
-    (Write      . file-content)
-    (Grep       . grep-results)
-    (Glob       . file-list)
-    (Bash       . shell-output)
-    (WebFetch   . web-content)
-    (WebSearch  . search-results)
-    (Task       . subagent-result)
-    (TodoWrite  . todo-list)
-    (AskUserQuestion . question))
-  "Map tool names to output types for rendering.")
+;; ❌ WRONG - This is client-side intelligence
+(defun efrit-agent--classify-output (tool-name result)
+  (cond
+    ((string-match-p "^@@" result) 'diff)      ; Pattern matching = intelligence
+    ((string-match-p "^{" result) 'json)       ; Decision-making = intelligence
+    (t 'text)))
 ```
 
-### 2. Summarizer Functions
+This violates ZCI because Efrit is making decisions about content.
 
-Each output type has a summarizer that produces the collapsed one-liner:
+### The Solution: Claude-Provided Display Hints
 
-| Type | Collapsed Summary Example |
-|------|--------------------------|
-| `file-content` | `📄 src/foo.el (120 lines)` |
-| `diff` | `✏️ src/foo.el (+15 -7)` |
-| `grep-results` | `🔍 23 matches in 5 files` |
-| `file-list` | `📁 Found 12 files` |
-| `shell-output` | `$ make test (exit 0, 2.3s)` |
-| `error` | `❌ Permission denied: /etc/passwd` |
+Claude sees the tool results and tells Efrit exactly how to display them:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ZCI Flow                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. Claude calls tool (e.g., Read)                              │
+│     ┌──────────────────────────────────────────┐                │
+│     │ {"tool": "Read",                         │                │
+│     │  "input": {"file_path": "/src/foo.el"}}  │                │
+│     └──────────────────────────────────────────┘                │
+│                         │                                        │
+│                         ▼                                        │
+│  2. Efrit executes, shows placeholder:                          │
+│     "⟳ Read /src/foo.el..."                                     │
+│                         │                                        │
+│                         ▼                                        │
+│  3. Efrit returns result to Claude                              │
+│                         │                                        │
+│                         ▼                                        │
+│  4. Claude calls DisplayHint with rendering instructions:       │
+│     ┌──────────────────────────────────────────┐                │
+│     │ {"tool": "DisplayHint",                  │                │
+│     │  "input": {                              │                │
+│     │    "tool_use_id": "toolu_abc123",        │                │
+│     │    "summary": "📄 Main entry point",     │                │
+│     │    "render_type": "elisp",               │                │
+│     │    "auto_expand": false,                 │                │
+│     │    "annotations": [                      │                │
+│     │      {"line": 42, "note": "key func"}    │                │
+│     │    ]                                     │                │
+│     │  }}                                      │                │
+│     └──────────────────────────────────────────┘                │
+│                         │                                        │
+│                         ▼                                        │
+│  5. Efrit updates display based on hint:                        │
+│     "▶ ✓ Read (0.1s) → 📄 Main entry point"                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## DisplayHint Tool Schema
+
+```json
+{
+  "name": "DisplayHint",
+  "description": "Provide rendering instructions for a tool result. Call this after any tool to control how its output is displayed to the user.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "tool_use_id": {
+        "type": "string",
+        "description": "ID of the tool call to annotate"
+      },
+      "summary": {
+        "type": "string",
+        "description": "One-line summary for collapsed view. Be contextual, e.g., 'Found auth module' not just 'Read file'"
+      },
+      "render_type": {
+        "type": "string",
+        "enum": ["text", "diff", "elisp", "json", "shell", "grep", "markdown", "error"],
+        "description": "How to syntax-highlight the expanded content"
+      },
+      "auto_expand": {
+        "type": "boolean",
+        "description": "Whether to expand by default. Use true for errors or important results"
+      },
+      "importance": {
+        "type": "string",
+        "enum": ["normal", "success", "warning", "error"],
+        "description": "Visual emphasis level"
+      },
+      "annotations": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "line": {"type": "integer"},
+            "note": {"type": "string"}
+          }
+        },
+        "description": "Optional line-level annotations for the expanded view"
+      }
+    },
+    "required": ["tool_use_id", "summary"]
+  }
+}
+```
+
+## Why This Is Better
+
+### 1. Contextual Summaries
+
+Client-side can only produce generic summaries:
+```
+📄 src/auth.el (150 lines)
+```
+
+Claude can produce contextual summaries:
+```
+📄 Found the authentication module - uses JWT tokens
+```
+
+### 2. Semantic Understanding
+
+Client-side doesn't know if a diff is important:
+```
+✏️ src/config.el (+2 -1)  ← same treatment for all diffs
+```
+
+Claude knows what matters:
+```
+✏️ Fixed the memory leak in session cleanup  ← auto_expand: true, importance: success
+```
+
+### 3. Cross-Tool Context
+
+Claude can reference earlier context:
+```
+🔍 Found 3 uses of deprecated API (as discussed above)
+```
+
+### 4. Error Explanation
+
+Client-side just shows the error:
+```
+❌ Permission denied: /etc/passwd
+```
+
+Claude explains and suggests:
+```
+❌ Can't read system file - try using sudo or check file permissions
+```
+
+## Efrit's Role: Pure Renderer
+
+Efrit only does mechanical rendering based on Claude's instructions:
 
 ```elisp
-(defun efrit-agent--summarize-output (type tool-name result success-p)
-  "Generate one-line summary for TYPE from RESULT."
-  (pcase type
-    ('file-content (efrit-agent--summarize-file-content result))
-    ('diff         (efrit-agent--summarize-diff result))
-    ('grep-results (efrit-agent--summarize-grep result))
-    ('file-list    (efrit-agent--summarize-file-list result))
-    ('shell-output (efrit-agent--summarize-shell result success-p))
-    ('error        (efrit-agent--summarize-error result))
-    (_             (truncate-string-to-width result 60 nil nil "…"))))
+(defun efrit-agent--apply-display-hint (hint)
+  "Apply HINT to update tool display. No decision-making, just execution."
+  (let* ((tool-id (plist-get hint :tool_use_id))
+         (summary (plist-get hint :summary))
+         (render-type (plist-get hint :render_type))
+         (auto-expand (plist-get hint :auto_expand))
+         (importance (plist-get hint :importance)))
+    ;; Find the tool region
+    (when-let ((region (efrit-agent--find-tool-region tool-id)))
+      ;; Update summary text
+      (efrit-agent--set-tool-summary tool-id summary)
+      ;; Set render type for expansion
+      (efrit-agent--set-tool-render-type tool-id render-type)
+      ;; Apply importance styling
+      (efrit-agent--set-tool-importance tool-id importance)
+      ;; Auto-expand if instructed
+      (when auto-expand
+        (efrit-agent--expand-tool tool-id)))))
 ```
 
-### 3. Renderer Plugin System
+### Render Type → Syntax Highlighting
 
-Each type has a dedicated renderer for expanded view:
+The `render_type` maps to Emacs major modes for syntax highlighting:
 
-```elisp
-(defvar efrit-agent-renderers
-  '((file-content  . efrit-agent--render-file-content)
-    (diff          . efrit-agent--render-diff)
-    (grep-results  . efrit-agent--render-grep)
-    (file-list     . efrit-agent--render-file-list)
-    (shell-output  . efrit-agent--render-shell)
-    (web-content   . efrit-agent--render-web)
-    (subagent-result . efrit-agent--render-subagent)
-    (error         . efrit-agent--render-error))
-  "Map output types to renderer functions.")
-```
+| render_type | Major Mode | Notes |
+|-------------|-----------|-------|
+| `text` | `fundamental-mode` | Plain text, no highlighting |
+| `diff` | `diff-mode` | +/- line coloring |
+| `elisp` | `emacs-lisp-mode` | Lisp syntax |
+| `json` | `json-mode` | JSON structure |
+| `shell` | `shell-mode` | Command output with ANSI |
+| `grep` | `grep-mode` | Clickable file:line refs |
+| `markdown` | `markdown-mode` | Headers, code blocks |
+| `error` | N/A | Red emphasis, recovery buttons |
 
-### 4. Display Modes
+### Importance → Visual Styling
 
-Three global display modes that control default behavior:
+| importance | Face | Icon |
+|------------|------|------|
+| `normal` | default | ✓ |
+| `success` | green | ✓ |
+| `warning` | yellow | ⚠ |
+| `error` | red | ✗ |
 
-| Mode | Default Collapse | Auto-Expand Errors | Show Summaries |
-|------|------------------|-------------------|----------------|
-| **minimal** | All collapsed | No | Shortest possible |
-| **smart** | Success collapsed, errors expanded | Yes | Context-aware |
-| **verbose** | All expanded | Yes | Full detail |
+## Display Modes (User Preference, Not Intelligence)
+
+Display modes are user preferences that affect the *default* behavior. They don't involve Efrit making decisions about content:
+
+| Mode | Behavior |
+|------|----------|
+| **minimal** | All collapsed, ignore `auto_expand` hints |
+| **smart** | Respect Claude's `auto_expand` hints |
+| **verbose** | All expanded, ignore `auto_expand` hints |
 
 ```elisp
 (defcustom efrit-agent-display-mode 'smart
-  "Output display mode: minimal, smart, or verbose."
+  "How to handle Claude's auto_expand hints.
+- minimal: Always collapsed (user must expand manually)
+- smart: Respect Claude's auto_expand recommendations
+- verbose: Always expanded"
   :type '(choice (const minimal) (const smart) (const verbose))
   :group 'efrit-agent)
 ```
 
-### 5. State Management
+This is configuration, not intelligence. Efrit isn't deciding what to expand—it's applying a user preference to Claude's recommendations.
+
+## Handling Missing Hints
+
+If Claude doesn't call DisplayHint for a tool, Efrit uses minimal defaults:
 
 ```elisp
-;; Persistent expansion state (survives re-render)
+(defun efrit-agent--default-display (tool-name result success-p elapsed)
+  "Default display when no DisplayHint received. Minimal, no intelligence."
+  (let ((status-icon (if success-p "✓" "✗"))
+        (truncated (truncate-string-to-width
+                    (replace-regexp-in-string "\n" " " result)
+                    50 nil nil "…")))
+    (format "%s %s (%.1fs) → %s" status-icon tool-name elapsed truncated)))
+```
+
+This is just string truncation, not content classification.
+
+## State Management
+
+Expansion state tracking remains—it's user interaction state, not intelligence:
+
+```elisp
 (defvar-local efrit-agent--expansion-state (make-hash-table :test 'equal)
-  "Hash table: tool-id → expansion state (t, nil, or 'user-set).")
-
-;; Cache rendered content for performance
-(defvar-local efrit-agent--render-cache (make-hash-table :test 'equal)
-  "Hash table: (tool-id . type) → rendered string.")
+  "Hash table: tool-id → expansion state.
+Values: nil (use mode default), t (user expanded), 'collapsed (user collapsed)")
 ```
 
-**State transitions:**
-- Tool starts: not in hash (default to mode-based behavior)
-- Tool completes: auto-expand if error + smart/verbose mode
-- User toggles: set to 'user-set, never auto-change again
-- Re-render: preserve 'user-set, recalculate others
+When user toggles with RET, their preference overrides Claude's hint and the display mode.
 
-### 6. Integration Flow
+## System Prompt Addition
+
+Add to Claude's system prompt:
 
 ```
-Tool Result Arrives
-        │
-        ▼
-┌───────────────────┐
-│ Classify Output   │  efrit-agent--classify-output(tool-name, result)
-│ → output-type     │
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│ Determine State   │  Check expansion-state hash
-│ → expanded?       │  If not set: use display-mode + success-p
-└───────────────────┘
-        │
-        ├─── collapsed ───┐
-        │                 │
-        ▼                 ▼
-┌───────────────────┐ ┌───────────────────┐
-│ Summarize         │ │ Render Full       │
-│ (one-liner)       │ │ (type-specific)   │
-└───────────────────┘ └───────────────────┘
-        │                 │
-        └────────┬────────┘
-                 ▼
-        ┌───────────────────┐
-        │ Insert in Buffer  │
-        │ with properties   │
-        └───────────────────┘
+## Tool Result Display
+
+After executing tools, use DisplayHint to control how results are shown to the user:
+
+- Provide contextual summaries (e.g., "Found the config file" not just "Read config.yaml")
+- Set render_type for syntax highlighting (diff, elisp, json, shell, grep, markdown)
+- Use auto_expand: true for errors or important results the user should see immediately
+- Set importance to highlight successes, warnings, or errors
+
+Example:
+After reading a file:
+  DisplayHint(tool_use_id="...", summary="📄 Main entry point for the app", render_type="elisp")
+
+After a failed edit:
+  DisplayHint(tool_use_id="...", summary="❌ File is read-only", render_type="error", auto_expand=true, importance="error")
 ```
 
-## Type-Specific Rendering Details
+## Implementation Tasks (Revised)
 
-### file-content (Read/Write results)
+### Phase 1: DisplayHint Infrastructure (P1)
 
-**Collapsed:**
-```
-  ▶ ✓ Read (0.1s) → 📄 lisp/efrit.el (245 lines)
-```
+1. **ef-XXX: Add DisplayHint tool**
+   - Add tool schema to efrit-do-schema.el
+   - Implement handler in efrit-tools
+   - Wire up to agent buffer display update
 
-**Expanded:**
-```elisp
-  ▼ ✓ Read (0.1s) → 📄 lisp/efrit.el (245 lines)
-     ┌────────────────────────────────────────────
-     │  1 ;;; efrit.el --- AI coding assistant
-     │  2
-     │  3 (require 'efrit-core)
-     │ ...
-     │245 ;;; efrit.el ends here
-     └────────────────────────────────────────────
-```
+2. **ef-XXX: Tool result placeholder display**
+   - Show "⟳ ToolName..." while executing
+   - Update when DisplayHint arrives
+   - Fall back to default if no hint after timeout
 
-- Syntax highlighting via `font-lock` for file extension
-- Line numbers
-- Clickable path opens file
-
-### diff (Edit results)
-
-**Collapsed:**
-```
-  ▶ ✓ Edit (0.3s) → ✏️ lisp/efrit.el (+12 -5)
-```
-
-**Expanded:**
-```diff
-  ▼ ✓ Edit (0.3s) → ✏️ lisp/efrit.el (+12 -5)
-     ┌────────────────────────────────────────────
-     │ @@ -10,5 +10,12 @@
-     │  (defun efrit-foo ()
-     │-  (message "old"))
-     │+  (message "new")
-     │+  (efrit-bar))
-     └────────────────────────────────────────────
-```
-
-- Green/red highlighting for +/-
-- Hunk headers in distinct color
-- Click on file path to jump to location
-
-### grep-results (Grep results)
-
-**Collapsed:**
-```
-  ▶ ✓ Grep (1.2s) → 🔍 23 matches in 5 files
-```
-
-**Expanded:**
-```
-  ▼ ✓ Grep (1.2s) → 🔍 23 matches in 5 files
-     ┌────────────────────────────────────────────
-     │ lisp/efrit.el:
-     │   42: (defun efrit-do ...)
-     │   87: (efrit-do-internal ...)
-     │
-     │ lisp/efrit-tools.el:
-     │   15: (require 'efrit-do)
-     │ ...
-     └────────────────────────────────────────────
-```
-
-- Grouped by file
-- Line numbers clickable (jump to location)
-- Match text highlighted
-
-### shell-output (Bash results)
-
-**Collapsed:**
-```
-  ▶ ✓ Bash (2.1s) → $ make compile (exit 0)
-  ▶ ✗ Bash (0.5s) → $ npm test (exit 1)  ← auto-expanded if smart mode
-```
-
-**Expanded:**
-```
-  ▼ ✓ Bash (2.1s) → $ make compile (exit 0)
-     ┌────────────────────────────────────────────
-     │ $ make compile
-     │ Compiling lisp/efrit.el...
-     │ Compiling lisp/efrit-tools.el...
-     │ Done.
-     └────────────────────────────────────────────
-```
-
-- Command echoed at top
-- ANSI color codes converted to faces
-- stderr in warning face if present
-- Exit code prominent
-
-### error (Failed tools)
-
-**Always expanded in smart/verbose mode:**
-```
-  ▼ ✗ Edit (0.1s) → ❌ File not found: /tmp/missing.el
-     ┌────────────────────────────────────────────
-     │ Error: File not found
-     │ Path: /tmp/missing.el
-     │
-     │ [Retry] [Skip] [Abort]
-     └────────────────────────────────────────────
-```
-
-## UI Controls
-
-### Mode Toggle
-
-Keybinding `M` cycles through modes:
-```
-minimal → smart → verbose → minimal
-```
-
-Header-line shows current mode:
-```
-[efrit] working 2:34 | smart mode | 5 tools
-```
-
-### Expand/Collapse All
-
-- `E` - Expand all tool results
-- `C` - Collapse all tool results
-- Both set `user-set` flag to prevent auto-changes
-
-### Individual Toggle
-
-- `RET` on tool line - toggle that tool
-- Sets `user-set` flag for that tool
-
-## Implementation Tasks
-
-### Phase 1: Foundation (P1)
-
-1. **ef-XXX: Output type classification system**
-   - Add `efrit-agent-output-types` registry
-   - Implement `efrit-agent--classify-output`
-   - Add type detection from tool result content
-
-2. **ef-XXX: Summarizer framework**
-   - Implement summarizer dispatch
-   - Create summarizers for: file-content, diff, shell-output, error
-   - Parse diff to extract +/- counts
-   - Parse grep to count matches/files
-
-3. **ef-XXX: Display mode infrastructure**
-   - Add `efrit-agent-display-mode` custom variable
-   - Add mode toggle keybinding `M`
-   - Show mode in header-line
-   - Implement mode-based default expansion
+3. **ef-XXX: System prompt for DisplayHint**
+   - Add DisplayHint usage instructions to tools prompt
+   - Include examples of good summaries
+   - Document render_type options
 
 ### Phase 2: Renderers (P2)
 
-4. **ef-XXX: File content renderer**
-   - Syntax highlighting via major-mode
-   - Line numbers
-   - Clickable file path
+4. **ef-XXX: Render type dispatch**
+   - Map render_type to major-mode for highlighting
+   - Apply syntax highlighting in expanded view
+   - Handle unknown types gracefully (fall back to text)
 
-5. **ef-XXX: Diff renderer enhancement**
-   - Improve current diff faces
-   - Add unified diff parsing
-   - Show file stats (+N -M) in header
+5. **ef-XXX: Importance styling**
+   - Define faces for normal/success/warning/error
+   - Apply to tool summary line
+   - Update icon based on importance
 
-6. **ef-XXX: Grep results renderer**
-   - Parse ripgrep output format
-   - Group by file
-   - Clickable line numbers
-   - Match highlighting
-
-7. **ef-XXX: Shell output renderer**
-   - ANSI to Emacs face conversion
-   - Command echo at top
-   - Exit code styling
+6. **ef-XXX: Annotation support**
+   - Render line-level annotations in expanded view
+   - Overlay notes at specified line numbers
+   - Clickable annotation markers
 
 ### Phase 3: Polish (P2)
 
+7. **ef-XXX: Display mode toggle**
+   - Add `M` keybinding to cycle modes
+   - Show mode in header-line
+   - Apply mode to auto_expand behavior
+
 8. **ef-XXX: Persistent expansion state**
-   - `efrit-agent--expansion-state` hash table
-   - Track user-set vs auto-set
-   - Preserve across re-renders
+   - Track user-toggled expansion/collapse
+   - Override Claude hints and display mode
+   - Preserve across buffer updates
 
 9. **ef-XXX: Expand/collapse all commands**
    - `E` for expand all
    - `C` for collapse all
-   - Respect user-set on individual toggle
-
-10. **ef-XXX: Error auto-expansion**
-    - Auto-expand failed tools in smart/verbose mode
-    - Visual emphasis for errors
-    - Never auto-collapse user-expanded items
+   - Update expansion state hash
 
 ## Open Questions
 
-1. **Side panel vs inline?** Current design is inline expansion. Should we consider a side panel for very long outputs?
+1. **Hint timing**: What if DisplayHint arrives before tool result display is ready?
+   - Solution: Queue hints, apply when tool region exists
 
-2. **Render cache invalidation?** When should cached rendered content be cleared?
+2. **Hint for streaming tools**: How to handle Bash with long-running output?
+   - Solution: Allow DisplayHint updates (summary can change)
 
-3. **Maximum expanded height?** Should we cap expanded content and provide scroll-within-expansion?
+3. **Multiple hints per tool**: Allow or reject?
+   - Proposal: Allow, last hint wins (enables progressive updates)
 
-4. **Copy support?** How to copy just the tool output without the chrome?
+4. **Missing hints**: How long to wait before applying defaults?
+   - Proposal: Apply defaults immediately, update if hint arrives
 
 ## Success Criteria
 
-- [ ] Buffer remains scannable with 10+ tool calls (collapsed by default)
-- [ ] RET expands to full type-specific rendering
-- [ ] Errors are visually prominent and auto-expanded
-- [ ] Mode toggle cycles minimal → smart → verbose
-- [ ] Expansion state persists across re-renders
-- [ ] No performance regression on buffer updates
+- [ ] DisplayHint tool implemented and documented
+- [ ] Claude provides contextual summaries (verified in testing)
+- [ ] Render types produce correct syntax highlighting
+- [ ] Display modes work as specified
+- [ ] User toggle overrides all automatic behavior
+- [ ] No client-side content classification or decision-making
+- [ ] Buffer remains scannable with 10+ tool calls
