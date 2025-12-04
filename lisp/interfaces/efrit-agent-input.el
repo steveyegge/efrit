@@ -28,6 +28,7 @@
 (declare-function efrit-agent-set-status "efrit-agent")
 (declare-function efrit-do--start-async-session "efrit-do")
 (declare-function efrit-session-id "efrit-session")
+(declare-function efrit-agent--begin-session "efrit-agent-core")
 
 ;;; Question Display
 
@@ -211,21 +212,8 @@ If a session is active but not waiting, injects the input as guidance."
          (t
           (require 'efrit-do)
           (let ((new-session (efrit-do--start-async-session input)))
-            ;; Attach this buffer's UI state to the new session
-            (setq efrit-agent--session-id (efrit-session-id new-session))
-            (setq efrit-agent--command input)
-            (setq efrit-agent--status 'working)
-            (setq efrit-agent--start-time (current-time))
-            ;; Reset per-session state
-            (setq efrit-agent--todos nil)
-            (setq efrit-agent--activities nil)
-            (setq efrit-agent--pending-question nil)
-            ;; Initialize pending tools hash table
-            (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
-            ;; Start elapsed timer if not running
-            (unless efrit-agent--elapsed-timer
-              (setq efrit-agent--elapsed-timer
-                    (run-at-time 1 1 #'efrit-agent--update-elapsed (current-buffer))))
+            ;; Use helper to attach buffer and reset per-session state
+            (efrit-agent--begin-session new-session input)
             (message "Efrit: started session from agent buffer"))))))))
 
 (defun efrit-agent-input-clear ()

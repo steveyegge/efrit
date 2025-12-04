@@ -383,6 +383,46 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
     (cancel-timer efrit-agent--elapsed-timer)
     (setq efrit-agent--elapsed-timer nil)))
 
+(defun efrit-agent--begin-session (session command)
+  "Attach this agent buffer to SESSION for COMMAND.
+Resets per-session state but preserves existing conversation text.
+Inserts a visible delimiter between sessions."
+  ;; Set new session context
+  (setq efrit-agent--session-id (efrit-session-id session))
+  (setq efrit-agent--command command)
+  (setq efrit-agent--status 'working)
+  (setq efrit-agent--start-time (current-time))
+  ;; Reset per-session state
+  (setq efrit-agent--todos nil)
+  (setq efrit-agent--activities nil)
+  (setq efrit-agent--pending-question nil)
+  (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
+  (setq efrit-agent--streaming-message nil)
+  (setq efrit-agent--thinking-indicator nil)
+  (setq efrit-agent--todos-region nil)
+  (setq efrit-agent--expansion-state (make-hash-table :test 'equal))
+  ;; Ensure region markers still exist
+  (unless (and efrit-agent--conversation-end
+               (marker-position efrit-agent--conversation-end))
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions))
+  ;; Start/restart elapsed timer
+  (when efrit-agent--elapsed-timer
+    (cancel-timer efrit-agent--elapsed-timer))
+  (setq efrit-agent--elapsed-timer
+        (run-at-time 1 1 #'efrit-agent--update-elapsed (current-buffer)))
+  ;; Insert visible delimiter between sessions (only if there's prior content)
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (> (marker-position efrit-agent--conversation-end) (point-min)))
+    (efrit-agent--append-to-conversation
+     (propertize (format "\n══════════════════════════════════════════════════════════
+Session: %s
+══════════════════════════════════════════════════════════\n\n"
+                         (truncate-string-to-width command 50))
+                 'face 'efrit-agent-section-header
+                 'efrit-type 'session-delimiter))))
+
 (defun efrit-agent--save-session-on-kill ()
   "Save the current session when the agent buffer is killed.
 Only saves if session has content worth preserving."
