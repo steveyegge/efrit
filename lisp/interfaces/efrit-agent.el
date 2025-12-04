@@ -197,6 +197,37 @@
   "Face for context lines in diffs."
   :group 'efrit-agent)
 
+;; Importance level faces (for tool results)
+(defface efrit-agent-importance-normal
+  '((t :foreground "gray80"))
+  "Face for normal importance tool results."
+  :group 'efrit-agent)
+
+(defface efrit-agent-importance-success
+  '((t :foreground "green3" :weight bold))
+  "Face for successful tool results."
+  :group 'efrit-agent)
+
+(defface efrit-agent-importance-warning
+  '((t :foreground "gold" :weight bold))
+  "Face for warning-level tool results."
+  :group 'efrit-agent)
+
+(defface efrit-agent-importance-error
+  '((t :foreground "red3" :weight bold))
+  "Face for error-level tool results, visually prominent."
+  :group 'efrit-agent)
+
+(defface efrit-agent-success
+  '((t :foreground "green3"))
+  "Face for success messages."
+  :group 'efrit-agent)
+
+(defface efrit-agent-warning
+  '((t :foreground "gold"))
+  "Face for warning messages."
+  :group 'efrit-agent)
+
 ;;; Keymap
 
 (defvar efrit-agent-mode-map

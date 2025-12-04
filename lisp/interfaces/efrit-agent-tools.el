@@ -665,22 +665,28 @@ IMPORTANCE (optional) is one of: normal, success, warning, error."
                            (or tool-running (eq importance 'error))))
            ;; Determine status face based on importance
            (status-face (pcase importance
-                         ('error 'efrit-agent-error)
-                         ('warning 'efrit-agent-warning)
-                         ('success 'efrit-agent-success)
-                         (_ nil)))
+                         ('error 'efrit-agent-importance-error)
+                         ('warning 'efrit-agent-importance-warning)
+                         ('success 'efrit-agent-importance-success)
+                         (_ 'efrit-agent-importance-normal)))
            ;; Format indicators
            (expand-char (efrit-agent--char (if should-expand 'expand-expanded 'expand-collapsed)))
-           (status-char (if tool-success
-                           (efrit-agent--char 'tool-success)
-                         (efrit-agent--char 'tool-failure)))
+           ;; Status char: use error icon if importance is 'error, otherwise use success/failure based on tool-success
+           (status-char (cond
+                         ((eq importance 'error) (efrit-agent--char 'error-icon))
+                         (tool-success (efrit-agent--char 'tool-success))
+                         (t (efrit-agent--char 'tool-failure))))
            ;; Build the updated tool line
            (new-text
             (concat
              "  "
              (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp)
              (propertize (format "%s " status-char)
-                         'face (if tool-success 'efrit-agent-timestamp 'efrit-agent-error))
+                         'face (pcase importance
+                                 ('error 'efrit-agent-importance-error)
+                                 ('warning 'efrit-agent-importance-warning)
+                                 ('success 'efrit-agent-importance-success)
+                                 (_ (if tool-success 'efrit-agent-timestamp 'efrit-agent-error))))
              (propertize (or tool-name "tool") 'face 'efrit-agent-tool-name)
              (when tool-elapsed
                (propertize (format " (%.2fs)" tool-elapsed) 'face 'efrit-agent-timestamp))
