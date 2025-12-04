@@ -25,10 +25,29 @@ Execute natural language commands that Claude translates to actions:
 
 ### Agent Session Buffer (`efrit-agent`)
 A structured, real-time view of agentic sessions with:
-- Session status and elapsed time
-- Task progress tracking (TODOs)
-- Activity log with expandable tool calls
-- Interactive input for follow-up commands
+- Session status and elapsed time in header-line
+- Task progress tracking (TODOs) updated by Claude
+- Conversation view with expandable tool calls
+- Interactive input for follow-up commands and mid-session guidance
+
+**Agent Buffer Keybindings:**
+
+| Key | Action |
+|-----|--------|
+| `n` / `M-n` | Next tool call |
+| `p` / `M-p` | Previous tool call |
+| `RET` | Expand/collapse tool at point |
+| `E` | Expand all tool calls |
+| `C` | Collapse all tool calls |
+| `w` | Copy tool output to kill ring |
+| `v` | Cycle verbosity (minimal/normal/verbose) |
+| `i` | Inject guidance mid-session |
+| `r` | Resume paused session |
+| `k` | Cancel session |
+| `g` | Refresh display |
+| `q` | Quit buffer (session continues) |
+| `1-4` | Select option when Claude asks |
+| `?` | Show help |
 
 ### Rich Tool Suite
 Efrit provides Claude with 35+ tools:
@@ -101,16 +120,21 @@ Verify with `M-x efrit-doctor`.
 
 ### When to Use Each Mode
 
-| Mode | Use When |
-|------|----------|
-| **`efrit-chat`** | Multi-turn conversations, asking questions, getting explanations. Tools: buffer-centric only (read current buffer, search). |
-| **`efrit-do`** | Single agentic commands, project-wide refactoring, file creation/editing, running tests. Tools: full suite (30+ tools including write_file, shell_exec, vcs). |
-| **`efrit-agent`** | Same as `efrit-do` but with a structured session view showing TODOs, tool calls, and progress. Best for complex multi-step tasks. |
+| Mode | Use When | Tools Available |
+|------|----------|-----------------|
+| **`efrit-chat`** | Multi-turn conversations, asking questions, explanations | Buffer-centric (read buffer, search) |
+| **`efrit-do`** | Quick agentic commands, shows progress in minibuffer | Full suite (35+ tools) |
+| **`efrit-agent`** | Complex tasks needing visibility and interaction | Full suite + structured UI |
 
-**Quick guide:**
-- Need to ask about code? → `efrit-chat`
-- Need to change code or run commands? → `efrit-do` or `efrit-agent`
-- Long-running task with multiple steps? → `efrit-agent` (better visibility)
+**Decision guide:**
+- **Just asking?** → `efrit-chat` (conversational, no file changes)
+- **Quick command?** → `efrit-do` (runs in background, shows progress buffer)
+- **Complex task?** → `efrit-agent` (real-time visibility, can guide mid-session)
+
+**Key differences:**
+- `efrit-chat`: Read-only context, conversational UI, retains history
+- `efrit-do`: Fire-and-forget, progress buffer with raw output
+- `efrit-agent`: Interactive session buffer with expandable tool calls, TODO tracking, and mid-session guidance (`i` key)
 
 ### Commands
 
@@ -159,6 +183,45 @@ You: Help me understand how the error handling works in this file
 Assistant: [analyzes current buffer and explains]
 You: Can you refactor it to use condition-case-unless-debug instead?
 ```
+
+### Agentic Workflows
+
+**Bug fix workflow:**
+```
+M-x efrit-agent RET
+> The function `my-parse-data` throws an error on empty input. Find and fix it.
+
+Claude will:
+1. Search for the function definition
+2. Analyze the code
+3. Identify the bug
+4. Create the fix with edit_file
+5. Show you the diff for review
+```
+
+**Refactoring workflow:**
+```
+M-x efrit-agent RET
+> Refactor all uses of deprecated `my-old-api` to use `my-new-api` in this project
+
+Claude will:
+1. Find all occurrences with search_content
+2. Create a TODO list for each file
+3. Edit each file, showing progress
+4. Verify changes compile
+```
+
+**Mid-session guidance:**
+While Claude is working, you can:
+- Press `i` to inject guidance: "Focus on the src/ directory only"
+- Press `k` to cancel if going wrong direction
+- Wait for questions - Claude will ask via `request_user_input` and you can respond directly in the buffer
+
+**Providing corrections:**
+When Claude asks a question, you can:
+- Type your response after the `>` prompt and press `C-c C-s` to send
+- Press `1`, `2`, `3`, or `4` to select from offered options
+- Type "actually, I meant..." to correct course
 
 ### Async Execution (Default Behavior)
 
