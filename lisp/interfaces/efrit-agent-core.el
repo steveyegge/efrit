@@ -361,9 +361,7 @@ Deletes from input-start marker to end of buffer."
       (when efrit-agent--elapsed-timer
         (cancel-timer efrit-agent--elapsed-timer))
       (setq efrit-agent--elapsed-timer
-            (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
-      ;; Add initial user message to conversation (incremental append)
-      (efrit-agent--add-user-message command))
+            (run-at-time 1 1 #'efrit-agent--update-elapsed buffer)))
     buffer))
 
 (defun efrit-agent--show-buffer ()

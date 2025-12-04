@@ -285,6 +285,8 @@ Uses incremental inline update instead of full re-render."
   "Start tracking a new session with SESSION-ID and COMMAND.
 Called from efrit-executor when an agentic session begins."
   (efrit-agent--create-buffer session-id command)
+  ;; Add initial user message showing what was requested
+  (efrit-agent--add-user-message command)
   (efrit-agent--show-buffer))
 
 (defun efrit-agent-end-session (success-p)
