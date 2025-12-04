@@ -157,7 +157,7 @@ Returns the end position of the inserted content."
     (insert "\n")
     ;; Insert expanded body if expanded
     (when (and expanded-p (or input result))
-      (insert (efrit-agent--format-tool-expansion input result success-p id render-type)))
+      (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations)))
     ;; Apply text properties to the entire region
     (add-text-properties start (point)
                          (list 'efrit-type 'tool-call
@@ -311,11 +311,12 @@ Uses the centralized tool-view renderer for consistent display."
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 
-(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id render-type)
+(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id render-type annotations)
   "Format the expansion content for a tool call.
 TOOL-INPUT is the input parameters, RESULT is the output.
 SUCCESS-P indicates status. TOOL-ID enables error recovery buttons.
 RENDER-TYPE (optional) hints how to format result (text, diff, elisp, json, shell, grep, markdown, error).
+ANNOTATIONS (optional) is a list of (line . note) pairs for line-level notes.
 Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
   (let ((indent "       ")
         (max-lines (pcase efrit-agent-verbosity
@@ -339,12 +340,37 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
         (if render-type
             (efrit-agent--format-by-render-type (format "%s" result) render-type indent max-lines)
           (efrit-agent--format-tool-result-with-diff result success-p indent max-lines))))
+     ;; Annotations section (line-level notes from display_hint)
+     (when (and annotations (listp annotations) (> (length annotations) 0))
+       (efrit-agent--format-annotations annotations indent))
      ;; Error recovery buttons (only when tool failed and tool-id is known)
      (when (and tool-id (not success-p))
        (efrit-agent--format-error-recovery-buttons tool-id result tool-input))
      ;; Separator
      indent (propertize (make-string 50 (efrit-agent--char 'box-horizontal))
                         'face 'efrit-agent-timestamp) "\n")))
+
+(defun efrit-agent--format-annotations (annotations indent)
+  "Format ANNOTATIONS list as a section with INDENT prefix.
+ANNOTATIONS is a list of hash-tables or alists with line and note keys."
+  (let ((result (concat indent
+                        (propertize "Notes: " 'face 'efrit-agent-section-header)
+                        "\n")))
+    (dolist (ann annotations)
+      (let ((line (if (hash-table-p ann)
+                      (gethash "line" ann)
+                    (cdr (assoc 'line ann))))
+            (note (if (hash-table-p ann)
+                      (gethash "note" ann)
+                    (cdr (assoc 'note ann)))))
+        (when (and line note)
+          (setq result
+                (concat result indent "  "
+                        (propertize (format "L%d: " line)
+                                    'face 'efrit-agent-tool-name)
+                        (propertize note 'face 'efrit-agent-session-id)
+                        "\n")))))
+    result))
 
 (defun efrit-agent--format-indented-lines (text indent max-lines)
   "Format TEXT with INDENT prefix, limiting to MAX-LINES."
