@@ -144,10 +144,11 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time."
 
 ;;; Tool Call Expansion (collapsed/expanded toggle)
 
-(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id)
+(defun efrit-agent--format-tool-expansion (tool-input result success-p &optional tool-id render-type)
   "Format the expansion content for a tool call.
 TOOL-INPUT is the input parameters, RESULT is the output.
 SUCCESS-P indicates status. TOOL-ID enables error recovery buttons.
+RENDER-TYPE (optional) hints how to format result (text, diff, elisp, json, shell, grep, markdown, error).
 Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
   (let ((indent "       ")
         (max-lines (pcase efrit-agent-verbosity
@@ -161,14 +162,16 @@ Diffs are syntax-highlighted if `efrit-agent-show-diff' is non-nil."
         indent (propertize "Input: " 'face 'efrit-agent-section-header) "\n"
         (efrit-agent--format-indented-lines
          (pp-to-string tool-input) indent max-lines)))
-     ;; Result section (with diff detection)
+     ;; Result section (with render-type aware formatting)
      (when result
        (concat
         indent (propertize (if success-p "Result: " "Error: ")
                            'face (if success-p 'efrit-agent-section-header 'efrit-agent-error))
         "\n"
-        ;; Use diff-aware formatting for results
-        (efrit-agent--format-tool-result-with-diff result success-p indent max-lines)))
+        ;; Use render-type if available, otherwise use old diff detection
+        (if render-type
+            (efrit-agent--format-by-render-type (format "%s" result) render-type indent max-lines)
+          (efrit-agent--format-tool-result-with-diff result success-p indent max-lines))))
      ;; Error recovery buttons (only when tool failed and tool-id is known)
      (when (and tool-id (not success-p))
        (efrit-agent--format-error-recovery-buttons tool-id result tool-input))
@@ -210,6 +213,45 @@ Returns formatted string with syntax highlighting applied via font-lock."
             ;; Fallback if mode not available
             text)))
     (efrit-agent--format-indented-lines highlighted indent max-lines)))
+
+(defun efrit-agent--format-by-render-type (text render-type indent max-lines)
+  "Format TEXT with highlighting based on RENDER-TYPE.
+RENDER-TYPE should be one of: text, diff, elisp, json, shell, grep, markdown, error.
+INDENT is the prefix for each line, MAX-LINES limits output."
+  (pcase render-type
+    ;; Diff format - unified diff with color highlighting
+    ('diff
+     (if (efrit-agent--diff-content-p text)
+         (efrit-agent--format-diff-content text indent max-lines)
+       ;; Fallback if text doesn't look like diff
+       (efrit-agent--format-indented-lines text indent max-lines)))
+    
+    ;; Emacs Lisp format
+    ('elisp
+     (efrit-agent--format-code-block text "emacs-lisp" indent max-lines))
+    
+    ;; Shell script format
+    ('shell
+     (efrit-agent--format-code-block text "shell" indent max-lines))
+    
+    ;; JSON format - try formatting as JSON first, then apply syntax highlighting
+    ('json
+     (efrit-agent--format-code-block text "json" indent max-lines))
+    
+    ;; Grep output - treat like text for now, could add grep-specific highlighting later
+    ('grep
+     (efrit-agent--format-indented-lines text indent max-lines))
+    
+    ;; Markdown format
+    ('markdown
+     (efrit-agent--format-code-block text "markdown" indent max-lines))
+    
+    ;; Error format - same as text, but caller should style differently
+    ('error
+     (efrit-agent--format-indented-lines text indent max-lines))
+    
+    ;; Text format (default)
+    (_ (efrit-agent--format-indented-lines text indent max-lines))))
 
 ;;; Inline Diff Display
 ;;
@@ -510,6 +552,7 @@ Returns t if toggled, nil if no tool at point."
                               (success-p (efrit-agent--char 'tool-success))
                               (t (efrit-agent--char 'tool-failure))))
            (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
+           (render-type (get-text-property start 'efrit-tool-render-type))
            (result-summary (when result
                              (truncate-string-to-width
                               (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
@@ -538,6 +581,7 @@ Returns t if toggled, nil if no tool at point."
                                  'efrit-tool-success success-p
                                  'efrit-tool-elapsed elapsed
                                  'efrit-tool-running running
+                                 'efrit-tool-render-type render-type
                                  'efrit-tool-expanded nil
                                  'read-only t)))))
 
@@ -552,6 +596,7 @@ Returns t if toggled, nil if no tool at point."
                               (success-p (efrit-agent--char 'tool-success))
                               (t (efrit-agent--char 'tool-failure))))
            (status-face (if (and (not running) (not success-p)) 'efrit-agent-error nil))
+           (render-type (get-text-property start 'efrit-tool-render-type))
            (result-summary (when result
                              (truncate-string-to-width
                               (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
@@ -571,8 +616,8 @@ Returns t if toggled, nil if no tool at point."
                  (concat " -> " (propertize result-summary 'face status-face))
                (propertize "..." 'face 'efrit-agent-timestamp))
              "\n"))
-           ;; Expansion content (pass tool-id for error recovery buttons)
-           (expansion-text (efrit-agent--format-tool-expansion input result success-p tool-id))
+           ;; Expansion content (pass tool-id and render-type)
+           (expansion-text (efrit-agent--format-tool-expansion input result success-p tool-id render-type))
            (new-text (concat header-text expansion-text)))
       (insert new-text)
       (add-text-properties start (point)
@@ -584,6 +629,7 @@ Returns t if toggled, nil if no tool at point."
                                  'efrit-tool-success success-p
                                  'efrit-tool-elapsed elapsed
                                  'efrit-tool-running running
+                                 'efrit-tool-render-type render-type
                                  'efrit-tool-expanded t
                                  'read-only t)))))
 
@@ -596,10 +642,9 @@ Returns t if toggled, nil if no tool at point."
   "Apply display hint to control how a tool result is rendered.
 TOOL-USE-ID is the ID of the tool call to modify.
 SUMMARY is the text to show when collapsed.
-RENDER-TYPE (optional) is one of: text, diff, elisp, json, shell, grep, markdown, error.
+RENDER-TYPE (optional) is one of: text, diff, elisp, json, shell, grep, markdown.
 AUTO-EXPAND (optional) controls default expansion state.
-IMPORTANCE (optional) is one of: normal, success, warning, error.
-ANNOTATIONS (optional) is a list of (line . note) pairs for line annotations."
+IMPORTANCE (optional) is one of: normal, success, warning, error."
   (let ((region (efrit-agent--find-tool-region tool-use-id)))
     (unless region
       (error "Tool call not found: %s" tool-use-id))
