@@ -427,28 +427,36 @@ INDENT is the prefix for each line, MAX-LINES limits output."
 (defun efrit-agent--diff-content-p (text)
   "Return non-nil if TEXT appears to contain unified diff content.
 Checks for common diff markers like --- and +++ file headers,
-@@ hunk headers, or lines starting with + or - followed by content."
+@@ hunk headers, or lines starting with + or - followed by content.
+Uses multiline matching so patterns can appear anywhere in the text."
   (and (stringp text)
        (or
-        ;; Check for unified diff file headers
-        (string-match-p "^---\\s-+\\S-+" text)
-        ;; Check for hunk headers
-        (string-match-p "^@@\\s--?[0-9]" text)
-        ;; Check for diff output from vcs_diff tool (has diff field)
+        ;; Check for unified diff file headers (anywhere in text)
+        (string-match-p "^---\\s-+[ab]/\\|^---\\s-+\\S-+" text)
+        ;; Check for hunk headers (anywhere in text)
+        (string-match-p "^@@\\s-+-?[0-9]" text)
+        ;; Check for diff --git header
         (string-match-p "^diff --git" text))))
 
 (defun efrit-agent--extract-diff-from-result (result)
   "Extract diff content from RESULT if present.
 RESULT may be a string containing diff directly, or an alist with a diff field.
+Tool results are typically wrapped: ((success . t) (result . ((diff . \"...\") ...)))
 Returns the diff string or nil if no diff content found."
   (cond
-   ;; Result is an alist with 'diff key (from vcs_diff tool)
-   ((and (listp result) (assoc 'diff result))
-    (cdr (assoc 'diff result)))
    ;; Result is a string that looks like diff
    ((and (stringp result) (efrit-agent--diff-content-p result))
     result)
-   ;; Check if stringified result looks like diff
+   ;; Result is wrapped tool response: ((success . t) (result . ((diff . ...) ...)))
+   ((and (listp result)
+         (assoc 'result result)
+         (listp (cdr (assoc 'result result)))
+         (assoc 'diff (cdr (assoc 'result result))))
+    (cdr (assoc 'diff (cdr (assoc 'result result)))))
+   ;; Result is an alist with 'diff key directly (from vcs_diff tool)
+   ((and (listp result) (assoc 'diff result))
+    (cdr (assoc 'diff result)))
+   ;; Check if stringified result contains diff markers
    ((let ((str (format "%s" result)))
       (when (efrit-agent--diff-content-p str)
         str)))
