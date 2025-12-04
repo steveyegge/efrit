@@ -462,10 +462,27 @@ Returns the diff string or nil if no diff content found."
         str)))
    (t nil)))
 
+(defun efrit-agent--extract-diff-filepath (line)
+  "Extract file path from diff header LINE.
+Returns the absolute or relative path, or nil if not a file header."
+  (cond
+   ;; diff --git a/path/to/file b/path/to/file
+   ((string-match "^diff --git a/\\(.+\\) b/\\(.+\\)$" line)
+    (match-string 2 line))
+   ;; --- a/path/to/file
+   ((string-match "^--- a/\\(.+\\)$" line)
+    (match-string 1 line))
+   ;; +++ b/path/to/file
+   ((string-match "^\\+\\+\\+ b/\\(.+\\)$" line)
+    (match-string 1 line))
+   (t nil)))
+
 (defun efrit-agent--format-diff-line (line indent)
   "Format a single diff LINE with appropriate face and INDENT prefix.
-Returns the formatted line string with text properties."
+Returns the formatted line string with text properties.
+File header lines are clickable to open the file."
   (let* ((line-content (concat indent "  " line "\n"))
+         (filepath (efrit-agent--extract-diff-filepath line))
          (face (cond
                 ;; File headers
                 ((string-match-p "^diff --git\\|^---\\|^\\+\\+\\+" line)
@@ -481,8 +498,26 @@ Returns the formatted line string with text properties."
                  'efrit-agent-diff-removed)
                 ;; Context lines (including empty lines and lines starting with space)
                 (t
-                 'efrit-agent-diff-context))))
-    (propertize line-content 'face face)))
+                 'efrit-agent-diff-context)))
+         (result (propertize line-content 'face face)))
+    ;; Make file headers clickable
+    (when filepath
+      (let ((map (make-sparse-keymap))
+            (action (lambda ()
+                      (interactive)
+                      (let ((full-path (if (file-name-absolute-p filepath)
+                                           filepath
+                                         (expand-file-name filepath default-directory))))
+                        (if (file-exists-p full-path)
+                            (find-file-other-window full-path)
+                          (message "File not found: %s" full-path))))))
+        (define-key map [mouse-1] action)
+        (define-key map (kbd "RET") action)
+        (setq result (propertize result
+                                 'keymap map
+                                 'mouse-face 'highlight
+                                 'help-echo (format "Click to open %s" filepath)))))
+    result))
 
 (defun efrit-agent--extract-code-block (text)
   "Extract a code block from TEXT if present.
