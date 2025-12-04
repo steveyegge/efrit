@@ -227,7 +227,7 @@ This provides smooth updates for changing thinking status."
 
 (defun efrit-agent--format-header-line ()
   "Format the header-line for display.
-Shows: status │ elapsed │ mode │ tool count │ hints"
+Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
   (let* ((status-str (efrit-agent--status-string))
          (elapsed (efrit-agent--format-elapsed))
          (tool-count (length (cl-remove-if-not
@@ -235,6 +235,9 @@ Shows: status │ elapsed │ mode │ tool count │ hints"
                               efrit-agent--activities)))
          (mode-str (propertize (format "[%s]" efrit-agent-display-mode)
                                'face 'efrit-agent-session-id))
+         (verbosity-str (propertize (format "v:%s" efrit-agent-verbosity)
+                                    'face 'efrit-agent-session-id
+                                    'help-echo "Press 'v' to cycle verbosity"))
          (sep (propertize " │ " 'face 'efrit-agent-session-id)))
     (concat
      " "
@@ -243,6 +246,8 @@ Shows: status │ elapsed │ mode │ tool count │ hints"
      (propertize elapsed 'face 'efrit-agent-timestamp)
      sep
      mode-str
+     sep
+     verbosity-str
      (when (> tool-count 0)
        (concat sep (propertize (format "%d tools" tool-count)
                                'face 'efrit-agent-session-id)))
