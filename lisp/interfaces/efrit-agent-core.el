@@ -300,17 +300,20 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
 
 (defun efrit-agent--append-to-conversation (text &optional properties)
   "Append TEXT with optional PROPERTIES to the conversation region.
-Inserts just before the conversation-end marker, preserving read-only."
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char efrit-agent--conversation-end)
-      (let ((start (point)))
-        (insert text)
-        ;; Apply any additional properties
-        (when properties
-          (add-text-properties start (point) properties))
-        ;; Make the new text read-only
-        (add-text-properties start (point) '(read-only t))))))
+Inserts just before the conversation-end marker, preserving read-only.
+Does nothing if the conversation-end marker is not initialized."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end))
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char efrit-agent--conversation-end)
+        (let ((start (point)))
+          (insert text)
+          ;; Apply any additional properties
+          (when properties
+            (add-text-properties start (point) properties))
+          ;; Make the new text read-only
+          (add-text-properties start (point) '(read-only t)))))))
 
 (defun efrit-agent--get-input ()
   "Get the current user input from the input region.

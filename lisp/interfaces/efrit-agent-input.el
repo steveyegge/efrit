@@ -183,7 +183,9 @@ Use S-RET to always insert a newline."
       ;; Clear the input
       (efrit-agent--clear-input)
       ;; Move point to input area
-      (goto-char efrit-agent--input-start)
+      (when (and efrit-agent--input-start
+                 (marker-position efrit-agent--input-start))
+        (goto-char efrit-agent--input-start))
       
       ;; Route to session if active
       (let ((session (efrit-session-active)))
@@ -204,7 +206,9 @@ Use S-RET to always insert a newline."
   "Clear the current input."
   (interactive)
   (efrit-agent--clear-input)
-  (goto-char efrit-agent--input-start)
+  (when (and efrit-agent--input-start
+             (marker-position efrit-agent--input-start))
+    (goto-char efrit-agent--input-start))
   (message "Input cleared"))
 
 ;;; Input History
