@@ -253,6 +253,9 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
                                'face 'efrit-agent-session-id)))
      ;; Show action hints based on status
      (pcase efrit-agent--status
+       ('idle
+        (concat sep (propertize "Type command at > prompt, RET to start"
+                                'face 'efrit-agent-timestamp)))
        ('waiting
         (concat sep (propertize "Type response, C-c C-s to send"
                                 'face 'efrit-agent-timestamp)))

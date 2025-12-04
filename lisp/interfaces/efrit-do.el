@@ -650,6 +650,24 @@ Returns the session object, ready for async loop execution."
     (setq efrit-do--todo-counter 0)
     session))
 
+(defun efrit-do--start-async-session (command)
+  "Internal helper to start an async efrit-do session for COMMAND.
+Does not prompt or validate; assumes COMMAND is already validated.
+Returns the session object for the caller to attach to their UI.
+
+This function can be called from:
+- `efrit-do' (minibuffer path)
+- `efrit-agent-input-send' (REPL path)"
+  ;; Add to history
+  (add-to-history 'efrit-do-history command efrit-do-history-max)
+  ;; Track command execution
+  (efrit-session-track-command command)
+  ;; Create session and start async loop
+  (let ((session (efrit-do--create-session-for-command command)))
+    (message "Efrit: starting async execution...")
+    (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
+    session))
+
 (defun efrit-do--on-async-complete (session stop-reason)
   "Handle completion of async efrit-do SESSION with STOP-REASON.
 Displays final results and processes queued commands."
@@ -735,18 +753,8 @@ Returns the session object for programmatic use."
           (message "Efrit: queue full, command not added"))
         nil)
     
-    ;; No active session - start async execution
-    ;; Add to history
-    (add-to-history 'efrit-do-history command efrit-do-history-max)
-    
-    ;; Track command execution
-    (efrit-session-track-command command)
-    
-    ;; Create session and start async loop
-    (let ((session (efrit-do--create-session-for-command command)))
-      (message "Efrit: starting async execution...")
-      (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
-      session)))
+    ;; No active session - use the helper to start execution
+    (efrit-do--start-async-session command)))
 
 ;;;###autoload
 (defun efrit-do-sync (command)

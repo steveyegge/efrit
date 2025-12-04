@@ -954,6 +954,38 @@ Shows pending question from Claude with options if available."
 ;;; Public API
 
 ;;;###autoload
+(defun efrit-agent-open ()
+  "Open or switch to the Efrit agent buffer in idle mode.
+Provides a persistent prompt buffer for interacting with Efrit.
+Type at the > prompt to start a session.
+
+This is the recommended entry point for the REPL-style Efrit interface."
+  (interactive)
+  (let ((buffer (efrit-agent--get-buffer)))
+    (with-current-buffer buffer
+      ;; Initialize mode if not already done
+      (unless (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent-mode))
+      ;; Initialize regions if not set up
+      (unless (and efrit-agent--conversation-end
+                   (marker-position efrit-agent--conversation-end))
+        (efrit-agent--init-regions)
+        (efrit-agent--setup-regions))
+      ;; Set idle state if no active session
+      (unless efrit-agent--session-id
+        (setq efrit-agent--status 'idle)
+        (setq efrit-agent--start-time nil)))
+    ;; Display at bottom and focus
+    (display-buffer buffer '(display-buffer-at-bottom (window-height . 15)))
+    (when-let ((win (get-buffer-window buffer)))
+      (select-window win))
+    ;; Move point to input region
+    (with-current-buffer buffer
+      (when (and efrit-agent--input-start
+                 (marker-position efrit-agent--input-start))
+        (goto-char efrit-agent--input-start)))))
+
+;;;###autoload
 (defun efrit-agent ()
   "Open or switch to the Efrit agent buffer."
   (interactive)
