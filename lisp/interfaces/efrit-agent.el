@@ -954,6 +954,16 @@ Shows pending question from Claude with options if available."
 ;;; Public API
 
 ;;;###autoload
+(defun efrit ()
+  "Open the Efrit REPL-style agent buffer.
+Type at the > prompt to start a session, or continue an active one.
+
+This is the recommended way to interact with Efrit.
+For one-off commands without the REPL UI, use \\[efrit-do] instead."
+  (interactive)
+  (efrit-agent-open))
+
+;;;###autoload
 (defun efrit-agent-open ()
   "Open or switch to the Efrit agent buffer in idle mode.
 Provides a persistent prompt buffer for interacting with Efrit.

@@ -707,13 +707,13 @@ Displays final results and processes queued commands."
 
 ;;;###autoload
 (defun efrit-do (command)
-  "Execute natural language COMMAND in Emacs asynchronously (recommended).
+  "Execute natural language COMMAND in Emacs asynchronously.
 
-This is the PRIMARY interface for Efrit command execution. It provides
-non-blocking execution with a real-time progress buffer showing:
-- Claude's reasoning and decision-making
-- Tool invocations and results
-- Session status and progress
+For a REPL-style experience with a persistent prompt buffer, use
+\\[efrit] instead. This command is better for:
+- One-off commands where you don't need the REPL interface
+- Scripting and automation
+- When you prefer the minibuffer workflow
 
 FEATURES:
 - Progress buffer with real-time updates (automatic display)
