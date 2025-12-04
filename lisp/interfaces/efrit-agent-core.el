@@ -331,6 +331,7 @@ Deletes from input-start marker to end of buffer."
 (defun efrit-agent--in-input-region-p ()
   "Return non-nil if point is in the input region."
   (and efrit-agent--input-start
+       (marker-position efrit-agent--input-start)
        (>= (point) efrit-agent--input-start)))
 
 ;;; Buffer Creation and Management
