@@ -236,6 +236,11 @@
     (define-key map (kbd "TAB") #'efrit-agent-next-section)
     (define-key map (kbd "<backtab>") #'efrit-agent-prev-section)
     (define-key map (kbd "S-TAB") #'efrit-agent-prev-section)
+    (define-key map (kbd "M-n") #'efrit-agent-next-tool)
+    (define-key map (kbd "M-p") #'efrit-agent-previous-tool)
+    (define-key map (kbd "n") #'efrit-agent-next-tool)
+    (define-key map (kbd "p") #'efrit-agent-previous-tool)
+    (define-key map (kbd "w") #'efrit-agent-copy-tool-output)
 
     ;; Actions
     (define-key map (kbd "q") #'efrit-agent-quit)
@@ -364,6 +369,70 @@ If the session is waiting for user input, prompts for a response."
       (when-let* ((prev (previous-single-property-change pos 'efrit-agent-section)))
         (goto-char prev)))))
 
+(defun efrit-agent-next-tool ()
+  "Move to the next tool call in the buffer."
+  (interactive)
+  (let ((start (point))
+        (found nil))
+    ;; First, move past current tool if we're on one
+    (when (get-text-property (point) 'efrit-id)
+      (goto-char (or (next-single-property-change (point) 'efrit-id)
+                     (point-max))))
+    ;; Search for next tool-call
+    (while (and (< (point) (point-max)) (not found))
+      (let ((id (get-text-property (point) 'efrit-id))
+            (type (get-text-property (point) 'efrit-type)))
+        (if (and id (eq type 'tool-call))
+            (setq found t)
+          (goto-char (or (next-single-property-change (point) 'efrit-id)
+                         (point-max))))))
+    (if found
+        (message "Tool: %s" (get-text-property (point) 'efrit-tool-name))
+      (goto-char start)
+      (message "No more tool calls"))))
+
+(defun efrit-agent-previous-tool ()
+  "Move to the previous tool call in the buffer."
+  (interactive)
+  (let ((start (point))
+        (found nil))
+    ;; Move before current position
+    (when (> (point) (point-min))
+      (goto-char (1- (point))))
+    ;; Search backwards for tool-call
+    (while (and (> (point) (point-min)) (not found))
+      (let ((id (get-text-property (point) 'efrit-id))
+            (type (get-text-property (point) 'efrit-type)))
+        (if (and id (eq type 'tool-call))
+            (setq found t)
+          (goto-char (or (previous-single-property-change (point) 'efrit-id)
+                         (point-min))))))
+    ;; If we found one, make sure we're at the start of it
+    (when found
+      (let ((id (get-text-property (point) 'efrit-id)))
+        (while (and (> (point) (point-min))
+                    (equal (get-text-property (1- (point)) 'efrit-id) id))
+          (goto-char (1- (point))))))
+    (if found
+        (message "Tool: %s" (get-text-property (point) 'efrit-tool-name))
+      (goto-char start)
+      (message "No more tool calls"))))
+
+(defun efrit-agent-copy-tool-output ()
+  "Copy the current tool's full result to the kill ring."
+  (interactive)
+  (let* ((tool-id (get-text-property (point) 'efrit-id))
+         (tool-type (get-text-property (point) 'efrit-type)))
+    (unless (and tool-id (eq tool-type 'tool-call))
+      (user-error "No tool at point"))
+    (let ((result (get-text-property (point) 'efrit-tool-result))
+          (name (get-text-property (point) 'efrit-tool-name)))
+      (if result
+          (progn
+            (kill-new (format "%s" result))
+            (message "Copied %s result (%d chars)" name (length (format "%s" result))))
+        (message "Tool %s has no result yet" name)))))
+
 (defun efrit-agent-toggle-expand ()
   "Toggle expansion of the tool call at point.
 In conversation region, expands/collapses tool calls to show input and results."
@@ -457,7 +526,10 @@ verbose: All tool results expanded, ignore auto_expand hints."
 
 Navigation:
   TAB / S-TAB    Move between sections
+  n / M-n        Next tool call
+  p / M-p        Previous tool call (when not in input)
   RET            Expand/collapse tool call at point
+  w              Copy tool result to kill ring
 
 Actions:
   q              Quit buffer (session continues)
