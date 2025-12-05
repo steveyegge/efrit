@@ -532,10 +532,10 @@ Navigation:
   w              Copy tool result to kill ring
 
 Actions:
-  q              Quit buffer (session continues)
-  k              Kill/cancel session
-  p              Pause session
-  r              Resume paused session
+   q              Quit buffer (session continues)
+   k              Kill/cancel session
+   P              Pause session
+   r              Resume paused session
   g              Refresh display
   E              Expand all tool calls
   C              Collapse all tool calls
