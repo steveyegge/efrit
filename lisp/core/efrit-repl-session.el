@@ -203,10 +203,15 @@ IS-ERROR indicates if this is an error result."
       (setf (efrit-repl-session-last-activity session) (current-time)))))
 
 (defun efrit-repl-session-get-api-messages (session)
-  "Get all API messages from SESSION for sending to Claude.
-Returns the full conversation history in Claude API format."
+  "Get API messages from SESSION for sending to Claude.
+Returns the most recent messages, limited by `efrit-repl-max-history'
+to prevent exceeding Claude's context window."
   (when session
-    (efrit-repl-session-api-messages session)))
+    (let ((all-messages (efrit-repl-session-api-messages session))
+          (max-messages (* 2 efrit-repl-max-history)))
+      (if (<= (length all-messages) max-messages)
+          all-messages
+        (seq-drop all-messages (- (length all-messages) max-messages))))))
 
 ;;; Session State Management
 
