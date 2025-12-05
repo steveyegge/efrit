@@ -305,9 +305,11 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
     (efrit-repl-session-end-turn session)
 
     ;; Update agent buffer status
+    ;; Note: "unknown" means Claude finished but with unrecognized stop_reason
+    ;; This is normal - treat it as idle, not failed.
     (when (fboundp 'efrit-agent-set-status)
       (efrit-agent-set-status
-       (if (member stop-reason '("end_turn" "session-complete"))
+       (if (member stop-reason '("end_turn" "session-complete" "unknown"))
            'idle
          'failed)))
 

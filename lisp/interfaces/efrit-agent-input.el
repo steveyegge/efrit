@@ -263,13 +263,16 @@ Creates a new REPL session if needed, otherwise continues the existing one."
 SESSION is the REPL session, STOP-REASON indicates why the turn ended."
   (efrit-log 'debug "REPL turn complete: %s" stop-reason)
   ;; Update agent buffer status based on stop reason
+  ;; Note: efrit-repl-loop--end-turn already sets status, but we need to
+  ;; handle the callback consistently. "unknown" typically means Claude
+  ;; finished but with an unrecognized stop_reason - treat as success.
   (when (fboundp 'efrit-agent-set-status)
     (efrit-agent-set-status
      (pcase stop-reason
-       ("end_turn" 'idle)
-       ("session-complete" 'idle)
+       ((or "end_turn" "session-complete" "unknown") 'idle)
        ("paused" 'paused)
-       (_ 'failed))))
+       ((or "api-error" "interrupted" "error") 'failed)
+       (_ 'idle))))
   ;; Reset prompt if we were waiting
   (efrit-agent--reset-input-prompt)
   ;; Auto-save session if enabled
