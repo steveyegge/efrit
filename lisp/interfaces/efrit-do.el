@@ -66,6 +66,12 @@
 (declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tool-utils")
 (defvar efrit-project-root)
 
+;; Declare external functions from efrit-agent
+(declare-function efrit-agent--get-buffer "efrit-agent-core")
+(declare-function efrit-agent--show-buffer "efrit-agent-core")
+(declare-function efrit-agent--begin-session "efrit-agent-core")
+(declare-function efrit-agent-mode "efrit-agent")
+
 (require 'efrit-tools)
 (require 'efrit-config)
 (require 'efrit-common)
@@ -147,6 +153,13 @@ truncated to keep only the most recent results as specified by
 When the results buffer exceeds `efrit-do-max-buffer-lines', it is
 truncated to keep this many recent results."
   :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-use-agent-ui nil
+  "When non-nil, show the efrit-agent buffer for efrit-do sessions.
+This provides a REPL-like view of command execution alongside
+the traditional progress buffer."
+  :type 'boolean
   :group 'efrit-do)
 
 ;; Context configuration moved to efrit-context.el
@@ -665,6 +678,17 @@ This function can be called from:
   ;; Create session and start async loop
   (let ((session (efrit-do--create-session-for-command command)))
     (message "Efrit: starting async execution...")
+    
+    ;; Optionally show agent buffer UI
+    (when efrit-do-use-agent-ui
+      (require 'efrit-agent)
+      (let ((buffer (efrit-agent--get-buffer)))
+        (with-current-buffer buffer
+          (unless (derived-mode-p 'efrit-agent-mode)
+            (efrit-agent-mode))
+          (efrit-agent--begin-session session command))
+        (efrit-agent--show-buffer)))
+    
     (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
     session))
 
