@@ -18,10 +18,13 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-log)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
 (require 'efrit-session)
 (require 'efrit-session-worklog)
+(require 'efrit-repl-session)
+(require 'efrit-repl-loop)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
@@ -29,6 +32,16 @@
 (declare-function efrit-do--start-async-session "efrit-do")
 (declare-function efrit-session-id "efrit-session")
 (declare-function efrit-agent--begin-session "efrit-agent-core")
+
+;;; REPL Session State
+;;
+;; Each agent buffer has a persistent REPL session that accumulates
+;; conversation context across multiple inputs.
+
+(defvar-local efrit-agent--repl-session nil
+  "The persistent REPL session for this agent buffer.
+Unlike efrit-session which completes after each command, this session
+persists and accumulates conversation context.")
 
 ;;; Question Display
 
@@ -172,10 +185,13 @@ Use S-RET to always insert a newline."
       (newline))))
 
 (defun efrit-agent-input-send ()
-  "Send the current input.
-If no session is active, starts a new efrit-do session.
-If a session is active and waiting for input, responds to the question.
-If a session is active but not waiting, injects the input as guidance."
+  "Send the current input using the persistent REPL session model.
+Conversation context accumulates across inputs - Claude remembers
+what was discussed previously.
+
+If the REPL session is idle, continues with the new input.
+If the REPL session is working, queues the input (not yet implemented).
+If no REPL session exists, creates one automatically."
   (interactive)
   (let ((input (efrit-agent--get-input)))
     (if (or (null input) (string-empty-p (string-trim input)))
@@ -184,7 +200,7 @@ If a session is active but not waiting, injects the input as guidance."
       (efrit-agent--add-to-history input)
       ;; Reset history navigation state
       (efrit-agent--reset-history-navigation)
-      ;; Add user message to conversation with proper formatting
+      ;; Add user message to conversation display
       (efrit-agent--add-user-message input)
       ;; Clear the input
       (efrit-agent--clear-input)
@@ -193,28 +209,68 @@ If a session is active but not waiting, injects the input as guidance."
                  (marker-position efrit-agent--input-start))
         (goto-char efrit-agent--input-start))
 
-      ;; Route based on session state
-      (let ((session (efrit-session-active)))
-        (cond
-         ;; Active session waiting for user input - respond to question
-         ((and session (efrit-session-waiting-for-user-p session))
-          (efrit-session-respond-to-question session input)
-          (setq efrit-agent--pending-question nil)
-          (efrit-agent-set-status 'working)
-          (message "Response sent"))
+      ;; Use REPL session model
+      (efrit-agent--repl-send input))))
 
-         ;; Active session not waiting - inject as guidance
-         (session
-          (efrit-session-add-message session 'user input)
-          (message "Guidance injected to session"))
+(defun efrit-agent--repl-send (input)
+  "Send INPUT to the REPL session.
+Creates a new REPL session if needed, otherwise continues the existing one."
+  ;; Ensure we have a REPL session
+  (unless efrit-agent--repl-session
+    (setq efrit-agent--repl-session (efrit-repl-session-create default-directory))
+    (setf (efrit-repl-session-buffer efrit-agent--repl-session) (current-buffer)))
 
-         ;; No active session - start a new one (REPL behavior)
-         (t
-          (require 'efrit-do)
-          (let ((new-session (efrit-do--start-async-session input)))
-            ;; Use helper to attach buffer and reset per-session state
-            (efrit-agent--begin-session new-session input)
-            (message "Efrit: started session from agent buffer"))))))))
+  (let ((session efrit-agent--repl-session))
+    (pcase (efrit-repl-session-status session)
+      ;; Idle - continue with new input
+      ('idle
+       (efrit-repl-continue session input
+                            #'efrit-agent--on-turn-complete)
+       (message "Efrit: continuing conversation"))
+
+      ;; Paused - resume and continue
+      ('paused
+       (efrit-repl-session-resume session)
+       (efrit-repl-continue session input
+                            #'efrit-agent--on-turn-complete)
+       (message "Efrit: resumed and continuing"))
+
+      ;; Working - can't send right now
+      ('working
+       (message "Efrit: session is busy, please wait")
+       ;; TODO: Queue input for later
+       )
+
+      ;; Waiting for specific input (question)
+      ('waiting
+       ;; Handle question response
+       (when (efrit-repl-session-pending-question session)
+         (setf (efrit-repl-session-pending-question session) nil))
+       (efrit-repl-continue session input
+                            #'efrit-agent--on-turn-complete)
+       (message "Efrit: response sent"))
+
+      ;; Unknown state
+      (_
+       (message "Efrit: unknown session state, resetting")
+       (efrit-repl-session-reset session)
+       (efrit-repl-continue session input
+                            #'efrit-agent--on-turn-complete)))))
+
+(defun efrit-agent--on-turn-complete (_session stop-reason)
+  "Callback when a REPL turn completes.
+_SESSION is the REPL session (unused), STOP-REASON indicates why the turn ended."
+  (efrit-log 'debug "REPL turn complete: %s" stop-reason)
+  ;; Update agent buffer status based on stop reason
+  (when (fboundp 'efrit-agent-set-status)
+    (efrit-agent-set-status
+     (pcase stop-reason
+       ("end_turn" 'idle)
+       ("session-complete" 'idle)
+       ("paused" 'paused)
+       (_ 'failed))))
+  ;; Reset prompt if we were waiting
+  (efrit-agent--reset-input-prompt))
 
 (defun efrit-agent-input-clear ()
   "Clear the current input."
@@ -224,6 +280,47 @@ If a session is active but not waiting, injects the input as guidance."
              (marker-position efrit-agent--input-start))
     (goto-char efrit-agent--input-start))
   (message "Input cleared"))
+
+;;; REPL Session Commands
+
+(defun efrit-agent-new-conversation ()
+  "Start a fresh conversation, clearing the REPL session context.
+The conversation display is cleared and a new REPL session is created."
+  (interactive)
+  (when efrit-agent--repl-session
+    (efrit-repl-session-reset efrit-agent--repl-session))
+  ;; Clear conversation display
+  (let ((inhibit-read-only t))
+    (when (and efrit-agent--conversation-end
+               (marker-position efrit-agent--conversation-end))
+      (delete-region (point-min) efrit-agent--conversation-end)
+      (goto-char (point-min))
+      (insert "\n")
+      (set-marker efrit-agent--conversation-end (point))))
+  ;; Reset status
+  (setq efrit-agent--status 'idle)
+  (when (fboundp 'efrit-agent-set-status)
+    (efrit-agent-set-status 'idle))
+  (message "Efrit: started new conversation"))
+
+(defun efrit-agent-pause ()
+  "Pause the current REPL session."
+  (interactive)
+  (when efrit-agent--repl-session
+    (efrit-repl-session-pause efrit-agent--repl-session)
+    (message "Efrit: session paused")))
+
+(defun efrit-agent-session-info ()
+  "Display information about the current REPL session."
+  (interactive)
+  (if (null efrit-agent--repl-session)
+      (message "No active REPL session")
+    (let ((session efrit-agent--repl-session))
+      (message "REPL Session: %s | Status: %s | Turns: %d | Elapsed: %s"
+               (efrit-repl-session-id session)
+               (efrit-repl-session-status session)
+               (efrit-repl-session-turn-count session)
+               (efrit-repl-session--format-elapsed session)))))
 
 ;;; Input History
 ;;

@@ -34,6 +34,8 @@
 (require 'efrit-session-metrics)
 (require 'efrit-session-context)
 (require 'efrit-session-transcript)
+(require 'efrit-repl-session)
+(require 'efrit-repl-loop)
 
 ;; Initialize the context system on load
 (efrit-context-init)
