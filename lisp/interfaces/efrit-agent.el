@@ -255,9 +255,15 @@
     (define-key map (kbd "M") #'efrit-agent-cycle-display-mode)
     (define-key map (kbd "?") #'efrit-agent-help)
 
+    ;; Session management (canonical keybindings)
+    (define-key map (kbd "C-c C-c") #'efrit-agent-send-input)  ; Send input
+    (define-key map (kbd "C-c C-k") #'efrit-agent-cancel)      ; Kill/pause session
+    (define-key map (kbd "C-c C-n") #'efrit-agent-new-session) ; New session
+    (define-key map (kbd "C-c C-r") #'efrit-agent-resume)      ; Resume session
+    (define-key map (kbd "C-c C-h") #'efrit-agent-browse-sessions) ; Browse sessions history
+    
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
-    (define-key map (kbd "C-c C-c") #'efrit-agent-abort)
     (define-key map (kbd "i") #'efrit-agent-inject-guidance)
     (define-key map (kbd "1") #'efrit-agent-select-option-1)
     (define-key map (kbd "2") #'efrit-agent-select-option-2)
@@ -345,6 +351,50 @@ If the session is waiting for user input, prompts for a response."
     (message "Session resume not yet implemented"))
    (t
     (message "Session is not paused or waiting for input"))))
+
+(defun efrit-agent-new-session ()
+  "Start a new conversation session in the current agent buffer.
+Clears the conversation history and starts fresh with a new prompt."
+  (interactive)
+  (let ((command (read-string "Enter command for new session: " nil 'efrit-do-history)))
+    (when (and command (not (string-empty-p (string-trim command))))
+      ;; Create a new session using the REPL input path
+      (require 'efrit-agent-input)
+      (efrit-agent--clear-conversation)
+      (efrit-agent--reset-input-prompt)
+      ;; Start the new session through the input handler
+      ;; which will use the persistent REPL session model
+      (when efrit-agent--input-start
+        (goto-char (marker-position efrit-agent--input-start))
+        (insert command)
+        (efrit-agent-input-send)))))
+
+(defun efrit-agent--clear-conversation ()
+  "Clear the conversation history from the agent buffer.
+Resets the display while preserving session state."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end))
+    (let ((inhibit-read-only t))
+      ;; Delete from point-min to conversation-end
+      (delete-region (point-min)
+                    (marker-position efrit-agent--conversation-end))))
+  ;; Reset state
+  (setq efrit-agent--activities nil)
+  (setq efrit-agent--todos nil)
+  (setq efrit-agent--pending-question nil)
+  (setq efrit-agent--streaming-message nil))
+
+(defun efrit-agent-browse-sessions ()
+  "Open a browser of recent sessions.
+Shows a list of recent agent buffer sessions with timestamps and summaries."
+  (interactive)
+  (message "Session browser not yet implemented")
+  ;; TODO: Implement session history browser
+  ;; Could show:
+  ;; - List of recent sessions from agent buffer history
+  ;; - Session summaries (timestamp, command, status)
+  ;; - Quick navigation between sessions
+  )
 
 (defun efrit-agent-refresh ()
   "Refresh the buffer display."
@@ -525,22 +575,28 @@ verbose: All tool results expanded, ignore auto_expand hints."
 %s
 
 Navigation:
-  TAB / S-TAB    Move between sections
-  n / M-n        Next tool call
-  p / M-p        Previous tool call (when not in input)
-  RET            Expand/collapse tool call at point
-  w              Copy tool result to kill ring
+   TAB / S-TAB    Move between sections
+   n / M-n        Next tool call
+   p / M-p        Previous tool call (when not in input)
+   RET            Expand/collapse tool call at point
+   w              Copy tool result to kill ring
+   g              Refresh display
 
-Actions:
+ Actions:
    q              Quit buffer (session continues)
-   k              Kill/cancel session
-   P              Pause session
-   r              Resume paused session
-  g              Refresh display
-  E              Expand all tool calls
-  C              Collapse all tool calls
-  v              Cycle verbosity (minimal/normal/verbose)
-  M              Cycle display mode (minimal/smart/verbose)
+   E              Expand all tool calls
+   C              Collapse all tool calls
+   v              Cycle verbosity (minimal/normal/verbose)
+   M              Cycle display mode (minimal/smart/verbose)
+
+ Session Management (canonical keybindings):
+   C-c C-c        Send input / Continue session
+   C-c C-k        Kill/pause session
+   C-c C-n        New session
+   C-c C-r        Resume paused session
+   C-c C-h        Browse session history
+   P              Pause session (non-canonical)
+   r              Resume session (non-canonical)
 
 Verbosity Levels:
   minimal        Show 20 chars result, 3 lines when expanded
@@ -984,7 +1040,7 @@ This is the recommended entry point for the REPL-style Efrit interface."
         (setq efrit-agent--start-time nil)))
     ;; Display at bottom and focus
     (display-buffer buffer '(display-buffer-at-bottom (window-height . 15)))
-    (when-let ((win (get-buffer-window buffer)))
+    (when-let* ((win (get-buffer-window buffer)))
       (select-window win))
     ;; Move point to input region
     (with-current-buffer buffer
