@@ -388,13 +388,90 @@ Resets the display while preserving session state."
   "Open a browser of recent sessions.
 Shows a list of recent agent buffer sessions with timestamps and summaries."
   (interactive)
-  (message "Session browser not yet implemented")
-  ;; TODO: Implement session history browser
-  ;; Could show:
-  ;; - List of recent sessions from agent buffer history
-  ;; - Session summaries (timestamp, command, status)
-  ;; - Quick navigation between sessions
-  )
+  (efrit-resume))
+
+;;;###autoload
+(defun efrit-resume ()
+  "Resume a previous Efrit session from disk.
+Shows a list of recent sessions with project and timestamp info.
+Select one to restore it into the current agent buffer."
+  (interactive)
+  (require 'efrit-session-persist)
+  (let* ((sessions (efrit-session-persist-list))
+         (choices (mapcar
+                   (lambda (s)
+                     (let* ((id (car s))
+                            (times (cdr s))
+                            (created (car times))
+                            (last-activity (cadr times))
+                            ;; Load session to get project and preview
+                            (session (efrit-session-persist-load id))
+                            (project (and session
+                                          (efrit-repl-session-project-root session)))
+                            (conv (and session
+                                       (efrit-repl-session-conversation session)))
+                            (first-msg (and conv
+                                            (car (last conv))
+                                            (plist-get (car (last conv)) :content)))
+                            (preview (if first-msg
+                                         (truncate-string-to-width
+                                          (replace-regexp-in-string "[\n\r]+" " " first-msg)
+                                          40)
+                                       "(empty)")))
+                       (cons (format "%s | %s | %s"
+                                     (or last-activity created id)
+                                     (or (and project (abbreviate-file-name project)) "?")
+                                     preview)
+                             id)))
+                   sessions)))
+    (if (null choices)
+        (message "No saved sessions found")
+      (let* ((selection (completing-read "Resume session: " choices nil t))
+             (session-id (cdr (assoc selection choices))))
+        (when session-id
+          (efrit-resume-session session-id))))))
+
+(defun efrit-resume-session (session-id)
+  "Resume session with SESSION-ID.
+Loads the session from disk and restores it into the agent buffer."
+  (require 'efrit-session-persist)
+  (let ((session (efrit-session-persist-load session-id)))
+    (if (null session)
+        (message "Failed to load session %s" session-id)
+      ;; Get or create agent buffer
+      (let ((buffer (efrit-agent--get-buffer)))
+        (with-current-buffer buffer
+          (unless (derived-mode-p 'efrit-agent-mode)
+            (efrit-agent-mode))
+          ;; Restore the REPL session
+          (setq efrit-agent--repl-session session)
+          (setf (efrit-repl-session-buffer session) buffer)
+          ;; Clear existing conversation display
+          (efrit-agent--clear-conversation)
+          ;; Restore conversation to display
+          (dolist (entry (reverse (efrit-repl-session-conversation session)))
+            (let ((role (plist-get entry :role))
+                  (content (plist-get entry :content)))
+              (pcase role
+                ('user (efrit-agent--add-user-message content))
+                ('assistant (efrit-agent--add-claude-message content))
+                (_ nil))))
+          ;; Set status to idle (ready for more input)
+          (setq efrit-agent--status 'idle)
+          (when (fboundp 'efrit-agent-set-status)
+            (efrit-agent-set-status 'idle))
+          ;; Update header
+          (setq efrit-agent--session-id session-id)
+          (force-mode-line-update))
+        ;; Display and focus
+        (display-buffer buffer '(display-buffer-at-bottom (window-height . 15)))
+        (when-let* ((win (get-buffer-window buffer)))
+          (select-window win))
+        (with-current-buffer buffer
+          (when (and efrit-agent--input-start
+                     (marker-position efrit-agent--input-start))
+            (goto-char efrit-agent--input-start)))
+        (message "Resumed session %s" session-id)))))
 
 (defun efrit-agent-refresh ()
   "Refresh the buffer display."
