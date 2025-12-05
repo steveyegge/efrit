@@ -23,6 +23,7 @@
 (require 'efrit-agent-render)
 (require 'efrit-session)
 (require 'efrit-session-worklog)
+(require 'efrit-session-persist)
 (require 'efrit-repl-session)
 (require 'efrit-repl-loop)
 
@@ -257,9 +258,9 @@ Creates a new REPL session if needed, otherwise continues the existing one."
        (efrit-repl-continue session input
                             #'efrit-agent--on-turn-complete)))))
 
-(defun efrit-agent--on-turn-complete (_session stop-reason)
+(defun efrit-agent--on-turn-complete (session stop-reason)
   "Callback when a REPL turn completes.
-_SESSION is the REPL session (unused), STOP-REASON indicates why the turn ended."
+SESSION is the REPL session, STOP-REASON indicates why the turn ended."
   (efrit-log 'debug "REPL turn complete: %s" stop-reason)
   ;; Update agent buffer status based on stop reason
   (when (fboundp 'efrit-agent-set-status)
@@ -270,7 +271,19 @@ _SESSION is the REPL session (unused), STOP-REASON indicates why the turn ended.
        ("paused" 'paused)
        (_ 'failed))))
   ;; Reset prompt if we were waiting
-  (efrit-agent--reset-input-prompt))
+  (efrit-agent--reset-input-prompt)
+  ;; Auto-save session if enabled
+  (when (and efrit-session-persist-auto-save session)
+    (efrit-agent--auto-save-session session)))
+
+(defun efrit-agent--auto-save-session (session)
+  "Auto-save SESSION to disk.
+Saves asynchronously to avoid blocking the UI."
+  (condition-case err
+      (when (efrit-session-persist-save session)
+        (efrit-log 'debug "Auto-saved session %s" (efrit-repl-session-id session)))
+    (error
+     (efrit-log 'error "Auto-save failed: %s" (error-message-string err)))))
 
 (defun efrit-agent-input-clear ()
   "Clear the current input."
