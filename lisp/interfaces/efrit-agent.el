@@ -594,9 +594,9 @@ Press q to close this help."
       (princ help-text))))
 
 (defun efrit-agent-send-input ()
-  "Send user input to the session.
-This is a wrapper that delegates to efrit-agent-input-send from the input module.
-The actual implementation reads from the input region and routes appropriately."
+  "Send user input to the session by delegating to the input module.
+Reads from the input region and routes to appropriate handler
+(respond to question, inject guidance, or start new session)."
   (interactive)
   (require 'efrit-agent-input)
   (call-interactively #'efrit-agent-input-send))
