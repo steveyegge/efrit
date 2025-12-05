@@ -289,8 +289,13 @@ Returns tool result string."
 
 (defun efrit-repl-loop--on-api-error (session error)
   "Handle API ERROR for REPL SESSION."
-  (let ((session-id (efrit-repl-session-id session)))
+  (let ((session-id (efrit-repl-session-id session))
+        (buffer (efrit-repl-session-buffer session)))
     (efrit-log 'error "REPL session %s: API error: %s" session-id error)
+    (when (and buffer (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (when (fboundp 'efrit-agent--add-error-message)
+          (efrit-agent--add-error-message (format "%s" error)))))
     (efrit-repl-loop--end-turn session "api-error")))
 
 (defun efrit-repl-loop--end-turn (session stop-reason)

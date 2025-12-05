@@ -66,6 +66,24 @@ Claude messages appear inline without a prefix."
     ;; Start a new message
     (efrit-agent--stream-start-message text)))
 
+(defun efrit-agent--add-error-message (text)
+  "Add an error message with TEXT to the conversation region.
+Error messages are displayed in red to make them visible."
+  (efrit-agent--stream-end-message)
+  (efrit-agent--hide-thinking)
+  (let* ((msg-id (format "error-msg-%d" (cl-incf efrit-agent--message-counter)))
+         (inhibit-read-only t)
+         (formatted-text (concat "\n⚠ Error: " text "\n\n")))
+    (save-excursion
+      (goto-char (marker-position efrit-agent--conversation-end))
+      (let ((start (point)))
+        (insert (propertize formatted-text 'face 'efrit-agent-error))
+        (add-text-properties start (point)
+                             (list 'efrit-type 'error-message
+                                   'efrit-id msg-id
+                                   'read-only t))
+        (set-marker efrit-agent--conversation-end (point))))))
+
 (defun efrit-agent--stream-start-message (text)
   "Start a new streaming Claude message with TEXT.
 Creates markers for tracking the message region for future appends."
