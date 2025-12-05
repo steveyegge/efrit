@@ -55,16 +55,53 @@ Follows precedence: explicit summary > annotations > truncated result."
       (efrit-agent--summary-from-annotations tv)
       (efrit-agent--default-summary tv)))
 
+(defun efrit-agent--smart-result-summary (tool-name result success-p)
+  "Generate a smart summary for TOOL-NAME's RESULT.
+SUCCESS-P indicates if the tool succeeded."
+  (let ((result-str (format "%s" result)))
+    (cond
+     ;; Read tool - show line count
+     ((string-match-p "Read\\|read" tool-name)
+      (let ((lines (length (split-string result-str "\n"))))
+        (format "%d lines" lines)))
+     ;; Edit/Create tool - show change summary
+     ((string-match-p "edit_file\\|create_file\\|Edit\\|Create" tool-name)
+      (cond
+       ((string-match-p "Created\\|created" result-str) "Created")
+       ((string-match "\\([0-9]+\\) lines?" result-str)
+        (format "%s lines changed" (match-string 1 result-str)))
+       (success-p "Done")
+       (t "Failed")))
+     ;; Grep - show match count
+     ((string-match-p "Grep\\|grep\\|search" tool-name)
+      (let ((matches (length (split-string result-str "\n" t))))
+        (if (> matches 0)
+            (format "%d matches" matches)
+          "No matches")))
+     ;; Bash - show exit status or output preview
+     ((string-match-p "Bash\\|bash\\|shell" tool-name)
+      (if success-p
+          (let ((lines (split-string result-str "\n" t)))
+            (if (> (length lines) 1)
+                (format "%d lines output" (length lines))
+              (truncate-string-to-width (car lines) 40)))
+        "Failed"))
+     ;; Fallback
+     (t nil))))
+
 (defun efrit-agent--default-summary (tv)
   "Generate default summary from TV's result by truncating."
-  (let ((result (efrit-agent-tool-view-result tv)))
+  (let ((result (efrit-agent-tool-view-result tv))
+        (tool-name (efrit-agent-tool-view-name tv))
+        (success-p (efrit-agent-tool-view-success-p tv)))
     (when result
-      (truncate-string-to-width
-       (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
-       (pcase efrit-agent-verbosity
-         ('minimal 20)
-         ('normal 40)
-         ('verbose 80))))))
+      (or (efrit-agent--smart-result-summary tool-name result success-p)
+          (truncate-string-to-width
+           (replace-regexp-in-string "[\n\r]+" " " (format "%s" result))
+           (pcase efrit-agent-verbosity
+             ('minimal 20)
+             ('normal 40)
+             ('verbose 80)))))))
 
 (defun efrit-agent--summary-from-annotations (tv)
   "Generate summary from TV's structured annotations.
@@ -123,6 +160,8 @@ Returns the end position of the inserted content."
          (importance (efrit-agent-tool-view-importance tv))
          (annotations (efrit-agent-tool-view-annotations tv))
          (expanded-p (efrit-agent-tool-view-expanded-p tv))
+         ;; Extract target for display
+         (target (efrit-agent--extract-tool-target name input))
          ;; Compute display elements
          (expand-char (efrit-agent--char
                        (if expanded-p 'expand-expanded 'expand-collapsed)))
@@ -144,17 +183,29 @@ Returns the end position of the inserted content."
     (insert "  ")
     (insert (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp))
     (insert (propertize (format "%s " status-char)
-                        'face (or status-face 'efrit-agent-timestamp)))
+                        'face (or status-face
+                                  (if running 'efrit-agent-status-working 'efrit-agent-timestamp))))
     (insert (propertize (or name "tool") 'face 'efrit-agent-tool-name))
+    ;; Show target (file path, pattern, etc.)
+    (when target
+      (insert (propertize (format ": %s" target) 'face 'efrit-agent-session-id)))
+    ;; Show elapsed time
     (when elapsed
       (insert (propertize (format " (%.2fs)" elapsed) 'face 'efrit-agent-timestamp)))
+    ;; Show result summary or running indicator
     (cond
      (running
-      (insert (propertize "..." 'face 'efrit-agent-timestamp)))
+      (insert "\n")
+      (insert (propertize (format "     %s\n" (efrit-agent--tool-progress-text name input))
+                          'face 'efrit-agent-timestamp)))
      (result
-      (insert " -> ")
-      (insert (propertize (or summary "") 'face status-face))))
-    (insert "\n")
+      (insert "\n")
+      (insert (propertize (format "     %s %s\n"
+                                  (if success-p "✓" "✗")
+                                  (or summary "Done"))
+                          'face (if success-p 'efrit-agent-success 'efrit-agent-error)))))
+    (unless (or running result)
+      (insert "\n"))
     ;; Insert expanded body if expanded
     (when (and expanded-p (or input result))
       (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations)))
@@ -195,6 +246,57 @@ Returns an efrit-agent-tool-view struct."
 
 ;;; Tool Call Display
 
+(defun efrit-agent--extract-tool-target (tool-name input)
+  "Extract the primary target from INPUT for TOOL-NAME.
+Returns a short string describing what the tool is operating on."
+  (when input
+    (let ((path (or (plist-get input :path)
+                    (plist-get input :file_path)
+                    (and (listp input)
+                         (or (cdr (assoc 'path input))
+                             (cdr (assoc :path input))
+                             (cdr (assoc 'file_path input))
+                             (cdr (assoc :file_path input)))))))
+      (cond
+       ;; File path - abbreviate to filename or short path
+       (path
+        (let ((name (file-name-nondirectory path)))
+          (if (> (length name) 30)
+              (concat "..." (substring name -27))
+            name)))
+       ;; Pattern for Grep
+       ((and (string-match-p "Grep\\|grep\\|search" tool-name)
+             (or (plist-get input :pattern)
+                 (and (listp input) (cdr (assoc 'pattern input)))))
+        (let ((pat (or (plist-get input :pattern)
+                       (cdr (assoc 'pattern input)))))
+          (truncate-string-to-width (format "\"%s\"" pat) 30)))
+       ;; Command for Bash
+       ((and (string-match-p "Bash\\|bash\\|shell" tool-name)
+             (or (plist-get input :cmd)
+                 (plist-get input :command)
+                 (and (listp input)
+                      (or (cdr (assoc 'cmd input))
+                          (cdr (assoc 'command input))))))
+        (let ((cmd (or (plist-get input :cmd)
+                       (plist-get input :command)
+                       (and (listp input)
+                            (or (cdr (assoc 'cmd input))
+                                (cdr (assoc 'command input)))))))
+          (truncate-string-to-width cmd 30)))
+       (t nil)))))
+
+(defun efrit-agent--tool-progress-text (tool-name _input)
+  "Generate progress text for TOOL-NAME with _INPUT (reserved)."
+  (pcase tool-name
+    ((pred (lambda (n) (string-match-p "Read\\|read" n))) "Reading...")
+    ((pred (lambda (n) (string-match-p "edit_file\\|Edit" n))) "Editing...")
+    ((pred (lambda (n) (string-match-p "create_file\\|Create" n))) "Creating...")
+    ((pred (lambda (n) (string-match-p "Grep\\|grep\\|search" n))) "Searching...")
+    ((pred (lambda (n) (string-match-p "Bash\\|bash\\|shell" n))) "Running...")
+    ((pred (lambda (n) (string-match-p "glob\\|find" n))) "Finding...")
+    (_ "...")))
+
 (defun efrit-agent--add-tool-call (tool-name &optional input)
   "Add a tool call indicator for TOOL-NAME with optional INPUT.
 Tool calls appear inline in the conversation.
@@ -204,14 +306,19 @@ Returns the tool ID for later update with result."
   ;; Hide thinking indicator when tool starts
   (efrit-agent--hide-thinking)
   (let* ((tool-id (format "tool-%d" (cl-incf efrit-agent--message-counter)))
+         (target (efrit-agent--extract-tool-target tool-name input))
+         (progress (efrit-agent--tool-progress-text tool-name input))
          (formatted-text
           (concat
            "  "
            (propertize (format "%s " (efrit-agent--char 'tool-running))
-                       'face 'efrit-agent-timestamp)
+                       'face 'efrit-agent-status-working)
            (propertize tool-name 'face 'efrit-agent-tool-name)
-           (propertize "..." 'face 'efrit-agent-timestamp)
-           "\n")))
+           (when target
+             (propertize (format ": %s" target) 'face 'efrit-agent-session-id))
+           "\n"
+           (propertize (format "     %s\n" progress)
+                       'face 'efrit-agent-timestamp))))
     ;; Store the tool info for later result update
     (efrit-agent--append-to-conversation
      formatted-text
