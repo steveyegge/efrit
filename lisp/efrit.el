@@ -63,6 +63,30 @@
 (defalias 'efrit-start 'efrit-chat
   "Start a new Efrit chat session (alias for efrit-chat).")
 
+;;;###autoload
+(defun efrit ()
+  "Open or switch to the Efrit REPL session buffer.
+
+This is the main entry point for interactive Efrit usage.
+The agent buffer provides a conversation-style REPL where you can:
+- Issue natural language commands
+- See real-time progress and tool execution
+- Interact with Claude in a persistent session
+- Have your context maintained across multiple commands
+
+Keybindings in the agent buffer:
+  RET       - Toggle tool call expansion
+  TAB       - Next section
+  Shift-TAB - Previous section
+  n/p       - Next/previous tool call
+  k         - Cancel current session
+  ?         - Show help
+
+Use M-x efrit-help for more information."
+  (interactive)
+  (require 'efrit-agent)
+  (call-interactively #'efrit-agent))
+
 ;; Define efrit-mode-map early so it's always available
 (defvar efrit-mode-map
   (let ((map (make-sparse-keymap)))
@@ -118,14 +142,13 @@
       (insert "======================================\n\n")
 
       (insert "Main Commands:\n\n")
-      (insert "  M-x efrit-chat         - Interactive multi-turn chat mode\n")
-      (insert "                           Use for back-and-forth conversations\n\n")
-      (insert "  M-x efrit-do           - Execute command asynchronously (default)\n")
-      (insert "                           Shows progress buffer, non-blocking\n\n")
-      (insert "  M-x efrit-do-silently  - Execute command in background\n")
-      (insert "                           No progress buffer by default\n\n")
-      (insert "  M-x efrit-do-sync      - Execute command synchronously (legacy)\n")
-      (insert "                           Blocks until complete, shows result\n\n")
+      (insert "  M-x efrit              - Open REPL session buffer (PRIMARY INTERFACE)\n")
+      (insert "                           Persistent conversation with Claude\n")
+      (insert "                           Recommended for all interactive use\n\n")
+      (insert "  M-x efrit-chat         - Start new chat session (alternative)\n")
+      (insert "                           Single-window chat mode\n\n")
+      (insert "  M-x efrit-do-sync      - Execute command synchronously (scripting)\n")
+      (insert "                           For shell scripts and automation\n\n")
 
       (insert "Utility Commands:\n\n")
       (insert "  M-x efrit-doctor       - Check configuration and health\n")
@@ -138,12 +161,10 @@
       (insert "  Set `efrit-enable-global-keymap` to t, or run:\n")
       (insert "  M-x efrit-setup-keybindings\n\n")
       (insert "  Then use C-c C-e prefix:\n")
-      (insert "    C-c C-e c  - efrit-chat\n")
-      (insert "    C-c C-e a  - efrit-agent (agentic session buffer)\n")
-      (insert "    C-c C-e d  - efrit-do (async, progress buffer)\n")
-      (insert "    C-c C-e w  - efrit-do-silently (async, background)\n")
+      (insert "    C-c C-e c  - efrit-chat (multi-turn chat)\n")
+      (insert "    C-c C-e d  - efrit-do (async execution, internal API)\n")
+      (insert "    C-c C-e D  - efrit-do-sync (sync execution, scripting)\n")
       (insert "    C-c C-e p  - efrit-do-show-progress\n")
-      (insert "    C-c C-e D  - efrit-do-sync (legacy, blocking)\n")
       (insert "    C-c C-e q  - Start remote queue\n")
       (insert "    C-c C-e Q  - Queue status\n\n")
 

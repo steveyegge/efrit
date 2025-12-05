@@ -733,11 +733,13 @@ Displays final results and processes queued commands."
 (defun efrit-do (command)
   "Execute natural language COMMAND in Emacs asynchronously.
 
-For a REPL-style experience with a persistent prompt buffer, use
-\\[efrit] instead. This command is better for:
-- One-off commands where you don't need the REPL interface
-- Scripting and automation
-- When you prefer the minibuffer workflow
+This is an internal API function. For user interaction, use M-x efrit
+to open the REPL session buffer instead.
+
+PROGRAMMATIC USE ONLY:
+This function is designed for programmatic use from other elisp code.
+For direct user execution, see `efrit-agent-input-send' in the agent
+buffer, or use the main `efrit' REPL entry point.
 
 FEATURES:
 - Progress buffer with real-time updates (automatic display)
@@ -746,22 +748,7 @@ FEATURES:
 - Non-blocking execution keeps Emacs responsive
 - Session state tracking and restoration
 
-USAGE:
-```
-M-x efrit-do RET
-> create a buffer with today's date
-```
-
-If a command is already running, this command is queued for later
-execution. Use `efrit-do-show-queue' to view queued commands.
-
-For silent execution without showing the progress buffer, use
-`efrit-do-silently' instead. For synchronous/blocking execution,
-use `efrit-do-sync'.
-
 Returns the session object for programmatic use."
-  (interactive
-   (list (read-string "Command: " nil 'efrit-do-history)))
   
   ;; Validate command is not empty or whitespace-only
   (when (string-empty-p (string-trim command))
@@ -784,14 +771,13 @@ Returns the session object for programmatic use."
 (defun efrit-do-sync (command)
   "Execute natural language COMMAND in Emacs synchronously (blocking).
 
-This is the synchronous/blocking execution path. Most users should
-prefer `efrit-do' for non-blocking async execution with real-time
-progress visibility, command queueing, and proper interruption handling.
+This is a synchronous/blocking execution path designed primarily for:
+- Shell scripts and automation where blocking is required
+- Scripting contexts that cannot handle asynchronous execution
+- One-off commands where you need to wait for completion
 
-Use `efrit-do-sync' only when you need blocking behavior, such as:
-- Scripts where waiting for completion is required
-- Scripting contexts that cannot handle async execution
-- One-off commands where blocking is acceptable
+For interactive use, prefer M-x efrit (the REPL agent buffer) which
+provides a better interactive experience with persistent context.
 
 The command is sent to Claude, which translates it into Elisp
 and executes it immediately. Results are displayed in a dedicated
@@ -846,15 +832,17 @@ Returns the result string for programmatic use."
 (defun efrit-do-silently (command)
   "Execute COMMAND asynchronously in background without progress buffer.
 
-Like `efrit-do', but without automatically displaying the progress buffer.
+Execute a command in the background without displaying the progress buffer.
 Progress is visible only in:
 - Modeline status indicator
 - Minibuffer messages
 
-WHEN TO USE:
-- Long-running commands where you want to continue editing
-- Commands where you don't need to see detailed progress
+DEPRECATED: For most interactive use, prefer M-x efrit (the REPL).
+
+This function is useful for:
 - Background tasks that shouldn't interrupt your workflow
+- When called from other elisp code
+- Legacy automation scripts
 
 Show progress buffer manually with \\[efrit-do-show-progress].
 Use \\[keyboard-quit] (C-g) to interrupt execution.
