@@ -245,7 +245,7 @@
     ;; Actions
     (define-key map (kbd "q") #'efrit-agent-quit)
     (define-key map (kbd "k") #'efrit-agent-cancel)
-    (define-key map (kbd "p") #'efrit-agent-pause)
+    (define-key map (kbd "P") #'efrit-agent-pause)
     (define-key map (kbd "r") #'efrit-agent-resume)
     (define-key map (kbd "g") #'efrit-agent-refresh)
     (define-key map (kbd "RET") #'efrit-agent-toggle-expand)
@@ -595,14 +595,11 @@ Press q to close this help."
 
 (defun efrit-agent-send-input ()
   "Send user input to the session.
-If the session is waiting for user input, prompts for a response."
+This is a wrapper that delegates to efrit-agent-input-send from the input module.
+The actual implementation reads from the input region and routes appropriately."
   (interactive)
-  (if (eq efrit-agent--status 'waiting)
-      (progn
-        (call-interactively #'efrit-executor-respond)
-        (efrit-agent-set-status 'working)
-        (efrit-agent--render))
-    (message "Session is not waiting for input")))
+  (require 'efrit-agent-input)
+  (call-interactively #'efrit-agent-input-send))
 
 (defun efrit-agent-abort ()
   "Abort the current operation."
@@ -1159,6 +1156,14 @@ Updates in-place if TODOs already exist in the conversation."
         (setq efrit-agent--todos todos)
         (efrit-agent--add-todos-inline todos)))))
 
-(provide 'efrit-agent)
+        ;;; Integration Setup
+        ;;
+        ;; Set up hooks to connect with efrit-do, efrit-progress, and session lifecycle.
+        ;; This happens on module load to ensure real-time updates are connected.
+
+        (require 'efrit-agent-integration)
+        (efrit-agent-setup-integration)
+
+        (provide 'efrit-agent)
 
 ;;; efrit-agent.el ends here
