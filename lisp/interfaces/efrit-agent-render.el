@@ -87,6 +87,11 @@ Error messages are displayed in red to make them visible."
 (defun efrit-agent--stream-start-message (text)
   "Start a new streaming Claude message with TEXT.
 Creates markers for tracking the message region for future appends."
+  ;; Ensure markers exist before proceeding
+  (unless (and efrit-agent--conversation-end
+               (marker-position efrit-agent--conversation-end))
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions))
   ;; Hide thinking indicator when Claude starts responding
   (efrit-agent--hide-thinking)
   (let* ((msg-id (format "claude-msg-%d" (cl-incf efrit-agent--message-counter)))
