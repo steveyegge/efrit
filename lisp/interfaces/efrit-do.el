@@ -342,8 +342,9 @@ Returns (error-p . error-msg) where error-p is t if errors found."
       (cons t (format "Runtime error in %s: %s" 
                       (match-string 1 result) 
                       (match-string 2 result))))
-     ;; API errors
-     ((string-match "API Error" result)
+     ;; API errors - match the specific format from efrit-do--process-api-response
+     ;; Format: "API Error (type): message" - must have parenthesized type
+     ((string-match "^API Error ([^)]+):" result)
       (cons t result))
      ;; General errors - match at start of line to avoid false positives
      ((string-match "^Error:" result)
