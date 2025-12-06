@@ -203,12 +203,17 @@ Options:
 
 (defun efrit-web-search--check-consent (query)
   "Check if web search is allowed, prompting user if needed.
-Returns t if allowed, nil if denied."
+Returns t if allowed, nil if denied.
+In batch/noninteractive mode, auto-approves to avoid blocking."
   (cond
    ;; Permanent enable
    (efrit-enable-web-access t)
    ;; Already enabled for session
    (efrit-web-search--session-enabled t)
+   ;; Batch/noninteractive mode - auto-approve (can't prompt)
+   (noninteractive
+    (setq efrit-web-search--session-enabled t)
+    t)
    ;; Need to ask user
    (t
     (let ((response (y-or-n-p
