@@ -91,8 +91,10 @@ Returns list of (timestamp . content) pairs in reverse order (newest first)."
             (with-temp-buffer
               (insert-file-contents undo-file)
               (let ((versions (json-read)))
-                ;; JSON reads into alist, already in newest-first order
-                versions))
+                ;; json-read returns a vector for arrays, convert to list
+                (if (vectorp versions)
+                    (append versions nil)
+                  versions)))
           (error nil))
       nil)))
 
