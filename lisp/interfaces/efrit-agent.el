@@ -275,12 +275,12 @@
 
 ;;; Major Mode Definition
 
-(define-derived-mode efrit-agent-mode special-mode "Efrit-Agent"
+(define-derived-mode efrit-agent-mode text-mode "Efrit-Agent"
   "Major mode for Efrit agentic session display.
 
 This buffer provides a conversation-first view of an Efrit agent session.
 The buffer is divided into:
-- Conversation region (read-only): messages and tool calls
+- Conversation region (read-only via text properties)
 - Input region (editable): where you type responses
 
 Status is shown in the header-line at top of window.
@@ -293,9 +293,6 @@ Status is shown in the header-line at top of window.
   (setq-local line-spacing 0.1)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
-  ;; Allow editing input region (conversation is protected by text properties)
-  ;; This overrides special-mode's buffer-read-only setting
-  (setq-local buffer-read-only nil)
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
   ;; Initialize user expansion state tracking (persists across buffer updates)
