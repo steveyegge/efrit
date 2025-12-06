@@ -132,12 +132,11 @@ Subclasses should override to export their fields."
                        (gethash "extension" tool-input))
                   "*")
    :recursive (if (hash-table-p tool-input)
-                  ;; When key exists, use its value (nil or t)
-                  ;; When key doesn't exist, default to t
                   (let ((val (gethash "recursive" tool-input 'no-value)))
-                    (if (eq val 'no-value)
-                        t  ; Key doesn't exist, default to recursive
-                      val))  ; Use the explicit value (t or nil)
+                    (cond
+                     ((eq val 'no-value) t)       ; Key doesn't exist, default to recursive
+                     ((eq val :json-false) nil)   ; JSON false → nil
+                     (t val)))                    ; Use the explicit value (t or nil)
                 t)))
 
 (cl-defmethod efrit-glob-files-input-get-pattern ((input efrit-glob-files-input))
