@@ -294,9 +294,9 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
     ;; Set markers at the saved positions (after all inserts to avoid insertion-type issues)
     (set-marker efrit-agent--conversation-end conversation-end-pos)
     (set-marker efrit-agent--input-start input-start-pos)
-    ;; Make conversation region read-only
+    ;; Make conversation region read-only (front-sticky prevents insertion at point-min)
     (add-text-properties (point-min) efrit-agent--conversation-end
-                         '(read-only t))))
+                         '(read-only t front-sticky (read-only)))))
 
 (defun efrit-agent--append-to-conversation (text &optional properties)
   "Append TEXT with optional PROPERTIES to the conversation region.

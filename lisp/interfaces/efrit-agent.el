@@ -293,6 +293,9 @@ Status is shown in the header-line at top of window.
   (setq-local line-spacing 0.1)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
+  ;; Allow editing input region (conversation is protected by text properties)
+  ;; This overrides special-mode's buffer-read-only setting
+  (setq-local buffer-read-only nil)
   ;; Initialize state
   (setq efrit-agent--expanded-items (make-hash-table :test 'equal))
   ;; Initialize user expansion state tracking (persists across buffer updates)
