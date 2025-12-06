@@ -734,13 +734,9 @@ Displays final results and processes queued commands."
 (defun efrit-do (command)
   "Execute natural language COMMAND in Emacs asynchronously.
 
-This is an internal API function. For user interaction, use M-x efrit
-to open the REPL session buffer instead.
-
-PROGRAMMATIC USE ONLY:
-This function is designed for programmatic use from other elisp code.
-For direct user execution, see `efrit-agent-input-send' in the agent
-buffer, or use the main `efrit' REPL entry point.
+For interactive use, prefer M-x efrit (the REPL agent buffer) which
+provides persistent conversation context. This command is useful for
+one-off requests without the REPL UI.
 
 FEATURES:
 - Progress buffer with real-time updates (automatic display)
@@ -750,6 +746,8 @@ FEATURES:
 - Session state tracking and restoration
 
 Returns the session object for programmatic use."
+  (interactive
+   (list (read-string "Efrit command: " nil 'efrit-do-history)))
   
   ;; Validate command is not empty or whitespace-only
   (when (string-empty-p (string-trim command))

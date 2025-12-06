@@ -1132,12 +1132,7 @@ This is the recommended entry point for the REPL-style Efrit interface."
 (defun efrit-agent ()
   "Open or switch to the Efrit agent buffer."
   (interactive)
-  (let ((buffer (efrit-agent--get-buffer)))
-    ;; Initialize mode if not already done
-    (unless (eq (buffer-local-value 'major-mode buffer) 'efrit-agent-mode)
-      (with-current-buffer buffer
-        (efrit-agent-mode)))
-    (pop-to-buffer buffer)))
+  (efrit-agent-open))
 
 (defun efrit-agent-add-activity (activity)
   "Add an ACTIVITY entry to the activity log.
