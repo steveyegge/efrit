@@ -292,14 +292,18 @@ Returns tool result string."
   (let ((session-id (efrit-repl-session-id session))
         (buffer (efrit-repl-session-buffer session)))
     (efrit-log 'error "REPL session %s: API error: %s" session-id error)
-    (when (and buffer (buffer-live-p buffer))
-      (with-current-buffer buffer
-        (when (fboundp 'efrit-agent--add-error-message)
-          (condition-case err
-              (efrit-agent--add-error-message (format "%s" error))
-            (error
-             (efrit-log 'error "REPL session %s: Error displaying error message: %s"
-                        session-id (error-message-string err)))))))
+    (when buffer
+      (if (buffer-live-p buffer)
+          ;; Buffer exists and is live - try to display error
+          (with-current-buffer buffer
+            (when (fboundp 'efrit-agent--add-error-message)
+              (condition-case err
+                  (efrit-agent--add-error-message (format "%s" error))
+                (error
+                 (efrit-log 'error "REPL session %s: Error displaying error message: %s"
+                            session-id (error-message-string err))))))
+        ;; Buffer reference is stale - clear it
+        (setf (efrit-repl-session-buffer session) nil)))
     (efrit-repl-loop--end-turn session "api-error")))
 
 (defun efrit-repl-loop--end-turn (session stop-reason)
