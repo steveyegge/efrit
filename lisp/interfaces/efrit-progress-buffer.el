@@ -298,7 +298,7 @@ Returns character count inserted."
 
 ;;; Buffer Management
 
-(defun efrit-progress-show-message (session-id message &optional _level)
+(defun efrit-progress-buffer-show-message (session-id message &optional _level)
   "Show MESSAGE in SESSION-ID's progress buffer with optional LEVEL.
 LEVEL can be `info', `warn', `error' (defaults to `info').
 Creates buffer if it doesn't exist."

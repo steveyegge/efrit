@@ -113,7 +113,7 @@
     (when efrit-progress-auto-show
       (display-buffer buffer))))
 
-(defun efrit-progress-show-message (message &optional type)
+(defun efrit-ui-progress--show-message (message &optional type)
   "Show MESSAGE in progress buffer with optional TYPE.
 TYPE can be \\='claude, \\='error, \\='success, or nil."
   (let ((face (pcase type
@@ -320,7 +320,7 @@ SUCCESS-P indicates if the execution was successful."
 
 (defun efrit-progress-update-todo (todo-id new-status)
   "Update TODO display when TODO-ID changes to NEW-STATUS."
-  (efrit-progress-show-message
+  (efrit-ui-progress--show-message
    (format "TODO %s → %s" todo-id new-status)
    (if (eq new-status 'completed) 'success 'info)))
 
