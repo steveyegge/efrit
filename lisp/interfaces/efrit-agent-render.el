@@ -127,7 +127,10 @@ Creates markers for tracking the message region for future appends."
 (defun efrit-agent--stream-append-text (text)
   "Append TEXT to the current streaming Claude message.
 Updates the message region markers."
-  (when efrit-agent--streaming-message
+  (when (and efrit-agent--streaming-message
+             (nth 2 efrit-agent--streaming-message)
+             (markerp (nth 2 efrit-agent--streaming-message))
+             (marker-position (nth 2 efrit-agent--streaming-message)))
     (let* ((msg-id (nth 0 efrit-agent--streaming-message))
            (end-marker (nth 2 efrit-agent--streaming-message))
            (inhibit-read-only t))
@@ -146,7 +149,10 @@ Updates the message region markers."
                                    'efrit-id msg-id
                                    'read-only t))
         ;; Update conversation end if needed
-        (when (> (point) (marker-position efrit-agent--conversation-end))
+        (when (and efrit-agent--conversation-end
+                   (markerp efrit-agent--conversation-end)
+                   (marker-position efrit-agent--conversation-end)
+                   (> (point) (marker-position efrit-agent--conversation-end)))
           (set-marker efrit-agent--conversation-end (point))))
       ;; Scroll to show new content
       (efrit-agent--scroll-to-bottom))))
