@@ -69,6 +69,11 @@ Claude messages appear inline without a prefix."
 (defun efrit-agent--add-error-message (text)
   "Add an error message with TEXT to the conversation region.
 Error messages are displayed in red to make them visible."
+  ;; Ensure markers exist before proceeding
+  (unless (and efrit-agent--conversation-end
+               (marker-position efrit-agent--conversation-end))
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions))
   (efrit-agent--stream-end-message)
   (efrit-agent--hide-thinking)
   (let* ((msg-id (format "error-msg-%d" (cl-incf efrit-agent--message-counter)))
