@@ -140,6 +140,34 @@ Returns nil if no options or N is out of range."
         (setq efrit-agent--status 'working)
         t))))
 
+(defun efrit-agent-input-select-option-1 ()
+  "Select the first option when waiting for input."
+  (interactive)
+  (if (efrit-agent--select-option 1)
+      (efrit-agent--clear-input)
+    (insert "1")))  ; Type "1" if not in waiting state
+
+(defun efrit-agent-input-select-option-2 ()
+  "Select the second option when waiting for input."
+  (interactive)
+  (if (efrit-agent--select-option 2)
+      (efrit-agent--clear-input)
+    (insert "2")))  ; Type "2" if not in waiting state
+
+(defun efrit-agent-input-select-option-3 ()
+  "Select the third option when waiting for input."
+  (interactive)
+  (if (efrit-agent--select-option 3)
+      (efrit-agent--clear-input)
+    (insert "3")))  ; Type "3" if not in waiting state
+
+(defun efrit-agent-input-select-option-4 ()
+  "Select the fourth option when waiting for input."
+  (interactive)
+  (if (efrit-agent--select-option 4)
+      (efrit-agent--clear-input)
+    (insert "4")))  ; Type "4" if not in waiting state
+
 ;;; Input Minor Mode
 ;;
 ;; A minor mode that activates when point is in the input region.
@@ -158,6 +186,12 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
     ;; Completion
     (define-key map (kbd "TAB") #'completion-at-point)
+    ;; Quick option selection (1-4 when waiting for question response)
+    ;; Only effective when status is 'waiting' (checked in handler)
+    (define-key map (kbd "1") #'efrit-agent-input-select-option-1)
+    (define-key map (kbd "2") #'efrit-agent-input-select-option-2)
+    (define-key map (kbd "3") #'efrit-agent-input-select-option-3)
+    (define-key map (kbd "4") #'efrit-agent-input-select-option-4)
     map)
   "Keymap for `efrit-agent-input-mode'.")
 

@@ -238,22 +238,19 @@
     (define-key map (kbd "S-TAB") #'efrit-agent-prev-section)
     (define-key map (kbd "M-n") #'efrit-agent-next-tool)
     (define-key map (kbd "M-p") #'efrit-agent-previous-tool)
-    (define-key map (kbd "n") #'efrit-agent-next-tool)
-    (define-key map (kbd "p") #'efrit-agent-previous-tool)
-    (define-key map (kbd "w") #'efrit-agent-copy-tool-output)
 
-    ;; Actions
-    (define-key map (kbd "q") #'efrit-agent-quit)
-    (define-key map (kbd "k") #'efrit-agent-cancel)
-    (define-key map (kbd "P") #'efrit-agent-pause)
-    (define-key map (kbd "r") #'efrit-agent-resume)
-    (define-key map (kbd "g") #'efrit-agent-refresh)
-    (define-key map (kbd "RET") #'efrit-agent-toggle-expand)
-    (define-key map (kbd "E") #'efrit-agent-expand-all)
-    (define-key map (kbd "C") #'efrit-agent-collapse-all)
-    (define-key map (kbd "v") #'efrit-agent-cycle-verbosity)
-    (define-key map (kbd "M") #'efrit-agent-cycle-display-mode)
-    (define-key map (kbd "?") #'efrit-agent-help)
+    ;; Actions (all with modifiers to avoid interfering with input)
+    (define-key map (kbd "C-q") #'efrit-agent-quit)
+    (define-key map (kbd "C-k") #'efrit-agent-cancel)
+    (define-key map (kbd "C-M-p") #'efrit-agent-pause)
+    (define-key map (kbd "C-M-r") #'efrit-agent-resume)
+    (define-key map (kbd "C-g") #'efrit-agent-refresh)
+    (define-key map (kbd "C-c C-t") #'efrit-agent-toggle-expand)
+    (define-key map (kbd "C-M-e") #'efrit-agent-expand-all)
+    (define-key map (kbd "C-M-c") #'efrit-agent-collapse-all)
+    (define-key map (kbd "C-M-v") #'efrit-agent-cycle-verbosity)
+    (define-key map (kbd "C-M-m") #'efrit-agent-cycle-display-mode)
+    (define-key map (kbd "C-h") #'efrit-agent-help)
 
     ;; Session management (canonical keybindings)
     (define-key map (kbd "C-c C-c") #'efrit-agent-send-input)  ; Send input
@@ -264,11 +261,8 @@
     
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
-    (define-key map (kbd "i") #'efrit-agent-inject-guidance)
-    (define-key map (kbd "1") #'efrit-agent-select-option-1)
-    (define-key map (kbd "2") #'efrit-agent-select-option-2)
-    (define-key map (kbd "3") #'efrit-agent-select-option-3)
-    (define-key map (kbd "4") #'efrit-agent-select-option-4)
+    ;; Number keys 1-4 for option selection are handled separately in input mode
+    ;; to avoid interfering with normal typing
 
     map)
   "Keymap for `efrit-agent-mode'.")
