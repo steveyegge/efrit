@@ -295,7 +295,11 @@ Returns tool result string."
     (when (and buffer (buffer-live-p buffer))
       (with-current-buffer buffer
         (when (fboundp 'efrit-agent--add-error-message)
-          (efrit-agent--add-error-message (format "%s" error)))))
+          (condition-case err
+              (efrit-agent--add-error-message (format "%s" error))
+            (error
+             (efrit-log 'error "REPL session %s: Error displaying error message: %s"
+                        session-id (error-message-string err)))))))
     (efrit-repl-loop--end-turn session "api-error")))
 
 (defun efrit-repl-loop--end-turn (session stop-reason)
