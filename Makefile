@@ -170,8 +170,8 @@ checkdoc:
 		--eval "(require 'checkdoc)" \
 		--eval "(setq checkdoc-autofix-style 'query)" \
 		$(foreach file,$(EL_FILES),--eval "(checkdoc-file \"$(file)\")") \
-		--eval "(if checkdoc-diagnostic-buffer (progn (set-buffer checkdoc-diagnostic-buffer) (message (buffer-string)) (error \"Checkdoc found issues\")))" \
-		2>&1 | grep -v "^$" || true
+		--eval '(if checkdoc-diagnostic-buffer (progn (set-buffer checkdoc-diagnostic-buffer) (message (buffer-string)) (error "Checkdoc found issues")))' \
+		2>&1 | grep -v "^$$" || true
 	@echo "✅ Docstring checks passed"
 
 # Linting (code style + byte-compile warnings + docstrings)
