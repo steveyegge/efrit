@@ -148,7 +148,14 @@ Optionally calls CALLBACK with error message."
     (efrit-executor--clear-mode-line)
 
     (when callback
-      (funcall callback (format "Error: %s" message)))
+      ;; Create a proper error response hash-table so callbacks can detect
+      ;; the error using efrit-response-error instead of receiving a raw string
+      (let ((error-response (make-hash-table :test 'equal))
+            (error-obj (make-hash-table :test 'equal)))
+        (puthash "type" "executor_error" error-obj)
+        (puthash "message" message error-obj)
+        (puthash "error" error-obj error-response)
+        (funcall callback error-response)))
 
     ;; Process next queued command if any
     (efrit-executor--process-queue)))
