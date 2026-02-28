@@ -23,9 +23,9 @@
 
 ;;; Customization
 
-(defcustom efrit-spinner-frames '("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+(defcustom efrit-spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
   "Spinner animation frames to cycle through."
-  :type '(repeat string)
+  :type '(vector string)
   :group 'efrit)
 
 (defcustom efrit-spinner-interval 0.08
@@ -112,8 +112,9 @@
             (goto-char (marker-position efrit-spinner--spinner-marker))
             ;; Move back to the start of "System: "
             (beginning-of-line)
-            ;; Delete the entire line
-            (delete-region (point) (+ (point) (length "System: Thinking X\n")))))
+            ;; Delete the entire line safely
+            (let ((end (line-end-position)))
+              (delete-region (point) (if (< end (point-max)) (1+ end) end)))))
         (setq-local efrit-spinner--spinner-marker nil)
         (setq-local efrit-spinner--frame-index 0)))))
 
