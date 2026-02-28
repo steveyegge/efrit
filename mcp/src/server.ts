@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import { mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import * as path from 'path';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
 import pLimit from 'p-limit';
@@ -38,7 +39,9 @@ const __dirname = path.dirname(__filename);
  */
 function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info', logFile?: string): pino.Logger {
   // Default log file location if not specified
-  const defaultLogFile = path.join(process.env['HOME'] || '~', '.efrit', 'logs', 'mcp-server.log');
+  // Use os.homedir() instead of '~' fallback - path.join doesn't expand tilde
+  const homeDir = process.env['HOME'] || os.homedir();
+  const defaultLogFile = path.join(homeDir, '.efrit', 'logs', 'mcp-server.log');
   const targetLogFile = logFile || defaultLogFile;
 
   // Ensure log directory exists
