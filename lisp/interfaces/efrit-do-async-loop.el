@@ -260,7 +260,7 @@ Handles: tool execution, error recovery, session state updates."
                 
                 ;; Mark if session_complete was requested
                 (when is-session-complete
-                  (setq session-complete-requested t)))))))
+                  (setq session-complete-requested t))))))))
     
     (efrit-log 'info "Session %s: executed %d tools"
                session-id (length results))
@@ -326,7 +326,7 @@ Error messages start with `Error ' for easy detection by caller."
          (if is-interrupt
              (efrit-log 'warn "Session %s: user interrupted tool execution" session-id)
            (efrit-log 'error "Session %s: %s" session-id formatted-error))
-         formatted-error))))))
+         formatted-error)))))
 
 (defun efrit-do-async--on-api-error (session error)
   "Handle API ERROR for SESSION."
