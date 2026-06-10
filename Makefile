@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun checkdoc
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel checkdoc
 
 # Default target
 all: compile
@@ -70,7 +70,7 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc $(ELC_FILES)
+compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc $(ELC_FILES) lint-toplevel
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
 lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
@@ -175,7 +175,7 @@ checkdoc:
 	@echo "✅ Docstring checks passed"
 
 # Linting (code style + byte-compile warnings + docstrings)
-lint: checkdoc lint-defun
+lint: checkdoc lint-defun lint-toplevel
 	@echo "Checking code style..."
 	@for file in $(EL_FILES); do \
 		echo "Linting $$file..."; \
@@ -195,6 +195,19 @@ lint: checkdoc lint-defun
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $(EL_FILES)
 	@echo "✅ Code style and warnings checks passed"
+
+# Detect definition forms swallowed by compensating paren errors (see 098182c):
+# every def form must be at top level (or in an allowed wrapper), and any
+# "not known to be defined" warning for a symbol defined in the same file fails.
+lint-toplevel:
+	@echo "Checking top-level definition forms..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
+		-l test/lint-toplevel.el
 
 # Check for nested/indented defun forms (catches paren mismatches)
 # Uses Emacs to properly detect nested forms (not inside condition-case/cl-eval-when)
