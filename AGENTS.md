@@ -38,8 +38,13 @@ bd ready                              # Find unblocked work
 bd create "Title" -t bug|feature|task -p 0-4
 bd update <id> --status in_progress
 bd close <id> --reason "Done"
-bd sync                               # Export to JSONL (auto-commits)
+bd export -o .beads/issues.jsonl      # Export to JSONL, then git commit it
 ```
+
+The JSONL file is the source of truth; the database file is gitignored.
+After changing issues, run `bd export -o .beads/issues.jsonl` and commit
+the JSONL. On a fresh clone, the db auto-imports from issues.jsonl on the
+first bd command. (bd 1.0.4 removed `bd sync` — do not use it.)
 
 **Issue Types**: bug, feature, task, epic, chore  
 **Priorities**: 0=Critical, 1=High, 2=Medium, 3=Low, 4=Backlog
@@ -59,15 +64,29 @@ bd sync                               # Export to JSONL (auto-commits)
 
 **YOU MUST VERIFY ALL CHANGES BEFORE REPORTING COMPLETION.**
 
-Acceptable:
-- ✅ `make compile` passes
+For all changes (necessary, not sufficient):
+- ✅ `make compile` passes (includes the top-level-form lint)
 - ✅ `emacs --batch` execution without errors
+
+For changes to live behavior (UI, sessions, async loops, buffers, timers):
+- ✅ Verify through `bin/efrit` against a live daemon (see docs/CHANNEL.md).
+  Every eval returns the value, any error, new `*Messages*` output, and an
+  editor snapshot — observe the actual behavior, don't infer it.
+- ✅ Use a dedicated test daemon, not the user's running Emacs:
+  `emacs -Q --daemon=NAME`, then add the lisp/ load-paths and
+  `(require 'efrit)` via `EFRIT_SOCKET=NAME bin/efrit eval - <<'EOF' ... EOF`
 - ✅ Actual API calls for efrit-chat/efrit-do changes
+
+Why batch mode is not enough: both June 2026 root-cause bugs (098182c —
+parens nested a defun inside its caller; 7916d58 — url-retrieve cleanup
+killing user buffers) passed `make compile` and `emacs --batch`, and were
+only findable by observing a live session through the channel.
 
 Unacceptable:
 - ❌ "The code looks correct"
 - ❌ "This should work"
 - ❌ Reading code and assuming it works
+- ❌ Verifying live-behavior changes with batch mode alone
 
 ## Code Standards
 
@@ -180,6 +199,10 @@ make test
 
 # Quick elisp check
 emacs --batch --eval "(progn (require 'efrit) (message \"OK\"))"
+
+# Live verification channel (see docs/CHANNEL.md and Verification Requirements)
+bin/efrit ping
+bin/efrit eval '(efrit-do "...")'
 ```
 
 ## Rules Summary
