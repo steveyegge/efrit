@@ -132,7 +132,15 @@ Async operation with callback for response handling."
      (lambda (response error)
        (if error
            (efrit-do-async--on-api-error session error)
-         (efrit-do-async--on-api-response session response))))))
+         ;; An uncaught elisp error here would silently kill the loop
+         ;; (see 098182c): catch it and fail the session visibly.
+         (condition-case err
+             (efrit-do-async--on-api-response session response)
+           (error
+            (let ((msg (error-message-string err)))
+              (efrit-log 'error "Session %s: error handling response: %s"
+                         (efrit-session-id session) msg)
+              (efrit-do-async--stop-loop session "elisp-error" msg)))))))))
 
 (defun efrit-do-async--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for SESSION.
@@ -193,7 +201,9 @@ RESPONSE contains content and stop_reason fields."
         (_
          (efrit-log 'warn "Session %s: unknown stop reason: %s"
                     session-id stop-reason)
-         (efrit-do-async--stop-loop session "unknown-stop-reason"))))))
+         (efrit-do-async--stop-loop session "unknown-stop-reason"
+                                    (format "API returned unrecognized stop reason: %S"
+                                            stop-reason)))))))
 
 (defun efrit-do-async--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for SESSION.
@@ -338,10 +348,12 @@ Error messages start with `Error ' for easy detection by caller."
       `((:message . ,(format "%S" error)) (:level . "ERROR")))
     
     ;; Stop loop
-    (efrit-do-async--stop-loop session "api-error")))
+    (efrit-do-async--stop-loop session "api-error" (format "%s" error))))
 
-(defun efrit-do-async--stop-loop (session stop-reason)
-  "Stop async loop for SESSION with STOP-REASON."
+(defun efrit-do-async--stop-loop (session stop-reason &optional error-message)
+  "Stop async loop for SESSION with STOP-REASON.
+ERROR-MESSAGE, when non-nil, is surfaced to the user in the agent
+buffer and echo area."
   (let* ((session-id (efrit-session-id session))
          (loop-state (gethash session-id efrit-do-async--loops))
          (on-complete (nth 1 loop-state))
@@ -367,7 +379,8 @@ Error messages start with `Error ' for easy detection by caller."
           `((:result . ,stop-reason) (:elapsed . ,elapsed))))))
     
     ;; Signal session completion to agent buffer
-    (efrit-agent-end-session (string= stop-reason "end_turn"))
+    (efrit-agent-end-session (string= stop-reason "end_turn")
+                             stop-reason error-message)
     
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)

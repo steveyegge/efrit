@@ -165,6 +165,10 @@ Only affects newly generated diffs, not pre-formatted diff output."
   "Current session status.
 One of: idle, working, paused, waiting, complete, failed.")
 
+(defvar-local efrit-agent--failure-reason nil
+  "Error message or stop reason for a failed session, or nil.
+Shown in the status line and header-line when status is `failed'.")
+
 (defvar-local efrit-agent--start-time nil
   "Time when the session started (from `current-time').")
 
@@ -354,6 +358,7 @@ Deletes from input-start marker to end of buffer."
       (setq efrit-agent--session-id session-id)
       (setq efrit-agent--command command)
       (setq efrit-agent--status 'working)
+      (setq efrit-agent--failure-reason nil)
       (setq efrit-agent--start-time (current-time))
       (setq efrit-agent--todos nil)
       (setq efrit-agent--activities nil)
@@ -391,6 +396,7 @@ Inserts a visible delimiter between sessions."
   (setq efrit-agent--session-id (efrit-session-id session))
   (setq efrit-agent--command command)
   (setq efrit-agent--status 'working)
+  (setq efrit-agent--failure-reason nil)
   (setq efrit-agent--start-time (current-time))
   ;; Reset per-session state
   (setq efrit-agent--todos nil)
@@ -478,7 +484,10 @@ Forces a redisplay of the header-line which contains the elapsed time."
                           'face 'efrit-agent-status-waiting))
     ('complete (propertize (format "%s Complete" (efrit-agent--char 'status-complete))
                            'face 'efrit-agent-status-complete))
-    ('failed (propertize (format "%s Failed" (efrit-agent--char 'status-failed))
+    ('failed (propertize (concat (format "%s Failed" (efrit-agent--char 'status-failed))
+                                 (when efrit-agent--failure-reason
+                                   (format ": %s" (truncate-string-to-width
+                                                   efrit-agent--failure-reason 35 nil nil t))))
                          'face 'efrit-agent-status-failed))
     (_ (format "? %s" efrit-agent--status))))
 

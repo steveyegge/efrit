@@ -982,6 +982,10 @@ even when not waiting for explicit input."
        (insert (format "%s " (efrit-agent--char 'error-icon)))
        (insert (propertize "Error: " 'face 'efrit-agent-error))
        (insert (propertize (or (plist-get activity :text) "") 'face 'efrit-agent-error))
+       (insert "\n"))
+      ('status
+       (insert (propertize (or (plist-get activity :text) "")
+                           'face 'efrit-agent-timestamp))
        (insert "\n")))))
 
 (defun efrit-agent--render-tool-details (_tool-name input result success)
@@ -1149,10 +1153,44 @@ STATUS should be one of: working, paused, waiting, complete, failed."
         ;; Force header-line update instead of full re-render
         (force-mode-line-update)))))
 
-(defun efrit-agent-end-session (success-p)
+(defun efrit-agent-end-session (success-p &optional stop-reason error-message)
   "End the current agent session.
-SUCCESS-P determines whether to show complete or failed status."
-  (efrit-agent-set-status (if success-p 'complete 'failed)))
+SUCCESS-P determines whether to show complete or failed status.
+STOP-REASON is the loop's stop reason string (e.g. \"end_turn\",
+\"api-error\", \"unknown-stop-reason\").  ERROR-MESSAGE is shown to
+the user when the session failed."
+  (let ((buffer (get-buffer efrit-agent-buffer-name))
+        (reason (if success-p nil
+                  (or error-message stop-reason "unknown error"))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq efrit-agent--status (if success-p 'complete 'failed))
+        (setq efrit-agent--failure-reason reason)
+        ;; Stop the elapsed timer so the display stops advancing
+        (when efrit-agent--elapsed-timer
+          (cancel-timer efrit-agent--elapsed-timer)
+          (setq efrit-agent--elapsed-timer nil))
+        ;; Record the stop reason in the Activity section
+        (setq efrit-agent--activities
+              (nconc efrit-agent--activities
+                     (list (if success-p
+                               (list :type 'status
+                                     :text (format "Session complete (%s)"
+                                                   (or stop-reason "end_turn"))
+                                     :timestamp (current-time))
+                             (list :type 'error
+                                   :text (format "Session failed (%s)%s"
+                                                 (or stop-reason "unknown")
+                                                 (if error-message
+                                                     (format ": %s" error-message)
+                                                   ""))
+                                   :timestamp (current-time))))))
+        ;; Full re-render: the boxed Status: line only updates on render
+        (efrit-agent--render)
+        (force-mode-line-update)))
+    ;; Failure must reach the user even if the buffer is buried
+    (unless success-p
+      (message "Efrit session failed: %s" reason))))
 
 (defun efrit-agent-start-session (session-id command)
   "Start agent buffer for SESSION-ID with COMMAND.
@@ -1168,6 +1206,7 @@ and sets status to working."
       (setq efrit-agent--session-id session-id)
       (setq efrit-agent--command command)
       (setq efrit-agent--status 'working)
+      (setq efrit-agent--failure-reason nil)
       (efrit-agent--render))
     ;; Display the buffer
     (pop-to-buffer buffer)))

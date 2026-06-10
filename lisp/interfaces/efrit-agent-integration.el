@@ -289,19 +289,27 @@ Called from efrit-executor when an agentic session begins."
   (efrit-agent--add-user-message command)
   (efrit-agent--show-buffer))
 
-(defun efrit-agent-end-session (success-p)
-  "End the current session with SUCCESS-P status."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+(defun efrit-agent-end-session (success-p &optional stop-reason error-message)
+  "End the current session with SUCCESS-P status.
+STOP-REASON is the loop's stop reason string; ERROR-MESSAGE is
+shown to the user when the session failed."
+  (let ((buffer (get-buffer efrit-agent-buffer-name))
+        (reason (if success-p nil
+                  (or error-message stop-reason "unknown error"))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; End any streaming message first
         (efrit-agent--stream-end-message)
         (setq efrit-agent--status (if success-p 'complete 'failed))
+        (setq efrit-agent--failure-reason reason)
         ;; Stop the elapsed timer
         (when efrit-agent--elapsed-timer
           (cancel-timer efrit-agent--elapsed-timer)
           (setq efrit-agent--elapsed-timer nil))
-        (efrit-agent--render)))))
+        (efrit-agent--render)))
+    ;; Failure must reach the user even if the buffer is buried
+    (unless success-p
+      (message "Efrit session failed: %s" reason))))
 
 (provide 'efrit-agent-integration)
 
