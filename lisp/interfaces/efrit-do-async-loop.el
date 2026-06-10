@@ -126,6 +126,9 @@ Returns the session ID."
   "Send request to Claude API for SESSION.
 Async operation with callback for response handling."
   (let* ((messages (efrit-session-get-api-messages-for-continuation session)))
+    ;; Animated indicator while the API call is in flight
+    (when (fboundp 'efrit-agent-show-thinking)
+      (efrit-agent-show-thinking "waiting for Claude..."))
     (efrit-do-async--api-call
      session
      messages
@@ -168,6 +171,9 @@ CALLBACK is (lambda (response error) ...) called when complete."
 RESPONSE contains content and stop_reason fields."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'debug "Session %s: received response" session-id)
+    ;; Content has arrived; stop the thinking indicator
+    (when (fboundp 'efrit-agent-hide-thinking)
+      (efrit-agent-hide-thinking))
     
     ;; Extract content and stop_reason from response using proper accessors
     (let* ((content (efrit-response-content response))
@@ -342,6 +348,8 @@ Error messages start with `Error ' for easy detection by caller."
   "Handle API ERROR for SESSION."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'error "Session %s: API error: %s" session-id error)
+    (when (fboundp 'efrit-agent-hide-thinking)
+      (efrit-agent-hide-thinking))
     
     ;; Fire error event
     (efrit-progress-insert-event session-id 'error

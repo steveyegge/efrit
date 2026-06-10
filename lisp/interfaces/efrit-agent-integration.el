@@ -300,6 +300,7 @@ shown to the user when the session failed."
       (with-current-buffer buffer
         ;; End any streaming message first
         (efrit-agent--stream-end-message)
+        (efrit-agent--spinner-stop)
         (setq efrit-agent--status (if success-p 'complete 'failed))
         (setq efrit-agent--failure-reason reason)
         ;; Stop the elapsed timer

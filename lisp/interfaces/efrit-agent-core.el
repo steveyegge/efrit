@@ -217,6 +217,16 @@ Used to append content to an ongoing message stream.")
 Format: (start-marker . end-marker) when active.
 The indicator is removed when content arrives.")
 
+(defvar-local efrit-agent--thinking-label nil
+  "Label shown next to the header-line spinner, or nil when idle.
+Non-nil means an API call is in flight and the spinner is animating.")
+
+(defvar-local efrit-agent--spinner-timer nil
+  "Timer animating the header-line spinner, or nil.")
+
+(defvar-local efrit-agent--spinner-index 0
+  "Current frame index of the header-line spinner.")
+
 (defvar-local efrit-agent--message-counter 0
   "Counter for generating unique message IDs.")
 
@@ -383,10 +393,72 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
                                (window-height . 15))))))
 
 (defun efrit-agent--cleanup-timer ()
-  "Clean up the elapsed timer when buffer is killed."
+  "Clean up the elapsed and spinner timers when buffer is killed."
   (when efrit-agent--elapsed-timer
     (cancel-timer efrit-agent--elapsed-timer)
-    (setq efrit-agent--elapsed-timer nil)))
+    (setq efrit-agent--elapsed-timer nil))
+  (when efrit-agent--spinner-timer
+    (cancel-timer efrit-agent--spinner-timer)
+    (setq efrit-agent--spinner-timer nil)))
+
+;;; Header-line Spinner
+;;
+;; Animated "thinking" indicator shown in the header-line while an API
+;; call is in flight.  Works in both render architectures because it
+;; never touches buffer text.
+
+(defcustom efrit-agent-spinner-interval 0.15
+  "Seconds between header-line spinner frame updates."
+  :type 'float
+  :group 'efrit-agent)
+
+(defconst efrit-agent--spinner-frames-unicode
+  ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
+  "Spinner animation frames (unicode display style).")
+
+(defconst efrit-agent--spinner-frames-ascii
+  ["-" "\\" "|" "/"]
+  "Spinner animation frames (ascii display style).")
+
+(defun efrit-agent--spinner-frame ()
+  "Return the current spinner frame for the active display style."
+  (let ((frames (if (eq efrit-agent-display-style 'unicode)
+                    efrit-agent--spinner-frames-unicode
+                  efrit-agent--spinner-frames-ascii)))
+    (aref frames (mod efrit-agent--spinner-index (length frames)))))
+
+(defun efrit-agent--spinner-tick (buffer)
+  "Advance the spinner in BUFFER and refresh its header-line."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (if efrit-agent--thinking-label
+          (progn
+            (setq efrit-agent--spinner-index (1+ efrit-agent--spinner-index))
+            (force-mode-line-update))
+        ;; Stale tick after the label was cleared — stop the timer
+        (when efrit-agent--spinner-timer
+          (cancel-timer efrit-agent--spinner-timer)
+          (setq efrit-agent--spinner-timer nil))))))
+
+(defun efrit-agent--spinner-start (&optional label)
+  "Show LABEL with an animated spinner in the header-line.
+Call in the agent buffer when an API call starts."
+  (setq efrit-agent--thinking-label (or label "thinking..."))
+  (setq efrit-agent--spinner-index 0)
+  (when efrit-agent--spinner-timer
+    (cancel-timer efrit-agent--spinner-timer))
+  (setq efrit-agent--spinner-timer
+        (run-at-time 0 efrit-agent-spinner-interval
+                     #'efrit-agent--spinner-tick (current-buffer)))
+  (force-mode-line-update))
+
+(defun efrit-agent--spinner-stop ()
+  "Stop the header-line spinner.  Idempotent."
+  (setq efrit-agent--thinking-label nil)
+  (when efrit-agent--spinner-timer
+    (cancel-timer efrit-agent--spinner-timer)
+    (setq efrit-agent--spinner-timer nil))
+  (force-mode-line-update))
 
 (defun efrit-agent--begin-session (session command)
   "Attach this agent buffer to SESSION for COMMAND.

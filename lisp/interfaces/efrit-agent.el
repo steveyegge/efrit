@@ -1166,7 +1166,8 @@ the user when the session failed."
       (with-current-buffer buffer
         (setq efrit-agent--status (if success-p 'complete 'failed))
         (setq efrit-agent--failure-reason reason)
-        ;; Stop the elapsed timer so the display stops advancing
+        ;; Stop the spinner and elapsed timer so the display settles
+        (efrit-agent--spinner-stop)
         (when efrit-agent--elapsed-timer
           (cancel-timer efrit-agent--elapsed-timer)
           (setq efrit-agent--elapsed-timer nil))
@@ -1294,6 +1295,9 @@ The indicator will automatically hide when content starts arriving."
   (let ((buffer (get-buffer efrit-agent-buffer-name)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        ;; Header-line spinner works in both render architectures;
+        ;; the in-buffer indicator needs the incremental regions
+        (efrit-agent--spinner-start text)
         (efrit-agent--show-thinking text)))))
 
 (defun efrit-agent-hide-thinking ()

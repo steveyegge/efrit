@@ -217,7 +217,9 @@ The indicator is removed when content arrives or explicitly hidden."
       (efrit-agent--scroll-to-bottom))))
 
 (defun efrit-agent--hide-thinking ()
-  "Hide the thinking indicator if currently shown."
+  "Hide the thinking indicator if currently shown.
+Also stops the header-line spinner."
+  (efrit-agent--spinner-stop)
   (when efrit-agent--thinking-indicator
     (let ((inhibit-read-only t)
           (start-marker (car efrit-agent--thinking-indicator))
@@ -276,6 +278,11 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
     (concat
      " "
      status-str
+     (when efrit-agent--thinking-label
+       (concat sep (propertize (format "%s %s"
+                                       (efrit-agent--spinner-frame)
+                                       efrit-agent--thinking-label)
+                               'face 'efrit-agent-thinking)))
      sep
      (propertize elapsed 'face 'efrit-agent-timestamp)
      sep
