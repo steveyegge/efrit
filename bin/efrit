@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# efrit — playwright-style channel into a live Emacs.
+#
+# Every command returns a JSON envelope on stdout: the eval result, any
+# error, new *Messages* output, and a snapshot of editor state.  Elisp
+# payloads and responses cross the emacsclient boundary base64-encoded,
+# so arbitrary code needs no shell/elisp escaping.
+#
+# Usage:
+#   efrit ping                         Check the channel is alive
+#   efrit eval '<elisp>'               Eval code, return result + snapshot
+#   efrit eval -                       Read elisp from stdin (heredoc-friendly)
+#   efrit snapshot                     Return editor state only
+#   efrit reload                       Force-reload efrit-channel.el
+#   efrit start                        Start the 'efrit' daemon explicitly
+#   efrit stop                         Kill the named daemon (never the default session)
+#
+# Options:
+#   -s NAME          emacsclient socket name (or $EFRIT_SOCKET)
+#   -t SECONDS       timeout, default 30 (or $EFRIT_TIMEOUT)
+#   --no-snapshot    omit the snapshot from eval responses
+#
+# Socket resolution: $EFRIT_SOCKET / -s if given; otherwise the default
+# emacsclient socket (your running Emacs); otherwise the 'efrit' daemon,
+# auto-started if needed.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHANNEL_EL="$SCRIPT_DIR/../lisp/efrit-channel.el"
+TIMEOUT="${EFRIT_TIMEOUT:-30}"
+SOCKET="${EFRIT_SOCKET:-}"
+SOCKET_EXPLICIT="${EFRIT_SOCKET:+yes}"
+NO_SNAPSHOT=""
+
+usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+err_json() { # $1 = type, $2 = message
+  printf '{"ok":false,"error":{"type":"%s","message":"%s"}}\n' "$1" \
+    "$(printf '%s' "$2" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')"
+}
+
+# --- option parsing -------------------------------------------------------
+
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -s) SOCKET="$2"; SOCKET_EXPLICIT=yes; shift 2 ;;
+    -t) TIMEOUT="$2"; shift 2 ;;
+    --no-snapshot) NO_SNAPSHOT=yes; shift ;;
+    -h|--help) usage ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
+CMD="${1:-}"
+[ -z "$CMD" ] && usage 1
+
+# --- socket discovery -----------------------------------------------------
+
+probe() { # $1 = socket name, "" = default socket
+  local args=()
+  [ -n "$1" ] && args=(-s "$1")
+  emacsclient "${args[@]}" --eval t >/dev/null 2>&1
+}
+
+start_daemon() { # $1 = daemon/socket name
+  echo "efrit: starting Emacs daemon '$1'..." >&2
+  emacs --daemon="$1" >/dev/null 2>&1
+  probe "$1"
+}
+
+resolve_socket() {
+  if [ -n "$SOCKET_EXPLICIT" ]; then
+    probe "$SOCKET" && return 0
+    start_daemon "$SOCKET" && return 0
+    err_json "no-server" "no Emacs server on socket '$SOCKET' and daemon start failed"
+    exit 1
+  fi
+  if probe ""; then SOCKET=""; return 0; fi
+  if probe efrit; then SOCKET=efrit; return 0; fi
+  if start_daemon efrit; then SOCKET=efrit; return 0; fi
+  err_json "no-server" "no Emacs server found and could not start daemon 'efrit'"
+  exit 1
+}
+
+# --- transport ------------------------------------------------------------
+
+ec() { # eval an expression with timeout; prints emacsclient stdout
+  local args=()
+  [ -n "$SOCKET" ] && args=(-s "$SOCKET")
+  perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT" \
+    emacsclient "${args[@]}" --eval "$1" 2>&1
+}
+
+call() { # $1 = elisp expression returning a base64 string
+  local bootstrap out status
+  bootstrap="(unless (fboundp 'efrit-channel-eval-b64) (load \"$CHANNEL_EL\" nil t))"
+  out=$(ec "(progn $bootstrap $1)")
+  status=$?
+  if [ $status -eq 142 ]; then
+    err_json "timeout" "no response from Emacs within ${TIMEOUT}s (still busy?)"
+    exit 1
+  elif [ $status -ne 0 ]; then
+    err_json "emacsclient" "$out"
+    exit 1
+  fi
+  out="${out%\"}"; out="${out#\"}"
+  if ! printf '%s' "$out" | base64 -d 2>/dev/null; then
+    err_json "bad-response" "$out"
+    exit 1
+  fi
+  echo
+}
+
+# --- commands -------------------------------------------------------------
+
+resolve_socket
+
+case "$CMD" in
+  ping)
+    call "(efrit-channel-ping-b64)"
+    ;;
+  snapshot)
+    call "(efrit-channel-snapshot-b64)"
+    ;;
+  eval)
+    CODE="${2:-}"
+    if [ -z "$CODE" ] || [ "$CODE" = "-" ]; then
+      CODE=$(cat)
+    fi
+    if [ -z "$CODE" ]; then
+      err_json "usage" "efrit eval requires elisp code (arg or stdin)"
+      exit 1
+    fi
+    B64=$(printf '%s' "$CODE" | base64 | tr -d '\n')
+    NOSNAP=nil; [ -n "$NO_SNAPSHOT" ] && NOSNAP=t
+    call "(efrit-channel-eval-b64 \"$B64\" $NOSNAP)"
+    ;;
+  reload)
+    call "(progn (load \"$CHANNEL_EL\" nil t) (efrit-channel-ping-b64))"
+    ;;
+  start)
+    echo "efrit: daemon ready on socket '${SOCKET:-default}'" >&2
+    call "(efrit-channel-ping-b64)"
+    ;;
+  stop)
+    if [ -z "$SOCKET" ]; then
+      err_json "usage" "refusing to kill the default Emacs session; pass -s NAME"
+      exit 1
+    fi
+    ec "(kill-emacs)" >/dev/null
+    echo "efrit: stopped daemon '$SOCKET'" >&2
+    ;;
+  *)
+    err_json "usage" "unknown command: $CMD"
+    exit 1
+    ;;
+esac
