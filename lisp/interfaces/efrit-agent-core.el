@@ -453,12 +453,36 @@ Only saves if session has content worth preserving."
 
 (defun efrit-agent--update-elapsed (buffer)
   "Update the elapsed time display in BUFFER.
-Forces a redisplay of the header-line which contains the elapsed time."
+Forces a redisplay of the header-line which contains the elapsed
+time, and rewrites the elapsed text in the boxed status header
+\(marked with the `efrit-agent-elapsed' text property) in place."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (memq efrit-agent--status '(working paused waiting))
         ;; Force header-line redisplay (it uses :eval so this triggers update)
-        (force-mode-line-update)))))
+        (force-mode-line-update)
+        ;; Update the boxed in-buffer elapsed text, if rendered
+        (when-let* ((start (text-property-any (point-min) (point-max)
+                                              'efrit-agent-elapsed t)))
+          (let ((end (or (next-single-property-change start 'efrit-agent-elapsed)
+                         (point-max)))
+                (inhibit-read-only t))
+            (save-excursion
+              (goto-char start)
+              (delete-region start end)
+              (let ((new-start (point)))
+                (insert (format " (%s)" (efrit-agent--format-elapsed)))
+                (put-text-property new-start (point) 'efrit-agent-elapsed t))
+              ;; Re-pad so the box's right border stays at column 58
+              (let* ((v-str (efrit-agent--char 'box-vertical))
+                     (eol (line-end-position)))
+                (when (re-search-forward (concat " +" (regexp-quote v-str))
+                                         eol t)
+                  (let ((border (match-beginning 0)))
+                    (delete-region border (match-end 0))
+                    (goto-char border)
+                    (insert (make-string (max 1 (- 58 (current-column))) ?\s))
+                    (insert (propertize v-str 'face 'efrit-agent-header))))))))))))
 
 (defun efrit-agent--format-elapsed ()
   "Format elapsed time since session start."

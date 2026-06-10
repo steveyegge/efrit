@@ -1207,6 +1207,12 @@ and sets status to working."
       (setq efrit-agent--command command)
       (setq efrit-agent--status 'working)
       (setq efrit-agent--failure-reason nil)
+      (setq efrit-agent--start-time (current-time))
+      ;; Tick the elapsed display ~1/sec while the session runs
+      (when efrit-agent--elapsed-timer
+        (cancel-timer efrit-agent--elapsed-timer))
+      (setq efrit-agent--elapsed-timer
+            (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
       (efrit-agent--render))
     ;; Display the buffer
     (pop-to-buffer buffer)))
