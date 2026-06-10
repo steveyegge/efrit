@@ -159,14 +159,7 @@ But that's **backwards**! The correct mental model:
 
 **Solution: Use requirement language, not temporal language**
 
-Instead of phases, name tasks by what they ARE, and think about what they NEED.
-
-It sounds like we have converged on thinking of phases as "ready fronts" in the work
-graph. If I understand correctly, they are areas in the work graph where work has natural
-synchronization points, serial bottlenecks, and other interesting topology, where we might
-break up tasks in logical dependency chunks. The current state of all in-progress molecules
-is also a "ready front", as it represents the current progress in chewing away at the
-mountain of work.
+Instead of phases, name tasks by what they ARE, and think about what they NEED:
 
 ```bash
 # ❌ WRONG - temporal thinking leads to inverted deps
