@@ -52,8 +52,11 @@ Prevents runaway loops. Set to 0 for unlimited."
   :type 'integer
   :group 'efrit-do-async)
 
-(defcustom efrit-do-async-show-progress-buffer t
-  "Whether to auto-show progress buffer when execution starts."
+(defcustom efrit-do-async-show-progress-buffer nil
+  "Whether to auto-show the raw progress buffer when execution starts.
+The agent buffer is the primary surface; the progress buffer is a
+debug-level event record.  Events are recorded either way — this
+only controls whether the buffer is displayed."
   :type 'boolean
   :group 'efrit-do-async)
 
@@ -73,9 +76,10 @@ Returns the session ID."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'info "Starting async loop for session %s" session-id)
     
-    ;; Initialize progress buffer
+    ;; Always record events in the progress buffer; only display it
+    ;; on request — the agent buffer is the single user-facing surface
+    (efrit-progress-create-buffer session-id)
     (when efrit-do-async-show-progress-buffer
-      (efrit-progress-create-buffer session-id)
       (efrit-progress-show-buffer session-id))
     
     ;; Initialize agent buffer for session

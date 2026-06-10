@@ -39,8 +39,13 @@
   :group 'efrit
   :prefix "efrit-progress-")
 
-(defcustom efrit-progress-auto-show t
-  "Whether to automatically show progress buffer when execution starts."
+(defcustom efrit-progress-keep-archived-buffers nil
+  "Whether to keep finished sessions' progress buffers as archives.
+When non-nil, a session's progress buffer is renamed to
+`*efrit-progress-TIMESTAMP*' on completion and kept around.
+When nil (the default), it is killed — the session transcript on
+disk remains the durable record, and archived buffers no longer
+accumulate for the lifetime of the Emacs session."
   :type 'boolean
   :group 'efrit-progress)
 
@@ -178,9 +183,16 @@ Returns the number of characters inserted."
                     (goto-char (point-max))
                     (recenter -3)))))
             
-            ;; Check buffer size and archive if needed
+            ;; Check buffer size: archive when keeping history,
+            ;; otherwise trim the oldest half in place so the live
+            ;; session keeps recording
             (when (> (buffer-size) efrit-progress-max-buffer-size)
-              (efrit-progress-archive-buffer session-id))
+              (if efrit-progress-keep-archived-buffers
+                  (efrit-progress-archive-buffer session-id)
+                (delete-region (point-min)
+                               (max (point-min)
+                                    (- (point-max)
+                                       (/ efrit-progress-max-buffer-size 2))))))
             
             inserted-chars))))))
 
@@ -313,19 +325,22 @@ Creates buffer if it doesn't exist."
                          message)))))))
 
 (defun efrit-progress-archive-buffer (session-id)
-  "Archive SESSION-ID's progress buffer with timestamp.
-Renames buffer from `*efrit-progress-SESSION-ID*' to
-`*efrit-progress-TIMESTAMP*' to preserve historical record."
+  "Retire SESSION-ID's progress buffer.
+When `efrit-progress-keep-archived-buffers' is non-nil, rename it to
+`*efrit-progress-TIMESTAMP*' to preserve a historical record;
+otherwise kill it (the on-disk transcript is the durable record)."
   (let ((buffer (efrit-progress-get-buffer session-id)))
     (when buffer
-      (let* ((timestamp (format-time-string "%Y%m%d-%H%M%S"))
-             (archive-name (format "*efrit-progress-%s*" timestamp)))
-        ;; Rename buffer
-        (with-current-buffer buffer
-          (rename-buffer archive-name t))
-        ;; Remove from active registry
-        (remhash session-id efrit-progress-buffers)
-        (efrit-log 'debug "Archived progress buffer to %s" archive-name)))))
+      (if efrit-progress-keep-archived-buffers
+          (let* ((timestamp (format-time-string "%Y%m%d-%H%M%S"))
+                 (archive-name (format "*efrit-progress-%s*" timestamp)))
+            (with-current-buffer buffer
+              (rename-buffer archive-name t))
+            (efrit-log 'debug "Archived progress buffer to %s" archive-name))
+        (kill-buffer buffer)
+        (efrit-log 'debug "Killed progress buffer for session %s" session-id))
+      ;; Remove from active registry
+      (remhash session-id efrit-progress-buffers))))
 
 ;;;###autoload
 (defun efrit-progress-show-buffer (session-id)

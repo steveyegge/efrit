@@ -427,10 +427,20 @@ exceeds `efrit-do-max-buffer-lines' lines."
                            (if (> (- (length result-positions) efrit-do-keep-results) 1)
                                "s" "")))))))))
 
+(defun efrit-do--agent-surface-visible-p ()
+  "Non-nil when the agent buffer is displayed in some window.
+The agent buffer is the single user-facing surface; when it is
+visible, other meta-buffers should not pop additional windows."
+  (when-let* ((name (bound-and-true-p efrit-agent-buffer-name))
+              (buffer (get-buffer name)))
+    (get-buffer-window buffer t)))
+
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.
 If ERROR-P is non-nil, this indicates an error result.
-When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
+When `efrit-do-show-errors-only' is non-nil, only show buffer for errors.
+The buffer is always written as a record, but not displayed when the
+agent buffer is already visible (single-surface principle)."
   (when error-p
     (require 'efrit-log)
     (efrit-log-error "[efrit-do] Command failed: %s\nResult: %s" command result))
@@ -444,8 +454,11 @@ When `efrit-do-show-errors-only' is non-nil, only show buffer for errors."
         (insert (efrit-do--format-result command result))
         ;; Auto-truncate if buffer is too large
         (efrit-do--truncate-results-buffer))
-      ;; Only display buffer if not in errors-only mode, or if this is an error
-      (when (or (not efrit-do-show-errors-only) error-p)
+      ;; Only display buffer if not in errors-only mode, or if this is
+      ;; an error — and never as a second window next to the agent
+      ;; buffer, which already shows the session's result and errors
+      (when (and (or (not efrit-do-show-errors-only) error-p)
+                 (not (efrit-do--agent-surface-visible-p)))
         (display-buffer (current-buffer)
                         '(display-buffer-reuse-window
                           display-buffer-below-selected
