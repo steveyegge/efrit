@@ -23,6 +23,12 @@ beads.left.meta.json
 beads.right.jsonl
 beads.right.meta.json
 
+# bd 1.x runtime internals (rebuilt from issues.jsonl via 'bd import')
+backup/
+embeddeddolt/
+export-state.json
+last-touched
+
 # Keep JSONL exports and config (source of truth for git)
 !issues.jsonl
 !metadata.json
