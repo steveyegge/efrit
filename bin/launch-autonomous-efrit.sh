@@ -92,7 +92,9 @@ start_daemon() {
     log_info "Log file: $LOG_FILE"
     
     # Start Emacs daemon with Efrit configuration (skip user config)
+    # load-prefer-newer: never let a stale .elc shadow edited source
     emacs --no-init-file \
+          --eval "(setq load-prefer-newer t)" \
           --daemon="$DAEMON_NAME" \
           --load "$STARTUP_FILE" \
           --eval "(setq efrit-autonomous-log-file \"$LOG_FILE\")" \

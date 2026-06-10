@@ -73,8 +73,12 @@ For changes to live behavior (UI, sessions, async loops, buffers, timers):
   Every eval returns the value, any error, new `*Messages*` output, and an
   editor snapshot — observe the actual behavior, don't infer it.
 - ✅ Use a dedicated test daemon, not the user's running Emacs:
-  `emacs -Q --daemon=NAME`, then add the lisp/ load-paths and
-  `(require 'efrit)` via `EFRIT_SOCKET=NAME bin/efrit eval - <<'EOF' ... EOF`
+  `emacs -Q --daemon=NAME`, then add the lisp/ load-paths, set
+  `(setq load-prefer-newer t)` (so a stale .elc can never shadow your
+  edits), and `(require 'efrit)` via
+  `EFRIT_SOCKET=NAME bin/efrit eval - <<'EOF' ... EOF`
+- ✅ Run `make compile` before live testing so .elc files are fresh
+  (it also deletes orphaned .elc whose source was renamed or removed)
 - ✅ Actual API calls for efrit-chat/efrit-do changes
 
 Why batch mode is not enough: both June 2026 root-cause bugs (098182c —
@@ -155,7 +159,14 @@ But that's **backwards**! The correct mental model:
 
 **Solution: Use requirement language, not temporal language**
 
-Instead of phases, name tasks by what they ARE, and think about what they NEED:
+Instead of phases, name tasks by what they ARE, and think about what they NEED.
+
+It sounds like we have converged on thinking of phases as "ready fronts" in the work
+graph. If I understand correctly, they are areas in the work graph where work has natural
+synchronization points, serial bottlenecks, and other interesting topology, where we might
+break up tasks in logical dependency chunks. The current state of all in-progress molecules
+is also a "ready front", as it represents the current progress in chewing away at the
+mountain of work.
 
 ```bash
 # ❌ WRONG - temporal thinking leads to inverted deps

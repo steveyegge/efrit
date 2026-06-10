@@ -20,7 +20,7 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel checkdoc
+.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
 
 # Default target
 all: compile
@@ -70,7 +70,17 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc $(ELC_FILES) lint-toplevel
+compile: clean-orphan-elc lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc $(ELC_FILES) lint-toplevel
+
+# Remove .elc files whose .el source is gone; stale orphans silently
+# shadow renamed/deleted modules at require time
+clean-orphan-elc:
+	@for elc in $$(find lisp -name '*.elc'); do \
+		if [ ! -f "$${elc%.elc}.el" ]; then \
+			echo "Removing orphaned $$elc"; \
+			rm -f "$$elc"; \
+		fi; \
+	done
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
 lisp/core/efrit-log.elc: lisp/core/efrit-config.elc

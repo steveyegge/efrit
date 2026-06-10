@@ -66,7 +66,8 @@ probe() { # $1 = socket name, "" = default socket
 
 start_daemon() { # $1 = daemon/socket name
   echo "efrit: starting Emacs daemon '$1'..." >&2
-  emacs --daemon="$1" >/dev/null 2>&1
+  # load-prefer-newer: never let a stale .elc shadow edited source
+  emacs --eval "(setq load-prefer-newer t)" --daemon="$1" >/dev/null 2>&1
   probe "$1"
 }
 
