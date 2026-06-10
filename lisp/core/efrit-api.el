@@ -121,19 +121,23 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
         (url-retrieve
          (efrit-common-get-api-url)
          (lambda (status)
-           (unwind-protect
-               (condition-case url-err
-                   (progn
-                     (when (plist-get status :error)
-                       (error "HTTP error: %s" (plist-get status :error)))
-                     (let ((response (efrit-api-parse-response)))
-                       (funcall callback response)))
-                 (error
-                  (if error-callback
-                      (funcall error-callback (error-message-string url-err))
-                    (error "%s" (error-message-string url-err)))))
-             (when (buffer-live-p (current-buffer))
-               (kill-buffer (current-buffer)))))
+           ;; The callback can change the current buffer (tools may call
+           ;; pop-to-buffer etc.), so capture the HTTP response buffer now
+           ;; lest the cleanup kill whatever buffer the callback left current.
+           (let ((response-buffer (current-buffer)))
+             (unwind-protect
+                 (condition-case url-err
+                     (progn
+                       (when (plist-get status :error)
+                         (error "HTTP error: %s" (plist-get status :error)))
+                       (let ((response (efrit-api-parse-response)))
+                         (funcall callback response)))
+                   (error
+                    (if error-callback
+                        (funcall error-callback (error-message-string url-err))
+                      (error "%s" (error-message-string url-err)))))
+               (when (buffer-live-p response-buffer)
+                 (kill-buffer response-buffer)))))
          nil t t))
     (error
      (if error-callback

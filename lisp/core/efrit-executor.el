@@ -107,27 +107,31 @@ Calls CALLBACK with parsed response or error information."
 
 (defun efrit-executor--handle-url-response (status callback)
   "Handle url-retrieve STATUS and call CALLBACK with parsed response."
-  (unwind-protect
-      (condition-case err
-          (progn
-            (when (plist-get status :error)
-              (error "HTTP error: %s" (plist-get status :error)))
+  ;; The callback can change the current buffer (tools may call
+  ;; pop-to-buffer etc.), so capture the HTTP response buffer now
+  ;; lest the cleanup kill whatever buffer the callback left current.
+  (let ((response-buffer (current-buffer)))
+    (unwind-protect
+        (condition-case err
+            (progn
+              (when (plist-get status :error)
+                (error "HTTP error: %s" (plist-get status :error)))
 
-            (goto-char (point-min))
-            (when (search-forward-regexp "^$" nil t)
-              (let ((response-text (buffer-substring-no-properties (point) (point-max))))
-                (if (string-empty-p (string-trim response-text))
-                    (funcall callback nil)
-                  (let* ((json-object-type 'hash-table)
-                         (json-array-type 'vector)
-                         (json-key-type 'string)
-                         (parsed-response (json-read-from-string response-text)))
-                    (funcall callback parsed-response))))))
-        (error
-         (efrit-log 'error "Response handling failed: %s" (error-message-string err))
-         (funcall callback nil)))
-    (when (buffer-live-p (current-buffer))
-      (kill-buffer (current-buffer)))))
+              (goto-char (point-min))
+              (when (search-forward-regexp "^$" nil t)
+                (let ((response-text (buffer-substring-no-properties (point) (point-max))))
+                  (if (string-empty-p (string-trim response-text))
+                      (funcall callback nil)
+                    (let* ((json-object-type 'hash-table)
+                           (json-array-type 'vector)
+                           (json-key-type 'string)
+                           (parsed-response (json-read-from-string response-text)))
+                      (funcall callback parsed-response))))))
+          (error
+           (efrit-log 'error "Response handling failed: %s" (error-message-string err))
+           (funcall callback nil)))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
 
 (defun efrit-executor--handle-error (error &optional callback)
   "Handle ERROR during execution.
