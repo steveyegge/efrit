@@ -339,9 +339,12 @@ Returns (error-p . error-msg) where error-p is t if errors found."
                       (match-string 2 result))))
      ;; Runtime errors
      ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
-      (cons t (format "Runtime error in %s: %s" 
-                      (match-string 1 result) 
+      (cons t (format "Runtime error in %s: %s"
+                      (match-string 1 result)
                       (match-string 2 result))))
+     ;; Efrit-internal dispatch errors (ef-hn6)
+     ((string-match "\\[Efrit internal error: \\(.+\\)\\]" result)
+      (cons t (format "Efrit internal error: %s" (match-string 1 result))))
      ;; API errors - match the specific format from efrit-do--process-api-response
      ;; Format: "API Error (type): message" - must have parenthesized type
      ((string-match "^API Error ([^)]+):" result)

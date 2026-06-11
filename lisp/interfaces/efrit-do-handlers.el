@@ -329,15 +329,20 @@ INPUT-STR is the elisp expression to evaluate.
 Validates syntax before execution and returns the result or error."
   (let ((validation (efrit-do--validate-elisp input-str)))
     (if (car validation)
-        ;; Valid elisp - proceed with execution
+        ;; Valid elisp - proceed with execution.  Errors signalled by
+        ;; the evaluated expression are caught inside
+        ;; `efrit-tools-eval-sexp' and returned as a result string, so
+        ;; an error signal reaching this handler comes from efrit's own
+        ;; dispatch machinery (rate-limit and other pre-checks), not
+        ;; from INPUT-STR (ef-hn6).
         (condition-case eval-err
             (let ((eval-result (efrit-tools-eval-sexp input-str)))
               (format "\n[Executed: %s]\n[Result: %s]"
                       input-str
                       eval-result))
           (error
-           (format "\n[Error executing %s: %s]"
-                   input-str (error-message-string eval-err))))
+           (format "\n[Efrit internal error: %s]\n[This error was raised by efrit's own tool dispatch, NOT by your elisp, which was likely never evaluated. Do not debug efrit internals. Retry the tool call once; if the error persists, stop and report it to the user.]"
+                   (error-message-string eval-err))))
       ;; Invalid elisp - report syntax error
       (format "\n[Syntax Error in %s: %s]"
               input-str (cdr validation)))))

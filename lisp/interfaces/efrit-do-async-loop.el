@@ -347,7 +347,12 @@ Error messages start with `Error ' for easy detection by caller."
                           (t (format "%S" error-data))))
               ;; Detect specific error conditions
               (is-interrupt (string-match-p "Quit" error-msg))
-              (formatted-error (format "Error executing %s: %s"
+              ;; An error signal escaping the dispatch means efrit's own
+              ;; machinery failed, not the model's tool input — say so,
+              ;; or the model burns turns debugging efrit (ef-hn6).
+              ;; Must keep the "Error " prefix: callers detect errors
+              ;; via (string-match-p "^Error " result).
+              (formatted-error (format "Error inside efrit's dispatch of %s (not caused by your tool input): %s. Do not debug efrit internals. Retry the tool call once; if the error persists, stop and report it to the user."
                                       tool-name error-msg)))
          ;; Log with appropriate level
          (if is-interrupt
