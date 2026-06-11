@@ -473,12 +473,12 @@ Call in the agent buffer when an API call starts."
     (setq efrit-agent--spinner-timer nil))
   (force-mode-line-update))
 
-(defun efrit-agent--begin-session (session command)
-  "Attach this agent buffer to SESSION for COMMAND.
+(defun efrit-agent--attach-session (session-id command)
+  "Attach this agent buffer to SESSION-ID for COMMAND.
 Resets per-session state but preserves existing conversation text.
 Inserts a visible delimiter between sessions."
   ;; Set new session context
-  (setq efrit-agent--session-id (efrit-session-id session))
+  (setq efrit-agent--session-id session-id)
   (setq efrit-agent--command command)
   (setq efrit-agent--status 'working)
   (setq efrit-agent--failure-reason nil)
@@ -488,6 +488,7 @@ Inserts a visible delimiter between sessions."
   (setq efrit-agent--activities nil)
   (setq efrit-agent--pending-question nil)
   (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
+  (setq efrit-agent--failed-tools nil)
   (setq efrit-agent--streaming-message nil)
   (setq efrit-agent--thinking-indicator nil)
   (setq efrit-agent--todos-region nil)
@@ -502,10 +503,15 @@ Inserts a visible delimiter between sessions."
     (cancel-timer efrit-agent--elapsed-timer))
   (setq efrit-agent--elapsed-timer
         (run-at-time 1 1 #'efrit-agent--update-elapsed (current-buffer)))
-  ;; Insert visible delimiter between sessions (only if there's prior content)
+  ;; Insert visible delimiter between sessions (only if there's prior
+  ;; content; the blank line from `efrit-agent--setup-regions' doesn't
+  ;; count, else a fresh buffer's first session gets a delimiter too)
   (when (and efrit-agent--conversation-end
              (marker-position efrit-agent--conversation-end)
-             (> (marker-position efrit-agent--conversation-end) (point-min)))
+             (string-match-p "[^ \t\n]"
+                             (buffer-substring-no-properties
+                              (point-min)
+                              (marker-position efrit-agent--conversation-end))))
     (efrit-agent--append-to-conversation
      (propertize (format "\n══════════════════════════════════════════════════════════
 Session: %s
@@ -513,6 +519,11 @@ Session: %s
                          (truncate-string-to-width command 50))
                  'face 'efrit-agent-section-header
                  'efrit-type 'session-delimiter))))
+
+(defun efrit-agent--begin-session (session command)
+  "Attach this agent buffer to SESSION for COMMAND.
+See `efrit-agent--attach-session'."
+  (efrit-agent--attach-session (efrit-session-id session) command))
 
 (defun efrit-agent--save-session-on-kill ()
   "Save the current session when the agent buffer is killed.

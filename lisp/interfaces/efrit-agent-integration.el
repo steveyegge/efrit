@@ -267,7 +267,6 @@ Call this after loading efrit-do and efrit-progress."
 
 ;;; Public API wrappers (for use by other modules)
 
-(declare-function efrit-agent--render "efrit-agent")
 (declare-function efrit-agent--add-todos-inline "efrit-agent-render")
 (declare-function efrit-agent-start-session "efrit-agent")
 (declare-function efrit-agent-end-session "efrit-agent")

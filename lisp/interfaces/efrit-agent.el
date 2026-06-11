@@ -319,7 +319,9 @@ Status is shown in the header-line at top of window.
       (progn
         (efrit-executor-cancel)
         (efrit-agent-set-status 'failed)
-        (efrit-agent--render))
+        ;; Update status in place: a full render here erased the
+        ;; incrementally rendered conversation (ef-7t0)
+        (efrit-agent--refresh-status-line))
     (message "No active session to cancel")))
 
 (defun efrit-agent-pause ()
@@ -340,7 +342,7 @@ If the session is waiting for user input, prompts for a response."
     ;; Session is waiting for user input - use efrit-executor-respond
     (call-interactively #'efrit-executor-respond)
     (efrit-agent-set-status 'working)
-    (efrit-agent--render))
+    (efrit-agent--refresh-status-line))
    ((eq efrit-agent--status 'paused)
     (message "Session resume not yet implemented"))
    (t
@@ -468,9 +470,13 @@ Loads the session from disk and restores it into the agent buffer."
         (message "Resumed session %s" session-id)))))
 
 (defun efrit-agent-refresh ()
-  "Refresh the buffer display."
+  "Refresh the status display.
+The conversation is rendered incrementally and cannot be rebuilt
+from session data, so only the status line and header-line are
+refreshed; a full render destroyed the transcript (ef-7t0)."
   (interactive)
-  (efrit-agent--render))
+  (efrit-agent--refresh-status-line)
+  (force-mode-line-update))
 
 (defun efrit-agent-next-section ()
   "Move to the next section in the buffer."
@@ -558,14 +564,11 @@ Loads the session from disk and restores it into the agent buffer."
   "Toggle expansion of the tool call at point.
 In conversation region, expands/collapses tool calls to show input and results."
   (interactive)
-  ;; Try new conversation-first tool expansion
+  ;; Legacy activity items (efrit-agent-item-id) only existed in the
+  ;; full-render layout, which no session path produces anymore; the
+  ;; old fallback's full render destroyed the transcript (ef-7t0).
   (unless (efrit-agent--toggle-tool-expansion)
-    ;; Fall back to old behavior for legacy activity items
-    (when-let* ((item-id (get-text-property (point) 'efrit-agent-item-id)))
-      (if (gethash item-id efrit-agent--expanded-items)
-          (remhash item-id efrit-agent--expanded-items)
-        (puthash item-id t efrit-agent--expanded-items))
-      (efrit-agent--render))))
+    (message "No expandable tool call at point")))
 
 (defun efrit-agent-expand-all ()
   "Expand all tool calls in the buffer.
@@ -621,8 +624,9 @@ Sets user expansion state for all tools, overriding display-mode and hints."
           ('minimal 'normal)
           ('normal 'verbose)
           ('verbose 'minimal)))
-  (message "Verbosity: %s" efrit-agent-verbosity)
-  (efrit-agent--render))
+  ;; Affects future tool rendering only; re-rendering the existing
+  ;; conversation destroyed it (ef-7t0)
+  (message "Verbosity: %s" efrit-agent-verbosity))
 
 (defun efrit-agent-cycle-display-mode ()
   "Cycle through display modes (minimal/smart/verbose).
@@ -777,7 +781,11 @@ even when not waiting for explicit input."
 ;;; Rendering (legacy full-buffer render)
 
 (defun efrit-agent--render ()
-  "Render the entire buffer."
+  "Render the entire buffer (legacy scaffold layout).
+Destructive: erases the incrementally rendered conversation, which
+cannot be rebuilt from session data.  No session or command path
+calls this anymore (ef-yqv, ef-ts3, ef-7t0); it remains only for
+the legacy-layout unit tests."
   (let ((inhibit-read-only t)
         (pos (point)))
     (erase-buffer)
@@ -1263,33 +1271,18 @@ is rendered in the conversation (ef-ter)."
 
 (defun efrit-agent-start-session (session-id command)
   "Start agent buffer for SESSION-ID with COMMAND.
-Creates and displays the agent buffer, initializes session tracking,
-and sets status to working."
+Creates and displays the agent buffer, attaches it to the session,
+and sets status to working.  Prior sessions' conversation text is
+preserved (ef-ts3): when the buffer is already attached to
+SESSION-ID (e.g. by `efrit-agent--begin-session' on the efrit-do
+path), the layout it set up is left untouched."
   (let ((buffer (efrit-agent--get-buffer)))
-    ;; Initialize mode if not already done
-    (unless (eq (buffer-local-value 'major-mode buffer) 'efrit-agent-mode)
-      (with-current-buffer buffer
-        (efrit-agent-mode)))
-    ;; Set session context
     (with-current-buffer buffer
-      (setq efrit-agent--session-id session-id)
-      (setq efrit-agent--command command)
-      (setq efrit-agent--status 'working)
-      (setq efrit-agent--failure-reason nil)
-      (setq efrit-agent--start-time (current-time))
-      ;; Reset per-session display state: a reused buffer otherwise
-      ;; shows prior sessions' Activity entries (and stale tasks/tools)
-      ;; under the new session header (ef-3v1)
-      (setq efrit-agent--activities nil)
-      (setq efrit-agent--todos nil)
-      (setq efrit-agent--pending-tools nil)
-      (setq efrit-agent--failed-tools nil)
-      ;; Tick the elapsed display ~1/sec while the session runs
-      (when efrit-agent--elapsed-timer
-        (cancel-timer efrit-agent--elapsed-timer))
-      (setq efrit-agent--elapsed-timer
-            (run-at-time 1 1 #'efrit-agent--update-elapsed buffer))
-      (efrit-agent--render))
+      ;; Initialize mode if not already done
+      (unless (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent-mode))
+      (unless (equal efrit-agent--session-id session-id)
+        (efrit-agent--attach-session session-id command)))
     ;; Display the buffer
     (pop-to-buffer buffer)))
 

@@ -391,6 +391,11 @@ Returns a propertized string ready for insertion."
 TODOS is a list of plists with :status, :content, :id.
 If a TODO block already exists, updates it in-place.
 If no block exists, inserts one."
+  ;; Ensure markers exist before proceeding
+  (unless (and efrit-agent--conversation-end
+               (marker-position efrit-agent--conversation-end))
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions))
   ;; End any streaming message first (so Claude's text is finalized before TODOs)
   (efrit-agent--stream-end-message)
   (let ((inhibit-read-only t)
