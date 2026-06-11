@@ -110,21 +110,36 @@ Returns the session ID."
           (efrit-do-async--stop-loop session "interrupted"))
       ;; Continue with normal flow
       (let* ((loop-state (gethash session-id efrit-do-async--loops))
-             (iteration-count (nth 2 loop-state)))
-        (if (and (> efrit-do-async-max-iterations 0)
-                 (>= iteration-count efrit-do-async-max-iterations))
-            (progn
-              (efrit-log 'warn "Session %s hit iteration limit (%d)"
-                         session-id efrit-do-async-max-iterations)
-              (efrit-do-async--stop-loop session "iteration-limit-exceeded"))
-          ;; Increment iteration count and send request
-          (progn
-            ;; Update loop state with new iteration count
-            (let ((new-state (list session (nth 1 loop-state) (1+ iteration-count) (nth 3 loop-state))))
-              (puthash session-id new-state efrit-do-async--loops))
-            (efrit-log 'debug "Session %s: sending request (iteration %d)"
-                       session-id (1+ iteration-count))
-            (efrit-do-async--send-request session)))))))
+             (iteration-count (nth 2 loop-state))
+             (elapsed (float-time
+                       (time-since (efrit-session-start-time session)))))
+        (cond
+         ;; Wall-clock timeout (ef-5o5): the sync path enforces
+         ;; `efrit-session-timeout' in efrit-executor, but this loop
+         ;; previously had only the iteration cap, so a slow session
+         ;; could run unbounded. Checked between iterations, so an
+         ;; in-flight API call still completes before the stop.
+         ((and (> efrit-session-timeout 0)
+               (>= elapsed efrit-session-timeout))
+          (efrit-log 'warn "Session %s hit wall-clock timeout (%.0fs, limit: %ds)"
+                     session-id elapsed efrit-session-timeout)
+          (efrit-do-async--stop-loop
+           session "session-timeout"
+           (format "Session timed out after %.0fs (limit: %ds, see efrit-session-timeout)"
+                   elapsed efrit-session-timeout)))
+         ((and (> efrit-do-async-max-iterations 0)
+               (>= iteration-count efrit-do-async-max-iterations))
+          (efrit-log 'warn "Session %s hit iteration limit (%d)"
+                     session-id efrit-do-async-max-iterations)
+          (efrit-do-async--stop-loop session "iteration-limit-exceeded"))
+         ;; Increment iteration count and send request
+         (t
+          ;; Update loop state with new iteration count
+          (let ((new-state (list session (nth 1 loop-state) (1+ iteration-count) (nth 3 loop-state))))
+            (puthash session-id new-state efrit-do-async--loops))
+          (efrit-log 'debug "Session %s: sending request (iteration %d)"
+                     session-id (1+ iteration-count))
+          (efrit-do-async--send-request session)))))))
 
 (defun efrit-do-async--send-request (session)
   "Send request to Claude API for SESSION.
