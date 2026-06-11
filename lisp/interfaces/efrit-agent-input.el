@@ -93,39 +93,52 @@ Returns the question ID for tracking responses."
     (efrit-agent--update-input-prompt question options)
     q-id))
 
+(defun efrit-agent--set-input-prompt (text)
+  "Replace the input prompt with TEXT.
+The prompt is the text between the beginning of the prompt line and
+`efrit-agent--input-start'; the input region itself starts at the
+marker.  Earlier versions inserted AT the marker, which put the prompt
+inside the input region where it accumulated on every update and would
+have been sent back to Claude as part of the user's answer."
+  (when (and (markerp efrit-agent--input-start)
+             (marker-position efrit-agent--input-start))
+    (let ((inhibit-read-only t)
+          (prompt-bol nil))
+      (save-excursion
+        (goto-char efrit-agent--input-start)
+        (setq prompt-bol (line-beginning-position))
+        (delete-region prompt-bol efrit-agent--input-start)
+        (goto-char efrit-agent--input-start)
+        (insert (propertize text 'face 'efrit-agent-input-prompt))
+        ;; Inserting at the marker leaves the marker before the text;
+        ;; move it back to the start of the (empty) input region.
+        (set-marker efrit-agent--input-start (point)))
+      ;; The rewrite strands point (and window points) that sat at the
+      ;; old prompt before the new text; anything left inside the prompt
+      ;; span would type OUTSIDE the input region, so move it in.
+      (when (and (>= (point) prompt-bol)
+                 (<= (point) efrit-agent--input-start))
+        (goto-char (point-max)))
+      (dolist (win (get-buffer-window-list (current-buffer) nil t))
+        (when (and (>= (window-point win) prompt-bol)
+                   (<= (window-point win) efrit-agent--input-start))
+          (set-window-point win (point-max)))))))
+
 (defun efrit-agent--update-input-prompt (_question options)
   "Update the input region prompt for question with OPTIONS.
 Shows context about what input is expected."
-  (when (marker-position efrit-agent--input-start)
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char efrit-agent--input-start)
-        ;; Clear any existing prompt marker
-        (when (looking-at "^.*\n")
-          (delete-region (point) (match-end 0)))
-        ;; Insert new context-aware prompt
-        (insert
-         (propertize
-          (if options
-              (format "Answer (or %s): "
-                      (mapconcat #'number-to-string
-                                 (number-sequence 1 (min 4 (length options)))
-                                 "/"))
-            "Answer: ")
-          'face 'efrit-agent-input-prompt))))))
+  (efrit-agent--set-input-prompt
+   (if options
+       (format "Answer (or %s): "
+               (mapconcat #'number-to-string
+                          (number-sequence 1 (min 4 (length options)))
+                          "/"))
+     "Answer: ")))
 
 (defun efrit-agent--reset-input-prompt ()
   "Reset the input region prompt to the default state.
 Called after responding to a question."
-  (when (marker-position efrit-agent--input-start)
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char efrit-agent--input-start)
-        ;; Clear any existing prompt text on this line
-        (when (looking-at "^[^\n]*")
-          (delete-region (point) (match-end 0)))
-        ;; Insert default prompt
-        (insert (propertize "> " 'face 'efrit-agent-input-prompt))))))
+  (efrit-agent--set-input-prompt "> "))
 
 ;;; Option Selection
 
@@ -136,7 +149,15 @@ Returns nil if no options or N is out of range."
     (let* ((options (cadr efrit-agent--pending-question))
            (option (and options (nth (1- n) options))))
       (when option
-        (efrit-executor-respond option)
+        ;; Questions can come from a waiting REPL session (request_user_input
+        ;; in the REPL loop, ef-dcn) or from an efrit-do executor session.
+        (if (and efrit-agent--repl-session
+                 (eq (efrit-repl-session-status efrit-agent--repl-session)
+                     'waiting))
+            (progn
+              (efrit-agent--add-user-message option)
+              (efrit-agent--repl-send option))
+          (efrit-executor-respond option))
         (setq efrit-agent--status 'working)
         t))))
 
@@ -281,6 +302,8 @@ Creates a new REPL session if needed, otherwise continues the existing one."
        ;; Handle question response
        (when (efrit-repl-session-pending-question session)
          (setf (efrit-repl-session-pending-question session) nil))
+       (setq efrit-agent--pending-question nil)
+       (efrit-agent--reset-input-prompt)
        (efrit-repl-continue session input
                             #'efrit-agent--on-turn-complete)
        (message "Efrit: response sent"))
@@ -304,12 +327,21 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
     (efrit-agent-set-status
      (pcase stop-reason
        ((or "end_turn" "session-complete" "unknown") 'idle)
+       ("waiting-for-user" 'waiting)
        ("paused" 'paused)
        ("interrupted" 'interrupted)
        ((or "api-error" "error") 'failed)
        (_ 'idle))))
-  ;; Reset prompt if we were waiting
-  (efrit-agent--reset-input-prompt)
+  ;; Reset prompt if we were waiting -- but keep the Answer: prompt when
+  ;; the turn paused on request_user_input (ef-dcn).  This callback runs
+  ;; from the API response handler, whose current buffer is NOT the agent
+  ;; buffer; the buffer-local input markers are nil there and crash with
+  ;; "markerp nil" (ef-jz6), so switch to the session's buffer first.
+  (unless (equal stop-reason "waiting-for-user")
+    (let ((buffer (efrit-repl-session-buffer session)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (efrit-agent--reset-input-prompt)))))
   ;; Auto-save session if enabled
   (when (and efrit-session-persist-auto-save session)
     (efrit-agent--auto-save-session session)))

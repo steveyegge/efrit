@@ -60,6 +60,12 @@ Prevents runaway loops. Set to 0 for unlimited."
   "Hash table of active REPL loops by session ID.
 Each entry contains: (session callback iteration-count)")
 
+(defvar efrit-repl-loop--tool-session nil
+  "The REPL session whose tool call is currently executing, if any.
+Dynamically bound around tool dispatch so session-aware tool handlers
+\(like request_user_input) can target the REPL session instead of
+requiring an active efrit-do session (ef-dcn).")
+
 ;;; Public API
 
 (defun efrit-repl-continue (session user-input &optional on-turn-complete)
@@ -137,12 +143,15 @@ Returns the session ID."
        (if error
            (efrit-repl-loop--on-api-error session error)
          ;; An uncaught elisp error here would silently kill the loop
-         ;; (see 098182c): catch it and fail the turn visibly.
+         ;; (see 098182c): catch it and fail the turn visibly.  Label it
+         ;; as a client-side bug, not an API failure -- relabeling these
+         ;; as API errors sent debugging down the wrong path (ef-jz6).
          (condition-case err
              (efrit-repl-loop--on-api-response session response)
            (error
-            (let ((msg (error-message-string err)))
-              (efrit-log 'error "REPL session %s: error handling response: %s"
+            (let ((msg (format "Internal error handling response (efrit bug, not an API failure): %s"
+                               (error-message-string err))))
+              (efrit-log 'error "REPL session %s: %s"
                          (efrit-repl-session-id session) msg)
               (efrit-repl-loop--on-api-error session msg)))))))))
 
@@ -212,7 +221,8 @@ CALLBACK is (lambda (response error) ...) called when complete."
   "Execute tools requested in Claude's CONTENT for REPL SESSION."
   (let ((session-id (efrit-repl-session-id session))
         (results nil)
-        (session-complete-requested nil))
+        (session-complete-requested nil)
+        (waiting-for-user nil))
 
     ;; Store Claude's response BEFORE executing tools
     (efrit-repl-session-add-assistant-message session content)
@@ -240,6 +250,7 @@ CALLBACK is (lambda (response error) ...) called when complete."
               (let* ((tool-result (efrit-repl-loop--execute-single-tool
                                    session tool-id tool-name input))
                      (is-session-complete (string-match-p "\\[SESSION-COMPLETE:" tool-result))
+                     (is-waiting (string-match-p "\\[WAITING-FOR-USER\\]" tool-result))
                      (is-error (string-match-p "^Error " tool-result))
                      (elapsed-secs (float-time (time-subtract (current-time) tool-start-time))))
 
@@ -255,7 +266,10 @@ CALLBACK is (lambda (response error) ...) called when complete."
                       results)
 
                 (when is-session-complete
-                  (setq session-complete-requested t))))))))
+                  (setq session-complete-requested t))
+
+                (when is-waiting
+                  (setq waiting-for-user t))))))))
 
     (efrit-log 'info "REPL session %s: executed %d tools" session-id (length results))
 
@@ -267,9 +281,15 @@ CALLBACK is (lambda (response error) ...) called when complete."
                             (content . ,(vconcat (nreverse results))))))))
 
     ;; Continue or end
-    (if session-complete-requested
-        (efrit-repl-loop--end-turn session "session-complete")
-      (efrit-repl-loop--continue-iteration session))))
+    (cond
+     (session-complete-requested
+      (efrit-repl-loop--end-turn session "session-complete"))
+     ;; request_user_input pauses the turn; the user's answer arrives
+     ;; via the next efrit-repl-continue call (ef-dcn).
+     (waiting-for-user
+      (efrit-repl-loop--end-turn session "waiting-for-user"))
+     (t
+      (efrit-repl-loop--continue-iteration session)))))
 
 (defun efrit-repl-loop--execute-single-tool (session tool-id tool-name input)
   "Execute single TOOL-NAME with INPUT for REPL SESSION.
@@ -287,7 +307,8 @@ Returns tool result string."
             (puthash "name" tool-name tool-item)
             (puthash "input" input tool-item)
 
-            (let ((result (efrit-do--execute-tool tool-item)))
+            (let ((result (let ((efrit-repl-loop--tool-session session))
+                            (efrit-do--execute-tool tool-item))))
               (unless (stringp result)
                 (setq result (format "%S" result)))
               (efrit-log 'debug "REPL session %s: tool %s returned %d chars"
@@ -330,14 +351,20 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
     ;; End the turn (transitions to idle, NOT complete)
     (efrit-repl-session-end-turn session)
 
+    ;; A turn paused on request_user_input stays in waiting state so the
+    ;; next input is routed as the answer (ef-dcn).
+    (when (equal stop-reason "waiting-for-user")
+      (efrit-repl-session-set-status session 'waiting))
+
     ;; Update agent buffer status
     ;; Note: "unknown" means Claude finished but with unrecognized stop_reason
     ;; This is normal - treat it as idle, not failed.
     (when (fboundp 'efrit-agent-set-status)
       (efrit-agent-set-status
-       (if (member stop-reason '("end_turn" "session-complete" "unknown"))
-           'idle
-         'failed)))
+       (cond
+        ((equal stop-reason "waiting-for-user") 'waiting)
+        ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
+        (t 'failed))))
 
     ;; Remove from active loops
     (remhash session-id efrit-repl-loop--active)

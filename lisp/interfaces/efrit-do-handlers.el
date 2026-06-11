@@ -50,6 +50,7 @@
 (require 'efrit-tools)
 (require 'efrit-tool-inputs)
 (require 'efrit-session)
+(require 'efrit-repl-session)
 (require 'efrit-progress)
 (require 'efrit-common)
 (require 'efrit-todo)
@@ -601,38 +602,62 @@ Includes safety limits to prevent hanging on large directories."
           (error
            (format "\n[Error finding files: %s]" (error-message-string err))))))))))
 
+(defun efrit-do--waiting-for-user-marker (question options)
+  "Format the [WAITING-FOR-USER] tool result for QUESTION with OPTIONS.
+The executor and the REPL loop both recognize this marker and pause
+the turn until the user responds."
+  (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
+          question
+          (if options
+              (format "\nOptions: %s" (mapconcat #'identity options ", "))
+            "")))
+
 (defun efrit-do--handle-request-user-input (tool-input)
   "Handle request_user_input tool to pause and ask user a question.
-Sets the session to waiting-for-user state and emits a progress event."
+Sets the session to waiting-for-user state and emits a progress event.
+
+Works in two execution paths: the efrit-do executor path, which uses
+the active `efrit-session', and the agent-buffer REPL path, where
+`efrit-repl-loop--tool-session' is dynamically bound to the REPL
+session whose tool call is executing (ef-dcn)."
   (let* ((input (efrit-request-user-input-input-create tool-input))
          (validation (efrit-request-user-input-input-is-valid input)))
     (if (not (car validation))
         (format "\n[Error: %s]" (cdr validation))
       (let* ((question (efrit-request-user-input-input-get-question input))
              (options (efrit-request-user-input-input-get-options input))
-             (session (efrit-session-active)))
-        (if (not session)
-            "\n[Error: request_user_input requires an active session]"
+             (repl-session (bound-and-true-p efrit-repl-loop--tool-session))
+             (session (and (not repl-session) (efrit-session-active))))
+        (cond
+         ;; REPL path: store the question on the REPL session; the loop
+         ;; pauses on the marker and the next user input is the answer.
+         (repl-session
+          (setf (efrit-repl-session-pending-question repl-session)
+                (list question options (current-time)))
+          (when (fboundp 'efrit-agent-show-question)
+            (efrit-agent-show-question question options))
+          (efrit-do--waiting-for-user-marker question options))
+
+         ((not session)
+          "\n[Error: request_user_input requires an active session]")
+
+         (t
           ;; Set pending question on session
-           (efrit-session-set-pending-question
-            session question
-            (when options options))
+          (efrit-session-set-pending-question
+           session question
+           (when options options))
 
-           ;; Show in agent buffer
-           (when (fboundp 'efrit-agent-show-question)
-             (efrit-agent-show-question question options))
+          ;; Show in agent buffer
+          (when (fboundp 'efrit-agent-show-question)
+            (efrit-agent-show-question question options))
 
-           ;; Emit progress event
-           (efrit-progress-show-message
-            (format "Question for user: %s" question)
-            'claude)
+          ;; Emit progress event
+          (efrit-progress-show-message
+           (format "Question for user: %s" question)
+           'claude)
 
           ;; Return a special marker that the executor can recognize
-          (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
-                  question
-                  (if options
-                      (format "\nOptions: %s" (mapconcat #'identity options ", "))
-                    "")))))))
+          (efrit-do--waiting-for-user-marker question options)))))))
 
 (defun efrit-do--handle-confirm-action (tool-input)
   "Handle confirm_action tool to get user confirmation for destructive operations.

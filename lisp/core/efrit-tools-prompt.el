@@ -55,6 +55,11 @@ Return:
           "  eval_sexp: (buffer-name)\n"
           "  eval_sexp: (find-file \"~/.emacs.d/init.el\")\n\n"
 
+          "NEVER evaluate synchronous user-input forms (read-string, y-or-n-p,\n"
+          "yes-or-no-p, completing-read, read-char, etc.) via eval_sexp - they\n"
+          "freeze all of Emacs and are rejected with an error. To ask the user\n"
+          "a question, use the request_user_input tool.\n\n"
+
           "### The Read-Verify-Act Pattern\n"
           "For ALL buffer manipulation requests, follow this workflow:\n\n"
           "1. READ: Call eval_sexp to read buffer contents\n"

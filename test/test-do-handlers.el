@@ -381,6 +381,80 @@ the function to return 'efrit-do--handle-request-user-input instead."
   (should (equal (efrit-do--vector-to-list '(a b c)) '(a b c)))
   (should (equal (efrit-do--vector-to-list []) nil)))
 
+;;; ============================================================
+;;; Tests for efrit-do--handle-request-user-input (ef-dcn)
+;;; ============================================================
+
+(require 'efrit-repl-session)
+(require 'efrit-repl-loop)
+
+(ert-deftest test-request-user-input-repl-path ()
+  "Test request_user_input works in the REPL loop path (ef-dcn).
+The REPL loop binds `efrit-repl-loop--tool-session' around tool
+dispatch; the handler must store the question on the REPL session
+instead of requiring an active efrit-do session."
+  (let* ((session (efrit-repl-session-create temporary-file-directory))
+         (input (make-hash-table :test 'equal)))
+    (puthash "question" "Which file?" input)
+    (puthash "options" ["a.el" "b.el"] input)
+    (let ((result (let ((efrit-repl-loop--tool-session session))
+                    (efrit-do--handle-request-user-input input))))
+      (should (string-match-p "\\[WAITING-FOR-USER\\]" result))
+      (should (string-match-p "Which file\\?" result))
+      (let ((pending (efrit-repl-session-pending-question session)))
+        (should pending)
+        (should (equal (car pending) "Which file?"))
+        (should (equal (cadr pending) '("a.el" "b.el")))))))
+
+(ert-deftest test-request-user-input-no-session-errors ()
+  "Test request_user_input still errors without any session."
+  (let ((input (make-hash-table :test 'equal)))
+    (puthash "question" "Q?" input)
+    (let ((result (efrit-do--handle-request-user-input input)))
+      (should (string-match-p "requires an active session" result)))))
+
+(ert-deftest test-repl-loop-end-turn-waiting-for-user ()
+  "Test the REPL loop leaves the session in waiting state (ef-dcn).
+A turn that pauses on request_user_input must end in `waiting', not
+`idle', so the next input is routed as the answer."
+  (let ((session (efrit-repl-session-create temporary-file-directory)))
+    (puthash (efrit-repl-session-id session) (list session nil 1)
+             efrit-repl-loop--active)
+    (efrit-repl-loop--end-turn session "waiting-for-user")
+    (should (eq (efrit-repl-session-status session) 'waiting))))
+
+;;; ============================================================
+;;; Tests for the eval_sexp synchronous-input guard (ef-bdg)
+;;; ============================================================
+
+(ert-deftest test-eval-sexp-blocks-read-string ()
+  "Test eval_sexp rejects read-string instead of freezing Emacs (ef-bdg)."
+  (let ((efrit-tools-block-interactive-input t))
+    (let ((result (efrit-tools-eval-sexp "(read-string \"color? \")")))
+      (should (string-match-p "blocked in eval_sexp" result))
+      (should (string-match-p "request_user_input" result)))))
+
+(ert-deftest test-eval-sexp-blocks-y-or-n-p ()
+  "Test eval_sexp rejects y-or-n-p instead of freezing Emacs (ef-bdg)."
+  (let ((efrit-tools-block-interactive-input t))
+    (let ((result (efrit-tools-eval-sexp "(y-or-n-p \"proceed? \")")))
+      (should (string-match-p "blocked in eval_sexp" result)))))
+
+(ert-deftest test-eval-sexp-guard-restores-functions ()
+  "Test the input guard restores original definitions after eval."
+  (let ((efrit-tools-block-interactive-input t)
+        (orig (symbol-function 'read-string)))
+    (efrit-tools-eval-sexp "(read-string \"x\")")
+    (should (eq (symbol-function 'read-string) orig))
+    ;; Also restored after a non-input error mid-eval
+    (efrit-tools-eval-sexp "(error \"boom\")")
+    (should (eq (symbol-function 'read-string) orig))))
+
+(ert-deftest test-eval-sexp-guard-allows-normal-eval ()
+  "Test normal evaluation is unaffected by the input guard."
+  (let ((efrit-tools-block-interactive-input t))
+    (should (equal (efrit-tools-eval-sexp "(+ 1 2)") "3"))))
+
 (provide 'test-do-handlers)
 
 ;;; test-do-handlers.el ends here

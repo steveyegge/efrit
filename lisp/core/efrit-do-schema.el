@@ -116,7 +116,9 @@ EXAMPLES:
 - Create buffer: (switch-to-buffer (get-buffer-create \"*My Buffer*\"))
 - Edit text: (with-current-buffer \"file.txt\" (goto-char (point-min)) (insert \"Hello\"))
 - Navigate: (goto-line 50) or (goto-char (point-max))
-- Search: (re-search-forward \"pattern\" nil t)")
+- Search: (re-search-forward \"pattern\" nil t)
+
+NEVER call synchronous user-input functions (read-string, y-or-n-p, yes-or-no-p, completing-read, read-char, etc.) - they freeze all of Emacs and are rejected with an error. To ask the user something, use the request_user_input tool instead.")
   ("input_schema" . (("type" . "object")
   ("properties" . (("expr" . (("type" . "string")
   ("description" . "The Elisp expression to evaluate")))))

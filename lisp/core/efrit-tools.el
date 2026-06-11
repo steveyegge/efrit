@@ -103,6 +103,15 @@ Use C-g to manually interrupt if an eval hangs."
   :type 'boolean
   :group 'efrit-tools)
 
+(defcustom efrit-tools-block-interactive-input t
+  "When non-nil, reject synchronous user-input calls inside eval_sexp.
+Forms like `read-string' and `y-or-n-p' block ALL of Emacs when
+evaluated from the async tool loop, freezing the editor until the
+eval timeout fires (ef-bdg).  With this enabled they signal an error
+immediately, telling the model to use the request_user_input tool."
+  :type 'boolean
+  :group 'efrit-tools)
+
 ;; efrit-tools-max-eval-per-session and efrit-tools-max-total-calls-per-session
 ;; are now aliases to shared config in efrit-config.el for consistency.
 (defvaralias 'efrit-tools-max-eval-per-session 'efrit-max-eval-per-session
@@ -183,18 +192,52 @@ Signals an error if rate limit would be exceeded."
       (error
        (error "Invalid Lisp syntax: %s" (error-message-string parse-err))))))
 
+(defconst efrit-tools--blocked-input-functions
+  '(read-string read-from-minibuffer y-or-n-p yes-or-no-p
+    completing-read completing-read-multiple read-char read-char-choice
+    read-key read-event read-number read-passwd read-answer
+    read-multiple-choice map-y-or-n-p)
+  "Synchronous user-input functions rejected inside eval_sexp.
+Each blocks the Emacs event loop waiting for keyboard input, which
+freezes the editor when called from the async tool loop (ef-bdg).")
+
+(defun efrit-tools--call-with-input-blocked (thunk)
+  "Call THUNK with synchronous input functions overridden to signal errors.
+Temporarily replaces each function in
+`efrit-tools--blocked-input-functions' with a stub that errors,
+directing the model to the request_user_input tool instead."
+  (let ((saved (mapcar (lambda (fn) (cons fn (symbol-function fn)))
+                       efrit-tools--blocked-input-functions)))
+    (unwind-protect
+        (progn
+          (dolist (fn efrit-tools--blocked-input-functions)
+            (let ((fn-name fn))
+              (fset fn (lambda (&rest _)
+                         (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
+                                fn-name)))))
+          (funcall thunk))
+      (dolist (pair saved)
+        (fset (car pair) (cdr pair))))))
+
 (defun efrit-tools--eval-with-context (sexp)
   "Evaluate SEXP and return result data with context.
-Applies `efrit-tools-eval-timeout' if set."
+Applies `efrit-tools-eval-timeout' if set, and blocks synchronous
+user-input functions when `efrit-tools-block-interactive-input' is
+non-nil."
   (let* ((timeout (and efrit-tools-eval-timeout
                        (> efrit-tools-eval-timeout 0)
                        efrit-tools-eval-timeout))
+         (do-eval (lambda ()
+                    (if efrit-tools-block-interactive-input
+                        (efrit-tools--call-with-input-blocked
+                         (lambda () (eval sexp t)))
+                      (eval sexp t))))
          (result (if timeout
                      (with-timeout (timeout
                                     (signal 'efrit-eval-timeout
                                             (list (format "Evaluation timed out after %d seconds" timeout))))
-                       (eval sexp t))
-                   (eval sexp t)))
+                       (funcall do-eval))
+                   (funcall do-eval)))
          (result-string (format "%S" result)))
     ;; Truncate if result is too long
     (when (and result-string 
