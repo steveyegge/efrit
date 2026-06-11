@@ -72,6 +72,10 @@ rest of efrit and loads into any Emacs ≥ 28.
   that name if unreachable).
 - Otherwise: default socket (your running Emacs) → `efrit` daemon →
   auto-start `efrit` daemon.
+- Auto-started daemons launch with `-Q` plus the repo's `lisp/`
+  load-paths, so they're deterministic and `(require 'efrit-do)` works
+  out of the box.  Set `EFRIT_DAEMON_INIT=user` to load your full init
+  instead.
 - `efrit stop` only kills explicitly named daemons, never the default
   session.
 

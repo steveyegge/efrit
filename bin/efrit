@@ -22,18 +22,21 @@
 #
 # Socket resolution: $EFRIT_SOCKET / -s if given; otherwise the default
 # emacsclient socket (your running Emacs); otherwise the 'efrit' daemon,
-# auto-started if needed.
+# auto-started if needed.  Auto-started daemons launch with -Q plus the
+# repo's lisp/ load-paths; set EFRIT_DAEMON_INIT=user to load your full
+# init instead.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHANNEL_EL="$SCRIPT_DIR/../lisp/efrit-channel.el"
+LISP_DIR="$(cd "$SCRIPT_DIR/../lisp" && pwd)"
+CHANNEL_EL="$LISP_DIR/efrit-channel.el"
 TIMEOUT="${EFRIT_TIMEOUT:-30}"
 SOCKET="${EFRIT_SOCKET:-}"
 SOCKET_EXPLICIT="${EFRIT_SOCKET:+yes}"
 NO_SNAPSHOT=""
 
-usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 err_json() { # $1 = type, $2 = message
   printf '{"ok":false,"error":{"type":"%s","message":"%s"}}\n' "$1" \
@@ -66,8 +69,18 @@ probe() { # $1 = socket name, "" = default socket
 
 start_daemon() { # $1 = daemon/socket name
   echo "efrit: starting Emacs daemon '$1'..." >&2
+  local args=()
+  if [ "${EFRIT_DAEMON_INIT:-}" != "user" ]; then
+    # -Q: a deterministic daemon, untouched by the user's init.
+    # Pre-add the repo load-paths so (require 'efrit-do) etc. just work.
+    args=(-Q)
+    local dir
+    for dir in "$LISP_DIR" "$LISP_DIR"/{core,interfaces,tools,support,dev}; do
+      args+=(--eval "(add-to-list 'load-path \"$dir\")")
+    done
+  fi
   # load-prefer-newer: never let a stale .elc shadow edited source
-  emacs --eval "(setq load-prefer-newer t)" --daemon="$1" >/dev/null 2>&1
+  emacs "${args[@]}" --eval "(setq load-prefer-newer t)" --daemon="$1" >/dev/null 2>&1
   probe "$1"
 }
 
