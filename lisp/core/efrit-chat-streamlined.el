@@ -117,7 +117,8 @@
          (request-data
           `(("model" . ,model)
             ("max_tokens" . ,efrit-max-tokens)
-            ("temperature" . ,efrit-temperature)
+            ,@(when efrit-temperature
+                `(("temperature" . ,efrit-temperature)))
             ("system" . ,system-prompt)
             ("messages" . ,(vconcat cleaned-messages))
             ,@(when efrit-enable-tools

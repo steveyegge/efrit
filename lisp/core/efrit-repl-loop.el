@@ -151,7 +151,6 @@ CALLBACK is (lambda (response error) ...) called when complete."
          (request-data
           `(("model" . ,efrit-default-model)
             ("max_tokens" . 8192)
-            ("temperature" . 0.0)
             ("messages" . ,(vconcat messages))
             ("system" . ,system-prompt)
             ("tools" . ,(efrit-do--get-current-tools-schema)))))

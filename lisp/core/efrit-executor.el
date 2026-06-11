@@ -518,7 +518,6 @@ Claude remembers previous tool calls and their results."
                (request-data
                 `(("model" . ,efrit-default-model)
                   ("max_tokens" . 8192)
-                  ("temperature" . 0.0)
                   ("messages" . ,api-messages)
                   ("system" . ,system-prompt)
                   ("tools" . ,(efrit-executor--get-tools-schema)))))
@@ -638,7 +637,6 @@ Returns the final result string."
       (let* ((request-data
               `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
-                ("temperature" . 0.0)
                 ("messages" . ,messages)
                 ("system" . ,system-prompt)
                 ("tools" . ,(efrit-executor--get-tools-schema))))
@@ -759,7 +757,6 @@ Calls optional CALLBACK with the result when complete."
            (request-data
             `(("model" . ,efrit-default-model)
               ("max_tokens" . 8192)
-              ("temperature" . 0.0)
               ("messages" . [(("role" . "user")
                              ("content" . ,command))])
               ("system" . ,system-prompt)
@@ -851,7 +848,6 @@ Continues the API call chain with the user's response in context."
              (request-data
               `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
-                ("temperature" . 0.0)
                 ("messages" . ,messages)
                 ("system" . ,system-prompt)
                 ("tools" . ,(efrit-executor--get-tools-schema)))))

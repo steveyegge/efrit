@@ -69,7 +69,8 @@ In interactive mode, uses async request with callbacks."
          (request-data
           `(("model" . ,model)
             ("max_tokens" . ,efrit-max-tokens)
-            ("temperature" . ,efrit-temperature)
+            ,@(when efrit-temperature
+                `(("temperature" . ,efrit-temperature)))
             ,@(when system-prompt
                 `(("system" . ,system-prompt)))
             ("messages" . ,(vconcat

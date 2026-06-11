@@ -476,7 +476,6 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
              (request-data
               `(("model" . ,efrit-default-model)
                 ("max_tokens" . ,efrit-max-tokens)
-                ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")
                                ("content" . ,command))])
                 ("system" . ,system-prompt)

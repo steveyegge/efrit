@@ -48,9 +48,12 @@ When nil, uses `efrit-default-model' from efrit-config.")
 
 ;;; Customization
 
-(defcustom efrit-temperature 0.1
-  "Temperature setting for response generation (0.0-1.0)."
-  :type 'float
+(defcustom efrit-temperature nil
+  "Temperature setting for response generation (0.0-1.0).
+When nil (the default), the parameter is omitted from API requests.
+Newer Claude models reject requests that include temperature."
+  :type '(choice (const :tag "Omit (model default)" nil)
+                 (float :tag "Temperature"))
   :group 'efrit)
 
 (defcustom efrit-enable-tools t
