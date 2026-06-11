@@ -397,8 +397,10 @@ buffer and echo area."
         (efrit-progress-insert-event session-id 'complete
           `((:result . ,stop-reason) (:elapsed . ,elapsed))))))
     
-    ;; Signal session completion to agent buffer
-    (efrit-agent-end-session (string= stop-reason "end_turn")
+    ;; Signal session completion to agent buffer.  session-complete is
+    ;; the success path too: it means Claude called the session_complete
+    ;; tool rather than simply ending its turn.
+    (efrit-agent-end-session (member stop-reason '("end_turn" "session-complete"))
                              stop-reason error-message)
     
     ;; Archive progress buffer

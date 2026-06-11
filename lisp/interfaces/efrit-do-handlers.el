@@ -118,6 +118,11 @@ Prevents runaway searches from overwhelming the system."
   :type 'integer
   :group 'efrit-do)
 
+(defcustom efrit-do-shell-timeout 10
+  "Seconds to allow a shell_exec command before it is killed."
+  :type 'integer
+  :group 'efrit-do)
+
 ;;; Shell command security
 
 (defcustom efrit-do-allowed-shell-commands
@@ -337,6 +342,31 @@ Validates syntax before execution and returns the result or error."
       (format "\n[Syntax Error in %s: %s]"
               input-str (cdr validation)))))
 
+(define-error 'efrit-shell-timeout "Shell command timeout")
+
+(defun efrit-do--shell-exec-to-string (command timeout)
+  "Run COMMAND via the shell and return its output as a string.
+Kill the process and signal `efrit-shell-timeout' if it runs longer
+than TIMEOUT seconds.  `shell-command-to-string' wrapped in
+`with-timeout' cannot time out at all: timers never fire while Emacs
+blocks inside `call-process'.  This loop checks the clock between
+`accept-process-output' calls instead."
+  (with-temp-buffer
+    (let ((proc (make-process :name "efrit-shell-exec"
+                              :buffer (current-buffer)
+                              :command (list shell-file-name
+                                             shell-command-switch command)
+                              :connection-type 'pipe))
+          (deadline (+ (float-time) timeout)))
+      (set-process-query-on-exit-flag proc nil)
+      (while (process-live-p proc)
+        (accept-process-output proc 0.2)
+        (when (and (process-live-p proc)
+                   (> (float-time) deadline))
+          (delete-process proc)
+          (signal 'efrit-shell-timeout (list command))))
+      (buffer-string))))
+
 (defun efrit-do--handle-shell-exec (input-str)
   "Handle shell_exec tool to execute a shell command.
 INPUT-STR is the shell command to execute.
@@ -347,8 +377,8 @@ Returns output or security error."
         ;; Command is safe, execute it
         (condition-case shell-err
             (let* ((start-time (current-time))
-                   (shell-result (with-timeout (10) ; 10 second timeout
-                                   (shell-command-to-string input-str)))
+                   (shell-result (efrit-do--shell-exec-to-string
+                                  input-str efrit-do-shell-timeout))
                    (end-time (current-time))
                    (duration (float-time (time-subtract end-time start-time))))
               (format "\n[Executed: %s]\n[Duration: %.2fs]\n[Result: %s]"
@@ -356,7 +386,9 @@ Returns output or security error."
                       (if (> (length shell-result) 1000)
                           (concat (substring shell-result 0 1000) "\n... (output truncated)")
                         shell-result)))
-          (timeout (format "\n[Shell command timed out after 10 seconds: %s]" input-str))
+          (efrit-shell-timeout
+           (format "\n[Shell command killed after exceeding the %d second timeout: %s]"
+                   efrit-do-shell-timeout input-str))
           (error (format "\n[Error executing shell command '%s': %s]"
                          input-str (error-message-string shell-err))))
       ;; Command failed validation
