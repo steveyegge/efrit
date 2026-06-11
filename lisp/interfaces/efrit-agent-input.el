@@ -305,7 +305,8 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
      (pcase stop-reason
        ((or "end_turn" "session-complete" "unknown") 'idle)
        ("paused" 'paused)
-       ((or "api-error" "interrupted" "error") 'failed)
+       ("interrupted" 'interrupted)
+       ((or "api-error" "error") 'failed)
        (_ 'idle))))
   ;; Reset prompt if we were waiting
   (efrit-agent--reset-input-prompt)

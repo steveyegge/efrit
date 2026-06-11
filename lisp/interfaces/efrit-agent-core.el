@@ -108,6 +108,7 @@ Only affects newly generated diffs, not pre-formatted diff output."
     (status-waiting . "⏳")
     (status-complete . "✓")
     (status-failed . "✗")
+    (status-interrupted . "⏹")
     (task-complete . "✓")
     (task-in-progress . "▶")
     (task-pending . "○")
@@ -134,6 +135,7 @@ Only affects newly generated diffs, not pre-formatted diff output."
     (status-waiting . "...")
     (status-complete . "[x]")
     (status-failed . "[!]")
+    (status-interrupted . "[stop]")
     (task-complete . "[x]")
     (task-in-progress . "->")
     (task-pending . "[ ]")
@@ -585,6 +587,9 @@ time, and rewrites the elapsed text in the boxed status header
                                    (format ": %s" (truncate-string-to-width
                                                    efrit-agent--failure-reason 35 nil nil t))))
                          'face 'efrit-agent-status-failed))
+    ;; A user-requested cancel is not a failure; render neutrally (ef-1xb)
+    ('interrupted (propertize (format "%s Interrupted" (efrit-agent--char 'status-interrupted))
+                              'face 'efrit-agent-status-paused))
     (_ (format "? %s" efrit-agent--status))))
 
 (defun efrit-agent--init-pending-tools ()

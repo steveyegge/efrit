@@ -1159,12 +1159,17 @@ SUCCESS-P determines whether to show complete or failed status.
 STOP-REASON is the loop's stop reason string (e.g. \"end_turn\",
 \"api-error\", \"unknown-stop-reason\").  ERROR-MESSAGE is shown to
 the user when the session failed."
-  (let ((buffer (get-buffer efrit-agent-buffer-name))
-        (reason (if success-p nil
-                  (or error-message stop-reason "unknown error"))))
+  (let* ((interrupted (equal stop-reason "interrupted"))
+         (buffer (get-buffer efrit-agent-buffer-name))
+         (reason (if (or success-p interrupted) nil
+                   (or error-message stop-reason "unknown error"))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (setq efrit-agent--status (if success-p 'complete 'failed))
+        ;; A user-requested interrupt is a deliberate cancel, not a
+        ;; failure; render it neutrally (ef-1xb)
+        (setq efrit-agent--status (cond (success-p 'complete)
+                                        (interrupted 'interrupted)
+                                        (t 'failed)))
         (setq efrit-agent--failure-reason reason)
         ;; Stop the spinner and elapsed timer so the display settles
         (efrit-agent--spinner-stop)
@@ -1174,24 +1179,30 @@ the user when the session failed."
         ;; Record the stop reason in the Activity section
         (setq efrit-agent--activities
               (nconc efrit-agent--activities
-                     (list (if success-p
-                               (list :type 'status
-                                     :text (format "Session complete (%s)"
-                                                   (or stop-reason "end_turn"))
-                                     :timestamp (current-time))
+                     (list (cond
+                            (success-p
+                             (list :type 'status
+                                   :text (format "Session complete (%s)"
+                                                 (or stop-reason "end_turn"))
+                                   :timestamp (current-time)))
+                            (interrupted
+                             (list :type 'status
+                                   :text "Session interrupted by user"
+                                   :timestamp (current-time)))
+                            (t
                              (list :type 'error
                                    :text (format "Session failed (%s)%s"
                                                  (or stop-reason "unknown")
                                                  (if error-message
                                                      (format ": %s" error-message)
                                                    ""))
-                                   :timestamp (current-time))))))
+                                   :timestamp (current-time)))))))
         ;; Full re-render: the boxed Status: line only updates on render
         (efrit-agent--render)
         (force-mode-line-update)))
-    ;; Failure must reach the user even if the buffer is buried
-    (unless success-p
-      (message "Efrit session failed: %s" reason))))
+    ;; The outcome must reach the user even if the buffer is buried
+    (cond (interrupted (message "Efrit session interrupted"))
+          ((not success-p) (message "Efrit session failed: %s" reason)))))
 
 (defun efrit-agent-start-session (session-id command)
   "Start agent buffer for SESSION-ID with COMMAND.
