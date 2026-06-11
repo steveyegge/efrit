@@ -165,9 +165,17 @@ CALLBACK is (lambda (response error) ...) called when complete."
     (efrit-executor--api-request
      request-data
      (lambda (response)
-       (if (and response (efrit-response-error response))
-           (funcall callback nil (efrit-error-message (efrit-response-error response)))
-         (funcall callback response nil))))))
+       (cond
+        ;; efrit-executor--handle-error reports failures by passing an
+        ;; "Error: ..." string through the success callback; don't let
+        ;; it masquerade as an API response (it would surface as
+        ;; "unknown stop reason: nil").
+        ((stringp response)
+         (funcall callback nil response))
+        ((and response (efrit-response-error response))
+         (funcall callback nil (efrit-error-message (efrit-response-error response))))
+        (t
+         (funcall callback response nil)))))))
 
 (defun efrit-do-async--on-api-response (session response)
   "Handle API RESPONSE for SESSION.

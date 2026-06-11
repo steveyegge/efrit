@@ -88,16 +88,33 @@ Must be called with point in a url-retrieve response buffer."
            (json-key-type 'string)
            (coding-system-for-read 'utf-8)
            (raw-response (decode-coding-region (point) (point-max) 'utf-8 t)))
-      (condition-case parse-err
-          (let ((response (json-read-from-string raw-response)))
-            ;; Check if the API returned an error object
-            (if-let* ((error-obj (gethash "error" response)))
-                (let ((error-type (gethash "type" error-obj))
-                      (error-msg (gethash "message" error-obj)))
-                  (error "API Error (%s): %s" error-type error-msg))
-              response))
-        (error
-         (error "Failed to parse API response: %s" (error-message-string parse-err)))))))
+      (let ((response (condition-case parse-err
+                          (json-read-from-string raw-response)
+                        (error
+                         (error "Failed to parse API response: %s"
+                                (error-message-string parse-err))))))
+        ;; Check if the API returned an error object
+        (if-let* ((error-obj (gethash "error" response)))
+            (let ((error-type (gethash "type" error-obj))
+                  (error-msg (gethash "message" error-obj)))
+              (error "API Error (%s): %s" error-type error-msg))
+          response)))))
+
+(defun efrit-api--error-from-body ()
+  "Extract the API error from the body of the current response buffer.
+Returns \"API Error (type): message\" if the body contains a JSON
+error object, nil otherwise.  Must be called in a url-retrieve
+response buffer."
+  (ignore-errors
+    (goto-char (point-min))
+    (when (search-forward-regexp "^$" nil t)
+      (let ((body (json-parse-string
+                   (decode-coding-region (point) (point-max) 'utf-8 t)
+                   :object-type 'hash-table)))
+        (when-let* ((error-obj (gethash "error" body)))
+          (format "API Error (%s): %s"
+                  (or (gethash "type" error-obj) "unknown")
+                  (or (gethash "message" error-obj) "unknown error")))))))
 
 (defun efrit-api-extract-content (response)
   "Extract content array from API RESPONSE hash-table."
@@ -128,8 +145,12 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
              (unwind-protect
                  (condition-case url-err
                      (progn
-                       (when (plist-get status :error)
-                         (error "HTTP error: %s" (plist-get status :error)))
+                       (when-let* ((http-err (plist-get status :error)))
+                         ;; The body usually carries the API's JSON error
+                         ;; object, which is far more useful than
+                         ;; url-retrieve's "(error http 400)".
+                         (error "%s" (or (efrit-api--error-from-body)
+                                         (format "HTTP error: %s" http-err))))
                        (let ((response (efrit-api-parse-response)))
                          (funcall callback response)))
                    (error
