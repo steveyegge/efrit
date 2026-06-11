@@ -239,14 +239,26 @@
                 (file-name-sans-extension file))
               (directory-files sessions-dir nil "\\.json$")))))
 
+(declare-function efrit-session-active "efrit-session-core")
+(declare-function efrit-session-id "efrit-session-core")
+
 (defun efrit-session-log (message level)
   "Log MESSAGE at LEVEL."
   (let* ((logs-dir (expand-file-name "logs" efrit-data-directory))
          (log-file (expand-file-name "session.log" logs-dir))
          (timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
-         (session-prefix (if efrit-session-id
-                            (format "[%s] " efrit-session-id)
-                          "[no-session] "))
+         ;; This module's metrics session (the efrit-session-id
+         ;; VARIABLE) is rarely started; fall back to the live efrit-do
+         ;; session so log lines carry a usable id (ef-6dt). The
+         ;; efrit-session-id FUNCTION is the struct accessor from
+         ;; efrit-session-core - same name, different namespace.
+         (live-id (or efrit-session-id
+                      (when-let* ((s (and (fboundp 'efrit-session-active)
+                                          (efrit-session-active))))
+                        (efrit-session-id s))))
+         (session-prefix (if live-id
+                             (format "[%s] " live-id)
+                           "[no-session] "))
          (log-entry (format "%s %s%s: %s\n"
                            timestamp
                            session-prefix
