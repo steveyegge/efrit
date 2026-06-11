@@ -22,6 +22,17 @@
 ;;; Forward declarations
 (declare-function efrit-agent-mode "efrit-agent")
 (declare-function efrit-agent--add-user-message "efrit-agent-render")
+(declare-function efrit-session-id "efrit-session-core" (session))
+(declare-function efrit-session-get-api-messages-for-continuation
+                  "efrit-session-worklog"
+                  (session))
+(declare-function efrit-transcript-save "efrit-session-transcript" (session))
+(declare-function efrit-log "efrit-log" (level format-string &rest args))
+
+;; Owned by efrit-agent-render; reset here on session start.
+(defvar efrit-agent--todos-region)
+;; Loaded on demand in `efrit-agent--save-session-on-kill'.
+(defvar efrit-do-async--loops)
 
 ;;; Customization (shared across modules)
 
