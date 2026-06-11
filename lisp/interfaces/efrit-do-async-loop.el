@@ -31,6 +31,7 @@
 (require 'efrit-session)
 (require 'efrit-progress-buffer)
 (require 'efrit-chat-response)
+(require 'efrit-api)
 (require 'efrit-executor)
 (require 'efrit-agent)
 
@@ -177,20 +178,20 @@ CALLBACK is (lambda (response error) ...) called when complete."
             ("messages" . ,messages)
             ("system" . ,system-prompt)
             ("tools" . ,(efrit-do--get-current-tools-schema)))))
-    (efrit-executor--api-request
+    ;; Call efrit-api-request-async directly rather than via
+    ;; efrit-executor--api-request: the executor's error handler ends
+    ;; the progress session generically, which made every API failure
+    ;; emit 'Session failed (unknown)' before stop-loop reported the
+    ;; real reason (ef-2qx). This loop owns the session lifecycle.
+    (efrit-api-request-async
      request-data
      (lambda (response)
-       (cond
-        ;; efrit-executor--handle-error reports failures by passing an
-        ;; "Error: ..." string through the success callback; don't let
-        ;; it masquerade as an API response (it would surface as
-        ;; "unknown stop reason: nil").
-        ((stringp response)
-         (funcall callback nil response))
-        ((and response (efrit-response-error response))
-         (funcall callback nil (efrit-error-message (efrit-response-error response))))
-        (t
-         (funcall callback response nil)))))))
+       (if (and response (efrit-response-error response))
+           (funcall callback nil (efrit-error-message (efrit-response-error response)))
+         (funcall callback response nil)))
+     (lambda (error-msg)
+       (efrit-log 'error "API request failed: %s" error-msg)
+       (funcall callback nil error-msg)))))
 
 (defun efrit-do-async--on-api-response (session response)
   "Handle API RESPONSE for SESSION.
