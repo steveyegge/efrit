@@ -29,13 +29,11 @@
 (require 'efrit-common)
 (require 'efrit-repl-session)
 (require 'efrit-chat-response)
-;; Note: efrit-executor is required at runtime to avoid circular dependency
-;; (efrit-executor -> efrit-session -> efrit-repl-loop -> efrit-executor)
+(require 'efrit-api)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--command-system-prompt "efrit-do-prompt")
 (declare-function efrit-do--get-current-tools-schema "efrit-do-schema")
-(declare-function efrit-executor--api-request "efrit-executor")
 (declare-function efrit-agent-stream-content "efrit-agent")
 (declare-function efrit-agent-stream-end "efrit-agent")
 (declare-function efrit-agent-show-tool-start "efrit-agent")
@@ -138,13 +136,20 @@ Returns the session ID."
      (lambda (response error)
        (if error
            (efrit-repl-loop--on-api-error session error)
-         (efrit-repl-loop--on-api-response session response))))))
+         ;; An uncaught elisp error here would silently kill the loop
+         ;; (see 098182c): catch it and fail the turn visibly.
+         (condition-case err
+             (efrit-repl-loop--on-api-response session response)
+           (error
+            (let ((msg (error-message-string err)))
+              (efrit-log 'error "REPL session %s: error handling response: %s"
+                         (efrit-repl-session-id session) msg)
+              (efrit-repl-loop--on-api-error session msg)))))))))
 
 (defun efrit-repl-loop--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for REPL SESSION.
 CALLBACK is (lambda (response error) ...) called when complete."
   (efrit-log 'debug "REPL API call sending %d messages" (length messages))
-  (require 'efrit-executor)
   (require 'efrit-do)
   (let* ((session-id (efrit-repl-session-id session))
          (system-prompt (efrit-do--command-system-prompt nil nil nil session-id nil))
@@ -154,12 +159,21 @@ CALLBACK is (lambda (response error) ...) called when complete."
             ("messages" . ,(vconcat messages))
             ("system" . ,system-prompt)
             ("tools" . ,(efrit-do--get-current-tools-schema)))))
-    (efrit-executor--api-request
+    ;; Call efrit-api-request-async directly rather than via
+    ;; efrit-executor--api-request: the executor's error handler invokes
+    ;; the success callback with a plain string, which this loop treated
+    ;; as a successful response and ended the turn as idle, and it also
+    ;; clears efrit-session global state that doesn't belong to REPL
+    ;; sessions (ef-ywc; same class as ef-2qx in the do-async loop).
+    (efrit-api-request-async
      request-data
      (lambda (response)
        (if (and response (efrit-response-error response))
            (funcall callback nil (efrit-error-message (efrit-response-error response)))
-         (funcall callback response nil))))))
+         (funcall callback response nil)))
+     (lambda (error-msg)
+       (efrit-log 'error "REPL API request failed: %s" error-msg)
+       (funcall callback nil error-msg)))))
 
 (defun efrit-repl-loop--on-api-response (session response)
   "Handle API RESPONSE for REPL SESSION."
