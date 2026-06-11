@@ -11,18 +11,18 @@
 ;;; Commentary:
 
 ;; This module consolidates all UI, monitoring, and performance functionality:
-;; - Real-time progress display (efrit-ui-progress)
 ;; - Dashboard with session/TODO management (efrit-ui-dashboard)
 ;; - Performance optimization (caching, memory management) (efrit-ui-performance)
 ;; - Live TODO buffer and mode line indicator (efrit-ui-todos)
 ;; - Face definitions (efrit-ui-faces)
-
-;; Replaces: efrit-progress.el, efrit-performance.el, efrit-dashboard.el
+;;
+;; Progress display lives in core/efrit-progress.el (event stream) and
+;; interfaces/efrit-progress-buffer.el (per-session buffers); the legacy
+;; efrit-ui-progress.el duplicate was removed (ef-d89).
 
 ;;; Code:
 
 (require 'efrit-ui-faces)
-(require 'efrit-ui-progress)
 (require 'efrit-ui-performance)
 (require 'efrit-ui-dashboard)
 (require 'efrit-ui-todos)

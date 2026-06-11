@@ -1327,14 +1327,14 @@ Updates in-place if TODOs already exist in the conversation."
         (setq efrit-agent--todos todos)
         (efrit-agent--add-todos-inline todos)))))
 
-        ;;; Integration Setup
-        ;;
-        ;; Set up hooks to connect with efrit-do, efrit-progress, and session lifecycle.
-        ;; This happens on module load to ensure real-time updates are connected.
+;;; Integration Setup
+;;
+;; Set up hooks to connect with efrit-do, efrit-progress, and session lifecycle.
+;; This happens on module load to ensure real-time updates are connected.
+;; efrit-agent-integration itself is required at the top of this file.
 
-        (require 'efrit-agent-integration)
-        (efrit-agent-setup-integration)
+(efrit-agent-setup-integration)
 
-        (provide 'efrit-agent)
+(provide 'efrit-agent)
 
 ;;; efrit-agent.el ends here

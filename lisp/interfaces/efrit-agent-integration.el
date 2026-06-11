@@ -269,6 +269,8 @@ Call this after loading efrit-do and efrit-progress."
 
 (declare-function efrit-agent--render "efrit-agent")
 (declare-function efrit-agent--add-todos-inline "efrit-agent-render")
+(declare-function efrit-agent-start-session "efrit-agent")
+(declare-function efrit-agent-end-session "efrit-agent")
 
 (defun efrit-agent-update-todos (todos)
   "Update the TODO list display with TODOS.
@@ -281,36 +283,10 @@ Uses incremental inline update instead of full re-render."
         ;; Use incremental inline update instead of full re-render
         (efrit-agent--add-todos-inline todos)))))
 
-(defun efrit-agent-start-session (session-id command)
-  "Start tracking a new session with SESSION-ID and COMMAND.
-Called from efrit-executor when an agentic session begins."
-  (efrit-agent--create-buffer session-id command)
-  ;; Add initial user message showing what was requested
-  (efrit-agent--add-user-message command)
-  (efrit-agent--show-buffer))
-
-(defun efrit-agent-end-session (success-p &optional stop-reason error-message)
-  "End the current session with SUCCESS-P status.
-STOP-REASON is the loop's stop reason string; ERROR-MESSAGE is
-shown to the user when the session failed."
-  (let ((buffer (get-buffer efrit-agent-buffer-name))
-        (reason (if success-p nil
-                  (or error-message stop-reason "unknown error"))))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        ;; End any streaming message first
-        (efrit-agent--stream-end-message)
-        (efrit-agent--spinner-stop)
-        (setq efrit-agent--status (if success-p 'complete 'failed))
-        (setq efrit-agent--failure-reason reason)
-        ;; Stop the elapsed timer
-        (when efrit-agent--elapsed-timer
-          (cancel-timer efrit-agent--elapsed-timer)
-          (setq efrit-agent--elapsed-timer nil))
-        (efrit-agent--render)))
-    ;; Failure must reach the user even if the buffer is buried
-    (unless success-p
-      (message "Efrit session failed: %s" reason))))
+;; efrit-agent-start-session and efrit-agent-end-session are defined in
+;; efrit-agent.el. Duplicate wrapper versions here were always shadowed
+;; (efrit-agent.el requires this file before defining its own) and were
+;; removed (ef-d89).
 
 (provide 'efrit-agent-integration)
 
