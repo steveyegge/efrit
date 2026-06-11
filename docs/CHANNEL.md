@@ -84,3 +84,35 @@ rest of efrit and loads into any Emacs ≥ 28.
 Output is bounded: printed values 20k chars, snapshot content 8k,
 messages 4k, 15 buffers, 60 lines around point. Tunable via the
 `efrit-channel-*` defvars.
+
+## Interactive testing: bin/efrit-tui
+
+`bin/efrit` is eval-only: it cannot send keystrokes, observe real
+redisplay, or act as the human when a session prompts for input.
+`bin/efrit-tui` fills that gap by running `emacs -nw` inside a
+detached, fixed-size tmux session with the repo load-paths, efrit
+preloaded, and a named server socket — so the same Emacs is reachable
+both ways:
+
+```bash
+bin/efrit-tui start                    # tmux + emacs -nw, idempotent
+bin/efrit-tui keys 'M-x'               # real keystrokes (tmux send-keys syntax)
+bin/efrit-tui type "efrit-do"          # literal text
+bin/efrit-tui keys Enter
+bin/efrit-tui wait-for 'Session complete' 60   # poll the rendered screen
+bin/efrit-tui screen                   # what a user actually sees
+bin/efrit-tui eval '(window-list)'     # ground truth via bin/efrit -s efrit-tui
+bin/efrit-tui stop
+```
+
+Typical loop: `keys`/`type` to act, `wait-for` to synchronize, `screen`
+to see, `eval` to assert on real state.  Two pitfalls: `wait-for`
+regexes happily match your own echoed input — anchor on output the
+model produces, not words from your prompt; and anything that prompts
+the minibuffer synchronously (e.g. the inner model calling
+`read-string` via `eval_sexp`) blocks the whole Emacs including the
+eval channel until it times out (ef-bdg).
+
+Use it for what eval cannot reach: minibuffer flows, agent-buffer REPL
+input, `request_user_input` round-trips, point-stealing, and window
+churn.  Its first run found ef-dcn, ef-bdg, and ef-jz6.

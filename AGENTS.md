@@ -72,6 +72,10 @@ For changes to live behavior (UI, sessions, async loops, buffers, timers):
 - ✅ Verify through `bin/efrit` against a live daemon (see docs/CHANNEL.md).
   Every eval returns the value, any error, new `*Messages*` output, and an
   editor snapshot — observe the actual behavior, don't infer it.
+- ✅ For interactive behavior (minibuffer prompts, agent-buffer input,
+  request_user_input, window/point UX): use `bin/efrit-tui`, which hosts
+  `emacs -nw` in tmux so you can send real keystrokes and read the real
+  rendered screen, with `efrit-tui eval` for ground truth (docs/CHANNEL.md).
 - ✅ Use a dedicated test daemon, not the user's running Emacs:
   `emacs -Q --daemon=NAME`, then add the lisp/ load-paths, set
   `(setq load-prefer-newer t)` (so a stale .elc can never shadow your

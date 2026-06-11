@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# efrit-tui — interactive Emacs test harness, tmux-hosted.
+#
+# Runs `emacs -nw` inside a detached, fixed-size tmux session with the
+# repo load-paths and a named server socket.  The same Emacs is then
+# reachable two ways:
+#   keystrokes in   -> tmux send-keys   (real events, real keymaps)
+#   rendered screen -> tmux capture-pane (real redisplay)
+#   ground truth    -> bin/efrit -s efrit-tui eval '<elisp>'
+# This is what bin/efrit (eval-only) cannot do: act as the human —
+# answer prompts, type into buffers, observe point/window behavior.
+#
+# Usage:
+#   efrit-tui start                  Start tmux session + emacs -nw (idempotent)
+#   efrit-tui stop                   Kill the tmux session (and its Emacs)
+#   efrit-tui status                 Report tmux session + server health
+#   efrit-tui screen                 Print the rendered pane (what a user sees)
+#   efrit-tui keys <keys...>         Send keys, tmux syntax: 'M-x' 'C-c' Enter Escape
+#   efrit-tui type <text>            Send literal text (no key interpretation)
+#   efrit-tui wait-for <regex> [sec] Poll screen until ERE matches (default 15s)
+#   efrit-tui eval <elisp|->         Ground-truth eval via bin/efrit -s efrit-tui
+#
+# Options / env:
+#   EFRIT_TUI_SESSION  tmux session and server socket name (default efrit-tui)
+#   EFRIT_TUI_SIZE     pane size as COLSxLINES (default 100x35)
+#   EFRIT_TUI_INIT     'user' to load your full init instead of -Q
+#
+# Typical loop: keys/type to act, wait-for to sync, screen to see,
+# eval to assert on real state.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SESSION="${EFRIT_TUI_SESSION:-efrit-tui}"
+SIZE="${EFRIT_TUI_SIZE:-100x35}"
+COLS="${SIZE%x*}"
+LINES="${SIZE#*x}"
+
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+die() { echo "efrit-tui: $*" >&2; exit 1; }
+
+have_session() { tmux has-session -t "=$SESSION" 2>/dev/null; }
+
+probe_server() { emacsclient -s "$SESSION" --eval t >/dev/null 2>&1; }
+
+require_session() {
+  have_session || die "no tmux session '$SESSION' — run: efrit-tui start"
+}
+
+CMD="${1:-}"
+[ -z "$CMD" ] && usage 1
+shift
+
+case "$CMD" in
+  start)
+    command -v tmux >/dev/null || die "tmux not found on PATH"
+    if have_session; then
+      if probe_server; then
+        echo "efrit-tui: already running (session '$SESSION')" >&2
+        exit 0
+      fi
+      die "tmux session '$SESSION' exists but its Emacs server is not responding — run: efrit-tui stop"
+    fi
+    QFLAG="-Q"
+    [ "${EFRIT_TUI_INIT:-}" = "user" ] && QFLAG=""
+    tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES" \
+      "EFRIT_TUI_SOCKET='$SESSION' emacs -nw $QFLAG -l '$SCRIPT_DIR/efrit-tui-init.el'" \
+      || die "tmux new-session failed"
+    # Wait for the server socket to come up
+    for _ in $(seq 1 40); do
+      probe_server && { echo "efrit-tui: ready (session '$SESSION', ${COLS}x${LINES})" >&2; exit 0; }
+      have_session || die "Emacs exited during startup — check: emacs -nw -Q -l $SCRIPT_DIR/efrit-tui-init.el"
+      sleep 0.25
+    done
+    die "Emacs server '$SESSION' did not come up within 10s"
+    ;;
+  stop)
+    have_session || { echo "efrit-tui: no session '$SESSION'" >&2; exit 0; }
+    tmux kill-session -t "=$SESSION"
+    echo "efrit-tui: stopped session '$SESSION'" >&2
+    ;;
+  status)
+    if ! have_session; then echo "tmux: down"; exit 1; fi
+    echo "tmux: up ($(tmux display-message -t "$SESSION" -p '#{pane_width}x#{pane_height}'))"
+    if probe_server; then echo "server: up (socket '$SESSION')"; else echo "server: DOWN"; exit 1; fi
+    ;;
+  screen)
+    require_session
+    tmux capture-pane -t "$SESSION" -p "$@"
+    ;;
+  keys)
+    require_session
+    [ $# -gt 0 ] || die "keys requires at least one key (tmux syntax, e.g. 'M-x' Enter)"
+    tmux send-keys -t "$SESSION" "$@"
+    ;;
+  type)
+    require_session
+    [ $# -gt 0 ] || die "type requires literal text"
+    tmux send-keys -t "$SESSION" -l -- "$*"
+    ;;
+  wait-for)
+    require_session
+    REGEX="${1:-}"; [ -n "$REGEX" ] || die "wait-for requires a regex"
+    TIMEOUT="${2:-15}"
+    DEADLINE=$(( $(date +%s) + TIMEOUT ))
+    while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+      if tmux capture-pane -t "$SESSION" -p | grep -qE "$REGEX"; then
+        echo "matched: $REGEX" >&2
+        exit 0
+      fi
+      sleep 0.5
+    done
+    echo "efrit-tui: timeout (${TIMEOUT}s) waiting for: $REGEX" >&2
+    tmux capture-pane -t "$SESSION" -p >&2
+    exit 1
+    ;;
+  eval)
+    require_session
+    probe_server || die "Emacs server '$SESSION' not responding"
+    exec "$SCRIPT_DIR/efrit" -s "$SESSION" eval "$@"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    die "unknown command: $CMD (see efrit-tui --help)"
+    ;;
+esac
