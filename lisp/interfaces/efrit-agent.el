@@ -1220,6 +1220,13 @@ and sets status to working."
       (setq efrit-agent--status 'working)
       (setq efrit-agent--failure-reason nil)
       (setq efrit-agent--start-time (current-time))
+      ;; Reset per-session display state: a reused buffer otherwise
+      ;; shows prior sessions' Activity entries (and stale tasks/tools)
+      ;; under the new session header (ef-3v1)
+      (setq efrit-agent--activities nil)
+      (setq efrit-agent--todos nil)
+      (setq efrit-agent--pending-tools nil)
+      (setq efrit-agent--failed-tools nil)
       ;; Tick the elapsed display ~1/sec while the session runs
       (when efrit-agent--elapsed-timer
         (cancel-timer efrit-agent--elapsed-timer))
