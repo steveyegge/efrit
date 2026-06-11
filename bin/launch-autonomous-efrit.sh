@@ -63,10 +63,12 @@ setup_directories() {
     log_success "Directories created"
 }
 
-# Check if daemon is running
+# Check if daemon is running.  Probe the socket with emacsclient: a
+# plain 'emacs --eval' launches an interactive Emacs that never exits
+# (hung make test forever), and pgrep can't see daemonized Emacs at all
+# because it rewrites its command line.
 is_daemon_running() {
-    emacs --eval "(server-running-p)" 2>/dev/null | grep -q "$DAEMON_NAME" || 
-    pgrep -f "emacs.*daemon.*$DAEMON_NAME" > /dev/null
+    emacsclient -s "$DAEMON_NAME" --eval t >/dev/null 2>&1
 }
 
 # Start the autonomous Efrit daemon
