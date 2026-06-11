@@ -244,7 +244,8 @@ CONTENT is a vector of content blocks.
 Handles: tool execution, error recovery, session state updates."
   (let ((session-id (efrit-session-id session))
         (results nil)
-        (session-complete-requested nil))
+        (session-complete-requested nil)
+        (completion-message nil))
     
     ;; CRITICAL: Store Claude's full response BEFORE executing tools
     ;; This maintains proper message order for API continuation
@@ -305,9 +306,17 @@ Handles: tool execution, error recovery, session state updates."
                 (push (efrit-session-build-tool-result tool-id tool-result is-error)
                       results)
                 
-                ;; Mark if session_complete was requested
+                ;; Mark if session_complete was requested, keeping
+                ;; Claude's final message for the user (ef-ter).  The
+                ;; match must span newlines: messages are often
+                ;; multi-line.
                 (when is-session-complete
-                  (setq session-complete-requested t))))))))
+                  (setq session-complete-requested t)
+                  (when (string-match
+                         "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]"
+                         tool-result)
+                    (setq completion-message
+                          (match-string 1 tool-result))))))))))
     
     (efrit-log 'info "Session %s: executed %d tools"
                session-id (length results))
@@ -321,7 +330,8 @@ Handles: tool execution, error recovery, session state updates."
         (progn
           (efrit-log 'info "Session %s: session_complete signal detected, stopping loop"
                      session-id)
-          (efrit-do-async--stop-loop session "session-complete"))
+          (efrit-do-async--stop-loop session "session-complete" nil
+                                     completion-message))
       ;; Normal path: continue the loop
       (efrit-do-async--continue-iteration session))))
 
@@ -394,10 +404,12 @@ Error messages start with `Error ' for easy detection by caller."
     ;; Stop loop
     (efrit-do-async--stop-loop session "api-error" (format "%s" error))))
 
-(defun efrit-do-async--stop-loop (session stop-reason &optional error-message)
+(defun efrit-do-async--stop-loop (session stop-reason &optional error-message
+                                          completion-message)
   "Stop async loop for SESSION with STOP-REASON.
 ERROR-MESSAGE, when non-nil, is surfaced to the user in the agent
-buffer and echo area."
+buffer and echo area.  COMPLETION-MESSAGE is Claude's final answer
+from the session_complete tool, rendered in the agent buffer (ef-ter)."
   (let* ((session-id (efrit-session-id session))
          (loop-state (gethash session-id efrit-do-async--loops))
          (on-complete (nth 1 loop-state))
@@ -426,7 +438,7 @@ buffer and echo area."
     ;; the success path too: it means Claude called the session_complete
     ;; tool rather than simply ending its turn.
     (efrit-agent-end-session (member stop-reason '("end_turn" "session-complete"))
-                             stop-reason error-message)
+                             stop-reason error-message completion-message)
     
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)

@@ -557,7 +557,12 @@ time, and rewrites the elapsed text in the boxed status header
               (delete-region start end)
               (let ((new-start (point)))
                 (insert (format " (%s)" (efrit-agent--format-elapsed)))
-                (put-text-property new-start (point) 'efrit-agent-elapsed t))
+                ;; Keep the status-line property contiguous: the whole
+                ;; line carries it so the status can be rewritten in
+                ;; place (ef-yqv)
+                (add-text-properties new-start (point)
+                                     '(efrit-agent-elapsed t
+                                       efrit-agent-status-line t)))
               ;; Re-pad so the box's right border stays at column 58
               (let* ((v-str (efrit-agent--char 'box-vertical))
                      (eol (line-end-position)))
@@ -566,8 +571,12 @@ time, and rewrites the elapsed text in the boxed status header
                   (let ((border (match-beginning 0)))
                     (delete-region border (match-end 0))
                     (goto-char border)
-                    (insert (make-string (max 1 (- 58 (current-column))) ?\s))
-                    (insert (propertize v-str 'face 'efrit-agent-header))))))))))))
+                    (let ((pad-start (point)))
+                      (insert (make-string (max 1 (- 58 (current-column))) ?\s))
+                      (insert (propertize v-str 'face 'efrit-agent-header))
+                      ;; Same property-contiguity requirement as above
+                      (put-text-property pad-start (point)
+                                         'efrit-agent-status-line t))))))))))))
 
 (defun efrit-agent--format-elapsed ()
   "Format elapsed time since session start."

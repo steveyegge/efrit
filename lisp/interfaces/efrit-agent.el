@@ -788,6 +788,57 @@ even when not waiting for explicit input."
     ;; Restore point approximately
     (goto-char (min pos (point-max)))))
 
+(defun efrit-agent--render-status-line ()
+  "Insert the boxed Status: line at point.
+The whole line carries the `efrit-agent-status-line' text property so
+`efrit-agent--refresh-status-line' can rewrite it in place without a
+destructive full-buffer render."
+  (let ((v-char (efrit-agent--char 'box-vertical))
+        (start (point)))
+    (insert (propertize v-char 'face 'efrit-agent-header))
+    (insert " Status: ")
+    (insert (efrit-agent--status-string))
+    ;; Mark elapsed time position for efficient partial updates
+    (let ((elapsed-start (point)))
+      (insert (format " (%s)" (efrit-agent--format-elapsed)))
+      (put-text-property elapsed-start (point) 'efrit-agent-elapsed t))
+    ;; Show tool call count
+    (let ((tool-count (length (cl-remove-if-not
+                               (lambda (a) (eq (plist-get a :type) 'tool))
+                               efrit-agent--activities))))
+      (when (> tool-count 0)
+        (insert (propertize (format " [%d tools]" tool-count)
+                            'face 'efrit-agent-session-id))))
+    ;; Add action buttons for active sessions
+    (when (memq efrit-agent--status '(working paused waiting))
+      (insert "  ")
+      (if (eq efrit-agent--status 'paused)
+          (insert (efrit-agent--make-button "Resume" #'efrit-agent-resume "Resume the paused session"))
+        (insert (efrit-agent--make-button "Pause" #'efrit-agent-pause "Pause the session")))
+      (insert " ")
+      (insert (efrit-agent--make-button "Cancel" #'efrit-agent-cancel "Cancel the session")))
+    (insert (make-string (max 1 (- 58 (current-column))) ? ))
+    (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
+    (put-text-property start (point) 'efrit-agent-status-line t)))
+
+(defun efrit-agent--refresh-status-line ()
+  "Rewrite the boxed Status: line in place, if one is rendered.
+Used for status changes during/after a session so the incrementally
+rendered conversation is preserved; the legacy full render erased it
+\(ef-yqv)."
+  (when-let* ((anchor (text-property-any (point-min) (point-max)
+                                         'efrit-agent-status-line t)))
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char anchor)
+        ;; Replace the whole physical line: in-place edits (elapsed
+        ;; ticks, padding) can split the property span mid-line
+        (let ((start (line-beginning-position))
+              (end (min (point-max) (1+ (line-end-position)))))
+          (delete-region start end)
+          (goto-char start)
+          (efrit-agent--render-status-line))))))
+
 (defun efrit-agent--render-header ()
   "Render the header section."
   (let ((h-char (efrit-agent--char 'box-horizontal))
@@ -817,30 +868,7 @@ even when not waiting for explicit input."
     (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
 
     ;; Status line with buttons
-    (insert (propertize v-char 'face 'efrit-agent-header))
-    (insert " Status: ")
-    (insert (efrit-agent--status-string))
-    ;; Mark elapsed time position for efficient partial updates
-    (let ((elapsed-start (point)))
-      (insert (format " (%s)" (efrit-agent--format-elapsed)))
-      (put-text-property elapsed-start (point) 'efrit-agent-elapsed t))
-    ;; Show tool call count
-    (let ((tool-count (length (cl-remove-if-not
-                               (lambda (a) (eq (plist-get a :type) 'tool))
-                               efrit-agent--activities))))
-      (when (> tool-count 0)
-        (insert (propertize (format " [%d tools]" tool-count)
-                            'face 'efrit-agent-session-id))))
-    ;; Add action buttons for active sessions
-    (when (memq efrit-agent--status '(working paused waiting))
-      (insert "  ")
-      (if (eq efrit-agent--status 'paused)
-          (insert (efrit-agent--make-button "Resume" #'efrit-agent-resume "Resume the paused session"))
-        (insert (efrit-agent--make-button "Pause" #'efrit-agent-pause "Pause the session")))
-      (insert " ")
-      (insert (efrit-agent--make-button "Cancel" #'efrit-agent-cancel "Cancel the session")))
-    (insert (make-string (max 1 (- 58 (current-column))) ? ))
-    (insert (propertize (concat v-char "\n") 'face 'efrit-agent-header))
+    (efrit-agent--render-status-line)
 
     ;; Bottom border
     (insert (propertize (efrit-agent--char 'box-bottom-left) 'face 'efrit-agent-header))
@@ -1141,7 +1169,9 @@ ACTIVITY is a plist with :type, :timestamp, and type-specific fields."
         ;; Append to end of list (O(1) with nconc when keeping tail pointer,
         ;; but for simplicity we use nconc which is O(n) but only traverses once)
         (setq efrit-agent--activities (nconc efrit-agent--activities (list activity)))
-        (efrit-agent--render)))))
+        ;; In-place status update only: a full render here erased the
+        ;; conversation region (ef-yqv)
+        (efrit-agent--refresh-status-line)))))
 
 (defun efrit-agent-set-status (status)
   "Set the session STATUS.
@@ -1153,12 +1183,15 @@ STATUS should be one of: working, paused, waiting, complete, failed."
         ;; Force header-line update instead of full re-render
         (force-mode-line-update)))))
 
-(defun efrit-agent-end-session (success-p &optional stop-reason error-message)
+(defun efrit-agent-end-session (success-p &optional stop-reason error-message
+                                          completion-message)
   "End the current agent session.
 SUCCESS-P determines whether to show complete or failed status.
 STOP-REASON is the loop's stop reason string (e.g. \"end_turn\",
 \"api-error\", \"unknown-stop-reason\").  ERROR-MESSAGE is shown to
-the user when the session failed."
+the user when the session failed.  COMPLETION-MESSAGE is Claude's
+final answer (the session_complete tool's message); when non-nil it
+is rendered in the conversation (ef-ter)."
   (let* ((interrupted (equal stop-reason "interrupted"))
          (buffer (get-buffer efrit-agent-buffer-name))
          (reason (if (or success-p interrupted) nil
@@ -1197,8 +1230,32 @@ the user when the session failed."
                                                      (format ": %s" error-message)
                                                    ""))
                                    :timestamp (current-time)))))))
-        ;; Full re-render: the boxed Status: line only updates on render
-        (efrit-agent--render)
+        ;; Surface the outcome in the conversation, where the user is
+        ;; reading.  A full re-render here used to erase the whole
+        ;; conversation (ef-yqv).
+        (efrit-agent--append-to-conversation
+         (concat "\n"
+                 (cond
+                  ((and success-p completion-message)
+                   (propertize (format "%s %s"
+                                       (efrit-agent--char 'task-complete)
+                                       completion-message)
+                               'face 'efrit-agent-status-complete))
+                  (success-p
+                   (propertize (format "%s Session complete"
+                                       (efrit-agent--char 'task-complete))
+                               'face 'efrit-agent-status-complete))
+                  (interrupted
+                   (propertize "Session interrupted by user"
+                               'face 'efrit-agent-timestamp))
+                  (t
+                   (propertize (format "%s Session failed: %s"
+                                       (efrit-agent--char 'error-icon)
+                                       reason)
+                               'face 'efrit-agent-error)))
+                 "\n"))
+        ;; Update the boxed Status: line in place
+        (efrit-agent--refresh-status-line)
         (force-mode-line-update)))
     ;; The outcome must reach the user even if the buffer is buried
     (cond (interrupted (message "Efrit session interrupted"))
