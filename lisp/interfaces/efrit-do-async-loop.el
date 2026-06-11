@@ -9,36 +9,29 @@
 
 ;;; Commentary:
 
-;; Async agentic loop implementation for Efrit's multi-step execution.
-;; This is the core engine that drives async execution of Claude commands.
+;; Async agentic loop for efrit-do / efrit-do-silently commands.
 ;;
-;; The loop:
-;; 1. Sends conversation to Claude (async)
-;; 2. Receives response with potential tool_use
-;; 3. Executes tools if requested
-;; 4. Sends results back to Claude
-;; 5. Repeats until end_turn or session_complete
-;; 6. Respects user interrupts (C-g) between steps
+;; The loop structure (iteration control, API calls, tool execution)
+;; lives in the shared engine `efrit-loop' (ef-0t4); this module
+;; configures it with efrit-session semantics: each command runs in
+;; its own session, which is *completed* when the loop stops.
+;; Contrast with `efrit-repl-loop', which transitions back to idle to
+;; keep conversation context.
 ;;
-;; All operations are non-blocking and fire progress events for visibility.
+;; All operations are non-blocking and fire progress events for
+;; visibility.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'efrit-log)
 (require 'efrit-common)
 (require 'efrit-session)
+(require 'efrit-loop)
+(require 'efrit-progress)
 (require 'efrit-progress-buffer)
-(require 'efrit-chat-response)
 (require 'efrit-api)
-(require 'efrit-executor)
 (require 'efrit-agent)
-
-(declare-function efrit-do--execute-tool "efrit-do-dispatch")
-(declare-function efrit-do--command-system-prompt "efrit-do-prompt")
-(declare-function efrit-do--get-current-tools-schema "efrit-do-schema")
-(defvar efrit-default-model)
 
 ;;; Customization
 
@@ -67,6 +60,48 @@ only controls whether the buffer is displayed."
   "Hash table of active async loops by session ID.
 Each entry contains: (session callback iteration-count)")
 
+;;; Engine Adapter
+
+(defvar efrit-do-async--adapter
+  (efrit-loop-adapter-create
+   :name "Session"
+   :state-hash efrit-do-async--loops
+   :id-fn #'efrit-session-id
+   :messages-fn #'efrit-session-get-api-messages-for-continuation
+   :add-assistant-fn #'efrit-session-add-assistant-response
+   :add-tool-results-fn #'efrit-session-add-tool-results
+   :interrupt-p-fn #'efrit-session-should-interrupt-p
+   :on-interrupt-fn
+   (lambda (session)
+     ;; Clear interrupt flag and record the interruption for Claude
+     (setf (efrit-session-interrupt-requested session) nil)
+     (efrit-session-add-tool-results session
+       (list (efrit-session-build-tool-result
+              "system" "User interrupted execution")))
+     "interrupted")
+   :max-iterations-fn (lambda () efrit-do-async-max-iterations)
+   ;; Wall-clock timeout over the whole session (ef-5o5): the session
+   ;; completes per command, so session age is the right measure.
+   :elapsed-fn (lambda (session)
+                 (float-time (time-since (efrit-session-start-time session))))
+   :timeout-fn (lambda () efrit-session-timeout)
+   ;; Dispatch failures never reach efrit-do--execute-tool's own work
+   ;; logging, so record them here (ef-c1h)
+   :on-tool-error-fn (lambda (session tool-result tool-name)
+                       (efrit-session-add-work session tool-result
+                                               (format "(%s)" tool-name)
+                                               nil
+                                               tool-name))
+   :event-fn #'efrit-progress-insert-event
+   :thinking-p t
+   :handles-waiting-p nil
+   :api-call-fn 'efrit-do-async--api-call
+   :continue-fn 'efrit-do-async--continue-iteration
+   :execute-tools-fn 'efrit-do-async--execute-tools
+   :on-api-error-fn 'efrit-do-async--on-api-error
+   :finish-fn #'efrit-do-async--finish)
+  "Engine adapter binding `efrit-loop' to efrit-do sessions.")
+
 ;;; Core Loop Implementation
 
 (defun efrit-do-async-loop (session _system-prompt &optional on-complete)
@@ -76,319 +111,39 @@ ON-COMPLETE is an optional callback called when execution finishes.
 Returns the session ID."
   (let ((session-id (efrit-session-id session)))
     (efrit-log 'info "Starting async loop for session %s" session-id)
-    
+
     ;; Always record events in the progress buffer; only display it
     ;; on request — the agent buffer is the single user-facing surface
     (efrit-progress-create-buffer session-id)
     (when efrit-do-async-show-progress-buffer
       (efrit-progress-show-buffer session-id))
-    
+
     ;; Initialize agent buffer for session
     (efrit-agent-start-session session-id (efrit-session-command session))
-    
+
     ;; Store loop state
     (puthash session-id
              (list session on-complete 0 nil)
              efrit-do-async--loops)
-    
+
     ;; Start first iteration
     (efrit-do-async--continue-iteration session)
-    
+
     session-id))
 
 (defun efrit-do-async--continue-iteration (session)
   "Continue async loop for SESSION, sending next request to Claude."
-  (let ((session-id (efrit-session-id session)))
-    ;; Check for interruption
-    (if (efrit-session-should-interrupt-p session)
-        (progn
-          (efrit-log 'info "Session %s interrupt requested, stopping loop"
-                     session-id)
-          ;; Clear interrupt flag and send completion message to Claude
-          (setf (efrit-session-interrupt-requested session) nil)
-          (efrit-session-add-tool-results session
-            (list (efrit-session-build-tool-result "system" "User interrupted execution")))
-          (efrit-do-async--stop-loop session "interrupted"))
-      ;; Continue with normal flow
-      (let* ((loop-state (gethash session-id efrit-do-async--loops))
-             (iteration-count (nth 2 loop-state))
-             (elapsed (float-time
-                       (time-since (efrit-session-start-time session)))))
-        (cond
-         ;; Wall-clock timeout (ef-5o5): the sync path enforces
-         ;; `efrit-session-timeout' in efrit-executor, but this loop
-         ;; previously had only the iteration cap, so a slow session
-         ;; could run unbounded. Checked between iterations, so an
-         ;; in-flight API call still completes before the stop.
-         ((and (> efrit-session-timeout 0)
-               (>= elapsed efrit-session-timeout))
-          (efrit-log 'warn "Session %s hit wall-clock timeout (%.0fs, limit: %ds)"
-                     session-id elapsed efrit-session-timeout)
-          (efrit-do-async--stop-loop
-           session "session-timeout"
-           (format "Session timed out after %.0fs (limit: %ds, see efrit-session-timeout)"
-                   elapsed efrit-session-timeout)))
-         ((and (> efrit-do-async-max-iterations 0)
-               (>= iteration-count efrit-do-async-max-iterations))
-          (efrit-log 'warn "Session %s hit iteration limit (%d)"
-                     session-id efrit-do-async-max-iterations)
-          (efrit-do-async--stop-loop session "iteration-limit-exceeded"))
-         ;; Increment iteration count and send request
-         (t
-          ;; Update loop state with new iteration count
-          (let ((new-state (list session (nth 1 loop-state) (1+ iteration-count) (nth 3 loop-state))))
-            (puthash session-id new-state efrit-do-async--loops))
-          (efrit-log 'debug "Session %s: sending request (iteration %d)"
-                     session-id (1+ iteration-count))
-          (efrit-do-async--send-request session)))))))
-
-(defun efrit-do-async--send-request (session)
-  "Send request to Claude API for SESSION.
-Async operation with callback for response handling."
-  (let* ((messages (efrit-session-get-api-messages-for-continuation session)))
-    ;; Animated indicator while the API call is in flight
-    (when (fboundp 'efrit-agent-show-thinking)
-      (efrit-agent-show-thinking "waiting for Claude..."))
-    (efrit-do-async--api-call
-     session
-     messages
-     (lambda (response error)
-       (if error
-           (efrit-do-async--on-api-error session error)
-         ;; An uncaught elisp error here would silently kill the loop
-         ;; (see 098182c): catch it and fail the session visibly.
-         (condition-case err
-             (efrit-do-async--on-api-response session response)
-           (error
-            (let ((msg (error-message-string err)))
-              (efrit-log 'error "Session %s: error handling response: %s"
-                         (efrit-session-id session) msg)
-              (efrit-do-async--stop-loop session "elisp-error" msg)))))))))
+  (efrit-loop-continue-iteration session efrit-do-async--adapter))
 
 (defun efrit-do-async--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for SESSION.
 CALLBACK is (lambda (response error) ...) called when complete."
-  (efrit-log 'debug "API call sending %d messages" (length messages))
-  (require 'efrit-do)
-  (let* ((session-id (efrit-session-id session))
-         (system-prompt (efrit-do--command-system-prompt nil nil nil session-id nil))
-         (request-data
-          `(("model" . ,efrit-default-model)
-            ("max_tokens" . 8192)
-            ("messages" . ,messages)
-            ("system" . ,system-prompt)
-            ("tools" . ,(efrit-do--get-current-tools-schema)))))
-    ;; Call efrit-api-request-async directly rather than via
-    ;; efrit-executor--api-request: the executor's error handler ends
-    ;; the progress session generically, which made every API failure
-    ;; emit 'Session failed (unknown)' before stop-loop reported the
-    ;; real reason (ef-2qx). This loop owns the session lifecycle.
-    (efrit-api-request-async
-     request-data
-     (lambda (response)
-       (if (and response (efrit-response-error response))
-           (funcall callback nil (efrit-error-message (efrit-response-error response)))
-         (funcall callback response nil)))
-     (lambda (error-msg)
-       (efrit-log 'error "API request failed: %s" error-msg)
-       (funcall callback nil error-msg)))))
-
-(defun efrit-do-async--on-api-response (session response)
-  "Handle API RESPONSE for SESSION.
-RESPONSE contains content and stop_reason fields."
-  (let ((session-id (efrit-session-id session)))
-    (efrit-log 'debug "Session %s: received response" session-id)
-    ;; Content has arrived; stop the thinking indicator
-    (when (fboundp 'efrit-agent-hide-thinking)
-      (efrit-agent-hide-thinking))
-    
-    ;; Extract content and stop_reason from response using proper accessors
-    (let* ((content (efrit-response-content response))
-           (stop-reason (efrit-response-stop-reason response)))
-      
-      ;; Fire progress event for message
-       (when content
-         (efrit-progress-insert-event session-id 'message
-           `((:text . ,(format "%S" content)) (:role . "assistant"))))
-       
-       ;; Stream text content to agent buffer
-       (when content
-         (dotimes (i (length content))
-           (let ((item (aref content i)))
-             (when (and (hash-table-p item)
-                        (string= (gethash "type" item) "text"))
-               (when (fboundp 'efrit-agent-stream-content)
-                 (efrit-agent-stream-content (gethash "text" item))))))
-         (when (fboundp 'efrit-agent-stream-end)
-           (efrit-agent-stream-end)))
-      
-      ;; Process based on stop reason
-      (pcase stop-reason
-        ("tool_use"
-         ;; Extract and execute tools
-         (efrit-do-async--execute-tools session content))
-        ("end_turn"
-         ;; Claude finished
-         (efrit-log 'info "Session %s: Claude ended turn" session-id)
-         (efrit-do-async--stop-loop session "end_turn"))
-        (_
-         (efrit-log 'warn "Session %s: unknown stop reason: %s"
-                    session-id stop-reason)
-         (efrit-do-async--stop-loop session "unknown-stop-reason"
-                                    (format "API returned unrecognized stop reason: %S"
-                                            stop-reason)))))))
+  (efrit-loop-api-call (efrit-session-id session) messages callback))
 
 (defun efrit-do-async--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for SESSION.
-CONTENT is a vector of content blocks.
-Handles: tool execution, error recovery, session state updates."
-  (let ((session-id (efrit-session-id session))
-        (results nil)
-        (session-complete-requested nil)
-        (completion-message nil))
-    
-    ;; CRITICAL: Store Claude's full response BEFORE executing tools
-    ;; This maintains proper message order for API continuation
-    (efrit-session-add-assistant-response session content)
-    
-    ;; Process each content item from the vector
-    (dotimes (i (length content))
-      (let* ((item (aref content i))
-             (tool-use-info (efrit-content-item-as-tool-use item)))
-        ;; Execute tool_use blocks only (returns nil if not a tool_use)
-        (when tool-use-info
-          (let* ((tool-id (nth 0 tool-use-info))
-                 (tool-name (nth 1 tool-use-info))
-                 (input (nth 2 tool-use-info)))
-            
-            (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
-                       session-id tool-name tool-id)
-            
-            ;; Fire progress event
-            (efrit-progress-insert-event session-id 'tool_started
-              `((:tool . ,tool-name) (:input . ,input)))
-            
-            ;; Show tool start in agent buffer and track time
-            (let ((agent-tool-id (efrit-agent-show-tool-start tool-name input))
-                  (tool-start-time (current-time)))
-              
-              ;; Execute tool and capture both result and error state
-              (let* ((tool-result (efrit-do-async--execute-single-tool
-                                  session tool-id tool-name input))
-                     ;; Check if result contains session_complete signal
-                     (is-session-complete (string-match-p "\\[SESSION-COMPLETE:" tool-result))
-                     ;; Check if result indicates an error
-                     (is-error (string-match-p "^Error " tool-result))
-                     ;; Calculate elapsed time
-                     (elapsed-secs (float-time (time-subtract (current-time) tool-start-time))))
-                
-                ;; Fire result event with status
-                (efrit-progress-insert-event session-id 'tool_result
-                  `((:tool . ,tool-name) 
-                    (:result . ,tool-result)
-                    (:success . ,(not is-error))))
-                
-                ;; Show tool result in agent buffer
-                (efrit-agent-show-tool-result agent-tool-id tool-result (not is-error) elapsed-secs)
-                
-                ;; Successful dispatches are already work-logged with
-                ;; their full input by efrit-do--execute-tool; logging
-                ;; here too double-counted every step ('Completed 24
-                ;; steps' for 12 calls, ef-c1h). Only log dispatch
-                ;; failures, which never reach that point.
-                (when is-error
-                  (efrit-session-add-work session tool-result
-                                          (format "(%s)" tool-name)
-                                          nil
-                                          tool-name))
-                
-                ;; Collect result for API call with error flag
-                (push (efrit-session-build-tool-result tool-id tool-result is-error)
-                      results)
-                
-                ;; Mark if session_complete was requested, keeping
-                ;; Claude's final message for the user (ef-ter).  The
-                ;; match must span newlines: messages are often
-                ;; multi-line.
-                (when is-session-complete
-                  (setq session-complete-requested t)
-                  (when (string-match
-                         "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]"
-                         tool-result)
-                    (setq completion-message
-                          (match-string 1 tool-result))))))))))
-    
-    (efrit-log 'info "Session %s: executed %d tools"
-               session-id (length results))
-    
-    ;; Send results back to Claude if any tools were executed
-    (when results
-      (efrit-session-add-tool-results session (nreverse results)))
-    
-    ;; Check if session_complete was signaled by a tool
-    (if session-complete-requested
-        (progn
-          (efrit-log 'info "Session %s: session_complete signal detected, stopping loop"
-                     session-id)
-          (efrit-do-async--stop-loop session "session-complete" nil
-                                     completion-message))
-      ;; Normal path: continue the loop
-      (efrit-do-async--continue-iteration session))))
-
-(defun efrit-do-async--execute-single-tool (session tool-id tool-name input)
-  "Execute single TOOL-NAME with INPUT for SESSION.
-TOOL-ID is the tool use ID from Claude's response.
-Wraps execution with error handling, validation, and detailed logging.
-Returns tool result (success or error message).
-Error messages start with `Error ' for easy detection by caller."
-  (let ((session-id (efrit-session-id session)))
-    (efrit-log 'debug "Session %s: executing tool %s (id: %s)"
-               session-id tool-name tool-id)
-    (require 'efrit-do)
-    (condition-case err
-        (progn
-          ;; Validate input structure
-          (unless (hash-table-p input)
-            (error "Tool input must be a hash table, got %s" (type-of input)))
-          
-          ;; Create tool item for execution
-          (let ((tool-item (make-hash-table :test 'equal)))
-            (puthash "id" tool-id tool-item)
-            (puthash "name" tool-name tool-item)
-            (puthash "input" input tool-item)
-            
-            ;; Execute the tool
-            (let ((result (efrit-do--execute-tool tool-item)))
-              ;; Validate result is a string
-              (unless (stringp result)
-                (setq result (format "%S" result)))
-              
-              ;; Log successful execution
-              (efrit-log 'debug "Session %s: tool %s returned %d chars"
-                         session-id tool-name (length result))
-              result)))
-      
-      ;; Handle execution errors with detailed context
-      (error
-       (let* ((error-data (cdr err))
-              (error-msg (cond
-                          ((stringp error-data) error-data)
-                          ((listp error-data) (mapconcat #'prin1-to-string error-data " "))
-                          (t (format "%S" error-data))))
-              ;; Detect specific error conditions
-              (is-interrupt (string-match-p "Quit" error-msg))
-              ;; An error signal escaping the dispatch means efrit's own
-              ;; machinery failed, not the model's tool input — say so,
-              ;; or the model burns turns debugging efrit (ef-hn6).
-              ;; Must keep the "Error " prefix: callers detect errors
-              ;; via (string-match-p "^Error " result).
-              (formatted-error (format "Error inside efrit's dispatch of %s (not caused by your tool input): %s. Do not debug efrit internals. Retry the tool call once; if the error persists, stop and report it to the user."
-                                      tool-name error-msg)))
-         ;; Log with appropriate level
-         (if is-interrupt
-             (efrit-log 'warn "Session %s: user interrupted tool execution" session-id)
-           (efrit-log 'error "Session %s: %s" session-id formatted-error))
-         formatted-error)))))
+CONTENT is a vector of content blocks."
+  (efrit-loop-execute-tools session efrit-do-async--adapter content))
 
 (defun efrit-do-async--on-api-error (session error)
   "Handle API ERROR for SESSION."
@@ -396,13 +151,25 @@ Error messages start with `Error ' for easy detection by caller."
     (efrit-log 'error "Session %s: API error: %s" session-id error)
     (when (fboundp 'efrit-agent-hide-thinking)
       (efrit-agent-hide-thinking))
-    
+
     ;; Fire error event
     (efrit-progress-insert-event session-id 'error
       `((:message . ,(format "%S" error)) (:level . "ERROR")))
-    
+
     ;; Stop loop
     (efrit-do-async--stop-loop session "api-error" (format "%s" error))))
+
+(defun efrit-do-async--finish (session stop-reason error-message
+                                       completion-message)
+  "Engine finish hook: stop SESSION's loop with STOP-REASON.
+Translates the engine's canonical reason to this module's historical
+strings, which callers and tests match on.  ERROR-MESSAGE and
+COMPLETION-MESSAGE pass through to `efrit-do-async--stop-loop'."
+  (efrit-do-async--stop-loop session
+                             (if (equal stop-reason "iteration-limit")
+                                 "iteration-limit-exceeded"
+                               stop-reason)
+                             error-message completion-message))
 
 (defun efrit-do-async--stop-loop (session stop-reason &optional error-message
                                           completion-message)
@@ -414,10 +181,10 @@ from the session_complete tool, rendered in the agent buffer (ef-ter)."
          (loop-state (gethash session-id efrit-do-async--loops))
          (on-complete (nth 1 loop-state))
          (iteration-count (or (nth 2 loop-state) 0)))
-    
+
     ;; Complete session (this clears active session state)
     (efrit-session-complete session stop-reason)
-    
+
     ;; Fire appropriate event based on stop reason
     (let ((elapsed (float-time
                    (time-since (efrit-session-start-time session))))
@@ -433,23 +200,23 @@ from the session_complete tool, rendered in the agent buffer (ef-ter)."
        (t
         (efrit-progress-insert-event session-id 'complete
           `((:result . ,stop-reason) (:elapsed . ,elapsed))))))
-    
+
     ;; Signal session completion to agent buffer.  session-complete is
     ;; the success path too: it means Claude called the session_complete
     ;; tool rather than simply ending its turn.
     (efrit-agent-end-session (member stop-reason '("end_turn" "session-complete"))
                              stop-reason error-message completion-message)
-    
+
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)
-    
+
     ;; Remove from active loops
     (remhash session-id efrit-do-async--loops)
-    
+
     ;; Call completion callback if provided
     (when on-complete
       (funcall on-complete session stop-reason))
-    
+
     (efrit-log 'info "Session %s: loop stopped (%s, %d iterations)"
                session-id stop-reason iteration-count)))
 
