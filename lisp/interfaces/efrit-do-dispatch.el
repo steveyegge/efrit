@@ -230,11 +230,14 @@ Applies circuit breaker limits to prevent infinite loops."
                  (return-value (if warning
                                    (concat "\n" warning "\n" final-result)
                                  final-result)))
-            ;; Log tool call to active session's work_log (if session exists)
+            ;; Log tool call to active session's work_log (if session
+            ;; exists). Prefer the extracted input string over the raw
+            ;; hash table, which prints as unreadable #s(hash-table ...)
             (when-let* ((session (efrit-session-active)))
               (efrit-session-add-work session
                                       return-value
-                                      (format "(%s %S)" tool-name tool-input)
+                                      (format "(%s %S)" tool-name
+                                              (or input-str tool-input))
                                       nil  ; no todo-snapshot
                                       tool-name))
             return-value))))))

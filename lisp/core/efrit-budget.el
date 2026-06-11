@@ -536,8 +536,15 @@ Returns a compressed string summary (~500 chars max)."
                 summary))
           (error
            (format "[%s error: %s]" tool (error-message-string err))))
-      ;; Fallback for unknown tools
-      (format "[%s result]" tool))))
+      ;; Fallback for tools without a dedicated compressor: keep a
+      ;; truncated slice of the raw result. Replacing it with a
+      ;; "[tool result]" placeholder erased the only record of what
+      ;; each step did (ef-c1h) - eval_sexp results in particular are
+      ;; short and the most valuable part of the work log.
+      (let ((str (string-trim (if (stringp result) result (format "%s" result)))))
+        (if (> (length str) efrit-budget-compress-max-chars)
+            (concat (substring str 0 (- efrit-budget-compress-max-chars 3)) "...")
+          str)))))
 
 (provide 'efrit-budget)
 

@@ -708,6 +708,25 @@ This function can be called from:
     (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
     session))
 
+(defun efrit-do--format-work-log (work-log)
+  "Format WORK-LOG (newest entry first) as numbered steps, oldest first.
+Each entry is (RESULT ELISP TODO-SNAPSHOT TOOL-NAME) per
+`efrit-session-add-work'. One line per step: the tool call and a
+snippet of its result, so *efrit-do* records what actually ran."
+  (let ((idx 0)
+        (one-line (lambda (s)
+                    (string-trim
+                     (replace-regexp-in-string "[\n\r]+" " " (or s ""))))))
+    (mapconcat
+     (lambda (entry)
+       (setq idx (1+ idx))
+       (format " %2d. %s => %s"
+               idx
+               (efrit-truncate-string (funcall one-line (nth 1 entry)) 100)
+               (efrit-truncate-string
+                (funcall one-line (format "%s" (nth 0 entry))) 80)))
+     (reverse work-log) "\n")))
+
 (defun efrit-do--on-async-complete (session stop-reason)
   "Handle completion of async efrit-do SESSION with STOP-REASON.
 Displays final results and processes queued commands."
@@ -716,7 +735,11 @@ Displays final results and processes queued commands."
          ;; Build a result summary from session state
          (work-log (efrit-session-work-log session))
          (result (if work-log
-                     (format "Completed %d steps" (length work-log))
+                     ;; Include per-step detail for post-hoc review of
+                     ;; what efrit actually did (ef-c1h)
+                     (format "Completed %d steps:\n%s"
+                             (length work-log)
+                             (efrit-do--format-work-log work-log))
                    "Completed")))
     ;; Store result
     (setq efrit-do--last-result result)

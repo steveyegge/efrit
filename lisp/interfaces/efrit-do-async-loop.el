@@ -290,12 +290,16 @@ Handles: tool execution, error recovery, session state updates."
                 ;; Show tool result in agent buffer
                 (efrit-agent-show-tool-result agent-tool-id tool-result (not is-error) elapsed-secs)
                 
-                ;; Update session work log with tool execution details
-                ;; Tool name is tool_name for compression awareness
-                (efrit-session-add-work session tool-result 
-                                        (format "(execute-tool %S)" tool-name)
-                                        nil
-                                        tool-name)
+                ;; Successful dispatches are already work-logged with
+                ;; their full input by efrit-do--execute-tool; logging
+                ;; here too double-counted every step ('Completed 24
+                ;; steps' for 12 calls, ef-c1h). Only log dispatch
+                ;; failures, which never reach that point.
+                (when is-error
+                  (efrit-session-add-work session tool-result
+                                          (format "(%s)" tool-name)
+                                          nil
+                                          tool-name))
                 
                 ;; Collect result for API call with error flag
                 (push (efrit-session-build-tool-result tool-id tool-result is-error)
