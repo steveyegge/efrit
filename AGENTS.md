@@ -79,6 +79,12 @@ For changes to live behavior (UI, sessions, async loops, buffers, timers):
   `EFRIT_SOCKET=NAME bin/efrit eval - <<'EOF' ... EOF`
 - ✅ Run `make compile` before live testing so .elc files are fresh
   (it also deletes orphaned .elc whose source was renamed or removed)
+- ✅ After editing source, RESTART the test daemon — do not hot-reload
+  with `unload-feature`. Force-unloading a module makunbounds its
+  `defvaralias` definitions, which unbinds the shared value cell of the
+  *target* variable in efrit-config; the next session then fails inside
+  efrit's own tool dispatch with void-variable errors that get blamed
+  on Claude's elisp (observed live: ef-hn6).
 - ✅ Actual API calls for efrit-chat/efrit-do changes
 
 Why batch mode is not enough: both June 2026 root-cause bugs (098182c —
