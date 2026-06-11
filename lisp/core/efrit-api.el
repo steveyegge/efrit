@@ -185,6 +185,127 @@ Returns the parsed response hash-table, or signals an error."
           (efrit-api-parse-response)
         (kill-buffer)))))
 
+;;; Prompt Caching
+;;
+;; Every request re-sends the same ~55k chars of tools schema + system
+;; prompt, plus the growing conversation prefix, at full input price.
+;; Anthropic prompt caching (5-minute TTL, writes 1.25x base, reads
+;; 0.1x) makes iterations 2+ of an agentic loop nearly free for that
+;; prefix (ef-tgt).  Request builders mark up to three breakpoints:
+;; the last tool, the system prompt, and the last content block of the
+;; last message (the API allows at most 4).  Marks are added at
+;; request-build time on copies -- never on stored conversation
+;; history, where they would accumulate past the 4-breakpoint limit.
+
+(defcustom efrit-api-prompt-caching t
+  "When non-nil, add cache_control breakpoints to Claude API requests.
+Cuts input cost of multi-iteration sessions by roughly 70-90% and
+improves time-to-first-token on long conversations.  Disable if a
+proxy in `efrit-api-custom-headers' rejects cache_control fields."
+  :type 'boolean
+  :group 'efrit)
+
+(defconst efrit-api--cache-control '(("type" . "ephemeral"))
+  "The cache_control value marking an ephemeral cache breakpoint.")
+
+(defun efrit-api--cache-marked-block (block)
+  "Return a copy of content/tool BLOCK with a cache_control breakpoint.
+BLOCK may be an alist (request builders) or a hash table (blocks
+echoed back from parsed API responses).  Returns nil if BLOCK's shape
+is not recognized, so callers can skip marking rather than corrupt
+the request."
+  (cond
+   ((hash-table-p block)
+    (let ((copy (copy-hash-table block)))
+      (puthash "cache_control" efrit-api--cache-control copy)
+      copy))
+   ((consp (car-safe block))
+    ;; Alist: cons a new pair onto the front; the shared tail is
+    ;; never mutated.
+    (cons (cons "cache_control" efrit-api--cache-control) block))))
+
+(defun efrit-api-cacheable-system (system-prompt)
+  "Wrap SYSTEM-PROMPT string for prompt caching.
+Returns a one-element content-block vector carrying a cache_control
+breakpoint, or SYSTEM-PROMPT unchanged when caching is disabled or
+SYSTEM-PROMPT is not a string."
+  (if (and efrit-api-prompt-caching (stringp system-prompt))
+      (vector `(("type" . "text")
+                ("text" . ,system-prompt)
+                ("cache_control" . ,efrit-api--cache-control)))
+    system-prompt))
+
+(defun efrit-api-cacheable-tools (tools)
+  "Return TOOLS vector with a cache_control breakpoint on the last entry.
+Returns TOOLS unchanged when caching is disabled or TOOLS is empty.
+Never mutates TOOLS (the schema is a shared constant)."
+  (if (and efrit-api-prompt-caching (vectorp tools) (> (length tools) 0))
+      (let* ((idx (1- (length tools)))
+             (marked (efrit-api--cache-marked-block (aref tools idx))))
+        (if marked
+            (let ((copy (copy-sequence tools)))
+              (aset copy idx marked)
+              copy)
+          tools))
+    tools))
+
+(defun efrit-api--block-get (obj key)
+  "Get string KEY from OBJ, an alist (string or symbol keys) or hash table."
+  (cond ((hash-table-p obj) (gethash key obj))
+        ((listp obj) (or (cdr (assoc key obj))
+                         (cdr (assq (intern key) obj))))))
+
+(defun efrit-api--message-with-content (msg content)
+  "Return a copy of message MSG with its content field replaced by CONTENT."
+  (cond
+   ((hash-table-p msg)
+    (let ((copy (copy-hash-table msg)))
+      (puthash "content" content copy)
+      copy))
+   ((listp msg)
+    (mapcar (lambda (pair)
+              (if (and (consp pair) (member (car pair) '("content" content)))
+                  (cons (car pair) content)
+                pair))
+            msg))))
+
+(defun efrit-api--message-with-cache-mark (msg)
+  "Return a copy of MSG whose final content block has a cache breakpoint.
+String content is converted to an equivalent one-block vector.
+Returns nil when MSG's shape is not recognized."
+  (let ((content (efrit-api--block-get msg "content")))
+    (cond
+     ((stringp content)
+      (efrit-api--message-with-content
+       msg (vector `(("type" . "text")
+                     ("text" . ,content)
+                     ("cache_control" . ,efrit-api--cache-control)))))
+     ((and (vectorp content) (> (length content) 0))
+      (let* ((idx (1- (length content)))
+             (marked (efrit-api--cache-marked-block (aref content idx))))
+        (when marked
+          (let ((copy (copy-sequence content)))
+            (aset copy idx marked)
+            (efrit-api--message-with-content msg copy))))))))
+
+(defun efrit-api-cacheable-messages (messages)
+  "Return MESSAGES with a cache breakpoint on the final content block.
+This caches the growing conversation prefix across loop iterations.
+Non-destructive: only the last message (and its last block) is
+copied, so stored history never accumulates stale breakpoints.
+Returns MESSAGES unchanged when caching is disabled, MESSAGES is not
+a non-empty vector, or the last message's shape is unrecognized."
+  (if (and efrit-api-prompt-caching (vectorp messages)
+           (> (length messages) 0))
+      (let* ((idx (1- (length messages)))
+             (marked (efrit-api--message-with-cache-mark (aref messages idx))))
+        (if marked
+            (let ((copy (copy-sequence messages)))
+              (aset copy idx marked)
+              copy)
+          messages))
+    messages))
+
 ;;; Tool Result Building
 
 (defun efrit-api-build-tool-result (tool-id result &optional is-error)

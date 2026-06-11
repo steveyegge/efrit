@@ -119,10 +119,12 @@
             ("max_tokens" . ,efrit-max-tokens)
             ,@(when efrit-temperature
                 `(("temperature" . ,efrit-temperature)))
-            ("system" . ,system-prompt)
-            ("messages" . ,(vconcat cleaned-messages))
+            ("system" . ,(efrit-api-cacheable-system system-prompt))
+            ("messages" . ,(efrit-api-cacheable-messages
+                            (vconcat cleaned-messages)))
             ,@(when efrit-enable-tools
-                `(("tools" . ,(efrit-do--get-current-tools-schema))))))
+                `(("tools" . ,(efrit-api-cacheable-tools
+                               (efrit-do--get-current-tools-schema)))))))
          (url-request-data (efrit-api-encode-request request-data)))
 
     (efrit-streamlined--log-to-work

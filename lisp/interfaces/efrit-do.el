@@ -481,8 +481,9 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                 ("max_tokens" . ,efrit-max-tokens)
                 ("messages" . [(("role" . "user")
                                ("content" . ,command))])
-                ("system" . ,system-prompt)
-                ("tools" . ,(efrit-do--get-current-tools-schema))))
+                ("system" . ,(efrit-api-cacheable-system system-prompt))
+                ("tools" . ,(efrit-api-cacheable-tools
+                             (efrit-do--get-current-tools-schema)))))
              (json-string (json-encode request-data))
              ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
               (escaped-json (efrit-common-escape-json-unicode json-string))

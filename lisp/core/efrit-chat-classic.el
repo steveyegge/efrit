@@ -72,14 +72,16 @@ In interactive mode, uses async request with callbacks."
             ,@(when efrit-temperature
                 `(("temperature" . ,efrit-temperature)))
             ,@(when system-prompt
-                `(("system" . ,system-prompt)))
-            ("messages" . ,(vconcat
-                            (mapcar (lambda (msg)
-                                      `(("role" . ,(alist-get 'role msg))
-                                        ("content" . ,(alist-get 'content msg))))
-                                    messages)))
+                `(("system" . ,(efrit-api-cacheable-system system-prompt))))
+            ("messages" . ,(efrit-api-cacheable-messages
+                            (vconcat
+                             (mapcar (lambda (msg)
+                                       `(("role" . ,(alist-get 'role msg))
+                                         ("content" . ,(alist-get 'content msg))))
+                                     messages))))
             ,@(when efrit-enable-tools
-                `(("tools" . ,(efrit-do--get-current-tools-schema))))))
+                `(("tools" . ,(efrit-api-cacheable-tools
+                               (efrit-do--get-current-tools-schema)))))))
          (url-request-data (efrit-api-encode-request request-data)))
     ;; In batch mode, use synchronous request (async callbacks don't work)
     ;; In interactive mode, use async request

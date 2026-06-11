@@ -518,9 +518,10 @@ Claude remembers previous tool calls and their results."
                (request-data
                 `(("model" . ,efrit-default-model)
                   ("max_tokens" . 8192)
-                  ("messages" . ,api-messages)
-                  ("system" . ,system-prompt)
-                  ("tools" . ,(efrit-executor--get-tools-schema)))))
+                  ("messages" . ,(efrit-api-cacheable-messages api-messages))
+                  ("system" . ,(efrit-api-cacheable-system system-prompt))
+                  ("tools" . ,(efrit-api-cacheable-tools
+                               (efrit-executor--get-tools-schema))))))
 
           (efrit-log 'info "Continuing session %s (continuation #%d, %d messages)"
                      session-id continuation-count (length api-messages))
@@ -637,9 +638,10 @@ Returns the final result string."
       (let* ((request-data
               `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
-                ("messages" . ,messages)
-                ("system" . ,system-prompt)
-                ("tools" . ,(efrit-executor--get-tools-schema))))
+                ("messages" . ,(efrit-api-cacheable-messages messages))
+                ("system" . ,(efrit-api-cacheable-system system-prompt))
+                ("tools" . ,(efrit-api-cacheable-tools
+                             (efrit-executor--get-tools-schema)))))
              (response (efrit-executor--sync-api-call request-data))
              (stop-reason (efrit-response-stop-reason response))
              (content (efrit-response-content response)))
@@ -757,10 +759,12 @@ Calls optional CALLBACK with the result when complete."
            (request-data
             `(("model" . ,efrit-default-model)
               ("max_tokens" . 8192)
-              ("messages" . [(("role" . "user")
-                             ("content" . ,command))])
-              ("system" . ,system-prompt)
-              ("tools" . ,(efrit-executor--get-tools-schema)))))
+              ("messages" . ,(efrit-api-cacheable-messages
+                              (vector `(("role" . "user")
+                                        ("content" . ,command)))))
+              ("system" . ,(efrit-api-cacheable-system system-prompt))
+              ("tools" . ,(efrit-api-cacheable-tools
+                           (efrit-executor--get-tools-schema))))))
 
       (efrit-session-set-active session)
       (efrit-executor--update-mode-line "Processing...")
@@ -848,9 +852,10 @@ Continues the API call chain with the user's response in context."
              (request-data
               `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
-                ("messages" . ,messages)
-                ("system" . ,system-prompt)
-                ("tools" . ,(efrit-executor--get-tools-schema)))))
+                ("messages" . ,(efrit-api-cacheable-messages messages))
+                ("system" . ,(efrit-api-cacheable-system system-prompt))
+                ("tools" . ,(efrit-api-cacheable-tools
+                             (efrit-executor--get-tools-schema))))))
 
         (efrit-log 'info "Resuming session %s after user response" session-id)
         (efrit-executor--update-mode-line "Resuming...")

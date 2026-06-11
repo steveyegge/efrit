@@ -198,9 +198,10 @@ current tools schema."
          (request-data
           `(("model" . ,efrit-default-model)
             ("max_tokens" . 8192)
-            ("messages" . ,messages)
-            ("system" . ,system-prompt)
-            ("tools" . ,(efrit-do--get-current-tools-schema)))))
+            ("messages" . ,(efrit-api-cacheable-messages messages))
+            ("system" . ,(efrit-api-cacheable-system system-prompt))
+            ("tools" . ,(efrit-api-cacheable-tools
+                         (efrit-do--get-current-tools-schema))))))
     ;; Call efrit-api-request-async directly rather than via
     ;; efrit-executor--api-request: the executor's error handler ends
     ;; the progress session generically and invokes the success
@@ -229,6 +230,13 @@ response's stop_reason."
     (when (and (efrit-loop-adapter-thinking-p adapter)
                (fboundp 'efrit-agent-hide-thinking))
       (efrit-agent-hide-thinking))
+    (when-let* ((usage (efrit-response-usage response)))
+      (efrit-log 'debug "%s %s: usage in=%s out=%s cache_write=%s cache_read=%s"
+                 name session-id
+                 (gethash "input_tokens" usage)
+                 (gethash "output_tokens" usage)
+                 (gethash "cache_creation_input_tokens" usage)
+                 (gethash "cache_read_input_tokens" usage)))
     (let ((content (efrit-response-content response))
           (stop-reason (efrit-response-stop-reason response)))
       (when content
