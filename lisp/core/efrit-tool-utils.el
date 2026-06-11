@@ -126,13 +126,17 @@ Returns the normalized path, or nil if PATH is invalid."
 
 (defun efrit-tool--path-in-directory-p (path directory)
   "Check if PATH is within DIRECTORY.
-Both paths are expanded before comparison.
-Handles the case where PATH equals DIRECTORY (same directory)."
-  (let ((expanded-path (expand-file-name path))
-        (expanded-dir (file-name-as-directory (expand-file-name directory))))
+Handles the case where PATH equals DIRECTORY (same directory).
+Symlinks on both sides are resolved via `file-truename' before
+comparison: callers pass truename-resolved paths, so a root that
+is itself reached through a symlink (e.g. /tmp -> /private/tmp on
+macOS) must be resolved too or it never prefix-matches (ef-0cm)."
+  (let ((true-path (file-truename (expand-file-name path)))
+        (true-dir (file-name-as-directory
+                   (file-truename (expand-file-name directory)))))
     ;; Either path is a prefix match, or they're the same directory
-    (or (string-prefix-p expanded-dir expanded-path)
-        (file-equal-p expanded-path (directory-file-name expanded-dir)))))
+    (or (string-prefix-p true-dir true-path)
+        (file-equal-p true-path (directory-file-name true-dir)))))
 
 (defun efrit-tool--is-sensitive-file (path)
   "Check if PATH matches any sensitive file pattern."
@@ -176,8 +180,12 @@ Returns a plist with:
                        (file-truename expanded)
                      expanded))
          (in-project (efrit-tool--path-in-directory-p resolved project-root))
+         ;; Relative to the resolved root: RESOLVED has symlinks
+         ;; expanded, so a raw root (e.g. /tmp/...) would yield a
+         ;; ../../private/tmp/... path (ef-0cm)
          (relative-path (when in-project
-                          (file-relative-name resolved project-root))))
+                          (file-relative-name resolved
+                                              (file-truename project-root)))))
 
     ;; Sandbox enforcement
     (when (and efrit-project-sandbox
