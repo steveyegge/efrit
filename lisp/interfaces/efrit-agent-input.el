@@ -202,6 +202,12 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
+    ;; Restore standard editing keys while typing in the input region.
+    ;; The major-mode map keeps C-k/C-q bound to agent actions as a
+    ;; convenience for the read-only conversation region; shadow them here
+    ;; so they behave like normal editing whenever point is in the input area.
+    (define-key map (kbd "C-k") #'kill-line)
+    (define-key map (kbd "C-q") #'quoted-insert)
     ;; History navigation
     (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)

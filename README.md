@@ -32,22 +32,29 @@ A structured, real-time view of agentic sessions with:
 
 **Agent Buffer Keybindings:**
 
+Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
+`C-h`, `C-M-*`, ...) keep their normal meaning in the input region.
+
 | Key | Action |
 |-----|--------|
-| `n` / `M-n` | Next tool call |
-| `p` / `M-p` | Previous tool call |
+| `TAB` / `S-TAB` | Move between sections |
+| `M-n` / `M-p` | Next / previous tool call |
 | `RET` | Expand/collapse tool at point |
-| `E` | Expand all tool calls |
-| `C` | Collapse all tool calls |
-| `w` | Copy tool output to kill ring |
-| `v` | Cycle verbosity (minimal/normal/verbose) |
-| `i` | Inject guidance mid-session |
-| `r` | Resume paused session |
-| `k` | Cancel session |
-| `g` | Refresh display |
-| `q` | Quit buffer (session continues) |
-| `1-4` | Select option when Claude asks |
-| `?` | Show help |
+| `C-c C-c` | Send input / continue session |
+| `C-c C-k` | Cancel session |
+| `C-c C-n` | New session |
+| `C-c C-r` | Resume paused session |
+| `C-c C-p` | Pause session |
+| `C-c C-h` | Browse session history |
+| `C-c C-t` | Toggle expand tool at point |
+| `C-c C-e` | Expand all tool calls |
+| `C-c C-d` | Collapse all tool calls |
+| `C-c C-v` | Cycle verbosity (minimal/normal/verbose) |
+| `C-c C-o` | Cycle display mode (minimal/smart/verbose) |
+| `C-c C-g` | Refresh display |
+| `C-c C-q` | Quit buffer (session continues) |
+| `1`-`4` | Select option when Claude asks (in input region) |
+| `C-c ?` | Show help |
 
 ### Rich Tool Suite
 Efrit provides Claude with 35+ tools:

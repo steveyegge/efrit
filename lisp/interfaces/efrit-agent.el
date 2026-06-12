@@ -239,26 +239,33 @@
     (define-key map (kbd "M-n") #'efrit-agent-next-tool)
     (define-key map (kbd "M-p") #'efrit-agent-previous-tool)
 
-    ;; Actions (all with modifiers to avoid interfering with input)
+    ;; Actions.  These live under the C-c prefix so they never shadow
+    ;; fundamental editing/control keys (C-g, C-h, C-M-*, ...), which must
+    ;; keep their standard meaning everywhere in the buffer, including the
+    ;; editable input region.  The bare C-q/C-k convenience keys below stay
+    ;; bound for the read-only conversation region and are shadowed back to
+    ;; standard editing in `efrit-agent-input-mode-map'.
     (define-key map (kbd "C-q") #'efrit-agent-quit)
     (define-key map (kbd "C-k") #'efrit-agent-cancel)
-    (define-key map (kbd "C-M-p") #'efrit-agent-pause)
-    (define-key map (kbd "C-M-r") #'efrit-agent-resume)
-    (define-key map (kbd "C-g") #'efrit-agent-refresh)
-    (define-key map (kbd "C-c C-t") #'efrit-agent-toggle-expand)
-    (define-key map (kbd "C-M-e") #'efrit-agent-expand-all)
-    (define-key map (kbd "C-M-c") #'efrit-agent-collapse-all)
-    (define-key map (kbd "C-M-v") #'efrit-agent-cycle-verbosity)
-    (define-key map (kbd "C-M-m") #'efrit-agent-cycle-display-mode)
-    (define-key map (kbd "C-h") #'efrit-agent-help)
 
     ;; Session management (canonical keybindings)
     (define-key map (kbd "C-c C-c") #'efrit-agent-send-input)  ; Send input
     (define-key map (kbd "C-c C-k") #'efrit-agent-cancel)      ; Kill/pause session
+    (define-key map (kbd "C-c C-q") #'efrit-agent-quit)        ; Quit buffer
     (define-key map (kbd "C-c C-n") #'efrit-agent-new-session) ; New session
     (define-key map (kbd "C-c C-r") #'efrit-agent-resume)      ; Resume session
+    (define-key map (kbd "C-c C-p") #'efrit-agent-pause)       ; Pause session
+    (define-key map (kbd "C-c C-g") #'efrit-agent-refresh)     ; Refresh display
     (define-key map (kbd "C-c C-h") #'efrit-agent-browse-sessions) ; Browse sessions history
-    
+    (define-key map (kbd "C-c ?")   #'efrit-agent-help)        ; Help
+
+    ;; Tool-call expansion
+    (define-key map (kbd "C-c C-t") #'efrit-agent-toggle-expand)
+    (define-key map (kbd "C-c C-e") #'efrit-agent-expand-all)
+    (define-key map (kbd "C-c C-d") #'efrit-agent-collapse-all)
+    (define-key map (kbd "C-c C-v") #'efrit-agent-cycle-verbosity)
+    (define-key map (kbd "C-c C-o") #'efrit-agent-cycle-display-mode)
+
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
     ;; Number keys 1-4 for option selection are handled separately in input mode
@@ -651,27 +658,27 @@ verbose: All tool results expanded, ignore auto_expand hints."
 
 Navigation:
    TAB / S-TAB    Move between sections
-   n / M-n        Next tool call
-   p / M-p        Previous tool call (when not in input)
+   M-n            Next tool call
+   M-p            Previous tool call (when not in input)
    RET            Expand/collapse tool call at point
-   w              Copy tool result to kill ring
-   g              Refresh display
 
- Actions:
-   q              Quit buffer (session continues)
-   E              Expand all tool calls
-   C              Collapse all tool calls
-   v              Cycle verbosity (minimal/normal/verbose)
-   M              Cycle display mode (minimal/smart/verbose)
+ Actions (C-c prefix keeps standard editing keys free):
+   C-c C-g        Refresh display
+   C-c C-q        Quit buffer (session continues)
+   C-c C-t        Toggle expand tool call at point
+   C-c C-e        Expand all tool calls
+   C-c C-d        Collapse all tool calls
+   C-c C-v        Cycle verbosity (minimal/normal/verbose)
+   C-c C-o        Cycle display mode (minimal/smart/verbose)
+   C-c ?          This help
 
  Session Management (canonical keybindings):
    C-c C-c        Send input / Continue session
    C-c C-k        Kill/pause session
    C-c C-n        New session
    C-c C-r        Resume paused session
+   C-c C-p        Pause session
    C-c C-h        Browse session history
-   P              Pause session (non-canonical)
-   r              Resume session (non-canonical)
 
 Verbosity Levels:
   minimal        Show 20 chars result, 3 lines when expanded
