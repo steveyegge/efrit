@@ -144,6 +144,12 @@
 
 ;;; Path Expansion Tests
 
+(ert-deftest test-config-default-data-directory-uses-user-emacs-directory ()
+  "Test that the default data directory follows `user-emacs-directory'."
+  (let ((user-emacs-directory "/tmp/efrit-custom-emacs.d/"))
+    (should (equal (efrit-config-default-data-directory)
+                   "/tmp/efrit-custom-emacs.d/.efrit"))))
+
 (ert-deftest test-config-data-directory-expansion ()
   "Test that data directory handles tilde expansion."
   (let ((efrit-data-directory "~/test-efrit"))

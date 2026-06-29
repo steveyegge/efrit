@@ -32,6 +32,7 @@
 (require 'json)
 (require 'cl-lib)
 (require 'url-parse)
+(require 'efrit-config)
 
 ;;; Customization
 
@@ -504,7 +505,8 @@ The file path is determined by `efrit-tool-audit-file'."
   :type 'boolean
   :group 'efrit-tool-utils)
 
-(defcustom efrit-tool-audit-file "~/.emacs.d/.efrit/logs/tool-audit.log"
+(defcustom efrit-tool-audit-file
+  (expand-file-name "logs/tool-audit.log" efrit-data-directory)
   "File path for tool audit log when `efrit-tool-audit-to-file' is non-nil."
   :type 'file
   :group 'efrit-tool-utils)

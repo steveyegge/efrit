@@ -324,7 +324,7 @@ coverage: compile
 		--eval "(efrit-coverage-report)" \
 		--eval "(efrit-coverage-report-lcov)" \
 		--eval "(efrit-coverage-report-json)"
-	@echo "✅ Coverage report generated in ~/.emacs.d/.efrit/coverage/"
+	@echo "✅ Coverage report generated in user-emacs-directory/.efrit/coverage/"
 
 coverage-simple: compile
 	@echo "Running simple function-level coverage..."

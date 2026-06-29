@@ -17,7 +17,7 @@
 ;; - Session replay (show progress buffer from past session)
 ;; - Cleanup of old sessions with configurable retention policy
 ;;
-;; Sessions are stored in ~/.emacs.d/.efrit/sessions/ with metadata.
+;; Sessions are stored in the Efrit data directory with metadata.
 
 ;;; Code:
 

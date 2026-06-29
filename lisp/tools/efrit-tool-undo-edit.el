@@ -29,7 +29,8 @@
 
 ;;; Undo Registry Management
 
-(defcustom efrit-undo-edit-dir "~/.emacs.d/.efrit/undo/"
+(defcustom efrit-undo-edit-dir
+  (expand-file-name "undo" efrit-data-directory)
   "Directory to store per-file undo history."
   :type 'directory
   :group 'efrit-tool-utils)
