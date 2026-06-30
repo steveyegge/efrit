@@ -27,7 +27,8 @@
 
 ;;; Customization
 
-(defcustom efrit-checkpoint-dir "~/.emacs.d/.efrit/checkpoints/"
+(defcustom efrit-checkpoint-dir
+  (expand-file-name "checkpoints" efrit-data-directory)
   "Directory to store checkpoint metadata."
   :type 'directory
   :group 'efrit-tool-utils)

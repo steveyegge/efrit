@@ -60,7 +60,7 @@ Set to 0 to disable threshold checking."
 
 (defcustom efrit-coverage-output-dir nil
   "Directory for coverage reports.
-If nil, uses ~/.emacs.d/.efrit/coverage/."
+If nil, uses .efrit/coverage/ under `user-emacs-directory'."
   :type '(choice (const nil) directory)
   :group 'efrit-coverage)
 
@@ -99,7 +99,7 @@ Each entry is an alist with:
   "Return the coverage output directory, creating it if needed."
   (let ((dir (or efrit-coverage-output-dir
                  (expand-file-name "coverage"
-                                   (expand-file-name ".efrit" "~/.emacs.d")))))
+                                   (expand-file-name ".efrit" user-emacs-directory)))))
     (unless (file-directory-p dir)
       (make-directory dir t))
     dir))

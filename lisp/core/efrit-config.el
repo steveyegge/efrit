@@ -30,7 +30,11 @@ Update this when releasing new versions.")
   :group 'applications
   :prefix "efrit-")
 
-(defcustom efrit-data-directory "~/.emacs.d/.efrit"
+(defun efrit-config-default-data-directory ()
+  "Return Efrit's default data directory."
+  (expand-file-name ".efrit" user-emacs-directory))
+
+(defcustom efrit-data-directory (efrit-config-default-data-directory)
   "Directory for storing efrit data files.
 This includes context files, session data, communication queues, logs,
 and cache. The directory will be created automatically if it doesn't exist."

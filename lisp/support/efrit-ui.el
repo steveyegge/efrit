@@ -27,7 +27,7 @@
 (require 'efrit-ui-dashboard)
 (require 'efrit-ui-todos)
 
-(defvar efrit-data-directory (expand-file-name "~/.emacs.d/.efrit/")
+(defvar efrit-data-directory (expand-file-name ".efrit" user-emacs-directory)
   "Directory for efrit data storage.")
 
 ;;; Initialization

@@ -59,7 +59,7 @@
   :group 'efrit-test-runner)
 
 (defcustom efrit-test-results-dir nil
-  "Directory for test results. If nil, uses ~/.emacs.d/.efrit/test-results/."
+  "Directory for test results. If nil, uses .efrit/test-results/ under `user-emacs-directory'."
   :type '(choice (const nil) directory)
   :group 'efrit-test-runner)
 

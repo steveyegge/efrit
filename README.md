@@ -359,7 +359,7 @@ The async API is now recommended for all use cases. Use `efrit-do-sync` only if 
 (setq efrit-max-tokens 8192)
 
 ;; Data directory
-(setq efrit-data-directory "~/.emacs.d/.efrit/")
+(setq efrit-data-directory (expand-file-name ".efrit" user-emacs-directory))
 
 ;; Enable debug logging
 (setq efrit-log-level 'debug)
@@ -405,7 +405,7 @@ The default forbidden patterns block truly dangerous commands like `sudo`, `shut
 
 ## Data Directory
 
-All data lives under `~/.emacs.d/.efrit/`:
+By default, all data lives under `.efrit/` inside `user-emacs-directory`:
 
 ```
 .efrit/

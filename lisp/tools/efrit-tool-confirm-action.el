@@ -36,7 +36,8 @@
   :type 'integer
   :group 'efrit-tool-utils)
 
-(defcustom efrit-confirm-log-file "~/.emacs.d/.efrit/logs/confirmations.log"
+(defcustom efrit-confirm-log-file
+  (expand-file-name "logs/confirmations.log" efrit-data-directory)
   "File path for confirmation audit log."
   :type 'file
   :group 'efrit-tool-utils)
