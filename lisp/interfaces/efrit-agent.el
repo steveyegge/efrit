@@ -1007,7 +1007,11 @@ rendered conversation is preserved; the legacy full render erased it
                   (result-str (replace-regexp-in-string
                                "[\n\r]+" " "
                                (format "%s" result))))
-             (insert (propertize (truncate-string-to-width result-str max-len)
+             ;; session_complete carries Claude's final answer - never
+             ;; truncate it (ef-gi82)
+             (insert (propertize (if (equal tool-name "session_complete")
+                                     result-str
+                                   (truncate-string-to-width result-str max-len))
                                  'face result-face))))
          ;; Mark the line with item-id for toggle functionality
          (when item-id

@@ -60,6 +60,14 @@ Follows precedence: explicit summary > annotations > truncated result."
 SUCCESS-P indicates if the tool succeeded."
   (let ((result-str (format "%s" result)))
     (cond
+     ;; session_complete - its message IS Claude's final answer; show it
+     ;; in full, never truncated (ef-gi82)
+     ((string-match-p "session_complete" tool-name)
+      (replace-regexp-in-string
+       "[\n\r]+" " "
+       (if (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" result-str)
+           (match-string 1 result-str)
+         result-str)))
      ;; Read tool - show line count
      ((string-match-p "Read\\|read" tool-name)
       (let ((lines (length (split-string result-str "\n"))))
