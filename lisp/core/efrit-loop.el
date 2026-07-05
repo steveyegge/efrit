@@ -270,18 +270,26 @@ response's stop_reason."
 
 ;;; Tool Execution
 
+(defconst efrit-loop--interrupt-result
+  "Error tool execution interrupted by user (C-g)"
+  "Tool result recorded when C-g aborts a tool mid-execution (ef-lx4c).
+Recorded as a normal tool_result so the API conversation stays
+well-formed; the loop then ends the turn via the interrupted path
+instead of continuing.")
+
 (defun efrit-loop-execute-tools (session adapter content)
   "Execute the tools Claude requested in CONTENT for SESSION via ADAPTER.
 CONTENT is a vector of content blocks.  Stores the assistant response,
 executes each tool_use block, collects tool_result blocks, and either
-finishes the turn (session_complete, waiting-for-user) or continues
-the loop."
+finishes the turn (session_complete, waiting-for-user, user C-g) or
+continues the loop."
   (let* ((name (efrit-loop-adapter-name adapter))
          (session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
          (results nil)
          (session-complete-requested nil)
          (completion-message nil)
-         (waiting-for-user nil))
+         (waiting-for-user nil)
+         (user-interrupted nil))
     ;; CRITICAL: Store Claude's full response BEFORE executing tools
     ;; This maintains proper message order for API continuation
     (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
@@ -290,7 +298,15 @@ the loop."
              (tool-use-info (efrit-content-item-as-tool-use item)))
         ;; Execute tool_use blocks only (returns nil if not a tool_use)
         (when tool-use-info
-          (let* ((tool-id (nth 0 tool-use-info))
+          (if user-interrupted
+              ;; A C-g already aborted this turn: don't run further
+              ;; tools, but still emit a tool_result for every
+              ;; remaining tool_use so the conversation stays valid.
+              (push (efrit-api-build-tool-result
+                     (nth 0 tool-use-info)
+                     "Error skipped: user interrupted the turn (C-g)" t)
+                    results)
+            (let* ((tool-id (nth 0 tool-use-info))
                  (tool-name (nth 1 tool-use-info))
                  (input (nth 2 tool-use-info)))
             (efrit-log 'debug "%s %s: executing tool %s (id: %s)"
@@ -343,14 +359,23 @@ the loop."
                          tool-result)
                     (setq completion-message
                           (match-string 1 tool-result))))
+                (when (string= tool-result efrit-loop--interrupt-result)
+                  (setq user-interrupted t))
                 (when is-waiting
-                  (setq waiting-for-user t))))))))
+                  (setq waiting-for-user t)))))))))
     (efrit-log 'info "%s %s: executed %d tools" name session-id (length results))
     ;; Send results back to Claude if any tools were executed
     (when results
       (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
                session (nreverse results)))
     (cond
+     ;; A C-g mid-tool ends the turn cleanly (ef-lx4c): tool_results
+     ;; are already recorded above, so the next user input can
+     ;; continue the session.
+     (user-interrupted
+      (efrit-log 'info "%s %s: turn interrupted by user during tool execution"
+                 name session-id)
+      (efrit-loop--finish session adapter "interrupted"))
      (session-complete-requested
       (efrit-log 'info "%s %s: session_complete signal detected, stopping loop"
                  name session-id)
@@ -393,6 +418,15 @@ Error messages start with `Error ' for easy detection by callers."
               (efrit-log 'debug "%s %s: tool %s returned %d chars"
                          name session-id tool-name (length result))
               result)))
+      ;; C-g signals `quit', which an (error ...) handler does NOT
+      ;; catch: it used to unwind the entire turn, leaving the UI
+      ;; stuck on a running spinner and the session silently dead
+      ;; (ef-lx4c).  Convert it into a distinguished tool result so
+      ;; efrit-loop-execute-tools can end the turn cleanly.
+      (quit
+       (efrit-log 'warn "%s %s: user interrupted (C-g) during tool %s"
+                  name session-id tool-name)
+       efrit-loop--interrupt-result)
       (error
        (let* ((error-msg (error-message-string err))
               (is-interrupt (string-match-p "Quit" error-msg))
