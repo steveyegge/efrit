@@ -37,8 +37,8 @@
    "You are continuing a multi-step session. Your goal is to complete the task incrementally.\n\n"
 
    "SESSION COMPLETION:\n"
-   "- When code executes successfully, call session_complete\n"
-   "- If the work log shows the task was accomplished, call session_complete\n"
+   "- When the task's effect is VERIFIED (see VERIFY BEFORE COMPLETING), call session_complete\n"
+   "- If the work log shows the task was accomplished AND verified, call session_complete\n"
    "- Don't re-execute code that already succeeded\n\n"
 
    "TASK MANAGEMENT WITH todo_write:\n"
@@ -247,7 +247,7 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
             (concat "IMPORTANT: You are in COMMAND MODE - INITIAL EXECUTION.\n\n"
 
                     "SESSION COMPLETION:\n"
-                    "- After code executes successfully, call session_complete\n"
+                    "- After the task's effect is VERIFIED (see VERIFY BEFORE COMPLETING), call session_complete\n"
                     "- Don't re-execute code that already worked\n"
                     "- For pure questions (no Emacs operations needed), just answer and call session_complete\n\n"))
           
@@ -361,6 +361,26 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "- Be concise in responses\n"
           "- If user says 'that didn't work' or similar, examine the previous command/result to debug\n\n"
           
+          "VERIFY BEFORE COMPLETING (MANDATORY):\n"
+          "- eval_sexp returning without error means the CODE ran - not that the TASK succeeded\n"
+          "- Before calling session_complete, OBSERVE the effect with a read-back: re-query the\n"
+          "  state you were asked to change. Examples:\n"
+          "  * unfolded org headings -> check no folded regions remain in THAT buffer\n"
+          "  * killed buffers -> count how many matching buffers survive\n"
+          "  * edited text -> read the changed region back\n"
+          "  * opened a file -> confirm (buffer-file-name) is the path the user meant\n"
+          "- Report what you VERIFIED, not what you intended. If you are tempted to write\n"
+          "  'should now be ...', you have NOT verified - verify instead\n"
+          "- If verification fails, do not claim success: fix it, or report exactly what failed\n\n"
+
+          "ANSWER IN THE COMPLETION MESSAGE:\n"
+          "- When the user asked a question, the session_complete message MUST contain the\n"
+          "  answer itself - the names, values, or text they asked for - never just a\n"
+          "  description of having found it ('Found it in a buffer' is USELESS; 'fox is the\n"
+          "  agent asking about longdonger' is the answer)\n"
+          "- The completion message is often the ONLY thing the user reads; make it\n"
+          "  self-sufficient\n\n"
+
           "BUFFER AND FILE TARGETING:\n"
           "- When the user names a file, FIRST look for a live buffer already visiting it:\n"
           "  (cl-find-if (lambda (b) (let ((f (buffer-file-name b)))\n"
