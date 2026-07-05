@@ -42,6 +42,28 @@
   :type 'integer
   :group 'efrit-tool-utils)
 
+(defcustom efrit-tool-search-max-files 5000
+  "Maximum files the Elisp fallback search will scan (ef-b10b).
+The fallback runs synchronously on the UI thread; without a cap a
+big search root (observed: a 27-clone container dir) freezes Emacs
+for minutes.  When the cap is hit the search returns partial results
+plus a warning telling Claude to narrow the scope."
+  :type 'integer
+  :group 'efrit-tool-utils)
+
+(defcustom efrit-tool-search-max-seconds 10
+  "Wall-clock budget in seconds for the Elisp fallback search (ef-b10b).
+On timeout the search stops and returns whatever it found, with a
+warning telling Claude to narrow the scope."
+  :type 'number
+  :group 'efrit-tool-utils)
+
+(defconst efrit-tool-search--prune-dirs
+  '(".git" ".hg" ".svn" "node_modules" "build" "dist" "target"
+    ".gradle" "eln-cache" "elpa" "straight" ".beads" "__pycache__"
+    ".venv" "venv" ".next" ".cache")
+  "Directory basenames the Elisp fallback never descends into (ef-b10b).")
+
 ;;; Tool Detection
 
 (defvar efrit-tool-search--ripgrep-available nil
@@ -181,30 +203,64 @@ Returns a plist with :matches and :files-searched."
 
 (defun efrit-tool-search--elisp-search (pattern path file-pattern context-lines
                                                 max-results case-sensitive is-regex)
-  "Search using Emacs Lisp (slow fallback)."
+  "Search using Emacs Lisp (slow fallback).
+Runs synchronously on the UI thread, so it is bounded (ef-b10b):
+VCS/build/dependency dirs are pruned, at most
+`efrit-tool-search-max-files' files are scanned, and the whole scan
+stops after `efrit-tool-search-max-seconds'.  Partial results carry
+a :warnings list telling Claude to narrow the scope."
   (let* ((matches '())
          (files-searched 0)
          (match-count 0)
+         (warnings '())
+         (start-time (current-time))
          (regex (if is-regex
                     pattern
                   (regexp-quote pattern)))
          (case-fold-search (not case-sensitive))
-         ;; Get file list
-         (files (if (efrit-tool-git-available-p)
-                    (let ((result (efrit-tool-run-git '("ls-files"))))
-                      (when (plist-get result :success)
-                        (mapcar (lambda (f) (expand-file-name f path))
-                                (split-string (plist-get result :output) "\n" t))))
-                  (directory-files-recursively path "."))))
+         ;; Get file list.  The git test must be about PATH, not the
+         ;; project root: gating on the project root and running
+         ;; ls-files there returned garbage paths (and silent zero
+         ;; matches) whenever path pointed elsewhere (ef-b10b).
+         (files (or (when (and (executable-find "git")
+                               (locate-dominating-file path ".git"))
+                      (let ((default-directory path))
+                        (with-temp-buffer
+                          (when (eq 0 (call-process "git" nil t nil "ls-files"))
+                            (mapcar (lambda (f) (expand-file-name f path))
+                                    (split-string (buffer-string) "\n" t))))))
+                    ;; Never descend into VCS/build/dependency dirs: on a
+                    ;; big non-git root (observed: a 27-clone container
+                    ;; dir) the unpruned walk froze Emacs for minutes.
+                    (directory-files-recursively
+                     path "." nil
+                     (lambda (dir)
+                       (not (member (file-name-nondirectory
+                                     (directory-file-name dir))
+                                    efrit-tool-search--prune-dirs)))))))
     ;; Filter by file pattern
     (when file-pattern
       (let ((file-regex (wildcard-to-regexp file-pattern)))
         (setq files (cl-remove-if-not
                      (lambda (f) (string-match-p file-regex f))
                      files))))
+    ;; Cap the number of files scanned
+    (when (> (length files) efrit-tool-search-max-files)
+      (push (format "Scanned only the first %d of %d candidate files - narrow the search with path or file_pattern"
+                    efrit-tool-search-max-files (length files))
+            warnings)
+      (setq files (seq-take files efrit-tool-search-max-files)))
     ;; Search each file
     (catch 'done
       (dolist (file files)
+        ;; Wall-clock budget: stop with partial results rather than
+        ;; freezing the UI
+        (when (> (float-time (time-since start-time))
+                 efrit-tool-search-max-seconds)
+          (push (format "Search stopped after %ds time budget (%d files scanned) - narrow the search with path or file_pattern, or install ripgrep"
+                        efrit-tool-search-max-seconds files-searched)
+                warnings)
+          (throw 'done nil))
         (when (and (file-regular-p file)
                    (not (efrit-tool-binary-file-p file)))
           (setq files-searched (1+ files-searched))
@@ -234,7 +290,8 @@ Returns a plist with :matches and :files-searched."
                   (throw 'done nil))))))))
     (list :matches (vconcat (nreverse matches))
           :files-searched files-searched
-          :total-matches match-count)))
+          :total-matches match-count
+          :warnings (nreverse warnings))))
 
 (defun efrit-tool-search--get-context-lines (start-line end-line)
   "Get context lines from START-LINE to END-LINE in current buffer."
@@ -299,10 +356,14 @@ Returns a standard tool response with search results."
                             pattern path file-pattern context-lines
                             fetch-count case-sensitive is-regex)
                          (progn
-                           (push "Using slow Elisp fallback (ripgrep not available)" warnings)
+                           (push "Using slow Elisp fallback (ripgrep not available - install it, e.g. brew install ripgrep)" warnings)
                            (efrit-tool-search--elisp-search
                             pattern path file-pattern context-lines
                             fetch-count case-sensitive is-regex)))))
+
+          ;; Surface fallback bounding warnings (file cap / time budget,
+          ;; ef-b10b) so Claude knows the scan was partial and narrows
+          (setq warnings (append warnings (plist-get result :warnings)))
 
           ;; Apply offset pagination
           (let* ((all-matches (append (plist-get result :matches) nil))
