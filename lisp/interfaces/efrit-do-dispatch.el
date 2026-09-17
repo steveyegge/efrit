@@ -17,6 +17,12 @@
 
 (require 'efrit-log)
 (require 'efrit-do-circuit-breaker)
+(require 'efrit-permissions)
+
+(defvar efrit-repl-loop--tool-session)
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function efrit-session-active "efrit-session")
+(declare-function efrit-session-id "efrit-session")
 
 ;; Forward declarations for handler functions (defined in efrit-do-handlers.el)
 (declare-function efrit-do--handle-eval-sexp "efrit-do-handlers")
@@ -113,6 +119,7 @@
     ("undo_edit"          . (efrit-do--handle-undo-edit . :tool-input))
     ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
     ("create_file"        . (efrit-do--handle-create-file . :tool-input))
+    ("editor_state"       . (efrit-do--handle-editor-state . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))
     ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
     ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))
@@ -210,13 +217,36 @@ Applies circuit breaker limits to prevent infinite loops."
 
       ;; CIRCUIT BREAKER: Check limits before executing
       (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name tool-input)))
-        (if (not (car breaker-check))
-            ;; Circuit breaker blocked execution
-            (progn
-              (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
-              (when (fboundp 'efrit-session-track-error)
-                (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
-              (cdr breaker-check))
+        (cond
+         ((not (car breaker-check))
+          ;; Circuit breaker blocked execution
+          (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
+          (when (fboundp 'efrit-session-track-error)
+            (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
+          (cdr breaker-check))
+
+         ;; PERMISSION: mutating tools need consent (efrit-permissions).
+         ;; A denial is returned as a distinguished tool result; the
+         ;; loop engine recognises it and ends the turn.
+         ((eq (efrit-permission-check tool-name tool-input
+                                      (efrit-do--dispatch-session-id))
+              'deny)
+          (efrit-log 'info "Permission denied for tool: %s" tool-name)
+          efrit-permission-denied-result)
+
+         (t
+          ;; The user may have edited the input at the prompt
+          (unless (eq efrit-permission-last-input tool-input)
+            (setq tool-input efrit-permission-last-input
+                  input-str (cond
+                             ((stringp tool-input) tool-input)
+                             ((hash-table-p tool-input)
+                              (seq-some (lambda (key) (gethash key tool-input))
+                                        '("expr" "expression" "code" "command")))
+                             (t input-str)))
+            (when input-str
+              (setq input-str (efrit-do--sanitize-elisp-string input-str)))
+            (efrit-log 'info "Tool %s input edited by user before running" tool-name))
 
           ;; Circuit breaker allows execution - record the call
           (efrit-do--circuit-breaker-record-call tool-name tool-input)
@@ -240,7 +270,19 @@ Applies circuit breaker limits to prevent infinite loops."
                                               (or input-str tool-input))
                                       nil  ; no todo-snapshot
                                       tool-name))
-            return-value))))))
+            return-value)))))))
+
+(defun efrit-do--dispatch-session-id ()
+  "Best-effort ID of the session whose tool is being dispatched, or nil.
+The REPL loop binds `efrit-repl-loop--tool-session' around dispatch;
+efrit-do sessions are found via `efrit-session-active'."
+  (cond
+   ((and (boundp 'efrit-repl-loop--tool-session)
+         efrit-repl-loop--tool-session
+         (fboundp 'efrit-repl-session-id))
+    (efrit-repl-session-id efrit-repl-loop--tool-session))
+   ((and (fboundp 'efrit-session-active) (fboundp 'efrit-session-id))
+    (when-let* ((s (efrit-session-active))) (efrit-session-id s)))))
 
 (provide 'efrit-do-dispatch)
 ;;; efrit-do-dispatch.el ends here

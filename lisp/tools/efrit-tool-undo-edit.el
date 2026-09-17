@@ -179,7 +179,7 @@ Returns a standard tool response with undo info."
                     (delete-file meta-file)))))
 
             ;; Return success with diff info
-            (let ((diff-output (efrit-tool-edit-file--generate-diff
+            (let ((diff-output (efrit-tool-unified-diff
                                original-content current-content path)))
               (efrit-tool-success
                `((path . ,path)

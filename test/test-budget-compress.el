@@ -112,9 +112,9 @@
     (let ((compressed (efrit-budget-compress-for-history "project_files" result)))
       (should (stringp compressed))
       (should (string-match-p "100 files" compressed))))
-  ;; Unknown tool
-  (let ((compressed (efrit-budget-compress-for-history "unknown_tool" nil)))
-    (should (string= "[unknown_tool result]" compressed))))
+  ;; Unknown tools keep a truncated slice of the raw result (ef-c1h)
+  (let ((compressed (efrit-budget-compress-for-history "unknown_tool" "raw output")))
+    (should (string= "raw output" compressed))))
 
 (ert-deftest test-compress-max-length ()
   "Test that compression respects max length."

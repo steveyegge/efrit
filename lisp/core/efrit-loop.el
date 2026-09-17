@@ -45,6 +45,8 @@
 (require 'efrit-log)
 (require 'efrit-api)
 (require 'efrit-chat-response)
+(require 'efrit-permissions)   ; efrit-permission-denied-result
+(require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
 (declare-function efrit-do--command-system-prompt "efrit-do-prompt")
@@ -55,7 +57,12 @@
 (declare-function efrit-agent-stream-end "efrit-agent")
 (declare-function efrit-agent-show-tool-start "efrit-agent")
 (declare-function efrit-agent-show-tool-result "efrit-agent")
+(declare-function efrit-api-stream-request "efrit-api-stream")
+(defvar efrit-api-streaming)
 (defvar efrit-default-model)
+
+(defvar efrit-loop--streamed-text nil
+  "Dynamically non-nil while handling a response whose text was already streamed.")
 
 ;;; Adapter
 
@@ -105,6 +112,11 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
+  (efrit-publish 'turn-complete
+                 `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
+                   (:stop-reason . ,reason)
+                   (:error-message . ,error-message)
+                   (:completion-message . ,completion-message)))
   (funcall (efrit-loop-adapter-finish-fn adapter)
            session reason error-message completion-message))
 
@@ -153,6 +165,8 @@ the next API request."
                    (efrit-loop-adapter-state-hash adapter))
           (efrit-log 'debug "%s %s: sending request (iteration %d)"
                      name session-id (1+ iteration-count))
+          (efrit-publish 'api-request `((:session-id . ,session-id)
+                                        (:iteration . ,(1+ iteration-count))))
           (efrit-loop--send-request session adapter)))))))
 
 ;;; Request / Response
@@ -208,16 +222,37 @@ current tools schema."
     ;; callback with a plain string, which misreported every API
     ;; failure (ef-2qx in the do-async loop, ef-ywc in the REPL loop).
     ;; The loop owns the session lifecycle.
-    (efrit-api-request-async
-     request-data
-     (lambda (response)
-       (if (and response (efrit-response-error response))
-           (funcall callback nil (efrit-error-message
-                                  (efrit-response-error response)))
-         (funcall callback response nil)))
-     (lambda (error-msg)
-       (efrit-log 'error "API request failed: %s" error-msg)
-       (funcall callback nil error-msg)))))
+    (if (and (bound-and-true-p efrit-api-streaming)
+             (require 'efrit-api-stream nil t))
+        ;; Streaming transport: text deltas go straight to the agent
+        ;; buffer; the assembled response then takes the normal path.
+        ;; efrit-loop--streamed-text remembers what was already shown
+        ;; so efrit-loop-handle-response doesn't render it twice.
+        (let ((shown nil))
+          (efrit-api-stream-request
+           request-data
+           (lambda (response error)
+             (when (and response (efrit-response-error response))
+               (setq error (efrit-error-message (efrit-response-error response))
+                     response nil))
+             (when error (efrit-log 'error "API request failed: %s" error))
+             (let ((efrit-loop--streamed-text shown))
+               (funcall callback response error)))
+           (lambda (text)
+             (setq shown t)
+             (when (fboundp 'efrit-agent-hide-thinking) (efrit-agent-hide-thinking))
+             (when (fboundp 'efrit-agent-stream-content)
+               (efrit-agent-stream-content text)))))
+      (efrit-api-request-async
+       request-data
+       (lambda (response)
+         (if (and response (efrit-response-error response))
+             (funcall callback nil (efrit-error-message
+                                    (efrit-response-error response)))
+           (funcall callback response nil)))
+       (lambda (error-msg)
+         (efrit-log 'error "API request failed: %s" error-msg)
+         (funcall callback nil error-msg))))))
 
 (defun efrit-loop-handle-response (session adapter response)
   "Handle API RESPONSE for SESSION using ADAPTER.
@@ -237,19 +272,25 @@ response's stop_reason."
                  (gethash "output_tokens" usage)
                  (gethash "cache_creation_input_tokens" usage)
                  (gethash "cache_read_input_tokens" usage)))
+    (efrit-publish 'api-response
+                   `((:session-id . ,session-id)
+                     (:usage . ,(efrit-response-usage response))
+                     (:stop-reason . ,(efrit-response-stop-reason response))))
     (let ((content (efrit-response-content response))
           (stop-reason (efrit-response-stop-reason response)))
       (when content
         (efrit-loop--event adapter session-id 'message
                            `((:text . ,(format "%S" content))
                              (:role . "assistant")))
-        ;; Stream text content to agent buffer
-        (dotimes (i (length content))
-          (let ((item (aref content i)))
-            (when (and (hash-table-p item)
-                       (string= (gethash "type" item) "text"))
-              (when (fboundp 'efrit-agent-stream-content)
-                (efrit-agent-stream-content (gethash "text" item))))))
+        ;; Render text content in the agent buffer -- unless the
+        ;; streaming transport already did, delta by delta
+        (unless efrit-loop--streamed-text
+          (dotimes (i (length content))
+            (let ((item (aref content i)))
+              (when (and (hash-table-p item)
+                         (string= (gethash "type" item) "text"))
+                (when (fboundp 'efrit-agent-stream-content)
+                  (efrit-agent-stream-content (gethash "text" item)))))))
         (when (fboundp 'efrit-agent-stream-end)
           (efrit-agent-stream-end)))
       (pcase stop-reason
@@ -304,7 +345,7 @@ continues the loop."
               ;; remaining tool_use so the conversation stays valid.
               (push (efrit-api-build-tool-result
                      (nth 0 tool-use-info)
-                     "Error skipped: user interrupted the turn (C-g)" t)
+                     "Error skipped: the turn was ended by the user (interrupt or permission denial)" t)
                     results)
             (let* ((tool-id (nth 0 tool-use-info))
                  (tool-name (nth 1 tool-use-info))
@@ -315,6 +356,8 @@ continues the loop."
               (funcall fn session tool-name))
             (efrit-loop--event adapter session-id 'tool_started
                                `((:tool . ,tool-name) (:input . ,input)))
+            (efrit-publish 'tool-start `((:session-id . ,session-id)
+                                         (:tool . ,tool-name) (:input . ,input)))
             ;; Show tool start in agent buffer and track time
             (let ((agent-tool-id (when (fboundp 'efrit-agent-show-tool-start)
                                    (efrit-agent-show-tool-start tool-name input)))
@@ -335,6 +378,11 @@ continues the loop."
                                    `((:tool . ,tool-name)
                                      (:result . ,tool-result)
                                      (:success . ,(not is-error))))
+                (efrit-publish 'tool-result `((:session-id . ,session-id)
+                                              (:tool . ,tool-name)
+                                              (:result . ,tool-result)
+                                              (:success . ,(not is-error))
+                                              (:elapsed . ,elapsed-secs)))
                 (when (and agent-tool-id (fboundp 'efrit-agent-show-tool-result))
                   (efrit-agent-show-tool-result agent-tool-id tool-result
                                                 (not is-error) elapsed-secs))
@@ -359,7 +407,10 @@ continues the loop."
                          tool-result)
                     (setq completion-message
                           (match-string 1 tool-result))))
-                (when (string= tool-result efrit-loop--interrupt-result)
+                ;; A C-g mid-tool, or a permission denial, both hand
+                ;; control back to the user: no further tools this turn.
+                (when (or (string= tool-result efrit-loop--interrupt-result)
+                          (string= tool-result efrit-permission-denied-result))
                   (setq user-interrupted t))
                 (when is-waiting
                   (setq waiting-for-user t)))))))))

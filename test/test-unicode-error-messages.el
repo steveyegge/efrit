@@ -16,7 +16,8 @@
 (ert-deftest test-unicode-apostrophe-in-error ()
   "Test that unicode apostrophe (U+2019) in error messages is properly escaped."
   ;; Mock url-retrieve to capture the request
-  (let ((captured-request nil))
+  (let ((captured-request nil)
+        (efrit-api-key "sk-test-key-for-unicode-tests-000"))
     (cl-letf (((symbol-function 'url-retrieve)
                (lambda (url callback &optional cbargs silent inhibit-cookies)
                  (setq captured-request url-request-data))))
@@ -57,7 +58,8 @@
     (dolist (test test-cases)
       (let ((input (car test))
             (expected-pattern (cdr test))
-            (captured-request nil))
+            (captured-request nil)
+            (efrit-api-key "sk-test-key-for-unicode-tests-000"))
 
         (cl-letf (((symbol-function 'url-retrieve)
                    (lambda (url callback &optional cbargs silent inhibit-cookies)

@@ -35,6 +35,9 @@
 (require 'cl-lib)
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
+(require 'efrit-agent-svg-header)
+(declare-function efrit-api-stream-cancel "efrit-api-stream")
+(autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-agent-integration)
@@ -265,6 +268,8 @@
     (define-key map (kbd "C-c C-d") #'efrit-agent-collapse-all)
     (define-key map (kbd "C-c C-v") #'efrit-agent-cycle-verbosity)
     (define-key map (kbd "C-c C-o") #'efrit-agent-cycle-display-mode)
+    (define-key map (kbd "C-c C-l") #'efrit-agent-cycle-header-style)
+    (define-key map (kbd "C-c C-m") #'efrit-menu)
 
     ;; Input handling
     (define-key map (kbd "C-c C-s") #'efrit-agent-send-input)
@@ -308,6 +313,10 @@ Status is shown in the header-line at top of window.
     (efrit-agent--load-history))
   ;; Enable input mode when point moves to input region
   (add-hook 'post-command-hook #'efrit-agent--maybe-enable-input-mode nil t)
+  ;; Remember which windows follow the output before each insert, so
+  ;; streaming only scrolls those (efrit-agent--scroll-to-bottom)
+  (add-hook 'before-change-functions
+            (lambda (&rest _) (efrit-agent--note-followers)) nil t)
   ;; Save session and clean up timer when buffer is killed
   (add-hook 'kill-buffer-hook #'efrit-agent--save-session-on-kill nil t)
   (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
@@ -324,21 +333,16 @@ Status is shown in the header-line at top of window.
   (interactive)
   (if (memq efrit-agent--status '(working paused waiting))
       (progn
+        ;; Abort any in-flight streaming request first so the model
+        ;; actually stops, not just the UI
+        (when (fboundp 'efrit-api-stream-cancel)
+          (efrit-api-stream-cancel))
         (efrit-executor-cancel)
         (efrit-agent-set-status 'failed)
         ;; Update status in place: a full render here erased the
         ;; incrementally rendered conversation (ef-7t0)
         (efrit-agent--refresh-status-line))
     (message "No active session to cancel")))
-
-(defun efrit-agent-pause ()
-  "Pause the current session.
-Note: Currently Efrit sessions can only be paused by Claude
-requesting user input. Arbitrary pause/resume is not yet supported."
-  (interactive)
-  (if (eq efrit-agent--status 'working)
-      (message "Arbitrary pause not yet implemented. Sessions pause when waiting for user input.")
-    (message "Session is not currently working")))
 
 (defun efrit-agent-resume ()
   "Resume a paused/waiting session by prompting for user input.

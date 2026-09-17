@@ -367,8 +367,8 @@
         (efrit-do-error-loop-auto-complete nil)) ; Disable auto-complete
 
     ;; Simulate two tool results with same error
-    (efrit-do--error-loop-check-result "[Error: Symbol's value as variable is void: test]")
-    (let ((check (efrit-do--error-loop-check-result "[Error: Symbol's value as variable is void: test]")))
+    (efrit-do--error-loop-check-result "[Error executing (foo): Symbol's value as variable is void: test]")
+    (let ((check (efrit-do--error-loop-check-result "[Error executing (foo): Symbol's value as variable is void: test]")))
       ;; Second occurrence hits threshold - result should be modified
       (should (car check))
       (should (string-match-p "ERROR LOOP DETECTED" (cdr check))))))

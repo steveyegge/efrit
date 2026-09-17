@@ -126,11 +126,15 @@ so extra chars after are ignored (not a syntax error)."
         (should (stringp (cdr result)))))))
 
 (ert-deftest test-validate-shell-blocked-patterns ()
-  "Test validation blocks forbidden patterns."
+  "Test validation blocks forbidden patterns.
+Command substitution is blocked; plain chaining (&&, ;, |) is allowed
+by design (see `efrit-do-forbidden-shell-patterns')."
   (let ((efrit-do-shell-security-enabled t))
-    (dolist (cmd '("ls && rm" "ls ; rm" "echo $(whoami)" "echo `date`"))
+    (dolist (cmd '("echo $(whoami)" "echo `date`" "echo ${HOME}"))
       (let ((result (efrit-do--validate-shell-command cmd)))
-        (should-not (car result))))))
+        (should-not (car result))))
+    (dolist (cmd '("ls && echo ok" "ls ; echo ok" "ls | wc -l"))
+      (should (car (efrit-do--validate-shell-command cmd))))))
 
 (ert-deftest test-validate-shell-empty-command ()
   "Test validation rejects empty command."
@@ -139,14 +143,11 @@ so extra chars after are ignored (not a syntax error)."
       (should-not (car result))
       (should (string-match-p "Empty" (cdr result))))))
 
-(ert-deftest test-validate-shell-too-long ()
-  "Test validation rejects overly long commands.
-Note: whitelist check happens first, so very long commands fail that check first."
+(ert-deftest test-validate-shell-long-command-allowed ()
+  "There is no length cap; a long but whitelisted command passes."
   (let ((efrit-do-shell-security-enabled t))
-    ;; Use an allowed command that's too long
-    (let ((result (efrit-do--validate-shell-command (concat "echo " (make-string 250 ?a)))))
-      (should-not (car result))
-      (should (string-match-p "too long" (cdr result))))))
+    (should (car (efrit-do--validate-shell-command
+                  (concat "echo " (make-string 250 ?a)))))))
 
 (ert-deftest test-validate-shell-security-disabled ()
   "Test all commands allowed when security disabled."

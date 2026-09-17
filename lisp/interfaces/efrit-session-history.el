@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'iso8601)
 (require 'json)
 (require 'efrit-log)
 (require 'efrit-common)

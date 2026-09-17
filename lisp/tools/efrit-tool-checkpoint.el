@@ -23,6 +23,7 @@
 
 (require 'efrit-tool-utils)
 (require 'cl-lib)
+(require 'iso8601)
 (require 'json)
 
 ;;; Customization
@@ -34,9 +35,20 @@
   :group 'efrit-tool-utils)
 
 (defcustom efrit-checkpoint-max-age-hours 24
-  "Auto-expire checkpoints older than this many hours."
+  "Checkpoints older than this many hours are reported as expired.
+`list_checkpoints' marks them with `expired: true' and an age so the
+model (or user) can decide to delete them; nothing is removed
+automatically, since the underlying git stash may still be wanted."
   :type 'integer
   :group 'efrit-tool-utils)
+
+(defun efrit-checkpoint--age-hours (created-at)
+  "Hours since CREATED-AT (an ISO 8601 string), or nil if unparsable."
+  (when (stringp created-at)
+    (condition-case nil
+        (/ (float-time (time-since (parse-iso8601-time-string created-at)))
+           3600.0)
+      (error nil))))
 
 ;;; Registry Management
 
@@ -270,14 +282,26 @@ Returns a standard tool response with checkpoint list."
             (mapcar (lambda (entry)
                       (let ((id (car entry))
                             (meta (cdr entry)))
-                        `((checkpoint_id . ,id)
-                          (description . ,(alist-get 'description meta))
-                          (created_at . ,(alist-get 'created_at meta))
-                          (stash_ref . ,(alist-get 'stash_ref meta)))))
-                    registry)))
+                        (let* ((created (alist-get 'created_at meta))
+                               (age (efrit-checkpoint--age-hours created)))
+                          `((checkpoint_id . ,id)
+                            (description . ,(alist-get 'description meta))
+                            (created_at . ,created)
+                            (stash_ref . ,(alist-get 'stash_ref meta))
+                            ,@(when age
+                                `((age_hours . ,(/ (round (* age 10)) 10.0))
+                                  (expired . ,(if (> age efrit-checkpoint-max-age-hours)
+                                                  t :json-false))))))))
+                    registry))
+           (expired (cl-count-if (lambda (c) (eq (alist-get 'expired c) t))
+                                 checkpoints)))
       (efrit-tool-success
        `((checkpoints . ,(vconcat checkpoints))
-         (count . ,(length checkpoints)))))))
+         (count . ,(length checkpoints))
+         (expired_count . ,expired)
+         ,@(when (> expired 0)
+             `((note . ,(format "%d checkpoint(s) older than %d hours; consider delete_checkpoint"
+                                expired efrit-checkpoint-max-age-hours)))))))))
 
 ;;; Delete Checkpoint Tool
 

@@ -131,13 +131,21 @@ Handles the case where PATH equals DIRECTORY (same directory).
 Symlinks on both sides are resolved via `file-truename' before
 comparison: callers pass truename-resolved paths, so a root that
 is itself reached through a symlink (e.g. /tmp -> /private/tmp on
-macOS) must be resolved too or it never prefix-matches (ef-0cm)."
-  (let ((true-path (file-truename (expand-file-name path)))
-        (true-dir (file-name-as-directory
-                   (file-truename (expand-file-name directory)))))
-    ;; Either path is a prefix match, or they're the same directory
-    (or (string-prefix-p true-dir true-path)
-        (file-equal-p true-path (directory-file-name true-dir)))))
+macOS) must be resolved too or it never prefix-matches (ef-0cm).
+
+Remote (Tramp) paths are contained only within a root on the same
+host: the remote identities (`file-remote-p') must match exactly, so
+a local path can never satisfy a remote root or vice versa, and
+/ssh:a:/x is never inside /ssh:b:/."
+  (let ((remote-path (file-remote-p path))
+        (remote-dir (file-remote-p directory)))
+    (and (equal remote-path remote-dir)
+         (let ((true-path (file-truename (expand-file-name path)))
+               (true-dir (file-name-as-directory
+                          (file-truename (expand-file-name directory)))))
+           ;; Either path is a prefix match, or they're the same directory
+           (or (string-prefix-p true-dir true-path)
+               (file-equal-p true-path (directory-file-name true-dir)))))))
 
 (defun efrit-tool--is-sensitive-file (path)
   "Check if PATH matches any sensitive file pattern."
@@ -159,28 +167,48 @@ signals an error if the resolved path is outside project root.
 Symlinks are resolved via `file-truename' for sandbox enforcement,
 preventing escape via symlinks pointing outside the project.
 
+Tramp: when the project root is remote (e.g. /ssh:host:/src/proj),
+a plain absolute PATH such as /etc/hosts is interpreted on that
+remote host, since the model sees only host-local paths in listings
+and the system prompt.  A PATH that already carries a Tramp prefix
+is used as given.
+
 Returns a plist with:
   :path - the absolute resolved path (symlinks resolved)
   :path-relative - path relative to project root (or nil if outside)
   :project-root - the project root directory
   :is-sensitive - t if path matches sensitive file patterns
-  :outside-project - t if path is outside project root"
+  :outside-project - t if path is outside project root
+  :remote - the Tramp remote identity of :path (e.g. \"/ssh:host:\"), or nil"
   (let* ((project-root (efrit-tool--get-project-root))
+         (root-remote (file-remote-p project-root))
          (expanded (cond
                     ;; Empty or nil path -> project root
                     ((or (null path) (string-empty-p path))
                      project-root)
+                    ;; Already a remote path -> use as-is
+                    ((file-remote-p path)
+                     (expand-file-name path))
+                    ;; Absolute host-local path under a remote root ->
+                    ;; same host as the root
+                    ((and (file-name-absolute-p path) root-remote)
+                     (expand-file-name (concat root-remote path)))
                     ;; Absolute path -> use as-is
                     ((file-name-absolute-p path)
                      (expand-file-name path))
                     ;; Relative path -> resolve against project root
                     (t
                      (expand-file-name path project-root))))
+         ;; A path on a different host than the root can never be
+         ;; inside it.  Decide that before any file operation, so we
+         ;; don't open a Tramp connection to a host just to reject it.
+         (same-host (equal (file-remote-p expanded) root-remote))
          ;; Resolve symlinks for sandbox enforcement
-         (resolved (if (file-exists-p expanded)
+         (resolved (if (and same-host (file-exists-p expanded))
                        (file-truename expanded)
                      expanded))
-         (in-project (efrit-tool--path-in-directory-p resolved project-root))
+         (in-project (and same-host
+                          (efrit-tool--path-in-directory-p resolved project-root)))
          ;; Relative to the resolved root: RESOLVED has symlinks
          ;; expanded, so a raw root (e.g. /tmp/...) would yield a
          ;; ../../private/tmp/... path (ef-0cm)
@@ -200,7 +228,8 @@ Returns a plist with:
           :path-relative relative-path
           :project-root project-root
           :is-sensitive (efrit-tool--is-sensitive-file resolved)
-          :outside-project (not in-project))))
+          :outside-project (not in-project)
+          :remote (file-remote-p resolved))))
 
 ;; Define the error type
 (define-error 'efrit-sandbox-violation "Sandbox violation")
@@ -340,11 +369,58 @@ Returns a symbol: \\='git, \\='npm, \\='cargo, \\='python, \\='make, or \\='unkn
      ((file-exists-p (expand-file-name "Makefile" root)) 'make)
      (t 'unknown))))
 
+;;; Remote-aware process helpers (Tramp)
+;;
+;; Tools must reach for these instead of `call-process' /
+;; `executable-find' / `make-temp-file' so that they do the right
+;; thing when `default-directory' (normally the project root) is a
+;; Tramp path: the program then runs on the remote host, is looked
+;; up on the remote PATH, and temp files live in the remote /tmp.
+
+(defun efrit-tool-executable-find (program &optional directory)
+  "Find PROGRAM on the host that owns DIRECTORY (default `default-directory').
+Uses the remote PATH when DIRECTORY is a Tramp path."
+  (let ((default-directory (or directory default-directory)))
+    (if (file-remote-p default-directory)
+        (executable-find program t)
+      (executable-find program))))
+
+(defun efrit-tool-call-process (program &optional infile destination display &rest args)
+  "Like `call-process', but run PROGRAM on the host of `default-directory'.
+Signature and return value are identical to `call-process'; when
+`default-directory' is remote this delegates to `process-file'.
+DESTINATION may not be a remote file name; a stderr file, if given,
+must be local (as `process-file' requires)."
+  (if (file-remote-p default-directory)
+      (apply #'process-file program infile destination display args)
+    (apply #'call-process program infile destination display args)))
+
+(defun efrit-tool-make-temp-file (prefix &optional dir-flag suffix text)
+  "Like `make-temp-file', but in the temp dir of the host of `default-directory'.
+Returns a Tramp file name when `default-directory' is remote, so the
+file is visible to a remote `efrit-tool-call-process'."
+  (let ((temporary-file-directory
+         (if (file-remote-p default-directory)
+             (concat (file-remote-p default-directory)
+                     (file-name-as-directory
+                      (or (file-remote-p default-directory 'localname)
+                          "/tmp")))
+           temporary-file-directory)))
+    (if (file-remote-p default-directory)
+        ;; make-nearby-temp-file (Emacs 26+) picks the remote /tmp
+        (make-nearby-temp-file prefix dir-flag suffix)
+      (make-temp-file prefix dir-flag suffix text))))
+
+(defun efrit-tool-local-name (path)
+  "Return PATH without its Tramp prefix, e.g. \"/ssh:h:/a/b\" -> \"/a/b\".
+Use this when passing a path as an argument to a remote process."
+  (or (file-remote-p path 'localname) path))
+
 ;;; Git Utilities (for vcs tools)
 
 (defun efrit-tool-git-available-p ()
-  "Check if git is available and we're in a git repository."
-  (and (executable-find "git")
+  "Check if git is available (on the project host) and we're in a git repository."
+  (and (efrit-tool-executable-find "git" (efrit-tool--get-project-root))
        (eq (efrit-tool-detect-project-type) 'git)))
 
 (defun efrit-tool-run-git (args &optional timeout)
@@ -360,6 +436,9 @@ Returns a plist with:
   (let* ((timeout (or timeout 30))
          (default-directory (efrit-tool--get-project-root))
          (output-buffer (generate-new-buffer " *efrit-git-output*"))
+         ;; Deliberately local even for a remote project: process-file
+         ;; requires the stderr file to be on the local host, and
+         ;; Tramp copies it back.
          (stderr-file (make-temp-file "efrit-git-stderr"))
          exit-code stdout stderr result)
     (unwind-protect
@@ -369,8 +448,10 @@ Returns a plist with:
                                             :output nil
                                             :error "Git command timed out"
                                             :exit-code -1)))
+            ;; Runs on the remote host when the project root is a
+            ;; Tramp path.
             (setq exit-code
-                  (apply #'call-process "git" nil
+                  (apply #'efrit-tool-call-process "git" nil
                          (list output-buffer stderr-file) nil args))
             (setq stdout (with-current-buffer output-buffer
                           (buffer-string)))
@@ -386,6 +467,32 @@ Returns a plist with:
       (kill-buffer output-buffer)
       (when (file-exists-p stderr-file)
         (delete-file stderr-file)))))
+
+;;; Unified diff between two strings
+
+(defun efrit-tool-unified-diff (old-content new-content file-path)
+  "Return a unified diff of OLD-CONTENT -> NEW-CONTENT labelled with FILE-PATH.
+Runs the local `diff' on local temp files (the inputs are strings, so
+this is host-independent).  Returns \"\" if diff is unavailable."
+  (if (not (executable-find "diff"))
+      ""
+    (let ((old-file (make-temp-file "efrit-old-"))
+          (new-file (make-temp-file "efrit-new-"))
+          (label (file-name-nondirectory (efrit-tool-local-name file-path))))
+      (unwind-protect
+          (progn
+            (with-temp-file old-file (insert old-content))
+            (with-temp-file new-file (insert new-content))
+            (with-temp-buffer
+              ;; Force the local host even if default-directory is remote
+              (let ((default-directory temporary-file-directory))
+                (call-process "diff" nil t nil "-u"
+                              "--label" (concat "a/" label)
+                              "--label" (concat "b/" label)
+                              old-file new-file))
+              (buffer-string)))
+        (delete-file old-file)
+        (delete-file new-file)))))
 
 ;;; Binary File Detection
 

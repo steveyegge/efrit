@@ -135,9 +135,11 @@
     (test-progress-buffer-cleanup)))
 
 (ert-deftest test-progress-buffer-archive ()
-  "Test archiving a progress buffer."
+  "Test archiving a progress buffer.
+Archived buffers are killed unless `efrit-progress-keep-archived-buffers'."
   (unwind-protect
-      (let ((session-id "test-session-9"))
+      (let ((session-id "test-session-9")
+            (efrit-progress-keep-archived-buffers t))
         (efrit-progress-create-buffer session-id)
         
         ;; Verify buffer is in active registry

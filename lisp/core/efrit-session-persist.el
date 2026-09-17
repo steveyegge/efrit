@@ -186,8 +186,10 @@
     
     (condition-case err
         (progn
-          (with-temp-file file-path
-            (insert json-str))
+          ;; Sessions hold buffer text and tool output: owner-only
+          (with-file-modes #o600
+            (with-temp-file file-path
+              (insert json-str)))
           (efrit-log 'debug "Saved session %s to %s" session-id file-path)
           t)
       (error

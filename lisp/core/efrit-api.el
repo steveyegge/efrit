@@ -25,6 +25,7 @@
 (require 'url)
 (require 'cl-lib)
 (require 'efrit-common)
+(require 'efrit-log)
 
 (declare-function efrit-log "efrit-log")
 (declare-function efrit-log-debug "efrit-log")
@@ -48,15 +49,77 @@ Example: \\='(\"anthropic-version\" \"anthropic-beta\")"
   :type '(repeat string)
   :group 'efrit)
 
+(defcustom efrit-api-request-transforms nil
+  "Functions that may rewrite each outgoing request before it is sent.
+
+Each is called with one argument, a plist (:url URL :headers ALIST
+:body ALIST), and returns a plist of the same shape or nil to leave
+the request unchanged.  They run in order, after the built-in header
+handling, so they can retarget the endpoint, rename or delete body
+fields for a gateway, or swap the auth header for a freshly minted
+token.  (minuet's :transform idea.)
+
+Example -- a gateway that wants the model in the path and no
+anthropic-version header:
+
+  (add-hook \='efrit-api-request-transforms
+            (lambda (req)
+              (let* ((body (plist-get req :body))
+                     (model (cdr (assoc \"model\" body))))
+                (list :url (format \"https://gw.example.com/models/%s/messages\" model)
+                      :headers (assoc-delete-all \"anthropic-version\"
+                                                 (copy-alist (plist-get req :headers)))
+                      :body body))))"
+  :type '(repeat function)
+  :group 'efrit)
+
+(defcustom efrit-api-extra-body nil
+  "Alist merged into the top level of every request body.
+Keys are strings as the API spells them; an entry here overrides the
+value efrit would otherwise send.  Use it for parameters efrit has no
+option for yet, e.g.
+
+  \='((\"service_tier\" . \"auto\")
+    (\"thinking\" . ((\"type\" . \"enabled\") (\"budget_tokens\" . 4096))))
+
+Set a value to `:delete' to remove a key efrit sends by default."
+  :type '(alist :key-type string :value-type sexp)
+  :group 'efrit)
+
+(defun efrit-api-apply-extra-body (body)
+  "Return BODY (an alist) with `efrit-api-extra-body' merged in."
+  (if (null efrit-api-extra-body)
+      body
+    (let ((out (copy-alist body)))
+      (dolist (pair efrit-api-extra-body)
+        (setq out (assoc-delete-all (car pair) out))
+        (unless (eq (cdr pair) :delete)
+          (setq out (append out (list (cons (car pair) (cdr pair)))))))
+      out)))
+
+(defun efrit-api-apply-transforms (url headers body)
+  "Run `efrit-api-request-transforms' over URL, HEADERS and BODY.
+Returns a plist (:url :headers :body).  A transform that signals is
+logged and skipped, so one bad hook cannot take every request down."
+  (let ((req (list :url url :headers headers :body body)))
+    (dolist (fn efrit-api-request-transforms)
+      (condition-case err
+          (when-let* ((new (funcall fn req)))
+            (setq req (list :url (or (plist-get new :url) (plist-get req :url))
+                            :headers (or (plist-get new :headers) (plist-get req :headers))
+                            :body (or (plist-get new :body) (plist-get req :body)))))
+        (error
+         (efrit-log 'warn "efrit-api-request-transforms: %S signalled: %s"
+                    fn (error-message-string err)))))
+    req))
+
 (defun efrit-api-build-headers (api-key)
   "Build HTTP headers for API requests with API-KEY.
 Applies header customization from `efrit-api-custom-headers' and
 `efrit-api-excluded-headers'."
-  (efrit-common--validate-api-key api-key)
-  (let ((default-headers `(("x-api-key" . ,api-key)
-                           ("anthropic-version" . ,efrit-common-api-version)
-                           ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")
-                           ("content-type" . "application/json"))))
+  ;; efrit-common-build-headers validates the key and picks the auth
+  ;; scheme (x-api-key vs. Authorization: Bearer for proxies).
+  (let ((default-headers (efrit-common-build-headers api-key)))
     ;; Remove excluded headers
     (when efrit-api-excluded-headers
       (setq default-headers
@@ -132,11 +195,15 @@ Calls CALLBACK with (RESPONSE) on success.
 Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
   (condition-case err
       (let* ((api-key (efrit-common-get-api-key))
+             (req (efrit-api-apply-transforms
+                   (efrit-common-get-api-url)
+                   (efrit-api-build-headers api-key)
+                   (efrit-api-apply-extra-body request-data)))
              (url-request-method "POST")
-             (url-request-extra-headers (efrit-api-build-headers api-key))
-             (url-request-data (efrit-api-encode-request request-data)))
+             (url-request-extra-headers (plist-get req :headers))
+             (url-request-data (efrit-api-encode-request (plist-get req :body))))
         (url-retrieve
-         (efrit-common-get-api-url)
+         (plist-get req :url)
          (lambda (status)
            ;; The callback can change the current buffer (tools may call
            ;; pop-to-buffer etc.), so capture the HTTP response buffer now
@@ -172,11 +239,15 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
 TIMEOUT is optional timeout in seconds (default 60).
 Returns the parsed response hash-table, or signals an error."
   (let* ((api-key (efrit-common-get-api-key))
+         (req (efrit-api-apply-transforms
+               (efrit-common-get-api-url)
+               (efrit-api-build-headers api-key)
+               (efrit-api-apply-extra-body request-data)))
          (url-request-method "POST")
-         (url-request-extra-headers (efrit-api-build-headers api-key))
-         (url-request-data (efrit-api-encode-request request-data))
+         (url-request-extra-headers (plist-get req :headers))
+         (url-request-data (efrit-api-encode-request (plist-get req :body)))
          (response-buffer (url-retrieve-synchronously
-                           (efrit-common-get-api-url)
+                           (plist-get req :url)
                            nil t (or timeout 60))))
     (unless response-buffer
       (error "Failed to get response from API (timeout or connection error)"))

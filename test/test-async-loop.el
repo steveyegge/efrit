@@ -14,6 +14,19 @@
 
 ;;; Test Fixtures
 
+;; The loop fires a real API request the moment it starts; without a
+;; key that fails synchronously and tears the loop entry down again,
+;; so the state assertions below saw an empty table (ef-3ou).  Park
+;; the request for the whole file instead: the callback is never
+;; invoked, leaving each loop in its "request in flight" state.
+(defun test-async-loop--parked-api-call (_session _messages _callback)
+  "Stand-in for `efrit-do-async--api-call' that never completes."
+  nil)
+
+(advice-add 'efrit-do-async--api-call :override
+            #'test-async-loop--parked-api-call
+            '((name . test-async-loop-park)))
+
 (defun test-async-loop-cleanup ()
   "Clean up test async loop state."
   (clrhash efrit-do-async--loops)
@@ -116,8 +129,9 @@
       (let ((session (efrit-session-create "test-session-8" "test")))
         (let ((session-id (efrit-do-async-loop session nil)))
           (let ((loop-state (gethash session-id efrit-do-async--loops)))
-            ;; Iteration count should be 0 initially
-            (should (= (nth 2 loop-state) 0)))))
+            ;; The first request has been sent, so one iteration is
+            ;; in flight (the engine increments before sending)
+            (should (= (nth 2 loop-state) 1)))))
     (test-async-loop-cleanup)))
 
 (ert-deftest test-async-loop-on-api-error ()

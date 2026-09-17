@@ -33,6 +33,7 @@
 (declare-function efrit-do--start-async-session "efrit-do")
 (declare-function efrit-session-id "efrit-session")
 (declare-function efrit-agent--begin-session "efrit-agent-core")
+(declare-function efrit-agent-toggle-expand "efrit-agent")
 
 ;;; REPL Session State
 ;;
@@ -236,15 +237,20 @@ Key bindings:
     (efrit-agent--setup-completion)))
 
 (defun efrit-agent-input-send-or-newline ()
-  "Send input if on a single line, otherwise insert newline.
-Use S-RET to always insert a newline."
+  "RET, context-sensitive.
+In the conversation region: toggle the tool call at point, as the
+help text has always promised.  In the input region: send the input
+if it is a single line, otherwise insert a newline.  Use S-RET to
+always insert a newline."
   (interactive)
-  (let ((input (efrit-agent--get-input)))
-    (if (and input (not (string-match-p "\n" input)))
-        ;; Single line - send it
-        (efrit-agent-input-send)
-      ;; Multi-line or empty - insert newline
-      (newline))))
+  (if (not (efrit-agent--in-input-region-p))
+      (efrit-agent-toggle-expand)
+    (let ((input (efrit-agent--get-input)))
+      (if (and input (not (string-match-p "\n" input)))
+          ;; Single line - send it
+          (efrit-agent-input-send)
+        ;; Multi-line or empty - insert newline
+        (newline)))))
 
 (defun efrit-agent-input-send ()
   "Send the current input using the persistent REPL session model.
@@ -514,10 +520,16 @@ Called after sending input to exit history navigation mode."
   "Save global history to `efrit-agent-history-file'."
   (when (and efrit-agent-history-file efrit-agent--global-history)
     (condition-case err
-        (with-temp-file efrit-agent-history-file
-          (insert ";; Efrit Agent Input History\n")
-          (insert ";; Do not edit manually\n")
-          (pp efrit-agent--global-history (current-buffer)))
+        (with-file-modes #o600
+          (with-temp-file efrit-agent-history-file
+            (insert ";; Efrit Agent Input History\n")
+            (insert ";; Do not edit manually\n")
+            ;; Plain strings only: text properties would round-trip
+            ;; through `read' and could carry keymap/display props
+            (let ((print-length nil) (print-level nil))
+              (pp (mapcar (lambda (h) (if (stringp h) (substring-no-properties h) h))
+                          efrit-agent--global-history)
+                  (current-buffer)))))
       (error
        (message "Failed to save efrit-agent history: %s" (error-message-string err))))))
 
@@ -532,7 +544,14 @@ Called after sending input to exit history navigation mode."
           ;; Skip comment lines
           (while (looking-at "^;")
             (forward-line 1))
-          (setq efrit-agent--global-history (read (current-buffer))))
+          (let ((data (read (current-buffer))))
+            ;; Accept only a list of strings, stripped of any properties
+            ;; a tampered file might carry (keymap, display, read-only)
+            (setq efrit-agent--global-history
+                  (if (listp data)
+                      (delq nil (mapcar (lambda (h) (and (stringp h) (substring-no-properties h)))
+                                        data))
+                    nil))))
       (error
        (message "Failed to load efrit-agent history: %s" (error-message-string err))
        (setq efrit-agent--global-history nil)))))

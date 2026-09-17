@@ -56,6 +56,22 @@ Set to nil (the default) to use the centralized configuration."
                  (string :tag "Legacy full URL override"))
   :group 'efrit)
 
+(defcustom efrit-api-auth-scheme 'x-api-key
+  "How the API key is presented to the endpoint.
+
+- `x-api-key': Anthropic's native scheme; the key is sent in an
+  `x-api-key' header and must look like an Anthropic key (`sk-...').
+- `bearer': send `Authorization: Bearer KEY' and skip Anthropic key
+  format validation.  Use this for LLM proxies (LiteLLM, Bifrost,
+  OpenRouter, ...) that expose the Anthropic Messages API behind
+  their own token scheme.  Point `efrit-api-base-url' at the proxy's
+  Anthropic-compatible base.
+
+Custom headers from `efrit-api-custom-headers' still override either."
+  :type '(choice (const :tag "x-api-key (Anthropic)" x-api-key)
+                 (const :tag "Authorization: Bearer (proxies)" bearer))
+  :group 'efrit)
+
 (defcustom efrit-api-auth-source-host "api.anthropic.com"
   "Host to use for auth-source lookup of API key."
   :type 'string
@@ -67,13 +83,17 @@ Set to nil (the default) to use the centralized configuration."
   :group 'efrit)
 
 (defun efrit-common--validate-api-key (key)
-  "Validate that KEY looks like a valid Anthropic API key.
-Returns t if valid, signals error if not."
+  "Validate that KEY is usable under `efrit-api-auth-scheme'.
+Returns t if valid, signals error if not.  Under `x-api-key' the key
+must look like an Anthropic key; under `bearer' any non-empty string
+is accepted, since proxy tokens have arbitrary formats."
   (when (or (not (stringp key))
-            (string-empty-p key)
-            (< (length key) 20)
-            (not (string-prefix-p "sk-" key)))
-    (error "Invalid API key format. Anthropic keys should start with 'sk-' and be at least 20 characters"))
+            (string-empty-p key))
+    (error "API key is empty or not a string"))
+  (when (and (eq efrit-api-auth-scheme 'x-api-key)
+             (or (< (length key) 20)
+                 (not (string-prefix-p "sk-" key))))
+    (error "Invalid API key format. Anthropic keys should start with 'sk-' and be at least 20 characters (set `efrit-api-auth-scheme' to `bearer' for proxy tokens)"))
   t)
 
 (defun efrit-common--sanitize-key-for-logging (key)
@@ -172,15 +192,21 @@ Validates key format and throws error if not found."
                  (message "⚠️  WARNING: API key stored directly in variable (security risk)"))
                efrit-api-key)
               
-              ;; Symbol naming an environment variable (recommended)
-              ((and (symbolp efrit-api-key) efrit-api-key)
-               (or (getenv (symbol-name efrit-api-key))
-                   (error "Environment variable %s not set" efrit-api-key)))
-              
-              ;; Function that returns API key (advanced)
+              ;; Function that returns the key.  Checked BEFORE the
+              ;; env-var case: a named function like #\='my-key-fn is
+              ;; also a symbol, and used to be looked up as an
+              ;; environment variable.
               ((functionp efrit-api-key)
                (or (funcall efrit-api-key)
-                   (error "API key function returned nil")))
+                   (error "API key function %s returned nil"
+                          (if (symbolp efrit-api-key) efrit-api-key "(lambda)"))))
+
+              ;; Symbol naming an environment variable
+              ((and (symbolp efrit-api-key) efrit-api-key)
+               (or (getenv (symbol-name efrit-api-key))
+                   (error "Environment variable %s not set%s" efrit-api-key
+                          (if (fboundp efrit-api-key) ""
+                            " (and it is not a function either)"))))
               
               ;; Try ANTHROPIC_API_KEY environment variable (fallback)
               ((getenv "ANTHROPIC_API_KEY"))
@@ -207,28 +233,36 @@ Validates key format and throws error if not found."
 (defun efrit-common-get-base-url ()
   "Get the configured base URL for API endpoints.
 Handles both static strings and dynamic functions."
-  (cond
-   ((stringp efrit-api-base-url) efrit-api-base-url)
-   ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
-   (t "https://api.anthropic.com")))
+  ;; Proxies often hand out bases with a trailing slash
+  ;; (e.g. "https://gw.example.com/anthropic/"); strip it so the
+  ;; "/v1/messages" suffix doesn't produce "//".
+  (string-remove-suffix
+   "/"
+   (cond
+    ((stringp efrit-api-base-url) efrit-api-base-url)
+    ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
+    (t "https://api.anthropic.com"))))
 
 (defun efrit-common-get-api-url ()
   "Get the full API URL for messages endpoint."
   (concat (efrit-common-get-base-url) "/v1/messages"))
 
-(defconst efrit-common-api-version "2023-06-01" 
+(defconst efrit-common-api-version "2023-06-01"
   "Anthropic API version for all requests.")
+
+(defun efrit-common-auth-header (api-key)
+  "Return the (NAME . VALUE) auth header for API-KEY per `efrit-api-auth-scheme'."
+  (pcase efrit-api-auth-scheme
+    ('bearer (cons "authorization" (concat "Bearer " api-key)))
+    (_ (cons "x-api-key" api-key))))
 
 (defun efrit-common-build-headers (api-key)
   "Build standard HTTP headers using API-KEY with security validation."
   ;; Validate the API key before using it
   (efrit-common--validate-api-key api-key)
-  
-  ;; Build headers (API key will not be logged due to validation above)
   `(("Content-Type" . "application/json")
     ("anthropic-version" . ,efrit-common-api-version)
-    ("x-api-key" . ,api-key)
-    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")))
+    ,(efrit-common-auth-header api-key)))
 
 ;;; Error Handling
 
@@ -390,81 +424,92 @@ Example usage:
            (message "%s\nRecovery: %s" msg recovery-hint))
          (cons nil msg))))))
 
-;;; Health Check
+;;; Output truncation, warn-once, templates, syntax check
 
-;;;###autoload
-(defun efrit-doctor ()
-  "Run health checks on Efrit configuration and environment.
-Validates: API key, data directories, module loading, and basic connectivity."
-  (interactive)
-  (require 'efrit-config)
-  (let ((results '())
-        (all-ok t))
+(defun efrit-truncate-output (text max-chars &optional keep)
+  "Truncate TEXT to about MAX-CHARS characters for a tool result.
+KEEP is `tail' (default), `head', or `both'.  Tool output usually
+ends with the interesting part (the failing test, the error), so the
+default keeps the tail.  A marker says how much was dropped."
+  (let ((len (length text)))
+    (if (<= len max-chars)
+        text
+      (pcase (or keep 'tail)
+        ('head (concat (substring text 0 max-chars)
+                       (format "\n... [%d more chars truncated]" (- len max-chars))))
+        ('both (let ((half (/ max-chars 2)))
+                 (concat (substring text 0 half)
+                         (format "\n... [%d chars omitted] ...\n" (- len max-chars))
+                         (substring text (- len half)))))
+        (_ (concat (format "[first %d chars omitted] ...\n" (- len max-chars))
+                   (substring text (- len max-chars))))))))
 
-    ;; Check 1: API key
-    (message "Checking API key...")
-    (let ((key-check (efrit--safe-execute
-                      (lambda () (efrit-common-get-api-key))
-                      "API key check")))
-      (if (car key-check)
-          (push "✓ API key is configured and accessible" results)
-        (setq all-ok nil)
-        (push (format "✗ API key check failed: %s" (cdr key-check)) results)))
+(defvar efrit--warned (make-hash-table :test 'equal)
+  "Keys already warned about, for `efrit-warn-once'.")
 
-    ;; Check 2: Data directory
-    (message "Checking data directory...")
-    (let ((dir efrit-data-directory))
-      (if (and dir (file-directory-p (expand-file-name dir)))
-          (progn
-            (push (format "✓ Data directory exists: %s" dir) results)
-            ;; Check write permissions
-            (if (file-writable-p (expand-file-name dir))
-                (push "✓ Data directory is writable" results)
-              (setq all-ok nil)
-              (push (format "✗ Data directory not writable: %s" dir) results)))
-        (setq all-ok nil)
-        (push (format "✗ Data directory missing: %s" dir) results)))
+(defun efrit-warn-once (key format-string &rest args)
+  "Display a warning once per KEY (and message text) per session.
+Re-warns only if the message changes, so a flapping condition doesn't
+spam but a *different* failure is still shown.  Returns non-nil if a
+warning was displayed."
+  (let* ((msg (apply #'format format-string args))
+         (prev (gethash key efrit--warned)))
+    (unless (equal prev msg)
+      (puthash key msg efrit--warned)
+      (display-warning 'efrit msg :warning)
+      t)))
 
-    ;; Check 3: Required modules
-    (message "Checking required modules...")
-    (let ((required-modules '(efrit-config efrit-tools efrit-session)))
-      (dolist (mod required-modules)
-        (if (featurep mod)
-            (push (format "✓ Module loaded: %s" mod) results)
-          (setq all-ok nil)
-          (push (format "✗ Module not loaded: %s" mod) results))))
+(defun efrit-expand-template (template lookup)
+  "Expand {{{:key}}} placeholders in TEMPLATE using LOOKUP.
+LOOKUP is a function from the keyword (e.g. :key) to a string, a
+symbol whose value is a string, a function returning a string, or
+nil.  A nil slot expands to the empty string.  Single pass with
+`string-search': replacement text is inserted verbatim, never
+rescanned, and never passed through a regexp replacement, so `\\1',
+`\\&' and backslashes in file contents cannot corrupt the result.
+\(minuet's expander.)"
+  (let ((out nil) (pos 0) (len (length template)))
+    (while (< pos len)
+      (let ((start (string-search "{{{" template pos)))
+        (if (not start)
+            (progn (push (substring template pos) out) (setq pos len))
+          (let ((end (string-search "}}}" template (+ start 3))))
+            (if (not end)
+                (progn (push (substring template pos) out) (setq pos len))
+              (push (substring template pos start) out)
+              (let* ((name (substring template (+ start 3) end))
+                     (key (intern (if (string-prefix-p ":" name) name (concat ":" name))))
+                     (raw (funcall lookup key))
+                     (val (cond ((null raw) "")
+                                ((stringp raw) raw)
+                                ((functionp raw) (funcall raw))
+                                ((and (symbolp raw) (boundp raw)) (symbol-value raw))
+                                (t raw))))
+                (unless (stringp val)
+                  (signal 'wrong-type-argument (list 'stringp val key)))
+                (push val out))
+              (setq pos (+ end 3)))))))
+    (apply #'concat (nreverse out))))
 
-    ;; Check 4: API endpoint
-    (message "Checking API endpoint...")
-    (let ((endpoint (efrit-common-get-api-url)))
-      (if endpoint
-          (push (format "✓ API endpoint configured: %s" endpoint) results)
-        (setq all-ok nil)
-        (push "✗ API endpoint not configured" results)))
+(defun efrit-lisp-syntax-problem (text &optional mode)
+  "Return a description of an unbalanced-paren/string problem in TEXT, or nil.
+Checks in a temp buffer under MODE (default `emacs-lisp-mode') using
+the mode's syntax table, so quotes and comments are respected.
+Use after writing Lisp so the model gets \"you produced unbalanced
+code at line N\" instead of a later load error."
+  (with-temp-buffer
+    (insert text)
+    (condition-case nil (funcall (or mode #'emacs-lisp-mode)) (error nil))
+    (condition-case err
+        (progn (check-parens) nil)
+      (user-error
+       ;; check-parens leaves point at the problem
+       (format "%s at line %d, column %d"
+               (error-message-string err)
+               (line-number-at-pos) (current-column)))
+      (error (error-message-string err)))))
 
-    ;; Display results
-    (with-current-buffer (get-buffer-create "*efrit-doctor*")
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert "Efrit Health Check\n")
-        (insert "==================\n\n")
-        (dolist (result (reverse results))
-          (insert result "\n"))
-        (insert "\n")
-        (if all-ok
-            (insert "Overall Status: ✓ All checks passed\n")
-          (insert "Overall Status: ✗ Some checks failed\n")
-          (insert "\nRecommended actions:\n")
-          (insert "- Set API key via ANTHROPIC_API_KEY environment variable\n")
-          (insert "- Or configure efrit-api-key in your init file\n")
-          (insert "- Run M-x efrit-config--ensure-directories to create directories\n"))
-        (goto-char (point-min))
-        (view-mode))
-      (display-buffer (current-buffer)))
-
-    (if all-ok
-        (message "Efrit health check: All OK")
-      (message "Efrit health check: Some issues found (see *efrit-doctor* buffer)"))))
+;;; Health check lives in efrit-doctor.el (M-x efrit-doctor)
 
 (provide 'efrit-common)
 

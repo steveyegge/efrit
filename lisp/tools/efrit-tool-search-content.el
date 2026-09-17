@@ -66,18 +66,24 @@ warning telling Claude to narrow the scope."
 
 ;;; Tool Detection
 
-(defvar efrit-tool-search--ripgrep-available nil
-  "Cache for ripgrep availability check.")
+(defvar efrit-tool-search--ripgrep-available (make-hash-table :test 'equal)
+  "Cache for ripgrep availability, keyed by host (`file-remote-p' or nil).")
 
-(defun efrit-tool-search--ripgrep-available-p ()
-  "Check if ripgrep (rg) is available."
-  (or efrit-tool-search--ripgrep-available
-      (setq efrit-tool-search--ripgrep-available
-            (and (executable-find "rg") t))))
+(defun efrit-tool-search--ripgrep-available-p (&optional directory)
+  "Check if ripgrep (rg) is available on the host of DIRECTORY.
+DIRECTORY defaults to `default-directory'; for a Tramp path the
+remote PATH is consulted.  Results are cached per host."
+  (let* ((dir (or directory default-directory))
+         (host (or (file-remote-p dir) "local"))
+         (cached (gethash host efrit-tool-search--ripgrep-available 'unknown)))
+    (if (eq cached 'unknown)
+        (puthash host (and (efrit-tool-executable-find "rg" dir) t)
+                 efrit-tool-search--ripgrep-available)
+      cached)))
 
-(defun efrit-tool-search--grep-available-p ()
-  "Check if grep is available."
-  (and (executable-find "grep") t))
+(defun efrit-tool-search--grep-available-p (&optional directory)
+  "Check if grep is available on the host of DIRECTORY."
+  (and (efrit-tool-executable-find "grep" (or directory default-directory)) t))
 
 ;;; Ripgrep Implementation
 
@@ -188,8 +194,10 @@ Returns a plist with :matches and :files-searched."
          exit-code output)
     (unwind-protect
         (progn
+          ;; default-directory is PATH, so on a remote root this runs
+          ;; rg on the remote host over "."
           (setq exit-code
-                (apply #'call-process "rg" nil output-buffer nil args))
+                (apply #'efrit-tool-call-process "rg" nil output-buffer nil args))
           (setq output (with-current-buffer output-buffer (buffer-string)))
           (if (memq exit-code '(0 1))  ; 0=matches, 1=no matches
               (efrit-tool-search--parse-rg-output output path max-results)
@@ -222,11 +230,11 @@ a :warnings list telling Claude to narrow the scope."
          ;; project root: gating on the project root and running
          ;; ls-files there returned garbage paths (and silent zero
          ;; matches) whenever path pointed elsewhere (ef-b10b).
-         (files (or (when (and (executable-find "git")
+         (files (or (when (and (efrit-tool-executable-find "git" path)
                                (locate-dominating-file path ".git"))
                       (let ((default-directory path))
                         (with-temp-buffer
-                          (when (eq 0 (call-process "git" nil t nil "ls-files"))
+                          (when (eq 0 (efrit-tool-call-process "git" nil t nil "ls-files"))
                             (mapcar (lambda (f) (expand-file-name f path))
                                     (split-string (buffer-string) "\n" t))))))
                     ;; Never descend into VCS/build/dependency dirs: on a
@@ -351,7 +359,7 @@ Returns a standard tool response with search results."
 
         ;; Run search - request extra to support offset
         (let* ((fetch-count (+ max-results offset 1))  ; +1 to detect if more available
-               (result (if (efrit-tool-search--ripgrep-available-p)
+               (result (if (efrit-tool-search--ripgrep-available-p path)
                            (efrit-tool-search--rg-search
                             pattern path file-pattern context-lines
                             fetch-count case-sensitive is-regex)
@@ -382,7 +390,7 @@ Returns a standard tool response with search results."
                ,@(when has-more
                    `((continuation_hint . ,(format "Use offset=%d to get more"
                                                    (+ offset (length returned-matches))))))
-               (search_tool . ,(if (efrit-tool-search--ripgrep-available-p)
+               (search_tool . ,(if (efrit-tool-search--ripgrep-available-p path)
                                    "ripgrep" "elisp")))
              warnings)))))))
 

@@ -55,42 +55,8 @@ The file path is appended to the command."
 
 ;;; Diff Generation
 
-(defun efrit-tool-format-file--generate-diff (old-content new-content file-path)
-  "Generate a unified diff between OLD-CONTENT and NEW-CONTENT.
-FILE-PATH is used for the diff header."
-  (let ((old-file (make-temp-file "efrit-old-"))
-        (new-file (make-temp-file "efrit-new-"))
-        diff-output)
-    (unwind-protect
-        (progn
-          (with-temp-file old-file
-            (insert old-content))
-          (with-temp-file new-file
-            (insert new-content))
-          (with-temp-buffer
-            (call-process "diff" nil t nil
-                          "-u"
-                          "--label" (format "a/%s" (file-name-nondirectory file-path))
-                          "--label" (format "b/%s" (file-name-nondirectory file-path))
-                          old-file new-file)
-            (setq diff-output (buffer-string))))
-      (delete-file old-file)
-      (delete-file new-file))
-    diff-output))
-
-;;; Formatter Detection
-
-(defun efrit-tool-format-file--find-formatter (file-path)
-  "Find the appropriate formatter for FILE-PATH.
-Returns (COMMAND . ARGS) or nil if no formatter found."
-  (let ((filename (file-name-nondirectory file-path)))
-    (cl-loop for (pattern . cmd) in efrit-tool-format-file-formatters
-             when (string-match-p pattern filename)
-             return cmd)))
-
-(defun efrit-tool-format-file--elisp-file-p (file-path)
-  "Return non-nil if FILE-PATH is an Emacs Lisp file."
-  (string-match-p "\\.el$" file-path))
+(defalias 'efrit-tool-format-file--generate-diff #'efrit-tool-unified-diff
+  "Obsolete: use `efrit-tool-unified-diff'.")
 
 ;;; Elisp Formatting
 
@@ -110,15 +76,22 @@ Returns the formatted content string."
 FORMATTER is (COMMAND . ARGS).
 Returns (success . error-message)."
   (let* ((cmd (car formatter))
-         (args (append (cdr formatter) (list file-path)))
+         ;; Run on the file's host: a remote file gets the remote
+         ;; formatter, with the host-local path as its argument.
+         (default-directory (file-name-directory file-path))
+         (args (append (cdr formatter)
+                       (list (efrit-tool-local-name file-path))))
          (exit-code nil)
          (output nil))
     ;; Check if formatter is available
-    (if (not (executable-find cmd))
-        (cons nil (format "Formatter '%s' not found in PATH" cmd))
+    (if (not (efrit-tool-executable-find cmd))
+        (cons nil (format "Formatter '%s' not found in PATH%s" cmd
+                          (if (file-remote-p default-directory)
+                              (format " on %s" (file-remote-p default-directory))
+                            "")))
       ;; Run the formatter
       (with-temp-buffer
-        (setq exit-code (apply #'call-process cmd nil t nil args))
+        (setq exit-code (apply #'efrit-tool-call-process cmd nil t nil args))
         (setq output (buffer-string)))
       (if (= exit-code 0)
           (cons t nil)

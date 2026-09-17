@@ -115,25 +115,26 @@
 
 (ert-deftest test-common-truncate-short-string ()
   "Test that short strings are not truncated."
-  (should (equal (efrit-common-truncate-string "hello" 10) "hello")))
+  (should (equal (efrit-truncate-string "hello" 10) "hello")))
 
 (ert-deftest test-common-truncate-long-string ()
   "Test truncation of long strings."
-  (let ((result (efrit-common-truncate-string "hello world" 8)))
+  (let ((result (efrit-truncate-string "hello world" 8)))
     (should (string-suffix-p "..." result))
-    ;; Default behavior: 8 chars + "..."
-    (should (= (length result) 11))))
+    ;; MAX-LENGTH bounds the result, ellipsis included
+    (should (= (length result) 8))
+    (should (string= result "hello..."))))
 
 (ert-deftest test-common-truncate-ellipsis-in-max ()
   "Test truncation with ellipsis included in max length."
-  (let ((result (efrit-common-truncate-string "hello world" 8 t)))
+  (let ((result (efrit-truncate-string "hello world" 8 t)))
     (should (string-suffix-p "..." result))
     ;; With ellipsis-in-max: total length should be 8
     (should (= (length result) 8))))
 
 (ert-deftest test-common-truncate-exact-length ()
   "Test string at exact max length."
-  (should (equal (efrit-common-truncate-string "hello" 5) "hello")))
+  (should (equal (efrit-truncate-string "hello" 5) "hello")))
 
 ;;; Unicode Escaping Tests
 

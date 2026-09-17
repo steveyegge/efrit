@@ -543,6 +543,12 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                       ("overwrite" . (("type" . "boolean")
                                                       ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))))
                       ("required" . ["path" "content"]))))
+   (("name" . "editor_state")
+    ("description" . "Snapshot of where the user is in Emacs: current buffer, file, mode, point (line/column), active region, diagnostics on the current line, project root, other visible buffers. The same block is prepended automatically to each user message; call this to refresh it after your own edits moved point or changed buffers, or to inspect a specific buffer.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("buffer" . (("type" . "string")
+                                                    ("description" . "Buffer name to inspect. Default: the buffer the user is working in (not the efrit buffer).")))))
+                      ("required" . []))))
    (("name" . "file_info")
     ("description" . "Get metadata about files without reading contents. Useful for checking existence, size, type before reading.
 

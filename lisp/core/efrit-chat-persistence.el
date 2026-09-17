@@ -150,8 +150,9 @@ Only saves if there are messages and auto-save is enabled."
       (condition-case err
           (progn
             (let ((coding-system-for-write 'utf-8))
-              (with-temp-file session-file
-                (insert (json-encode session-data))))
+              (with-file-modes #o600
+                (with-temp-file session-file
+                  (insert (json-encode session-data)))))
             (setq efrit-chat--session-modified nil)
             (efrit-log 'debug "Saved chat session: %s (%d messages)"
                        efrit-chat--session-id

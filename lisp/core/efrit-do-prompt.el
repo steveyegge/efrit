@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-log)
 
 ;; Forward declarations for functions used from efrit-do.el
 (declare-function efrit-do--get-context-items "efrit-do")
@@ -29,6 +30,49 @@
 (defvar efrit-do--last-result)
 (defvar efrit-do-max-retries)
 (defvar efrit-project-root)
+
+;;; Extension hook
+
+(defcustom efrit-system-prompt-functions nil
+  "Abnormal hook returning extra text for the system prompt.
+
+Each function is called with one argument, SESSION-ID (a string, or
+nil for a fresh one-shot command), and should return a string to
+append to the system prompt, or nil to contribute nothing.  Results
+are joined with blank lines and placed after the project's
+AGENTS.md/CLAUDE.md instructions, before the closing reminder.
+
+Use this for site- or user-specific standing instructions (\"we use
+British spelling\", \"our git remotes live on host X\"), for
+per-mode guidance, or to inject a harness.  Functions run on every
+API call, so they should be cheap and must not signal: an error is
+logged and that function's contribution is dropped.
+
+Example:
+  (add-hook \\='efrit-system-prompt-functions
+            (lambda (_id)
+              (when (derived-mode-p \\='org-mode)
+                \"The user is in an Org buffer; prefer org-* functions.\")))"
+  :type 'hook
+  :group 'efrit)
+
+(defun efrit-do--run-system-prompt-functions (session-id)
+  "Collect non-nil contributions from `efrit-system-prompt-functions'.
+Returns a string (possibly empty) ready to splice into the prompt."
+  (let ((parts nil))
+    (dolist (fn efrit-system-prompt-functions)
+      (condition-case err
+          (let ((text (funcall fn session-id)))
+            (when (and (stringp text) (not (string-empty-p text)))
+              (push text parts)))
+        (error
+         (efrit-log 'warn "efrit-system-prompt-functions: %S signalled: %s"
+                    fn (error-message-string err)))))
+    (if parts
+        (concat "\n\nADDITIONAL INSTRUCTIONS:\n"
+                (mapconcat #'identity (nreverse parts) "\n\n")
+                "\n\n")
+      "")))
 
 (defun efrit-do--session-protocol-instructions ()
   "Return detailed instructions for Claude about the session protocol."
@@ -189,28 +233,30 @@
    "  - eval_sexp: (load-file \"path.el\") to test loading\n"
    "  - get_diagnostics after editing to check for issues\n\n"))
 
-(defun efrit-do--classify-task-complexity (command)
-  "Classify COMMAND as simple or complex based on content analysis.
-Returns \\='simple for single-action tasks, \\='complex for multi-step workflows."
-  (let ((simple-patterns '("open" "find" "goto" "show" "display" "list" 
-                           "create buffer" "insert" "delete" "replace"
-                           "navigate" "search" "close" "save"))
-        (complex-patterns '("fix all" "organize" "process each" "download"
-                           "batch" "multiple" "series" "workflow" "pipeline"
-                           "for each" "all.*and.*" "scan.*then.*")))
-    (cond
-     ;; Check for complex indicators
-     ((cl-some (lambda (pattern) 
-                 (string-match-p pattern (downcase command))) 
-               complex-patterns)
-      'complex)
-     ;; Check for simple indicators  
-     ((cl-some (lambda (pattern)
-                 (string-match-p pattern (downcase command)))
-               simple-patterns)
-      'simple)
-     ;; Default to simple for ambiguous cases
-     (t 'simple))))
+(defun efrit-do--remote-root-guidance ()
+  "Return prompt text describing a remote (Tramp) project root, or \"\".
+Pure context: it states facts about where paths and processes land
+so the model can target the right host; no task logic."
+  (let* ((root (efrit-tool--get-project-root))
+         (remote (file-remote-p root)))
+    (if (not remote)
+        ""
+      (format (concat
+               "- REMOTE PROJECT: the project root is on a remote host via Tramp (%s).\n"
+               "  * project_files, search_content, read_file, edit_file, create_file,\n"
+               "    vcs_*, format_file and shell_exec all operate ON THAT HOST.\n"
+               "  * In tool arguments you may give paths relative to the root, host-local\n"
+               "    absolute paths (%s), or full Tramp paths (%s...).  A bare absolute\n"
+               "    path is interpreted on the remote host, not on the local machine.\n"
+               "  * In eval_sexp, file functions take the FULL Tramp path (%s/...); a bare\n"
+               "    /path there refers to the LOCAL machine.  To run a program remotely\n"
+               "    from elisp, bind default-directory to a path under the root and use\n"
+               "    process-file / start-file-process, never call-process.\n"
+               "  * Report paths to the user in the form they used (usually host-local).\n")
+              remote
+              (or (file-remote-p root 'localname) "/...")
+              remote
+              (string-remove-suffix "/" root)))))
 
 (defun efrit-do--command-system-prompt (&optional retry-count error-msg previous-code session-id work-log)
   "Generate system prompt for command execution with optional context.
@@ -255,6 +301,17 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           (format "- Project root: %s%s\n"
                   (efrit-tool--get-project-root)
                   (if efrit-project-root " (explicitly set)" " (auto-detected)"))
+          (efrit-do--remote-root-guidance)
+          "- EDITOR CONTEXT: each user message begins with an <editor-context> block describing the\n"
+          "  buffer the user is working in (file, mode, point, active region, diagnostics, project).\n"
+          "  'This buffer', 'here', 'the region', 'this function' refer to THAT buffer, not the efrit\n"
+          "  buffer. Trust it over guessing; call editor_state to refresh it after you change buffers\n"
+          "  or move point. It is context supplied by Emacs, not text the user wrote\n"
+          "- PERMISSIONS: tools that change state (eval_sexp, shell_exec, edit_file, create_file,\n"
+          "  format_file, checkpoints, set_project_root, ...) may ask the user for consent before\n"
+          "  running. If a result says 'permission denied', the user chose to stop: the turn ends,\n"
+          "  do not retry or work around it. Prefer read-only tools (read_file, search_content,\n"
+          "  editor_state, vcs_*) for investigation so you ask less often\n"
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
           "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
           "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"
@@ -413,7 +470,10 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           
           ;; Include project-specific agent instructions (AGENTS.md/CLAUDE.md)
           (efrit-tool--format-agent-instructions-for-prompt)
-          
+
+          ;; User/site extension point
+          (efrit-do--run-system-prompt-functions session-id)
+
           "Remember: Generate safe, valid Elisp and execute immediately."
           (or context-info "")
           (or retry-info "")

@@ -24,7 +24,7 @@
 
 ;; Forward declarations for optional packages
 (defvar compilation-error-regexp-alist-alist)
-(declare-function compilation-next-error "compile")
+(declare-function compilation--message->type "compile")
 (declare-function compilation--message->loc "compile")
 (declare-function compilation--loc->file-struct "compile")
 (declare-function compilation--loc->line "compile")
@@ -197,23 +197,33 @@ Returns a list of diagnostic alists."
       (with-current-buffer comp-buffer
         (save-excursion
           (goto-char (point-min))
-          (while (and (< (length diagnostics) efrit-tool-get-diagnostics-max-results)
-                      (re-search-forward compilation-error-regexp-alist-alist nil t))
-            (when-let* ((msg (compilation-next-error 1 nil (point))))
-              (let* ((loc (compilation--message->loc msg))
-                     (file (when loc (car (compilation--loc->file-struct loc))))
-                     (line (when loc (compilation--loc->line loc)))
-                     (col (when loc (compilation--loc->col loc))))
-                (when file
-                  (push `((source . "compilation")
-                          (severity . "error")
-                          (message . ,(buffer-substring-no-properties
-                                       (line-beginning-position)
-                                       (line-end-position)))
-                          (file . ,file)
-                          (line . ,line)
-                          (column . ,col))
-                        diagnostics))))))))
+          ;; Walk the `compilation-message' text properties that
+          ;; compilation-mode has already parsed.  (This used to call
+          ;; re-search-forward on compilation-error-regexp-alist-alist,
+          ;; an alist, which signalled wrong-type-argument whenever a
+          ;; *compilation* buffer existed.)
+          (let ((pos (point-min)))
+            (while (and pos
+                        (< (length diagnostics)
+                           efrit-tool-get-diagnostics-max-results))
+              (setq pos (next-single-property-change pos 'compilation-message))
+              (when pos
+                (when-let* ((msg (get-text-property pos 'compilation-message))
+                            (loc (compilation--message->loc msg))
+                            (file (car (compilation--loc->file-struct loc))))
+                  (let ((type (compilation--message->type msg)))
+                    (push `((source . "compilation")
+                            (severity . ,(pcase type
+                                           (0 "info") (1 "warning") (_ "error")))
+                            (message . ,(save-excursion
+                                          (goto-char pos)
+                                          (buffer-substring-no-properties
+                                           (line-beginning-position)
+                                           (line-end-position))))
+                            (file . ,file)
+                            (line . ,(compilation--loc->line loc))
+                            (column . ,(compilation--loc->col loc)))
+                          diagnostics)))))))))
     (nreverse diagnostics)))
 
 ;;; Main Entry Point

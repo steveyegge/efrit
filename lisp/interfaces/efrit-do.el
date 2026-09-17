@@ -391,7 +391,7 @@ The RESPONSE-BUFFER is automatically killed after extraction."
 ;;; Command execution
 ;; NOTE: efrit-do--command-examples, efrit-do--command-formatting-tools,
 ;; efrit-do--command-common-tasks, efrit-do--command-project-workflow,
-;; efrit-do--classify-task-complexity, and efrit-do--command-system-prompt
+;; and efrit-do--command-system-prompt
 ;; have been moved to efrit-do-prompt.el
 
 (defun efrit-do--format-result (command result)

@@ -21,6 +21,8 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-file-io)
+(require 'efrit-common)
 (require 'cl-lib)
 (require 'diff)
 (require 'efrit-tool-undo-edit)
@@ -39,28 +41,8 @@
 
 ;;; Diff Generation
 
-(defun efrit-tool-edit-file--generate-diff (old-content new-content file-path)
-  "Generate a unified diff between OLD-CONTENT and NEW-CONTENT.
-FILE-PATH is used for the diff header."
-  (let ((old-file (make-temp-file "efrit-old-"))
-        (new-file (make-temp-file "efrit-new-"))
-        diff-output)
-    (unwind-protect
-        (progn
-          (with-temp-file old-file
-            (insert old-content))
-          (with-temp-file new-file
-            (insert new-content))
-          (with-temp-buffer
-            (call-process "diff" nil t nil
-                          "-u"
-                          "--label" (format "a/%s" (file-name-nondirectory file-path))
-                          "--label" (format "b/%s" (file-name-nondirectory file-path))
-                          old-file new-file)
-            (setq diff-output (buffer-string))))
-      (delete-file old-file)
-      (delete-file new-file))
-    diff-output))
+(define-obsolete-function-alias 'efrit-tool-edit-file--generate-diff
+  #'efrit-tool-unified-diff "0.5.0")
 
 ;;; Main Implementation
 
@@ -123,10 +105,8 @@ Returns a standard tool response with diff showing changes."
         (when (efrit-tool-binary-file-p path 8192)
           (signal 'user-error (list "Cannot edit binary file" path)))
 
-        ;; Read the file content
-        (let* ((original-content (with-temp-buffer
-                                   (insert-file-contents path)
-                                   (buffer-string)))
+        ;; Read what the user sees (visiting buffer if any, else disk)
+        (let* ((original-content (efrit-file-read-string path))
                (match-count (with-temp-buffer
                               (insert original-content)
                               (goto-char (point-min))
@@ -150,42 +130,49 @@ Returns a standard tool response with diff showing changes."
                     (list (format "old_str appears %d times in file. Use replace_all=true to replace all, or add more context to make it unique."
                                   match-count)))))
 
-          ;; Create backup if enabled
-          (when efrit-tool-edit-file-backup
+          ;; Create backup if enabled (disk copy; a visiting buffer's
+          ;; unsaved state is what efrit-file-replace operates on)
+          (when (and efrit-tool-edit-file-backup (file-exists-p path))
             (let ((backup-path (concat path "~")))
               (copy-file path backup-path t)))
 
-          ;; Perform the replacement
-          (let ((new-content (with-temp-buffer
-                               (insert original-content)
-                               (goto-char (point-min))
-                               (if replace-all
-                                   (while (search-forward old-str nil t)
-                                     (replace-match new-str t t))
-                                 (when (search-forward old-str nil t)
-                                   (replace-match new-str t t)))
-                               (buffer-string))))
+          ;; Apply.  efrit-file-replace re-verifies that the content is
+          ;; still ORIGINAL-CONTENT right before changing anything: the
+          ;; user may have typed, or a permission prompt may have
+          ;; blocked, between our read above and now.  When a buffer
+          ;; visits the file the change is made there, in one undo
+          ;; group, and saved.
+          (let* ((result (efrit-file-replace path old-str new-str replace-all
+                                             original-content))
+                 (new-content (plist-get result :content))
+                 (diff-output (efrit-tool-unified-diff
+                               original-content new-content path)))
 
-            ;; Generate diff before saving
-            (let ((diff-output (efrit-tool-edit-file--generate-diff
-                                original-content new-content path)))
+            ;; Register with undo system
+            (efrit-undo-edit--register-edit path original-content)
+        ;; Balance check for Lisp targets: tell the model now, not at load
+        (when (string-match-p "\\.el\\'" path)
+          (when-let* ((problem (efrit-lisp-syntax-problem new-content)))
+            (push (format "Lisp syntax problem in the written file: %s. Fix it before evaluating." problem)
+                  warnings)))
 
-              ;; Write the new content
-               (with-temp-file path
-                 (insert new-content))
+            (when (eq (plist-get result :via) 'buffer)
+              (push (format "Applied in the live buffer visiting %s%s"
+                            path-relative
+                            (if (plist-get result :saved) " and saved"
+                              " (buffer left modified, not saved)"))
+                    warnings))
 
-               ;; Register with undo system
-               (efrit-undo-edit--register-edit path original-content)
-
-               ;; Return success with diff
-               (efrit-tool-success
-                `((path . ,path)
-                  (path_relative . ,path-relative)
-                  (replacements . ,match-count)
-                  (diff . ,diff-output)
-                  (old_size . ,(length original-content))
-                  (new_size . ,(length new-content)))
-                warnings))))))))
+            ;; Return success with diff
+            (efrit-tool-success
+             `((path . ,path)
+               (path_relative . ,path-relative)
+               (replacements . ,(plist-get result :count))
+               (applied_via . ,(symbol-name (plist-get result :via)))
+               (diff . ,diff-output)
+               (old_size . ,(length original-content))
+               (new_size . ,(length new-content)))
+             warnings)))))))
 
 (provide 'efrit-tool-edit-file)
 

@@ -38,7 +38,7 @@
 (ert-deftest test-vcs-blame-basic ()
   "Test basic blame on a tracked file."
   ;; Use CLAUDE.md which should exist in this repo
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 1)
                                           (end_line . 3)))))
     (should (test-vcs-blame--success-p response))
@@ -55,7 +55,7 @@
 
 (ert-deftest test-vcs-blame-line-numbers ()
   "Test that line numbers are correct."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 5)
                                           (end_line . 7)))))
     (should (test-vcs-blame--success-p response))
@@ -67,7 +67,7 @@
 
 (ert-deftest test-vcs-blame-commit-hash-format ()
   "Test that commit hashes have correct format."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 1)
                                           (end_line . 1)))))
     (should (test-vcs-blame--success-p response))
@@ -83,7 +83,7 @@
 
 (ert-deftest test-vcs-blame-date-format ()
   "Test that dates are in ISO 8601 format."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 1)
                                           (end_line . 1)))))
     (should (test-vcs-blame--success-p response))
@@ -109,7 +109,7 @@
 
 (ert-deftest test-vcs-blame-invalid-line-range ()
   "Test error when start_line > end_line."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 10)
                                           (end_line . 5)))))
     (should-not (test-vcs-blame--success-p response))
@@ -117,7 +117,7 @@
 
 (ert-deftest test-vcs-blame-negative-line ()
   "Test error when line number is negative."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . -1)))))
     (should-not (test-vcs-blame--success-p response))
     (should (alist-get 'error response))))
@@ -126,12 +126,12 @@
 
 (ert-deftest test-vcs-blame-result-metadata ()
   "Test that result includes correct metadata."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 1)
                                           (end_line . 5)))))
     (should (test-vcs-blame--success-p response))
     (let ((result (test-vcs-blame--get-result response)))
-      (should (equal (alist-get 'file result) "CLAUDE.md"))
+      (should (equal (alist-get 'file result) "README.md"))
       (should (= (alist-get 'line_count result) 5))
       (should (= (alist-get 'start_line result) 1))
       (should (= (alist-get 'end_line result) 5)))))
@@ -150,7 +150,7 @@
 
 (ert-deftest test-vcs-blame-start-only ()
   "Test blaming with only start_line (to end of file)."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 100)))))
     (should (test-vcs-blame--success-p response))
     (let ((result (test-vcs-blame--get-result response)))
@@ -162,7 +162,7 @@
 
 (ert-deftest test-vcs-blame-json-encodable ()
   "Test that response is JSON encodable."
-  (let ((response (efrit-tool-vcs-blame '((path . "CLAUDE.md")
+  (let ((response (efrit-tool-vcs-blame '((path . "README.md")
                                           (start_line . 1)
                                           (end_line . 5)))))
     (should (stringp (json-encode response)))))

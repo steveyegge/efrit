@@ -93,12 +93,17 @@ git clone https://github.com/steveyegge/efrit.git
 cd efrit
 ```
 
-Add to `~/.emacs.d/init.el`:
+Generate the autoloads once (`make autoloads`), then add to
+`~/.emacs.d/init.el`:
 
 ```elisp
 (add-to-list 'load-path "/path/to/efrit/lisp")
-(require 'efrit)
+(load "efrit-autoloads")   ; every command available lazily, incl. efrit-doctor
 ```
+
+or, to load everything eagerly, `(require 'efrit)` instead of the
+`load`.  With `use-package :load-path`, put the `load` in `:init`
+(see `docs/examples/proxy-config.el`).
 
 ### API Key Configuration
 

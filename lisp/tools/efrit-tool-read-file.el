@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-file-io)
 (require 'cl-lib)
 
 ;;; Customization
@@ -91,15 +92,29 @@ Returns the coding system to use."
 ENCODING is the coding system to use.
 MAX-SIZE limits total bytes read.
 Returns a plist with :content, :lines-read, :total-lines, :truncated."
-  (let ((coding-system-for-read encoding)
-        content lines-read total-lines truncated)
+  (let* ((coding-system-for-read encoding)
+         ;; A visiting buffer's text (unsaved edits included) is what
+         ;; the user sees and what edit_file will operate on; read
+         ;; that rather than the stale disk copy.
+         (vbuf (efrit-file-visiting-buffer path))
+         (live (and vbuf (buffer-modified-p vbuf)))
+         content lines-read total-lines truncated)
+    (cl-flet ((insert-source (&optional beg end)
+                (if vbuf
+                    (let ((text (with-current-buffer vbuf
+                                  (save-restriction (widen)
+                                    (buffer-substring-no-properties (point-min) (point-max))))))
+                      (insert (if (and beg end)
+                                  (substring text (min beg (length text)) (min end (length text)))
+                                text)))
+                  (insert-file-contents path nil beg end))))
     (with-temp-buffer
       (condition-case err
           (progn
             (if (and start end)
                 ;; Line range specified - read efficiently
                 (progn
-                  (insert-file-contents path nil nil nil)
+                  (insert-source)
                   (setq total-lines (count-lines (point-min) (point-max)))
                   (goto-char (point-min))
                   (forward-line (1- start))
@@ -110,23 +125,25 @@ Returns a plist with :content, :lines-read, :total-lines, :truncated."
               ;; No range - read with size limit
               (if (> (file-attribute-size (file-attributes path)) max-size)
                   (progn
-                    (insert-file-contents path nil 0 max-size)
+                    (insert-source 0 max-size)
                     (setq truncated t)
                     ;; Count total lines in file
                     (setq total-lines
                           (with-temp-buffer
-                            (insert-file-contents path)
+                            (insert-source)
                             (count-lines (point-min) (point-max)))))
-                (insert-file-contents path)
+                (insert-source)
                 (setq total-lines (count-lines (point-min) (point-max))))
               (setq content (buffer-string))
               (setq lines-read (format "1-%d" (count-lines (point-min) (point-max))))))
         (error
-         (signal 'file-error (list "Error reading file" (error-message-string err)))))
+         (signal 'file-error (list "Error reading file" (error-message-string err))))))
       (list :content content
             :lines-read lines-read
             :total-lines total-lines
-            :truncated truncated))))
+            :truncated truncated
+            :from-buffer (and vbuf t)
+            :unsaved live))))
 
 (defun efrit-tool-read-file (args)
   "Read a file and return its contents with metadata.
@@ -197,6 +214,9 @@ Returns a standard tool response with file contents."
               (push (format "File truncated at %dKB. Use start_line/end_line for specific sections."
                             (/ max-size 1000))
                     warnings))
+            (when (plist-get read-result :unsaved)
+              (push "Content is from the live buffer, which has UNSAVED changes; the file on disk differs. edit_file operates on the buffer."
+                    warnings))
 
             (efrit-tool-success
              `((path . ,path)
@@ -208,7 +228,8 @@ Returns a standard tool response with file contents."
                           (file-attribute-modification-time attrs)))
                (total_lines . ,(plist-get read-result :total-lines))
                (lines_returned . ,(plist-get read-result :lines-read))
-               (truncated . ,(if (plist-get read-result :truncated) t :json-false)))
+               (truncated . ,(if (plist-get read-result :truncated) t :json-false))
+               (from_live_buffer . ,(if (plist-get read-result :from-buffer) t :json-false)))
              warnings)))))))
 
 (provide 'efrit-tool-read-file)

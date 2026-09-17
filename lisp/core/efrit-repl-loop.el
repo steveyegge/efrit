@@ -33,8 +33,12 @@
 (require 'efrit-config)
 (require 'efrit-repl-session)
 (require 'efrit-loop)
+(require 'efrit-context-sources)
+(require 'efrit-events)
+(require 'efrit-models)
 
 (declare-function efrit-agent-set-status "efrit-agent")
+(defvar efrit-default-model)
 (declare-function efrit-agent--add-error-message "efrit-agent-render")
 
 ;;; Customization
@@ -111,6 +115,11 @@ requiring an active efrit-do session (ef-dcn).")
 Adds the user message to the session and runs the agentic loop.
 Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
 
+An editor-context snapshot (`efrit-context-sources') of the buffer
+the user is working in is taken now, at submit time, and prepended to
+the copy of USER-INPUT sent to the API; the conversation shows the
+plain input.
+
 Unlike \\='efrit-do-async-loop\\=', this does not complete the session.
 Instead, it transitions to idle state, preserving conversation context
 for the next input.
@@ -123,11 +132,20 @@ Returns the session ID."
         (efrit-log 'warn "REPL session %s already working, ignoring input" session-id)
         (user-error "Session is already processing a request"))
 
-      ;; Add user message to session
-      (efrit-repl-session-add-user-message session user-input)
+      ;; Add user message to session, with the editor snapshot for the API
+      (efrit-repl-session-add-user-message
+       session user-input
+       (condition-case err
+           (efrit-context-wrap-user-input user-input)
+         (error
+          (efrit-log 'warn "REPL session %s: context snapshot failed: %s"
+                     session-id (error-message-string err))
+          nil)))
 
       ;; Begin the turn
       (efrit-repl-session-begin-turn session)
+      (efrit-publish 'turn-start `((:session-id . ,session-id)
+                                   (:input . ,user-input)))
 
       ;; Update agent buffer status
       (when (fboundp 'efrit-agent-set-status)
@@ -179,11 +197,29 @@ CALLBACK is (lambda (response error) ...) called when complete."
         (setf (efrit-repl-session-buffer session) nil)))))
 
 (defun efrit-repl-loop--on-api-error (session error)
-  "Handle API ERROR for REPL SESSION."
-  (efrit-log 'error "REPL session %s: API error: %s"
-             (efrit-repl-session-id session) error)
-  (efrit-repl-loop--display-error session (format "%s" error))
-  (efrit-repl-loop--end-turn session "api-error"))
+  "Handle API ERROR for REPL SESSION.
+A cancelled streaming request arrives here as \"interrupted\" and is
+a user action, not a failure."
+  (if (equal error "interrupted")
+      (progn
+        (efrit-log 'info "REPL session %s: request cancelled by user"
+                   (efrit-repl-session-id session))
+        (efrit-repl-loop--end-turn session "interrupted"))
+    (efrit-log 'error "REPL session %s: API error: %s"
+               (efrit-repl-session-id session) error)
+    (efrit-repl-loop--display-error session (efrit-repl-loop--explain-api-error error))
+    (efrit-repl-loop--end-turn session "api-error")))
+
+(defun efrit-repl-loop--explain-api-error (error)
+  "Return ERROR as a string, with a next step appended when we know one."
+  (let ((msg (format "%s" error)))
+    (cond
+     ((efrit-models-model-error-p msg)
+      (format "%s\n\nThe endpoint does not serve model %s.  Run M-x efrit-select-model (C-u to probe candidates) or C-u M-x efrit-doctor."
+              msg efrit-default-model))
+     ((string-match-p "401\\|authentication\\|Unauthorized" msg)
+      (format "%s\n\nCredentials were rejected.  If the key is minted per session it may have expired; refresh it and run M-x efrit-doctor." msg))
+     (t msg))))
 
 (defun efrit-repl-loop--finish (session stop-reason error-message
                                         _completion-message)
@@ -230,6 +266,7 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
        (cond
         ((equal stop-reason "waiting-for-user") 'waiting)
         ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
+        ((equal stop-reason "interrupted") 'interrupted)
         (t 'failed))))
 
     ;; Remove from active loops

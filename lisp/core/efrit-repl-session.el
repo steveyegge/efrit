@@ -137,11 +137,15 @@ Optional PROJECT-ROOT associates the session with a project."
 
 ;;; Conversation Management
 
-(defun efrit-repl-session-add-user-message (session content)
+(defun efrit-repl-session-add-user-message (session content &optional api-content)
   "Add a user message to SESSION's conversation.
-Updates both human-readable conversation and API messages."
+CONTENT is what the user typed and is stored in the human-readable
+conversation.  API-CONTENT, when non-nil, is what is actually sent to
+Claude in its place -- typically CONTENT with an editor-context block
+prepended (see `efrit-context-wrap-user-input')."
   (when (and session content (not (string-empty-p content)))
-    (let ((timestamp (current-time)))
+    (let ((timestamp (current-time))
+          (api-content (or api-content content)))
       ;; Update human-readable conversation
       (setf (efrit-repl-session-conversation session)
             (append (efrit-repl-session-conversation session)
@@ -152,11 +156,11 @@ Updates both human-readable conversation and API messages."
       (setf (efrit-repl-session-api-messages session)
             (append (efrit-repl-session-api-messages session)
                     (list `((role . "user")
-                            (content . ,content)))))
+                            (content . ,api-content)))))
       ;; Track tokens
       (efrit-budget-record-usage (efrit-repl-session-budget session)
                                  'user-message
-                                 (efrit-budget-estimate-tokens content))
+                                 (efrit-budget-estimate-tokens api-content))
       ;; Update activity timestamp
       (setf (efrit-repl-session-last-activity session) timestamp)
       (efrit-log 'debug "REPL session %s: added user message (%d chars)"

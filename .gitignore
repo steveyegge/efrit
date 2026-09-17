@@ -41,3 +41,4 @@ mcp/node_modules/
 package-lock.json
 mcp/package-lock.json
 .beads/interactions.jsonl
+lisp/efrit-autoloads.el

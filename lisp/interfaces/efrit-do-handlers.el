@@ -98,6 +98,8 @@
 (declare-function efrit-tool-beads-close "efrit-tool-beads")
 (declare-function efrit-tool-beads-list "efrit-tool-beads")
 (declare-function efrit-tool-beads-show "efrit-tool-beads")
+(declare-function efrit-context-snapshot "efrit-context-sources")
+(declare-function efrit-context-target-buffer "efrit-context-sources")
 
 ;; TODO struct accessors and state now come from efrit-todo.el
 ;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
@@ -116,6 +118,11 @@ Recommended to keep enabled for safety."
 (defcustom efrit-do-glob-files-max-results 1000
   "Maximum number of files to return from glob_files.
 Prevents runaway searches from overwhelming the system."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-shell-output-max 8000
+  "Characters of shell_exec output returned to the model; the tail is kept."
   :type 'integer
   :group 'efrit-do)
 
@@ -358,12 +365,19 @@ than TIMEOUT seconds.  `shell-command-to-string' wrapped in
 blocks inside `call-process'.  This loop checks the clock between
 `accept-process-output' calls instead."
   (with-temp-buffer
-    (let ((proc (make-process :name "efrit-shell-exec"
-                              :buffer (current-buffer)
-                              :command (list shell-file-name
-                                             shell-command-switch command)
-                              :connection-type 'pipe))
-          (deadline (+ (float-time) timeout)))
+    ;; Run in the project root, on its host: for a Tramp root
+    ;; `start-file-process' spawns the shell remotely (efrit-tramp).
+    (let* ((default-directory (efrit-tool--get-project-root))
+           (proc (if (file-remote-p default-directory)
+                     (start-file-process "efrit-shell-exec" (current-buffer)
+                                         shell-file-name shell-command-switch
+                                         command)
+                   (make-process :name "efrit-shell-exec"
+                                 :buffer (current-buffer)
+                                 :command (list shell-file-name
+                                                shell-command-switch command)
+                                 :connection-type 'pipe)))
+           (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
       (while (process-live-p proc)
         (accept-process-output proc 0.2)
@@ -387,11 +401,13 @@ Returns output or security error."
                                   input-str efrit-do-shell-timeout))
                    (end-time (current-time))
                    (duration (float-time (time-subtract end-time start-time))))
-              (format "\n[Executed: %s]\n[Duration: %.2fs]\n[Result: %s]"
-                      input-str duration
-                      (if (> (length shell-result) 1000)
-                          (concat (substring shell-result 0 1000) "\n... (output truncated)")
-                        shell-result)))
+              (format "\n[Executed: %s]%s\n[Duration: %.2fs]\n[Result: %s]"
+                      input-str
+                      (let ((remote (file-remote-p (efrit-tool--get-project-root))))
+                        (if remote (format "\n[On host: %s]" remote) ""))
+                      duration
+                      ;; Keep the tail: that's where the error is
+                      (efrit-truncate-output shell-result efrit-do-shell-output-max 'tail)))
           (efrit-shell-timeout
            (format "\n[Shell command killed after exceeding the %d second timeout: %s]"
                    efrit-do-shell-timeout input-str))
@@ -1032,6 +1048,19 @@ TOOL-INPUT contains buffer name to get info about."
       (let* ((buffer (gethash "buffer" tool-input))
              (args `((buffer . ,buffer))))
         (format "\n[%s]" (efrit-tool-buffer-info args)))))
+
+(defun efrit-do--handle-editor-state (tool-input)
+  "Handle editor_state: return the editor-context snapshot.
+TOOL-INPUT may name a BUFFER; otherwise the user's working buffer is
+used (see `efrit-context-target-buffer')."
+  (require 'efrit-context-sources)
+  (let* ((name (and (hash-table-p tool-input) (gethash "buffer" tool-input)))
+         (buf (if (and name (not (string-empty-p name)))
+                  (or (get-buffer name)
+                      (error "No buffer named %s" name))
+                (efrit-context-target-buffer))))
+    (or (efrit-context-snapshot buf)
+        "<editor-context>\n(no context sources enabled)\n</editor-context>")))
 
 (defun efrit-do--handle-get-context-alias (_tool-input)
   "Alias handler for get_context.
