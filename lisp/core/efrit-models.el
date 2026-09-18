@@ -39,9 +39,11 @@
 (require 'json)
 (require 'url)
 (require 'efrit-common)
+(require 'efrit-log)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
+(declare-function efrit-api-describe-failure "efrit-api")
 (declare-function efrit-api-cacheable-system "efrit-api")
 (defvar efrit-default-model)
 (defvar efrit-api-prompt-caching)
@@ -106,12 +108,17 @@ Synchronous; waits at most TIMEOUT (default 10) seconds.  Never
 signals: a missing route, auth failure or parse failure yields nil so
 callers fall back to `efrit-models-fallback'."
   (require 'efrit-api)
-  (condition-case nil
+  (condition-case err
       (let* ((url-request-method "GET")
              (url-request-extra-headers
               (efrit-api-build-headers (efrit-common-get-api-key)))
              (buf (url-retrieve-synchronously (efrit-models--models-url)
                                               t nil (or timeout 10))))
+        (unless buf
+          (efrit-log 'info "%s"
+                     (efrit-api-describe-failure
+                      (format "no response within %ds; using efrit-models-fallback" (or timeout 10))
+                      (efrit-models--models-url) "-" "url-retrieve (sync)" "listing models")))
         (when buf
           (unwind-protect
               (with-current-buffer buf
@@ -121,7 +128,11 @@ callers fall back to `efrit-models-fallback'."
                   (efrit-models--parse-list
                    (decode-coding-region (point) (point-max) 'utf-8 t))))
             (kill-buffer buf))))
-    (error nil)))
+    (error
+     (efrit-log 'info "%s" (efrit-api-describe-failure
+                            (format "%s; using efrit-models-fallback" (error-message-string err))
+                            (efrit-models--models-url) "-" "url-retrieve (sync)" "listing models"))
+     nil)))
 
 (defun efrit-models-candidates ()
   "Model ids to offer: the endpoint's list if it has one, else the fallback.

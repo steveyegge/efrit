@@ -60,24 +60,56 @@ window are cleaned up either way."
         (ignore-errors (quit-window nil w)))
       (kill-buffer buf))))
 
+(define-derived-mode efrit-preview-mode special-mode "Efrit-Preview"
+  "Read-only popup for previews and details.
+\\<special-mode-map>\\[quit-window] dismisses it and removes the window."
+  (setq buffer-read-only t))
+
+(defvar efrit-preview-keys-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") #'quit-window)
+    map)
+  "Keys layered on any preview whose major mode lacks a quit binding.
+`diff-mode' and other non-special modes get `q' this way; modes that
+already bind it (special-mode descendants) win because the composed
+map puts the mode map first.")
+
 (defun efrit-show-preview (name text &optional mode)
-  "Display TEXT in a preview buffer NAME in a window fitted to its size.
-MODE is an optional major mode (e.g. `diff-mode').  Returns the window.
-The buffer is read-only and reused across calls."
+  "Display TEXT in a popup buffer NAME, in a window fitted to its size.
+MODE is an optional major mode (e.g. `diff-mode'); without it the
+buffer is in `efrit-preview-mode'.  Either way the buffer is
+read-only and `q' dismisses it: the window is deleted, not left
+showing another buffer, because it is displayed as a popup with
+`quit-restore' set by `display-buffer'.  Returns the window.  The
+buffer is reused across calls."
   (let ((buf (get-buffer-create name)))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert text)
         (goto-char (point-min)))
-      (when (and mode (fboundp mode) (not (eq major-mode mode)))
-        (condition-case nil (funcall mode) (error nil)))
+      (let ((wanted (if (and mode (fboundp mode)) mode #'efrit-preview-mode)))
+        (unless (eq major-mode wanted)
+          (condition-case nil (funcall wanted) (error (efrit-preview-mode)))))
+      (unless (derived-mode-p 'special-mode)
+        (use-local-map (make-composed-keymap (current-local-map) efrit-preview-keys-map)))
       (setq buffer-read-only t))
-    (let ((win (display-buffer buf '((display-buffer-at-bottom)
-                                     (window-height . fit-window-to-buffer)))))
+    (let ((win (display-buffer
+                buf
+                '((display-buffer-reuse-window display-buffer-at-bottom)
+                  (window-height . fit-window-to-buffer)
+                  (dedicated . t)))))
       (when (window-live-p win)
         (fit-window-to-buffer win (/ (frame-height) 2) 4))
       win)))
+
+(defun efrit-show-popup (name text &optional mode)
+  "Like `efrit-show-preview' but select the popup so `q' works at once.
+For popups the user reads and dismisses (details, listings), not for
+previews shown beside a prompt that is still reading keys."
+  (let ((win (efrit-show-preview name text mode)))
+    (when (window-live-p win) (select-window win))
+    win))
 
 (defun efrit-fence-for (text)
   "Return a backtick fence longer than any run of backticks in TEXT.

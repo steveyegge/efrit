@@ -33,6 +33,8 @@
 (require 'cl-lib)
 (require 'url-parse)
 (require 'efrit-config)
+(declare-function efrit-sandbox-check "efrit-sandbox")
+(defvar efrit-sandbox-enabled)
 
 ;;; Customization
 
@@ -107,9 +109,13 @@ Returns the expanded absolute path."
     ;; Fallback to default-directory
     (t default-directory))))
 
+;;;###autoload
 (defun efrit-set-project-root (path)
-  "Set `efrit-project-root' to PATH.
+  "Set `efrit-project-root' to PATH (interactively: read a directory).
+The sandbox is keyed on this root: reads inside it are allowed by
+default, and per-project grants live in its .efrit/sandbox.json.
 Returns the normalized path, or nil if PATH is invalid."
+  (interactive "DProject root for efrit: ")
   (let ((expanded (expand-file-name path)))
     (if (file-directory-p expanded)
         (progn
@@ -154,15 +160,24 @@ a local path can never satisfy a remote root or vice versa, and
                (string-match-p pattern path-str))
              efrit-sensitive-file-patterns)))
 
-(defun efrit-resolve-path (path &optional allow-outside)
+(defun efrit-resolve-path (path &optional access tool)
   "Resolve PATH relative to project root with sandbox enforcement.
 
 If PATH is absolute, use as-is (with sandbox check).
 If PATH is relative, resolve against project root.
 If PATH is nil or empty, return project root.
 
-When `efrit-project-sandbox' is non-nil and ALLOW-OUTSIDE is nil,
-signals an error if the resolved path is outside project root.
+ACCESS is `read' (default) or `write': the capability the caller
+needs on the resolved path.  TOOL names the caller for the prompt.
+The scope sandbox (`efrit-sandbox-check') decides: inside the project
+root, reads are allowed by default and writes ask; outside it, both
+ask.  A refusal signals `efrit-sandbox-denied'.  For compatibility,
+ACCESS may also be the legacy ALLOW-OUTSIDE flag t, meaning `read'
+with the old prefix check skipped.
+
+When `efrit-sandbox-enabled' is nil the legacy behaviour applies:
+`efrit-project-sandbox' non-nil signals `efrit-sandbox-violation'
+for paths outside the root.
 
 Symlinks are resolved via `file-truename' for sandbox enforcement,
 preventing escape via symlinks pointing outside the project.
@@ -216,13 +231,23 @@ Returns a plist with:
                           (file-relative-name resolved
                                               (file-truename project-root)))))
 
-    ;; Sandbox enforcement
-    (when (and efrit-project-sandbox
-               (not allow-outside)
-               (not in-project))
-      (signal 'efrit-sandbox-violation
-              (list (format "Path '%s' is outside project root '%s'"
-                           path project-root))))
+    ;; Sandbox enforcement.  The scope sandbox subsumes the old
+    ;; prefix check when enabled; otherwise the prefix check stands.
+    (let ((cap (if (eq access 'write) 'write 'read))
+          (legacy-allow-outside (eq access t)))
+      (if (bound-and-true-p efrit-sandbox-enabled)
+          ;; The detail is the exact path the tool asked for; the
+          ;; request's target may be wider (its directory), and the
+          ;; prompt should show both
+          (efrit-sandbox-check cap resolved tool
+                               (format "%s %s" (if (eq cap 'write) "write" "read")
+                                       (abbreviate-file-name resolved)))
+        (when (and efrit-project-sandbox
+                   (not legacy-allow-outside)
+                   (not in-project))
+          (signal 'efrit-sandbox-violation
+                  (list (format "Path '%s' is outside project root '%s'"
+                               path project-root))))))
 
     (list :path resolved
           :path-relative relative-path
@@ -234,10 +259,10 @@ Returns a plist with:
 ;; Define the error type
 (define-error 'efrit-sandbox-violation "Sandbox violation")
 
-(defun efrit-resolve-path-simple (path &optional allow-outside)
+(defun efrit-resolve-path-simple (path &optional access tool)
   "Simplified path resolution - returns just the absolute path string.
-See `efrit-resolve-path' for full details."
-  (plist-get (efrit-resolve-path path allow-outside) :path))
+See `efrit-resolve-path' for ACCESS and TOOL."
+  (plist-get (efrit-resolve-path path access tool) :path))
 
 ;;; Response Building
 
@@ -418,13 +443,29 @@ Use this when passing a path as an argument to a remote process."
 
 ;;; Git Utilities (for vcs tools)
 
+(defvar efrit-tool-git-directory nil
+  "Directory the git tools operate in for the current tool call, or nil.
+A VCS tool binds this to the path it resolved (and the sandbox
+checked); `efrit-tool-run-git' and `efrit-tool-git-available-p' use it
+instead of the project root.  Before this, the `path' argument was
+checked and then ignored, so `vcs_status' on / ran in the project.")
+
+(defun efrit-tool-git-directory ()
+  "The directory git commands run in: the bound override or the project root."
+  (or efrit-tool-git-directory (efrit-tool--get-project-root)))
+
 (defun efrit-tool-git-available-p ()
-  "Check if git is available (on the project host) and we're in a git repository."
-  (and (efrit-tool-executable-find "git" (efrit-tool--get-project-root))
-       (eq (efrit-tool-detect-project-type) 'git)))
+  "Non-nil if git exists on the target host and `efrit-tool-git-directory' is in a repository.
+Uses `git rev-parse', which is what the question means: the directory
+may be anywhere inside a work tree, not only its root."
+  (let ((default-directory (efrit-tool-git-directory)))
+    (and (efrit-tool-executable-find "git" default-directory)
+         (eq 0 (ignore-errors
+                 (efrit-tool-call-process "git" nil nil nil
+                                          "rev-parse" "--is-inside-work-tree"))))))
 
 (defun efrit-tool-run-git (args &optional timeout)
-  "Run git command with ARGS and return output.
+  "Run git command with ARGS in `efrit-tool-git-directory' and return output.
 ARGS should be a list of command-line arguments.
 TIMEOUT defaults to 30 seconds.
 
@@ -434,7 +475,7 @@ Returns a plist with:
   :error - stderr as string (if failed)
   :exit-code - the exit code"
   (let* ((timeout (or timeout 30))
-         (default-directory (efrit-tool--get-project-root))
+         (default-directory (efrit-tool-git-directory))
          (output-buffer (generate-new-buffer " *efrit-git-output*"))
          ;; Deliberately local even for a remote project: process-file
          ;; requires the stderr file to be on the local host, and
@@ -709,6 +750,11 @@ Returns the result of BODY, which should be a tool response."
         (efrit-tool-error 'sandbox_violation
                           (cadr err)
                           `((tool . ,(symbol-name ',tool-name)))))
+       (efrit-sandbox-denied
+        (efrit-tool-audit ',tool-name ,inputs :blocked)
+        ;; Re-signal: the dispatcher turns this into the turn-ending
+        ;; tool result so the model stops instead of retrying
+        (signal (car err) (cdr err)))
        (error
         (efrit-tool-audit ',tool-name ,inputs :error
                           (float-time (time-subtract (current-time) start-time)))
@@ -727,71 +773,6 @@ ARGS are passed to `format'."
     (efrit-log level (format "[%s] %s" tool-name (apply #'format message args)))))
 
 
-
-;;; Project Agent Instructions (AGENTS.md/CLAUDE.md)
-
-(defcustom efrit-agent-instructions-files
-  '(".efrit/AGENTS.md" "AGENTS.md" "AGENT.md" "CLAUDE.md" ".efrit/CLAUDE.md")
-  "List of filenames to search for project-specific agent instructions.
-Files are checked in order; the first one found is used."
-  :type '(repeat string)
-  :group 'efrit-tool-utils)
-
-(defcustom efrit-agent-instructions-max-size 50000
-  "Maximum size in bytes for agent instructions file.
-Larger files are truncated with a warning."
-  :type 'integer
-  :group 'efrit-tool-utils)
-
-(defun efrit-tool--find-agent-instructions-file ()
-  "Find the first agent instructions file in project root.
-Searches for files listed in `efrit-agent-instructions-files'.
-Returns the absolute path if found, nil otherwise."
-  (let ((project-root (efrit-tool--get-project-root)))
-    (cl-some (lambda (filename)
-               (let ((path (expand-file-name filename project-root)))
-                 (when (file-readable-p path)
-                   path)))
-             efrit-agent-instructions-files)))
-
-(defun efrit-tool--read-agent-instructions ()
-  "Read and return project-specific agent instructions.
-Returns a plist with:
-  :content - the file contents (possibly truncated)
-  :file - the file path that was read
-  :truncated - t if content was truncated
-Returns nil if no instructions file found."
-  (when-let* ((file (efrit-tool--find-agent-instructions-file)))
-    (condition-case err
-        (let* ((attrs (file-attributes file))
-               (size (file-attribute-size attrs))
-               (truncated (> size efrit-agent-instructions-max-size))
-               (content (with-temp-buffer
-                          (insert-file-contents file nil 0
-                                                (min size efrit-agent-instructions-max-size))
-                          (buffer-string))))
-          (list :content content
-                :file file
-                :truncated truncated))
-      (error
-       (efrit-tool-log 'warn "agent-instructions"
-                       "Failed to read %s: %s" file (error-message-string err))
-       nil))))
-
-(defun efrit-tool--format-agent-instructions-for-prompt ()
-  "Format agent instructions for inclusion in system prompt.
-Returns a formatted string, or empty string if no instructions found."
-  (if-let* ((instructions (efrit-tool--read-agent-instructions)))
-      (let ((content (plist-get instructions :content))
-            (file (plist-get instructions :file))
-            (truncated (plist-get instructions :truncated)))
-        (concat "\n\nPROJECT-SPECIFIC INSTRUCTIONS:\n"
-                (format "(from %s%s)\n\n"
-                        (file-name-nondirectory file)
-                        (if truncated " [truncated]" ""))
-                content
-                "\n\n"))
-    ""))
 
 ;;; Deprecated - moved to efrit-common.el
 

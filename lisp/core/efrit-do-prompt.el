@@ -16,13 +16,13 @@
 
 (require 'cl-lib)
 (require 'efrit-log)
+(require 'efrit-instructions)
 
 ;; Forward declarations for functions used from efrit-do.el
 (declare-function efrit-do--get-context-items "efrit-do")
 (declare-function efrit-do--build-error-context "efrit-do")
 (declare-function efrit-do--format-todos-for-prompt "efrit-do")
 (declare-function efrit-tool--get-project-root "efrit-tools")
-(declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tools")
 (declare-function efrit-context-item-command "efrit-context")
 (declare-function efrit-context-item-result "efrit-context")
 
@@ -113,7 +113,8 @@ Returns a string (possibly empty) ready to splice into the prompt."
 
    "EXECUTION:\n"
    "- BATCH MULTIPLE TOOL CALLS when they are independent (e.g., reading several files)\n"
-   "- Use eval_sexp for Emacs operations, shell_exec for shell commands\n"
+   "- Use eval_sexp for Emacs operations; shell_exec only when the user asked for the shell\n"
+   "  or no Emacs facility exists (check with emacs_apropos first)\n"
    "- Keep responses minimal - focus on execution\n"
    "- Each API continuation has a cost - be efficient by combining independent operations\n\n"
 
@@ -127,11 +128,28 @@ Returns a string (possibly empty) ready to splice into the prompt."
   (concat
    "Examples:\n\n"
    
+   "User: open the org file I had open earlier today\n"
+   "Assistant: I'll look in your recent files.\n"
+   "Tool call: eval_sexp with expr: \"(seq-filter (lambda (f) (string-suffix-p \\\".org\\\" f)) recentf-list)\"\n"
+   "[Response: (\"/home/u/notes/2026-09-17.org\" \"/ssh:build:/srv/plan.org\")]\n"
+   "Assistant: Two candidates; the first is today's. Opening it.\n"
+   "Tool call: eval_sexp with expr: \"(find-file \\\"/home/u/notes/2026-09-17.org\\\")\"\n\n"
+
    "User: show me untracked files in ~/.emacs.d/\n"
-   "Assistant: I'll find untracked files and create a report.\n"
-   "Tool call: shell_exec with command: \"cd ~/.emacs.d && find . -name '*.el' -not -path './.git/*'\"\n"
-   "Tool call: format_file_list with content: \"[shell output]\"\n"
-   "Tool call: buffer_create with name: \"*efrit-report: Untracked Files*\", content: \"[formatted list]\", mode: \"markdown-mode\"\n\n"
+   "Assistant: I'll ask VC.\n"
+   "Tool call: vcs_status with path: \"~/.emacs.d/\"\n"
+   "[Response lists 4 untracked files]\n"
+   "Assistant: Four untracked files:\n- custom.el\n- eln-cache/\n- projects\n- transient/history.el\n\n"
+
+   "User: what's in /var/log on the build box? (project root is /ssh:build:/srv/app/)\n"
+   "Assistant: I'll open it in dired on that host.\n"
+   "Tool call: eval_sexp with expr: \"(dired \\\"/ssh:build:/var/log/\\\")\"\n\n"
+
+   "User: rename all the .jpeg files in ~/Pictures to .jpg\n"
+   "Assistant: I don't remember the exact dired helper; let me check what exists.\n"
+   "Tool call: emacs_apropos with query: \"rename files regexp\"\n"
+   "[Response: dired-do-rename-regexp, rename-file, ...]\n"
+   "Tool call: eval_sexp with expr: \"(dolist (f (directory-files \\\"~/Pictures/\\\" t \\\"\\\\\\\\.jpeg\\\\\\\\'\\\")) (rename-file f (concat (file-name-sans-extension f) \\\".jpg\\\")))\"\n\n"
    
    "User: open dired to my downloads folder\n"
    "Assistant: I'll open dired for your downloads folder.\n"
@@ -176,30 +194,70 @@ Returns a string (possibly empty) ready to splice into the prompt."
   "Return formatting tools documentation for command system prompt."
   (concat
    "FORMATTING AND DISPLAY TOOLS:\n"
-   "- buffer_create: Create dedicated buffers for reports, lists, analysis (specify name, content, mode)\n"
+   "- Short results (a list of up to ~20 items, a table, a paragraph) go in your reply, in the\n"
+   "  conversation. Do NOT create a buffer for them.\n"
+   "- buffer_create: only for output too long to read in the conversation (a long log, a file\n"
+   "  listing of hundreds of entries, a generated document). The buffer is not shown\n"
+   "  automatically; the user opens it from the tool row. Name it *efrit-report: <topic>*,\n"
+   "  say in one line what is in it, and do not repeat its content in your reply.\n"
    "- format_file_list: Format raw text as markdown file lists with bullet points\n"
    "- format_todo_list: Format TODOs with optional sorting ('status', 'priority', or none)\n"
    "- display_in_buffer: Display content in specific buffers with custom window height\n\n"))
 
 (defun efrit-do--command-common-tasks ()
-  "Return common tasks section for command system prompt."
+  "Return the Emacs-first guidance: what Emacs already does, and how to find it."
   (concat
-   "Common tasks:\n"
-   "- Font scaling: (global-text-scale-adjust 2) or (text-scale-adjust 2)\n"
-   "- Buffer switching: (switch-to-buffer \"*Messages*\")\n"
-   "- Window operations: (split-window-horizontally), (other-window 1)\n"
-   "- Text wrapping: (let ((fill-column N)) (fill-region (point-min) (point-max)))\n"
-   "- Sorting lines: (sort-lines nil (point-min) (point-max))\n"
-   "- Case changes: (upcase-region (point-min) (point-max))\n\n"))
+   "EMACS FIRST. You live inside a running Emacs with the user's whole configuration\n"
+   "loaded. Nearly everything a shell could do, Emacs does natively, on local AND remote\n"
+   "(Tramp) files alike, with the user's settings applied and without leaving their\n"
+   "editor. A shell command sees none of that: it runs on the local machine even when\n"
+   "the user's files are remote, ignores their Emacs state, and needs a separate grant.\n"
+   "Order of preference for any task:\n"
+   "  1. An existing Emacs command or function (built-in or from the user's packages).\n"
+   "  2. A few lines of Lisp composed from Emacs primitives.\n"
+   "  3. shell_exec, only when the user asked for a shell/external tool, or when no\n"
+   "     Emacs facility exists (say so when you fall back).\n"
+   "You do not have to know the name: emacs_apropos query=\"<words for the job>\" finds\n"
+   "what exists in THIS Emacs, then elisp_docs symbol=\"<name>\" tells you how to call it.\n"
+   "Two tool calls are cheaper than a wrong shell command.\n\n"
+
+   "WHAT EMACS ALREADY HAS (starting points; the user may have more, e.g. magit, consult):\n"
+   "- Recent files: recentf-list holds the paths (newest first). Open one with\n"
+   "  (find-file (nth 0 recentf-list)); filter with seq-filter on the list. Also\n"
+   "  file-name-history, buffer-list, bookmark-alist, register-alist.\n"
+   "- Files and directories: find-file, find-file-other-window, dired, dired-jump,\n"
+   "  directory-files, directory-files-recursively, file-exists-p, file-attributes,\n"
+   "  rename-file, copy-file, delete-file, make-directory, write-region,\n"
+   "  insert-file-contents. ALL of these accept Tramp paths (/ssh:host:/path) and run on\n"
+   "  the right host; that is why they beat ls/cp/mv/find.\n"
+   "- Dired for anything on a set of files: (dired DIR), dired-get-marked-files,\n"
+   "  dired-do-copy/rename/delete, dired-mark-files-regexp, wdired for bulk renames.\n"
+   "- Version control through VC (works for git, hg, svn, on remote files too):\n"
+   "  vc-diff, vc-log-outgoing, vc-print-log, vc-root-diff, vc-revert, vc-next-action,\n"
+   "  vc-annotate; vc-git-* for git specifics; the vcs_* tools for structured output.\n"
+   "  If magit is loaded, magit-status / magit-* are what the user expects.\n"
+   "- Search and replace: re-search-forward, replace-regexp-in-region, grep, rgrep,\n"
+   "  project-find-regexp, xref-find-references, occur, multi-occur; the search_content\n"
+   "  tool for the project.\n"
+   "- Buffers and windows: switch-to-buffer, pop-to-buffer, display-buffer, get-buffer,\n"
+   "  with-current-buffer, save-some-buffers, revert-buffer, kill-buffer, split-window,\n"
+   "  other-window, delete-other-windows, winner-undo.\n"
+   "- Text: fill-region, sort-lines, upcase-region, indent-region, delete-trailing-whitespace,\n"
+   "  comment-region, align-regexp, query-replace (non-interactively: replace-string).\n"
+   "- Processes: process-file and start-file-process run on the host of default-directory\n"
+   "  (remote-aware); compile, shell-command-to-string, async-shell-command.\n"
+   "- Projects: project-current, project-root, project-files, project-find-file.\n"
+   "- Org, mail, calendar, eshell, tramp, bookmarks, registers, abbrevs, macros:\n"
+   "  ask emacs_apropos.\n"
+   "- Appearance: text-scale-adjust, global-text-scale-adjust, load-theme, set-face-attribute.\n\n"))
 
 (defun efrit-do--command-project-workflow ()
   "Return project exploration and elisp development workflow guidance."
   (concat
    "PROJECT EXPLORATION WORKFLOW:\n"
    "When working with code or asked to 'help build' something:\n"
-   "1. If working on an EXTERNAL project (not the user's default-directory):\n"
-   "   - FIRST call set_project_root with the project path\n"
-   "   - Example: set_project_root path=\"~/src/gastown\"\n"
+   "1. The project root is fixed by the user (shown in CRITICAL CONTEXT RULES); you cannot\n"
+   "   change it. Paths outside it are reachable only if the user grants access when asked.\n"
    "2. Explore the project structure:\n"
    "   - project_files pattern=\"*.el\" to see elisp files\n"
    "   - project_files pattern=\"*\" for all files\n"
@@ -307,11 +365,14 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "  'This buffer', 'here', 'the region', 'this function' refer to THAT buffer, not the efrit\n"
           "  buffer. Trust it over guessing; call editor_state to refresh it after you change buffers\n"
           "  or move point. It is context supplied by Emacs, not text the user wrote\n"
-          "- PERMISSIONS: tools that change state (eval_sexp, shell_exec, edit_file, create_file,\n"
-          "  format_file, checkpoints, set_project_root, ...) may ask the user for consent before\n"
-          "  running. If a result says 'permission denied', the user chose to stop: the turn ends,\n"
-          "  do not retry or work around it. Prefer read-only tools (read_file, search_content,\n"
-          "  editor_state, vcs_*) for investigation so you ask less often\n"
+          "- SANDBOX: you may READ inside the project root without asking. Writing anywhere,\n"
+          "  reading outside the root, evaluating Lisp, running shell commands and network access\n"
+          "  each need a grant; efrit asks the user the first time and remembers per project.\n"
+          "  If a result says 'sandbox denied' or 'permission denied', the user said no to that\n"
+          "  access: do not retry it or reach it another way. Carry on with the rest of the task\n"
+          "  without it; if the task cannot proceed, say what you need and stop. Prefer read-only tools (read_file,\n"
+          "  search_content, editor_state, vcs_*) for investigation so you ask less often. Never\n"
+          "  touch .efrit/, .ssh/, .gnupg/ or credential files; those are always refused\n"
           "- You are operating INSIDE Emacs - all operations should use Elisp unless explicitly requesting shell commands\n"
           "- When user says 'open' files, use find-file to open in Emacs buffers, NOT shell commands\n"
           "- 'Display', 'show', 'list' means create Emacs buffers, NOT terminal output\n"
@@ -320,12 +381,16 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           "- COMPLEX TASKS (3+ steps OR user lists multiple items): Use todo_write FIRST\n"
           "- PROACTIVE RULE: When user explicitly lists items (numbered, comma-separated), ALWAYS use todo_write\n"
           "- TASK CLASSIFICATION: Most 'open X files' requests are SIMPLE - use eval_sexp with directory-files-recursively\n"
-          "- If project_files or search_content returns results from the wrong directory, use set_project_root first\n\n"
+          "- If project_files or search_content look at the wrong directory, tell the user; the\n"
+          "  project root is theirs to change (M-x efrit-set-project-root)\n\n"
           
           "TOOL SELECTION GUIDE:\n"
           "- eval_sexp: PRIMARY TOOL for Emacs operations (open files, edit buffers, navigate, define functions, etc.)\n"
-          "- shell_exec: ONLY when explicitly asking for shell/terminal operations\n"
-          "- buffer_create: ONLY for read-only reports, lists, and formatted output display\n"
+          "- emacs_apropos: when you need an Emacs command/variable and do not know its name\n"
+          "- elisp_docs: exact signature and docstring of a symbol before you call it\n"
+          "- shell_exec: ONLY when the user asks for shell/terminal operations or no Emacs\n"
+          "  facility exists; it runs on the LOCAL machine and cannot see remote files\n"
+          "- buffer_create: ONLY for read-only output too long for the conversation (see FORMATTING)\n"
           "  * NEVER use buffer_create for code that needs to be evaluated/executed\n"
           "  * For code generation: use eval_sexp with (with-current-buffer... (insert...)) then evaluate\n"
           "- todo_write: PROACTIVELY use for multi-step tasks - call FIRST with plan, update as you progress\n"
@@ -392,9 +457,10 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
 
           "CODE GENERATION vs DISPLAY:\n"
           "- When user asks to WRITE CODE or DEFINE FUNCTIONS: Use eval_sexp to insert into buffer AND evaluate\n"
-          "- When user asks to SHOW/DISPLAY RESULTS: Use buffer_create for formatted output\n"
+          "- When user asks to SHOW/DISPLAY RESULTS: answer in the conversation; buffer_create\n"
+          "  only when the output is too long to read there\n"
           "- Example: 'write fibonacci function' -> Use eval_sexp to (defun fib ...)\n"
-          "- Example: 'show me all buffers' -> Use buffer_create with (buffer-list) results\n\n"
+          "- Example: 'show me all buffers' -> list them in your reply (a long list: buffer_create)\n\n"
 
           "NAMING CONVENTIONS:\n"
           "- When user specifies a function name exactly, use that EXACT name\n"
@@ -468,8 +534,8 @@ If SESSION-ID is provided, include session continuation protocol with WORK-LOG."
           
           session-info
           
-          ;; Include project-specific agent instructions (AGENTS.md/CLAUDE.md)
-          (efrit-tool--format-agent-instructions-for-prompt)
+          ;; Layered AGENTS.md/CLAUDE.md: user, ancestors, project, local
+          (efrit-instructions-for-prompt)
 
           ;; User/site extension point
           (efrit-do--run-system-prompt-functions session-id)

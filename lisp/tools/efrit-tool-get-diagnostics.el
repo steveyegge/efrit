@@ -261,7 +261,7 @@ Returns a standard tool response with diagnostics data."
 
       ;; If path specified but buffer not found, try to find file
       (when (and path (not buffer))
-        (let ((file-path (efrit-resolve-path-simple path)))
+        (let ((file-path (efrit-resolve-path-simple path 'read "get_diagnostics")))
           (when (file-exists-p file-path)
             (setq buffer (find-file-noselect file-path)))))
 

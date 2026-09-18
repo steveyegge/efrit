@@ -18,6 +18,7 @@
 (require 'efrit-log)
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-permissions)
+(require 'efrit-sandbox)
 
 (defvar efrit-repl-loop--tool-session)
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -55,6 +56,7 @@
 (declare-function efrit-do--handle-vcs-log "efrit-do-handlers")
 (declare-function efrit-do--handle-vcs-blame "efrit-do-handlers")
 (declare-function efrit-do--handle-elisp-docs "efrit-do-handlers")
+(declare-function efrit-do--handle-emacs-apropos "efrit-do-handlers")
 (declare-function efrit-do--handle-set-project-root "efrit-do-handlers")
 (declare-function efrit-do--handle-get-diagnostics "efrit-do-handlers")
 (declare-function efrit-do--handle-read-image "efrit-do-handlers")
@@ -126,6 +128,7 @@
     ("vcs_log"            . (efrit-do--handle-vcs-log . :tool-input))
     ("vcs_blame"          . (efrit-do--handle-vcs-blame . :tool-input))
     ("elisp_docs"         . (efrit-do--handle-elisp-docs . :tool-input))
+    ("emacs_apropos"      . (efrit-do--handle-emacs-apropos . :tool-input))
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
     ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input))
     ("read_image"         . (efrit-do--handle-read-image . :tool-input))
@@ -253,7 +256,16 @@ Applies circuit breaker limits to prevent infinite loops."
 
           ;; If there's a warning message, prepend it to the result
           (let* ((warning (cdr breaker-check))
-                 (result (efrit-do--dispatch-tool tool-name tool-input input-str))
+                 (result (condition-case err
+                             (efrit-do--dispatch-tool tool-name tool-input input-str)
+                           ;; The scope sandbox refused and the user
+                           ;; declined to widen it: a distinguished
+                           ;; result the loop engine recognises to end
+                           ;; the turn (like a permission denial)
+                           (efrit-sandbox-denied
+                            (efrit-log 'info "Sandbox denied %s" tool-name)
+                            (concat efrit-sandbox-denied-prefix
+                                    (efrit-sandbox-denied-tool-result (cadr err))))))
                  ;; Check result for error loops and inject warnings if needed
                  (loop-check (efrit-do--error-loop-check-result result))
                  (final-result (cdr loop-check))

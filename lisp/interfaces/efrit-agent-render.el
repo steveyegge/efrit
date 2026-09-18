@@ -31,31 +31,37 @@
 ;; Functions to add messages to the conversation region without full re-render.
 ;; These use efrit-agent--append-to-conversation for incremental updates.
 
+(defface efrit-agent-user-block
+  '((((background dark)) :background "#2b2f3a" :extend t)
+    (t :background "#eef1f6" :extend t))
+  "Background for the user's turn, so questions stand apart from answers."
+  :group 'efrit-agent)
+
 (defun efrit-agent--add-user-message (text)
   "Add a user message with TEXT to the conversation region.
-User messages are prefixed with `> ' and have proper faces applied.
-Multi-line messages have continuation lines indented."
+The turn is rendered as a shaded block with a `❯' prefix on the
+first line and continuation lines indented, followed by one blank
+line.  Text properties mark it `user-message' with an id."
   ;; End any streaming Claude message first
   (efrit-agent--stream-end-message)
   ;; Hide thinking indicator when user sends message
   (efrit-agent--hide-thinking)
   (let* ((msg-id (format "user-msg-%d" (cl-incf efrit-agent--message-counter)))
-         (lines (split-string text "\n"))
-         (first-line (car lines))
-         (rest-lines (cdr lines))
+         (lines (split-string (string-trim-right text) "\n"))
+         (body (mapconcat
+                (lambda (pair)
+                  (let ((first (car pair)) (line (cdr pair)))
+                    (concat (propertize (if first "❯ " "  ") 'face 'efrit-agent-user-prefix)
+                            (propertize line 'face 'efrit-agent-user-message))))
+                (cl-loop for l in lines for i from 0 collect (cons (zerop i) l))
+                "\n"))
          (formatted-text
-          (concat
-           ;; First line with > prefix
-           (propertize "> " 'face 'efrit-agent-user-prefix)
-           (propertize first-line 'face 'efrit-agent-user-message)
-           ;; Continuation lines with indentation
-           (when rest-lines
-             (mapconcat
-              (lambda (line)
-                (concat "\n  " (propertize line 'face 'efrit-agent-user-message)))
-              rest-lines
-              ""))
-           "\n\n")))
+          ;; The block background is *added* under the prefix/message
+          ;; faces; `propertize' would replace them and the line lost
+          ;; its gold prompt and text colour.
+          (let ((block (concat body "\n")))
+            (add-face-text-property 0 (length block) 'efrit-agent-user-block t block)
+            (concat block "\n"))))
     (efrit-agent--append-to-conversation
      formatted-text
      (list 'efrit-type 'user-message
@@ -111,6 +117,11 @@ Creates markers for tracking the message region for future appends."
     ;; Move to end of conversation region
     (save-excursion
       (goto-char (marker-position efrit-agent--conversation-end))
+      ;; Prose after tool rows gets a blank line, so the answer does
+      ;; not read as the last row's continuation
+      (when (and (> (point) (point-min))
+                 (eq (get-text-property (1- (point)) 'efrit-type) 'tool-call))
+        (insert (propertize "\n" 'read-only t)))
       (setq start-marker (point-marker))
       ;; Insert the text
       (insert (propertize text 'face 'efrit-agent-claude-message))
@@ -141,13 +152,11 @@ Updates the message region markers."
            (end-marker (nth 2 efrit-agent--streaming-message))
            (inhibit-read-only t))
       (save-excursion
-        ;; Insert at end marker (before it, due to insertion type)
+        ;; end-marker has insertion-type t, so inserting AT it keeps
+        ;; it after the new text.  (An earlier version inserted at
+        ;; (1- marker), i.e. before the previous chunk's last char:
+        ;; "Hello, " + "world." came out as "Hello,world. ".)
         (goto-char (marker-position end-marker))
-        ;; Move back before the marker to insert
-        (let ((insert-pos (1- (point))))
-          (when (> insert-pos (point-min))
-            (goto-char insert-pos)))
-        ;; Insert the new text
         (insert (propertize text 'face 'efrit-agent-claude-message))
         ;; Update properties on the new text
         (add-text-properties (- (point) (length text)) (point)
@@ -228,6 +237,30 @@ when that list is empty (first output) every window is."
 ;; Shows when Claude is processing but no tool is running.
 ;; Disappears when content starts arriving.
 
+(defun efrit-agent--thinking-line (text)
+  "The in-buffer activity line: spinner, then TEXT (or a default)."
+  (propertize (concat "  " (efrit-agent--spinner-frame) " "
+                      (propertize (or text "thinking…") 'face 'efrit-agent-thinking)
+                      "\n")
+              'efrit-type 'thinking-indicator))
+
+(defun efrit-agent--refresh-thinking-line ()
+  "Redraw the thinking line's spinner glyph in place, if it is showing."
+  (when-let* ((ind efrit-agent--thinking-indicator)
+              (start (marker-position (car ind)))
+              (end (marker-position (cdr ind))))
+    (let ((inhibit-read-only t)
+          (label (save-excursion
+                   (goto-char start)
+                   (let ((s (buffer-substring-no-properties start (line-end-position))))
+                     ;; "  <spinner> label"
+                     (string-trim (if (> (length s) 4) (substring s 4) ""))))))
+      (save-excursion
+        (goto-char start)
+        (delete-region start end)
+        (insert (propertize (efrit-agent--thinking-line label) 'read-only t))
+        (set-marker (cdr ind) (point))))))
+
 (defun efrit-agent--show-thinking (&optional text)
   "Show the thinking indicator with optional TEXT description.
 If TEXT is nil, shows just '[thinking...]'.
@@ -241,12 +274,7 @@ The indicator is removed when content arrives or explicitly hidden."
         (goto-char (marker-position efrit-agent--conversation-end))
         (setq start-marker (point-marker))
         ;; Insert the thinking indicator
-        (insert (propertize (format "[%s%s] %s\n"
-                                    (efrit-agent--char 'status-waiting)
-                                    "thinking..."
-                                    (or text ""))
-                            'face 'efrit-agent-thinking
-                            'efrit-type 'thinking-indicator))
+        (insert (efrit-agent--thinking-line text))
         (setq end-marker (point-marker))
         ;; Set marker insertion types
         (set-marker-insertion-type start-marker nil)
@@ -292,13 +320,7 @@ This provides smooth updates for changing thinking status."
           (save-excursion
             (goto-char start-marker)
             (delete-region start-marker end-marker)
-            (insert (propertize (format "[%s%s] %s\n"
-                                        (efrit-agent--char 'status-waiting)
-                                        "thinking..."
-                                        (or text ""))
-                                'face 'efrit-agent-thinking
-                                'efrit-type 'thinking-indicator
-                                'read-only t))
+            (insert (propertize (efrit-agent--thinking-line text) 'read-only t))
             (set-marker end-marker (point)))))
     ;; No indicator yet, show one
     (efrit-agent--show-thinking text)))

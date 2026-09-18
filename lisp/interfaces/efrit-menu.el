@@ -28,7 +28,7 @@
 (defvar efrit-api-auth-scheme)
 (defvar efrit-api-streaming)
 (defvar efrit-api-prompt-caching)
-(defvar efrit-permission-policy)
+(defvar efrit-sandbox-enabled)
 (defvar efrit-agent-header-style)
 (defvar efrit-context-sources)
 (defvar efrit-agent--repl-session)
@@ -36,7 +36,8 @@
 (declare-function efrit-usage-indicator "efrit-usage")
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-doctor--redact-url "efrit-doctor")
-(declare-function efrit-permission-reset "efrit-permissions")
+(declare-function efrit-sandbox "efrit-sandbox-ui")
+(declare-function efrit-sandbox-reset-session "efrit-sandbox")
 
 ;;; Description helpers (all pure, all safe with modules unloaded)
 
@@ -57,12 +58,8 @@
   (format "%s [%s]" label (if (and (boundp var) (symbol-value var)) "on" "off")))
 
 (defun efrit-menu--desc-permissions ()
-  (format "Permission policy [%s]"
-          (if (boundp 'efrit-permission-policy)
-              (if efrit-permission-policy
-                  (mapconcat #'symbol-name efrit-permission-policy "+")
-                "never ask")
-            "?")))
+  (format "Sandbox [%s]"
+          (if (bound-and-true-p efrit-sandbox-enabled) "on" "off")))
 
 (defun efrit-menu--desc-header ()
   (format "Header style [%s]" (if (boundp 'efrit-agent-header-style) efrit-agent-header-style "?")))
@@ -92,16 +89,12 @@
   (setq efrit-api-prompt-caching (not efrit-api-prompt-caching))
   (message "efrit prompt caching %s" (if efrit-api-prompt-caching "on" "off")))
 
-(defun efrit-menu-cycle-permissions ()
-  "Cycle `efrit-permission-policy': (write exec) -> (exec) -> nil -> ..."
+(defun efrit-menu-toggle-sandbox ()
+  "Toggle `efrit-sandbox-enabled'."
   (interactive)
-  (require 'efrit-permissions)
-  (setq efrit-permission-policy
-        (pcase efrit-permission-policy
-          ('(write exec) '(exec))
-          ('(exec) nil)
-          (_ '(write exec))))
-  (message "efrit permission policy: %S" efrit-permission-policy))
+  (require 'efrit-sandbox)
+  (setq efrit-sandbox-enabled (not efrit-sandbox-enabled))
+  (message "efrit sandbox %s" (if efrit-sandbox-enabled "on" "OFF -- every tool runs unchecked")))
 
 (defun efrit-menu-show-log ()
   "Show efrit's log buffer."
@@ -129,13 +122,15 @@
         :description (lambda () (efrit-menu--desc-toggle "Streaming" 'efrit-api-streaming)))
        ("c" efrit-menu-toggle-caching :transient t
         :description (lambda () (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching)))
-       ("p" efrit-menu-cycle-permissions :transient t :description efrit-menu--desc-permissions)
-       ("P" "Forget session permission grants" efrit-permission-reset :transient t)
+       ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
+       ("x" "Sandbox grants for this project" efrit-sandbox)
+       ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
        ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]
      [["Diagnostics"
        ("D" "Doctor (static)" efrit-doctor)
        ("L" "Doctor with live API check" (lambda () (interactive) (efrit-doctor t)))
        ("l" "Show log" efrit-menu-show-log)
+       ("R" "Reload efrit from source" efrit-reload)
        ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
       ["View"
        ("TAB" "Toggle tool call at point" efrit-agent-toggle-expand)

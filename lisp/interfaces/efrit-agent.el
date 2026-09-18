@@ -36,6 +36,7 @@
 (require 'efrit-agent-core)
 (require 'efrit-agent-render)
 (require 'efrit-agent-svg-header)
+(require 'efrit-sandbox-ui)
 (declare-function efrit-api-stream-cancel "efrit-api-stream")
 (autoload 'efrit-menu "efrit-menu" nil t)
 (require 'efrit-agent-tools)
@@ -262,7 +263,11 @@
     (define-key map (kbd "C-c C-h") #'efrit-agent-browse-sessions) ; Browse sessions history
     (define-key map (kbd "C-c ?")   #'efrit-agent-help)        ; Help
 
-    ;; Tool-call expansion
+    ;; Tool-call expansion.  `d' (details) works in the transcript,
+    ;; which is read-only; in the input region it inserts a d as usual
+    ;; because the input minor-mode map shadows it.
+    (define-key map (kbd "d") #'efrit-agent-toggle-expand)
+    (define-key map (kbd "o") #'efrit-agent-open-at-point)
     (define-key map (kbd "C-c C-t") #'efrit-agent-toggle-expand)
     (define-key map (kbd "C-c C-e") #'efrit-agent-expand-all)
     (define-key map (kbd "C-c C-d") #'efrit-agent-collapse-all)
@@ -297,6 +302,11 @@ Status is shown in the header-line at top of window.
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (setq-local line-spacing 0.1)
+  ;; The comint/eshell input model: the transcript and the prompt are
+  ;; the `output' field, the typed text is the input.  `beginning-of-line'
+  ;; then stops at the prompt and `kill-line' stops at the field edge.
+  ;; Line motion (C-n/C-p) must still cross fields, as in comint.
+  (setq-local inhibit-line-move-field-capture t)
   ;; Don't let cursor jump around during updates
   (setq-local cursor-in-non-selected-windows nil)
   ;; Initialize state
@@ -471,9 +481,7 @@ Loads the session from disk and restores it into the agent buffer."
           (setq efrit-agent--session-id session-id)
           (force-mode-line-update))
         ;; Display and focus
-        (display-buffer buffer '(display-buffer-at-bottom (window-height . 15)))
-        (when-let* ((win (get-buffer-window buffer)))
-          (select-window win))
+        (efrit-agent-display buffer t)
         (with-current-buffer buffer
           (when (and efrit-agent--input-start
                      (marker-position efrit-agent--input-start))
@@ -570,6 +578,28 @@ refreshed; a full render destroyed the transcript (ef-7t0)."
             (kill-new (format "%s" result))
             (message "Copied %s result (%d chars)" name (length (format "%s" result))))
         (message "Tool %s has no result yet" name)))))
+
+(defun efrit-agent-open-at-point ()
+  "Open what the tool row at point produced: a report buffer or a file.
+For `buffer_create' rows that is the report buffer, shown as a popup
+\(`q' closes it); for file tools it is the file.  Other rows expand."
+  (interactive)
+  (let* ((name (get-text-property (point) 'efrit-tool-name))
+         (input (get-text-property (point) 'efrit-tool-input))
+         (buffer-name (and input (member name '("buffer_create" "create_buffer"))
+                           (efrit-agent--input-field input "name")))
+         (path (and input (efrit-agent--input-field input "path" "file_path" "file"))))
+    (cond
+     ((and buffer-name (get-buffer buffer-name))
+      (require 'efrit-ui-helpers)
+      (let ((win (display-buffer (get-buffer buffer-name)
+                                 '((display-buffer-reuse-window display-buffer-at-bottom)
+                                   (window-height . 0.4)
+                                   (dedicated . t)))))
+        (when (window-live-p win) (select-window win))))
+     (buffer-name (message "Buffer %s no longer exists" buffer-name))
+     ((and (stringp path) (file-exists-p path)) (find-file-other-window path))
+     (t (efrit-agent-toggle-expand)))))
 
 (defun efrit-agent-toggle-expand ()
   "Toggle expansion of the tool call at point.
@@ -1164,10 +1194,8 @@ This is the recommended entry point for the REPL-style Efrit interface."
       (unless efrit-agent--session-id
         (setq efrit-agent--status 'idle)
         (setq efrit-agent--start-time nil)))
-    ;; Display at bottom and focus
-    (display-buffer buffer '(display-buffer-at-bottom (window-height . 15)))
-    (when-let* ((win (get-buffer-window buffer)))
-      (select-window win))
+    ;; Display (reusing an existing window) and focus
+    (efrit-agent-display buffer t)
     ;; Move point to input region
     (with-current-buffer buffer
       (when (and efrit-agent--input-start
@@ -1299,7 +1327,7 @@ path), the layout it set up is left untouched."
       (unless (equal efrit-agent--session-id session-id)
         (efrit-agent--attach-session session-id command)))
     ;; Display the buffer
-    (pop-to-buffer buffer)))
+    (efrit-agent-display buffer t)))
 
 (defun efrit-agent-add-message (text &optional type)
   "Add a message with TEXT to the conversation.

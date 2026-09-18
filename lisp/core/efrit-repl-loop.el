@@ -33,6 +33,8 @@
 (require 'efrit-config)
 (require 'efrit-repl-session)
 (require 'efrit-loop)
+(require 'efrit-tools)   ; efrit-tools--reset-rate-limits
+(require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
 (require 'efrit-context-sources)
 (require 'efrit-events)
 (require 'efrit-models)
@@ -96,7 +98,9 @@ requiring an active efrit-do session (ef-dcn).")
    :wrap-dispatch-fn (lambda (session thunk)
                        (let ((efrit-repl-loop--tool-session session))
                          (funcall thunk)))
-   :thinking-p nil
+   ;; The agent buffer is this loop's surface: show the activity
+   ;; indicator while a request is in flight.
+   :thinking-p t
    :handles-waiting-p t
    ;; Store Claude's final message so the conversation context carries
    ;; into the next turn
@@ -142,7 +146,14 @@ Returns the session ID."
                      session-id (error-message-string err))
           nil)))
 
-      ;; Begin the turn
+      ;; Begin the turn.  The per-turn tool counters live in
+      ;; efrit-tools and were never reset, so after ~100 tool calls in
+      ;; an Emacs session every eval_sexp failed with "rate limit
+      ;; exceeded" -- the "tool limit reached" the model then reported.
+      (efrit-tools--reset-rate-limits)
+      ;; Same for the circuit breaker's counters (30 tool calls per
+      ;; *turn*, not per Emacs session)
+      (efrit-do--circuit-breaker-reset)
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))

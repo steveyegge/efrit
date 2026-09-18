@@ -45,7 +45,10 @@
 (require 'efrit-log)
 (require 'efrit-api)
 (require 'efrit-chat-response)
-(require 'efrit-permissions)   ; efrit-permission-denied-result
+(require 'efrit-permissions)
+(require 'efrit-sandbox)
+(require 'efrit-review)
+(require 'efrit-limits)
 (require 'efrit-events)
 
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -112,6 +115,8 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
+  ;; A "continue once" raise of a limit lasts for this turn only
+  (efrit-limits-reset-once)
   (efrit-publish 'turn-complete
                  `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                    (:stop-reason . ,reason)
@@ -139,8 +144,16 @@ the next API request."
              (iteration-count (or (nth 2 loop-state) 0))
              (timeout (funcall (efrit-loop-adapter-timeout-fn adapter)))
              (elapsed (funcall (efrit-loop-adapter-elapsed-fn adapter) session))
-             (max-iterations (funcall (efrit-loop-adapter-max-iterations-fn
-                                       adapter))))
+             (max-iterations (efrit-limits-effective
+                              'max-iterations
+                              (funcall (efrit-loop-adapter-max-iterations-fn adapter)))))
+        ;; At the cap, ask before giving up: a long task is not a
+        ;; runaway loop.  A raise (once / session / project) changes
+        ;; the effective limit and the check below then passes.
+        (when (and (> max-iterations 0) (>= iteration-count max-iterations))
+          (when-let* ((raised (efrit-limits-ask-to-raise 'max-iterations max-iterations)))
+            (efrit-log 'info "%s %s: iteration limit raised to %d" name session-id raised)
+            (setq max-iterations raised)))
         (cond
          ;; Wall-clock timeout (ef-5o5).  Checked between iterations,
          ;; so an in-flight API call still completes before the stop.
@@ -207,7 +220,11 @@ Builds the request from the shared command system prompt and the
 current tools schema."
   (efrit-log 'debug "API call sending %d messages" (length messages))
   (require 'efrit-do)
-  (let* ((system-prompt (efrit-do--command-system-prompt nil nil nil
+  (let* ((efrit-api-request-purpose
+          (format "the model's next turn (session %s, %d messages)"
+                  (truncate-string-to-width (format "%s" session-id) 12 nil nil "…")
+                  (length messages)))
+         (system-prompt (efrit-do--command-system-prompt nil nil nil
                                                          session-id nil))
          (request-data
           `(("model" . ,efrit-default-model)
@@ -295,8 +312,14 @@ response's stop_reason."
           (efrit-agent-stream-end)))
       (pcase stop-reason
         ("tool_use"
-         (funcall (efrit-loop-adapter-execute-tools-fn adapter)
-                  session content))
+         (if (efrit-review-applies-p content)
+             (efrit-loop--review-then-execute session adapter content)
+           ;; Say why there is no review row, so a missing one is
+           ;; never mistaken for a missed review
+           (when-let* ((why (efrit-review-skip-reason content)))
+             (efrit-publish 'review-skipped `((:session-id . ,session-id) (:reason . ,why))))
+           (funcall (efrit-loop-adapter-execute-tools-fn adapter)
+                    session content)))
         ("end_turn"
          (efrit-log 'info "%s %s: Claude ended turn" name session-id)
          (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
@@ -308,6 +331,60 @@ response's stop_reason."
          (efrit-loop--finish session adapter "unknown-stop-reason"
                              (format "API returned unrecognized stop reason: %S"
                                      stop-reason)))))))
+
+;;; Review before execution
+
+(defun efrit-loop--review-then-execute (session adapter content)
+  "Have the reviewer judge CONTENT's mutating tool calls, then act on the verdict.
+On approve, execute the tools as usual.  On reject, record the
+assistant turn and a rejection tool_result for every tool_use in it
+\(the API needs one per call), then continue the loop so the proposer
+can revise; after `efrit-review-max-rejections' consecutive rejections
+the turn is handed to the user instead."
+  (let* ((name (efrit-loop-adapter-name adapter))
+         (session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
+         (messages (funcall (efrit-loop-adapter-messages-fn adapter) session)))
+    (when (and (efrit-loop-adapter-thinking-p adapter)
+               (fboundp 'efrit-agent-show-thinking))
+      (efrit-agent-show-thinking))
+    (efrit-review-turn
+     session-id messages content
+     (lambda (verdict)
+       (when (and (efrit-loop-adapter-thinking-p adapter)
+                  (fboundp 'efrit-agent-hide-thinking))
+         (efrit-agent-hide-thinking))
+       (let ((count (efrit-review-note-verdict session-id (car verdict))))
+         (pcase (car verdict)
+           ('approve
+            (funcall (efrit-loop-adapter-execute-tools-fn adapter) session content))
+           ('reject
+            (let ((reason (cdr verdict))
+                  (results nil))
+              (efrit-log 'info "%s %s: reviewer rejected turn (%d consecutive)"
+                         name session-id count)
+              (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
+              (dotimes (i (length content))
+                (when-let* ((use (efrit-content-item-as-tool-use (aref content i))))
+                  (let ((text (if (efrit-review--reviewable-p (nth 1 use))
+                                  (efrit-review-rejected-tool-result reason)
+                                (concat efrit-review-rejected-prefix
+                                        "not run: another call in this batch was rejected."))))
+                    (efrit-loop--event adapter session-id 'tool_result
+                                       `((:tool . ,(nth 1 use)) (:result . ,text)
+                                         (:success . nil)))
+                    (when (fboundp 'efrit-agent-show-tool-start)
+                      (let ((row (efrit-agent-show-tool-start (nth 1 use) (nth 2 use))))
+                        (when (and row (fboundp 'efrit-agent-show-tool-result))
+                          (efrit-agent-show-tool-result row text nil 0))))
+                    (push (efrit-api-build-tool-result (nth 0 use) text t) results))))
+              (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
+                       session (nreverse results))
+              (if (>= count efrit-review-max-rejections)
+                  (efrit-loop--finish
+                   session adapter "review-rejected"
+                   (format "The reviewer rejected %d turns in a row. Last reason: %s"
+                           count (or reason "none given")))
+                (funcall (efrit-loop-adapter-continue-fn adapter) session))))))))))
 
 ;;; Tool Execution
 
@@ -345,7 +422,7 @@ continues the loop."
               ;; remaining tool_use so the conversation stays valid.
               (push (efrit-api-build-tool-result
                      (nth 0 tool-use-info)
-                     "Error skipped: the turn was ended by the user (interrupt or permission denial)" t)
+                     "Error skipped: the turn was ended by the user (C-g)" t)
                     results)
             (let* ((tool-id (nth 0 tool-use-info))
                  (tool-name (nth 1 tool-use-info))
@@ -407,10 +484,11 @@ continues the loop."
                          tool-result)
                     (setq completion-message
                           (match-string 1 tool-result))))
-                ;; A C-g mid-tool, or a permission denial, both hand
-                ;; control back to the user: no further tools this turn.
-                (when (or (string= tool-result efrit-loop--interrupt-result)
-                          (string= tool-result efrit-permission-denied-result))
+                ;; Only a C-g mid-tool hands control back to the user.
+                ;; A sandbox or permission denial is an ordinary failed
+                ;; tool result: the model reads it and carries on, as
+                ;; it would after a failed command.
+                (when (string= tool-result efrit-loop--interrupt-result)
                   (setq user-interrupted t))
                 (when is-waiting
                   (setq waiting-for-user t)))))))))

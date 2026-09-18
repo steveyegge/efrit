@@ -175,6 +175,7 @@ ARGS is an alist with:
 
 Returns a standard tool response with checkpoint info."
   (efrit-tool-execute checkpoint args
+    (efrit-resolve-path nil 'write "checkpoint")
     (let* ((description (alist-get 'description args)))
 
       ;; Validate
@@ -224,6 +225,7 @@ ARGS is an alist with:
 
 Returns a standard tool response with restore result."
   (efrit-tool-execute restore_checkpoint args
+    (efrit-resolve-path nil 'write "restore_checkpoint")
     (let* ((checkpoint-id (alist-get 'checkpoint_id args))
            (keep-checkpoint (alist-get 'keep_checkpoint args)))
 
@@ -313,6 +315,7 @@ ARGS is an alist with:
 
 Returns a standard tool response."
   (efrit-tool-execute delete_checkpoint args
+    (efrit-resolve-path nil 'write "delete_checkpoint")
     (let* ((checkpoint-id (alist-get 'checkpoint_id args)))
 
       ;; Validate

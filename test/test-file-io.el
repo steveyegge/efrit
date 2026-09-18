@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'efrit-file-io)
 (require 'efrit-tool-edit-file)
 (require 'efrit-tool-read-file)

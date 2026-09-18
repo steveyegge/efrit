@@ -80,7 +80,8 @@ When nil (or curl is missing) the url-retrieve path is used."
   stop-reason usage
   (status-line nil) (http-status nil)
   (finished nil) (partial nil) (cancelled nil)
-  (error-body ""))
+  (error-body "")
+  (context nil))          ; (URL MODEL TRANSPORT PURPOSE) for error messages
 
 (defvar efrit-api-stream--active nil
   "List of in-flight `efrit-api-stream' structs.")
@@ -243,7 +244,8 @@ When nil (or curl is missing) the url-retrieve path is used."
         (funcall cb nil "interrupted"))
        ;; API-level error event in the stream, or non-2xx with a body
        ((not (string-empty-p (efrit-api-stream-error-body st)))
-        (funcall cb nil (efrit-api-stream--format-error (efrit-api-stream-error-body st))))
+        (funcall cb nil (efrit-api-stream--fail st (efrit-api-stream--format-error
+                                                    (efrit-api-stream-error-body st)))))
        ((efrit-api-stream-finished st)
         (funcall cb (efrit-api-stream-response st) nil))
        ;; curl 28 = operation timed out; anything else non-zero is transport
@@ -252,16 +254,27 @@ When nil (or curl is missing) the url-retrieve path is used."
         (efrit-log 'warn "stream ended early (curl exit %d); delivering partial content" exit)
         (funcall cb (efrit-api-stream-response st) nil))
        ((/= exit 0)
-        (funcall cb nil (format "HTTP error: curl exit %d%s" exit
-                                (pcase exit (28 " (timeout)") (6 " (could not resolve host)")
-                                       (7 " (connection refused)") (35 " (TLS handshake)") (_ "")))))
+        (funcall cb nil (efrit-api-stream--fail
+                         st (format "curl exit %d%s%s" exit
+                                    (pcase exit (28 (format " (no response within %ds)" efrit-api-stream-timeout))
+                                           (6 " (could not resolve host)")
+                                           (7 " (connection refused)") (35 " (TLS handshake failed)")
+                                           (56 " (connection reset)") (_ ""))
+                                    (if (efrit-api-stream-http-status st)
+                                        (format ", HTTP %s" (efrit-api-stream-http-status st))
+                                      "")))))
        ;; exit 0 but no message_stop: server closed early
        (have-content
         (setf (efrit-api-stream-partial st) t)
         (funcall cb (efrit-api-stream-response st) nil))
-       (t (funcall cb nil (if (string-empty-p (efrit-api-stream-buffer st))
-                              "Empty response from endpoint"
-                            (efrit-api-stream--format-error (efrit-api-stream-buffer st)))))))))
+       (t (funcall cb nil (efrit-api-stream--fail
+                           st (if (string-empty-p (efrit-api-stream-buffer st))
+                                  "Empty response from endpoint"
+                                (efrit-api-stream--format-error (efrit-api-stream-buffer st))))))))))
+
+(defun efrit-api-stream--fail (st text)
+  "TEXT prefixed with the request context recorded in ST."
+  (apply #'efrit-api-describe-failure text (efrit-api-stream-context st)))
 
 (defun efrit-api-stream--format-error (body)
   "Turn an error BODY (JSON or text) into efrit's \"API Error (type): msg\" form."
@@ -299,7 +312,13 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
          (config (efrit-api-stream--write-config
                   (cons '("accept" . "text/event-stream") (plist-get req :headers))))
          (st (efrit-api-stream--make :callback callback :on-text on-text
-                                     :config-file config)))
+                                     :config-file config
+                                     ;; captured now; the sentinel runs
+                                     ;; outside the caller's bindings
+                                     :context (list (plist-get req :url)
+                                                    (alist-get "model" request-data nil nil #'equal)
+                                                    "curl (streaming)"
+                                                    efrit-api-request-purpose))))
     (with-temp-file body-file
       (set-buffer-multibyte nil)
       (insert (efrit-api-encode-request (plist-get req :body))))

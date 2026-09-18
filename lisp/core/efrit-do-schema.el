@@ -138,7 +138,7 @@ DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
                                                       ("description" . "The shell command to execute")))))
                        ("required" . ["command"]))))
     (("name" . "buffer_create")
-     ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
+     ("description" . "Create a read-only report buffer for output too long for the conversation. Not shown automatically: the user opens it from the tool row. Short results belong in your reply instead.")
      ("input_schema" . (("type" . "object")
                        ("properties" . (("name" . (("type" . "string")
                                                    ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
@@ -649,21 +649,33 @@ Returns: Symbol type, docstring, signature (for functions), source location, rel
                                       ("related" . (("type" . "boolean")
                                                     ("description" . "Include related symbols (default: false)")))))
                       ("required" . ["symbol"]))))
-   (("name" . "set_project_root")
-    ("description" . "Set the project root directory explicitly. CALL THIS FIRST if you need to work with files but the project context is unclear or default-directory is wrong (e.g., in daemon mode).
+   (("name" . "emacs_apropos")
+    ("description" . "Find the Emacs command, function or variable for a job when you do not know its name. Searches THIS Emacs (built-ins plus whatever the user has installed: magit, consult, org, tramp...), ranked like M-x apropos, and returns the first docstring line, the source feature, and current values of matching variables. Read-only; needs no grant.
+
+Use it BEFORE reaching for shell_exec or writing Lisp from memory. Then call the command with eval_sexp.
 
 EXAMPLES:
-- Set project: set_project_root path=\"~/src/myproject\"
-- Clear and auto-detect: set_project_root path=\"\"
-
-This affects all file operations (project_files, search_content, read_file, etc.) which resolve relative paths against the project root.
-
-Returns: The normalized project root path, or error if path doesn't exist.")
+- emacs_apropos query=\"recent files\"            -> recentf-open-files, recentf-list (with its value)
+- emacs_apropos query=\"revert buffer\"           -> revert-buffer-quick, revert-buffer
+- emacs_apropos query=\"vc diff\"                 -> vc-diff, vc-diff-mergebase, vc-ediff
+- emacs_apropos query=\"dired mark\" kind=\"all\"
+- emacs_apropos query=\"^tramp-.*method\" kind=\"variable\"   (regexp)")
     ("input_schema" . (("type" . "object")
-                      ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "Absolute path to project root, or empty string to clear and auto-detect")))))
-                      ("required" . ["path"]))))
-   (("name" . "get_diagnostics")
+                      ("properties" . (("query" . (("type" . "string")
+                                                   ("description" . "Words describing the job (two or more words match symbols containing at least two), or a regexp")))
+                                      ("kind" . (("type" . "string")
+                                                 ("enum" . ["command" "function" "variable" "all"])
+                                                 ("description" . "What to search (default: command, i.e. things a user can M-x)")))
+                                      ("include_values" . (("type" . "boolean")
+                                                           ("description" . "Report current values of matching variables (default: true)")))
+                                      ("include_internal" . (("type" . "boolean")
+                                                             ("description" . "Include private symbols with -- in the name (default: false)")))
+                                      ("max" . (("type" . "integer")
+                                                ("description" . "Most results to return (default: 25)")))))
+                      ("required" . ["query"]))))
+   ;; set_project_root removed from the model-facing schema: it let the
+    ;; model move its own sandbox.  M-x efrit-set-project-root remains.
+    (("name" . "get_diagnostics")
     ("description" . "Get compiler/linter errors from IDE diagnostic systems. CRITICAL for the edit-compile-fix loop.
 
 Collects diagnostics from:

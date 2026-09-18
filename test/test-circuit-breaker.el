@@ -98,7 +98,7 @@
     ;; Next check should trip the breaker
     (let ((check-result (efrit-do--circuit-breaker-check-limits "tool6")))
       (should (not (car check-result))) ; Not allowed
-      (should (string-match-p "Session limit" (cdr check-result)))
+      (should (string-match-p "limit for this turn reached" (cdr check-result)))
       (should efrit-do--circuit-breaker-tripped))))
 
 (ert-deftest test-circuit-breaker-same-tool-warning ()
@@ -267,7 +267,7 @@
 
       ;; Third should be blocked (session limit)
       (let ((result (efrit-do--execute-tool tool3)))
-        (should (string-match-p "Session limit" result))))))
+        (should (string-match-p "limit for this turn reached" result))))))
 
 ;;; Error Loop Detection Tests
 

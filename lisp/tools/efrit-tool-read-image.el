@@ -96,9 +96,9 @@ and users commonly need to view images from anywhere (Desktop, Downloads, etc.).
       (when (string-empty-p path-input)
         (signal 'user-error (list "Path is required")))
 
-      ;; Resolve path WITHOUT sandbox check - image reading is read-only and
-      ;; users commonly need to view images from Desktop, Downloads, etc.
-      (let* ((path (expand-file-name path-input))
+      ;; Images are often outside the project (Desktop, Downloads): the
+      ;; scope sandbox asks for `read' there rather than refusing.
+      (let* ((path (efrit-resolve-path-simple path-input 'read "read_image"))
              (path-relative (file-name-nondirectory path)))
 
         ;; Check file exists

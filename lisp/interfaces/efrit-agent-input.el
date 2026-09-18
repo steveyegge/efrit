@@ -92,7 +92,101 @@ Returns the question ID for tracking responses."
            'efrit-options options))
     ;; Update input prompt to indicate we're waiting
     (efrit-agent--update-input-prompt question options)
+    ;; A menu for the choices, on top of the transcript.  Opened from
+    ;; the command loop: this runs inside a tool result callback.
+    (when (and options (efrit-agent-question-menu-available-p))
+      (let ((buf (current-buffer)))
+        (run-at-time 0 nil (lambda ()
+                             (when (buffer-live-p buf)
+                               (with-current-buffer buf
+                                 (efrit-agent--open-question-menu question options)))))))
     q-id))
+
+;;; Question menu (transient)
+
+(defcustom efrit-agent-question-menu t
+  "When non-nil, a question with options opens a menu of the choices.
+The choices are still shown in the transcript and 1-4 still select
+them; the menu is a layer on top.  Closing it (q, C-g) leaves the
+question waiting for a typed answer."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defvar efrit-agent--question-menu-options nil
+  "Options of the question the menu is showing, for its suffixes.")
+(defvar efrit-agent--question-menu-buffer nil
+  "The agent buffer the open question menu answers into.")
+
+(defun efrit-agent-question-menu-available-p ()
+  "Non-nil when the choices menu can be shown."
+  (and efrit-agent-question-menu
+       (not noninteractive)
+       (require 'transient nil t)))
+
+(defun efrit-agent--question-menu-choose (n)
+  "Answer the pending question with option N from the menu."
+  (when (buffer-live-p efrit-agent--question-menu-buffer)
+    (with-current-buffer efrit-agent--question-menu-buffer
+      (when (efrit-agent--select-option n)
+        (efrit-agent--clear-input)))))
+
+(defun efrit-agent--question-menu-custom ()
+  "Close the menu and leave point in the input for a typed answer."
+  (when (buffer-live-p efrit-agent--question-menu-buffer)
+    (efrit-agent-display efrit-agent--question-menu-buffer t)))
+
+(defun efrit-agent--question-menu-description ()
+  "The question text as the menu's heading, wrapped to the frame."
+  (let ((q (car efrit-agent--pending-question)))
+    (with-temp-buffer
+      (insert (or q "Choose"))
+      (let ((fill-column (max 40 (- (frame-width) 10))))
+        (fill-region (point-min) (point-max)))
+      (buffer-string))))
+
+(defun efrit-agent--question-menu-option-label (n)
+  "Label of option N, or nil past the end.  Long labels are cut."
+  (when-let* ((opt (nth (1- n) efrit-agent--question-menu-options)))
+    (truncate-string-to-width opt (max 30 (- (frame-width) 12)) nil nil "…")))
+
+(defun efrit-agent--define-question-menu ()
+  "Define `efrit-agent-question-menu' (the transient) once."
+  (unless (fboundp 'efrit-agent-question-menu)
+    (eval
+     '(transient-define-prefix efrit-agent-question-menu ()
+        "Answer the model's question."
+        [:description efrit-agent--question-menu-description
+         ["Choose"
+          ("1" (lambda () (interactive) (efrit-agent--question-menu-choose 1))
+           :description (lambda () (efrit-agent--question-menu-option-label 1))
+           :if (lambda () (efrit-agent--question-menu-option-label 1)))
+          ("2" (lambda () (interactive) (efrit-agent--question-menu-choose 2))
+           :description (lambda () (efrit-agent--question-menu-option-label 2))
+           :if (lambda () (efrit-agent--question-menu-option-label 2)))
+          ("3" (lambda () (interactive) (efrit-agent--question-menu-choose 3))
+           :description (lambda () (efrit-agent--question-menu-option-label 3))
+           :if (lambda () (efrit-agent--question-menu-option-label 3)))
+          ("4" (lambda () (interactive) (efrit-agent--question-menu-choose 4))
+           :description (lambda () (efrit-agent--question-menu-option-label 4))
+           :if (lambda () (efrit-agent--question-menu-option-label 4)))
+          ("5" (lambda () (interactive) (efrit-agent--question-menu-choose 5))
+           :description (lambda () (efrit-agent--question-menu-option-label 5))
+           :if (lambda () (efrit-agent--question-menu-option-label 5)))
+          ("6" (lambda () (interactive) (efrit-agent--question-menu-choose 6))
+           :description (lambda () (efrit-agent--question-menu-option-label 6))
+           :if (lambda () (efrit-agent--question-menu-option-label 6)))]
+         ["Or"
+          ("t" "type an answer" efrit-agent--question-menu-custom)]])
+     t)))
+
+(defun efrit-agent--open-question-menu (question options)
+  "Show the transient menu for QUESTION with OPTIONS in this agent buffer."
+  (when (efrit-agent-question-menu-available-p)
+    (efrit-agent--define-question-menu)
+    (setq efrit-agent--question-menu-options options
+          efrit-agent--question-menu-buffer (current-buffer))
+    (ignore question)
+    (call-interactively #'efrit-agent-question-menu)))
 
 (defun efrit-agent--set-input-prompt (text)
   "Replace the input prompt with TEXT.
@@ -107,10 +201,25 @@ have been sent back to Claude as part of the user's answer."
           (prompt-bol nil))
       (save-excursion
         (goto-char efrit-agent--input-start)
-        (setq prompt-bol (line-beginning-position))
+        ;; The prompt is a field: `line-beginning-position' would stop
+        ;; after it and the old prompt would survive, growing by one
+        ;; "> " per reset.  Ask for the true line start.
+        (setq prompt-bol (let ((inhibit-field-text-motion t)) (line-beginning-position)))
         (delete-region prompt-bol efrit-agent--input-start)
         (goto-char efrit-agent--input-start)
-        (insert (propertize text 'face 'efrit-agent-input-prompt))
+        ;; Read-only with rear-nonsticky: typing at the marker inserts
+        ;; editable text after the prompt, while a backspace at the
+        ;; start of the input, or a kill spanning the prompt, is
+        ;; refused.  The initial prompt from `efrit-agent--setup-buffer'
+        ;; carries the same properties; earlier versions dropped them
+        ;; on every rewrite, which is how the prompt got deleted.
+        (insert (propertize text
+                            'face 'efrit-agent-input-prompt
+                            'efrit-agent-prompt t
+                            'read-only t
+                            'field 'output
+                            'front-sticky '(read-only field)
+                            'rear-nonsticky t))
         ;; Inserting at the marker leaves the marker before the text;
         ;; move it back to the start of the (empty) input region.
         (set-marker efrit-agent--input-start (point)))
@@ -209,9 +318,20 @@ Returns nil if no options or N is out of range."
     ;; so they behave like normal editing whenever point is in the input area.
     (define-key map (kbd "C-k") #'kill-line)
     (define-key map (kbd "C-q") #'quoted-insert)
-    ;; History navigation
+    (define-key map (kbd "d") #'self-insert-command)
+    (define-key map (kbd "o") #'self-insert-command)
+    ;; comint conventions: C-a goes to just after the prompt, C-c C-u
+    ;; kills the whole input, C-c C-a is the true beginning of line
+    (define-key map (kbd "C-a") #'efrit-agent-input-bol)
+    (define-key map (kbd "<home>") #'efrit-agent-input-bol)
+    (define-key map (kbd "C-c C-a") #'beginning-of-line)
+    (define-key map (kbd "C-c C-u") #'efrit-agent-input-kill)
+    ;; History navigation: M-p/M-n always; the arrows step history at
+    ;; the edges of the input and move by line inside it, as a shell does
     (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
+    (define-key map (kbd "<up>") #'efrit-agent-input-up)
+    (define-key map (kbd "<down>") #'efrit-agent-input-down)
     ;; Completion
     (define-key map (kbd "TAB") #'completion-at-point)
     ;; Quick option selection (1-4 when waiting for question response)
@@ -366,6 +486,51 @@ Saves asynchronously to avoid blocking the UI."
         (efrit-log 'debug "Auto-saved session %s" (efrit-repl-session-id session)))
     (error
      (efrit-log 'error "Auto-save failed: %s" (error-message-string err)))))
+
+(defun efrit-agent-input-bol ()
+  "Move to the start of the input on this line, after the prompt.
+On the prompt line that is just after the prompt (like `comint-bol');
+on a continuation line of a multi-line input it is the line start.
+A second press goes to the real beginning of line."
+  (interactive)
+  (let* ((true-bol (let ((inhibit-field-text-motion t)) (line-beginning-position)))
+         (field-start (field-beginning (point) t)))
+    (if (and (> field-start true-bol) (/= (point) field-start))
+        (goto-char field-start)
+      (goto-char true-bol))))
+
+(defun efrit-agent--input-first-line-p ()
+  "Non-nil if point is on the first line of the input."
+  (<= (let ((inhibit-field-text-motion t)) (line-beginning-position))
+      efrit-agent--input-start))
+
+(defun efrit-agent--input-last-line-p ()
+  "Non-nil if point is on the last line of the input."
+  (= (line-end-position) (point-max)))
+
+(defun efrit-agent-input-up ()
+  "Previous history entry on the first input line; otherwise the previous line.
+The shell convention: an up arrow in a one-line input recalls history,
+in a multi-line input it moves up until it reaches the top."
+  (interactive)
+  (if (efrit-agent--input-first-line-p)
+      (efrit-agent-input-history-prev)
+    (let ((line-move-visual nil)) (line-move -1 t))))
+
+(defun efrit-agent-input-down ()
+  "Next history entry on the last input line; otherwise the next line."
+  (interactive)
+  (if (efrit-agent--input-last-line-p)
+      (efrit-agent-input-history-next)
+    (let ((line-move-visual nil)) (line-move 1 t))))
+
+(defun efrit-agent-input-kill ()
+  "Kill the whole current input (like `comint-kill-input'); it goes to the kill ring."
+  (interactive)
+  (when (and efrit-agent--input-start (marker-position efrit-agent--input-start)
+             (< efrit-agent--input-start (point-max)))
+    (kill-region efrit-agent--input-start (point-max))
+    (goto-char (point-max))))
 
 (defun efrit-agent-input-clear ()
   "Clear the current input."

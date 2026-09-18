@@ -76,7 +76,7 @@ Returns a standard tool response with commit list."
                                  "%aI" efrit-tool-vcs-log--field-sep
                                  "%s" efrit-tool-vcs-log--commit-sep))
              (path-resolved (when path-input
-                             (plist-get (efrit-resolve-path path-input) :path-relative)))
+                             (plist-get (efrit-resolve-path path-input 'read "vcs_log") :path-relative)))
              ;; Build args list directly in correct order
              (log-args (append
                         (list "log"

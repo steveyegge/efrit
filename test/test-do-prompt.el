@@ -49,5 +49,32 @@
                (lambda () "/srv/proj/")))
       (should (string= (efrit-do--remote-root-guidance) "")))))
 
+(ert-deftest test-do-prompt-emacs-first-guidance ()
+  "The prompt teaches Emacs-first: discovery tool, the built-in map, shell last."
+  (let ((text (efrit-do--command-common-tasks)))
+    (should (string-match-p "EMACS FIRST" text))
+    (should (string-match-p "emacs_apropos" text))
+    (dolist (sym '("recentf-list" "dired" "vc-diff" "process-file" "find-file"
+                   "directory-files-recursively" "Tramp"))
+      (should (string-match-p (regexp-quote sym) text)))
+    ;; shell is the last resort, stated as such
+    (should (string-match-p "3\\. shell_exec" text)))
+  (let ((examples (efrit-do--command-examples)))
+    ;; the first example is recentf, not a shell command
+    (should (< (string-match "recentf-list" examples)
+               (or (string-match "shell_exec" examples) most-positive-fixnum)))
+    (should (string-match-p "vcs_status" examples))
+    (should (string-match-p "/ssh:build:" examples))
+    ;; the embedded regexp survives the string escaping intact
+    ;; in the prompt text (a JSON-ish string) the Lisp regexp appears as \\\\.jpeg\\\\'
+    (should (string-search "\\\\\\\\.jpeg\\\\\\\\'" examples))))
+
+(ert-deftest test-do-prompt-tool-selection-mentions-discovery ()
+  (let ((efrit-project-root nil))
+    (cl-letf (((symbol-function 'efrit-tool--get-project-root) (lambda () "/srv/p/")))
+      (let ((text (efrit-do--command-system-prompt)))
+        (should (string-match-p "- emacs_apropos:" text))
+        (should (string-match-p "runs on the LOCAL machine" text))))))
+
 (provide 'test-do-prompt)
 ;;; test-do-prompt.el ends here

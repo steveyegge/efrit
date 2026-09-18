@@ -54,6 +54,7 @@
 (require 'efrit-progress)
 (require 'efrit-common)
 (require 'efrit-todo)
+(require 'efrit-sandbox)
 
 ;; Forward declarations
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
@@ -348,6 +349,8 @@ Validates syntax before execution and returns the result or error."
               (format "\n[Executed: %s]\n[Result: %s]"
                       input-str
                       eval-result))
+          ;; Sandbox denials end the turn; the dispatcher handles them
+          (efrit-sandbox-denied (signal (car eval-err) (cdr eval-err)))
           (error
            (format "\n[Efrit internal error: %s]\n[This error was raised by efrit's own tool dispatch, NOT by your elisp, which was likely never evaluated. Do not debug efrit internals. Retry the tool call once; if the error persists, stop and report it to the user.]"
                    (error-message-string eval-err))))
@@ -390,9 +393,15 @@ blocks inside `call-process'.  This loop checks the clock between
 (defun efrit-do--handle-shell-exec (input-str)
   "Handle shell_exec tool to execute a shell command.
 INPUT-STR is the shell command to execute.
-Validates against security whitelist before execution.
+With the scope sandbox on, running any shell command needs the single
+`shell' grant (any command can escalate to any other, so a per-command
+whitelist is not a boundary).  Without it the legacy whitelist applies.
 Returns output or security error."
-  (let ((validation (efrit-do--validate-shell-command input-str)))
+  (when (bound-and-true-p efrit-sandbox-enabled)
+    (efrit-sandbox-check 'shell t "shell_exec" input-str))
+  (let ((validation (if (bound-and-true-p efrit-sandbox-enabled)
+                        (cons t nil)
+                      (efrit-do--validate-shell-command input-str))))
     (if (car validation)
         ;; Command is safe, execute it
         (condition-case shell-err
@@ -836,8 +845,18 @@ Returns JSON-encoded list of checkpoint metadata."
   :label "VCS Blame Result")
 
 (defun efrit-do--handle-set-project-root (tool-input)
-  "Handle set_project_root tool to set the project context."
+  "Handle set_project_root: refused under the scope sandbox.
+Letting the model move the project root let it move its own fence.
+The tool is no longer in the schema; a stale conversation may still
+call it, so answer clearly instead of silently obeying."
   (require 'efrit-tool-utils)
+  (if (bound-and-true-p efrit-sandbox-enabled)
+      (format "\n[Error: set_project_root is not available. The project root is %s and only the user can change it (M-x efrit-set-project-root). If you need files outside it, request them by path and the user will be asked to grant access.]"
+              (efrit-tool--get-project-root))
+    (efrit-do--handle-set-project-root-legacy tool-input)))
+
+(defun efrit-do--handle-set-project-root-legacy (tool-input)
+  "Pre-sandbox set_project_root behaviour (efrit-sandbox-enabled nil)."
   (or (efrit-do--validate-hash-table tool-input "set_project_root")
       (let ((path (gethash "path" tool-input)))
         (cond
@@ -853,6 +872,13 @@ Returns JSON-encoded list of checkpoint metadata."
                 (format "\n[Project root set to: %s]" result)
               (efrit-format-error "set_project_root"
                                   (format "Path does not exist: %s" path)))))))))
+
+(efrit-define-simple-tool-handler efrit-do--handle-emacs-apropos "emacs_apropos"
+  :require efrit-tool-emacs-apropos
+  :required ("query")
+  :fields ("query" "kind" "include_values" "include_internal" "max")
+  :fn efrit-tool-emacs-apropos
+  :label "Emacs Apropos Result")
 
 (efrit-define-simple-tool-handler efrit-do--handle-elisp-docs "elisp_docs"
   :require efrit-tool-elisp-docs
@@ -1054,11 +1080,16 @@ TOOL-INPUT contains buffer name to get info about."
 TOOL-INPUT may name a BUFFER; otherwise the user's working buffer is
 used (see `efrit-context-target-buffer')."
   (require 'efrit-context-sources)
+  (require 'efrit-sandbox)
   (let* ((name (and (hash-table-p tool-input) (gethash "buffer" tool-input)))
          (buf (if (and name (not (string-empty-p name)))
                   (or (get-buffer name)
                       (error "No buffer named %s" name))
                 (efrit-context-target-buffer))))
+    ;; A named buffer may visit a file outside the project; the default
+    ;; target buffer is always allowed by the buffer rules.
+    (when (and name (not (string-empty-p name)))
+      (efrit-sandbox-check-buffer buf "editor_state"))
     (or (efrit-context-snapshot buf)
         "<editor-context>\n(no context sources enabled)\n</editor-context>")))
 

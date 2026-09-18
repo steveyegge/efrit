@@ -59,6 +59,8 @@
      (when (memq level '(warn error))
        (message (apply #'format format-string args))))))
 
+(require 'efrit-sandbox-eval)   ; wraps eval_sexp; see efrit-tools-eval-sexp
+
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
 (declare-function efrit-truncate-string "efrit-common")
@@ -132,7 +134,9 @@ immediately, telling the model to use the request_user_input tool."
   "Count of all tool calls in current session.")
 
 (defun efrit-tools--reset-rate-limits ()
-  "Reset rate limiting counters. Called at session start."
+  "Reset the per-turn tool counters.
+Called at the start of every REPL turn and every efrit-do session;
+without that the counters span the whole Emacs process."
   (setq efrit-tools--eval-count 0
         efrit-tools--total-call-count 0))
 
@@ -141,15 +145,13 @@ immediately, telling the model to use the request_user_input tool."
 Signals an error if rate limit would be exceeded."
   (when (> efrit-tools-max-total-calls-per-session 0)
     (when (>= efrit-tools--total-call-count efrit-tools-max-total-calls-per-session)
-      (error "Tool call rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--total-call-count
+      (error "Tool call limit for this turn reached (%d; efrit-max-tool-calls-per-session). Tell the user; do not retry."
              efrit-tools-max-total-calls-per-session)))
 
   (when (and (string= tool-name "eval_sexp")
              (> efrit-tools-max-eval-per-session 0))
     (when (>= efrit-tools--eval-count efrit-tools-max-eval-per-session)
-      (error "eval_sexp rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--eval-count
+      (error "eval_sexp limit for this turn reached (%d; efrit-max-eval-per-session). Tell the user; do not retry."
              efrit-tools-max-eval-per-session))))
 
 (defun efrit-tools--increment-rate-limit (tool-name)
@@ -227,11 +229,19 @@ non-nil."
   (let* ((timeout (and efrit-tools-eval-timeout
                        (> efrit-tools-eval-timeout 0)
                        efrit-tools-eval-timeout))
+         ;; The scope sandbox wraps the evaluation: static inspection,
+         ;; then file/process/network checks during the run
+         ;; (efrit-sandbox-eval).  The input-blocking wrapper is passed
+         ;; in as the evaluator so both apply.
+         (evaluator (lambda (form)
+                      (if efrit-tools-block-interactive-input
+                          (efrit-tools--call-with-input-blocked
+                           (lambda () (eval form t)))
+                        (eval form t))))
          (do-eval (lambda ()
-                    (if efrit-tools-block-interactive-input
-                        (efrit-tools--call-with-input-blocked
-                         (lambda () (eval sexp t)))
-                      (eval sexp t))))
+                    (if (bound-and-true-p efrit-sandbox-enabled)
+                        (efrit-sandbox-eval-form sexp evaluator)
+                      (funcall evaluator sexp))))
          (result (if timeout
                      (with-timeout (timeout
                                     (signal 'efrit-eval-timeout
@@ -310,6 +320,9 @@ Handles parsing, evaluation, error handling, and result formatting."
   (let ((result-data (condition-case err
                          (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
+                       ;; A sandbox denial is not an eval error: let it
+                       ;; reach the dispatcher, which ends the turn
+                       (efrit-sandbox-denied (signal (car err) (cdr err)))
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
 
     ;; Return formatted result

@@ -54,6 +54,7 @@
 (require 'efrit-log)
 (require 'efrit-events)
 (require 'efrit-ui-helpers)
+(require 'efrit-sandbox)   ; efrit-sandbox-enabled decides whether this layer runs
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -76,6 +77,9 @@
     ("buffer_create" . write) ("edit_buffer" . write) ("create_buffer" . write)
     ("beads_create" . write) ("beads_update" . write) ("beads_close" . write)
     ("set_project_root" . write)
+    ;; net: data leaves the machine (the sandbox's `net' grant gates
+    ;; these; the class is for review and policy)
+    ("fetch_url" . net) ("web_search" . net)
     ;; control: efrit plumbing, never gated
     ("session_complete" . control) ("todo_write" . control)
     ("request_user_input" . control) ("confirm_action" . control)
@@ -83,12 +87,13 @@
     ("display_in_buffer" . control) ("format_file_list" . control)
     ("format_todo_list" . control))
   "Alist mapping tool names to permission classes.
-Classes are `read', `write', `exec', `control'.  Tools not listed are
-treated as `read'.  Network tools (web_search, fetch_url) already
-have their own consent inside the tool."
+Classes are `read', `write', `exec', `net', `control'.  Tools not
+listed are treated as `read'.  Network tools have their own consent
+through the sandbox's `net' grant; the class exists so review and
+policy can treat them as more than a read."
   :type '(alist :key-type string
                 :value-type (choice (const read) (const write)
-                                    (const exec) (const control)))
+                                    (const exec) (const net) (const control)))
   :group 'efrit-permissions)
 
 (defcustom efrit-permission-policy '(write exec)
@@ -170,8 +175,13 @@ Examples:
   (or (cdr (assoc tool efrit-permission-tool-classes)) 'read))
 
 (defun efrit-permission-needed-p (tool)
-  "Non-nil if TOOL's class is in `efrit-permission-policy'."
-  (memq (efrit-permission-tool-class tool) efrit-permission-policy))
+  "Non-nil if TOOL's class is in `efrit-permission-policy'.
+When the scope sandbox is enabled it owns consent for reads, writes,
+eval, shell and network -- per project, with remembered grants -- so
+this per-call prompt would only double-ask; it then applies to nothing.
+Set `efrit-sandbox-enabled' to nil to get the per-call prompt back."
+  (and (not efrit-sandbox-enabled)
+       (memq (efrit-permission-tool-class tool) efrit-permission-policy)))
 
 (defun efrit-permission--input-get (input key)
   (cond ((hash-table-p input) (gethash key input))
@@ -376,10 +386,10 @@ edited the input at the prompt, the edited version is available from
       decision)))
 
 (defconst efrit-permission-denied-result
-  "Error permission denied: the user declined to allow this tool call. The turn ends here; do not retry. Wait for the user's next instruction."
+  "Error permission denied: the user declined this tool call. Do not retry it or work around it. Continue without it if you can; otherwise say what you need and stop."
   "Tool result recorded when the user denies a call.
-Starts with \"Error \" so the loop's error detection sees it, and is
-matched literally by `efrit-loop-execute-tools' to end the turn.")
+Starts with \"Error \" so the loop's error detection sees it.  The
+turn continues; the model decides how to proceed without the call.")
 
 (provide 'efrit-permissions)
 

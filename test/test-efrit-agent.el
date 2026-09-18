@@ -427,6 +427,238 @@
             (setq has-diff-face t)))
         (should-not has-diff-face)))))
 
+(ert-deftest test-efrit-agent-prompt-cannot-be-deleted ()
+  "Backspace at the start of the input, or a kill over the prompt, is refused.
+The prompt text is read-only with front-sticky read-only, both at
+buffer setup and after `efrit-agent--set-input-prompt' rewrites it."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (progn
+          (goto-char (point-max))
+          (insert "abc")
+          (goto-char efrit-agent--input-start)
+          (should-error (delete-char -1) :type 'text-read-only)
+          ;; the field keeps line-beginning-position after the prompt,
+          ;; so a kill over "the line" no longer reaches it; a region
+          ;; that explicitly spans the prompt is still refused
+          (goto-char (point-max))
+          (should (= (line-beginning-position) efrit-agent--input-start))
+          (should-error (delete-region (let ((inhibit-field-text-motion t)) (line-beginning-position))
+                                       (point))
+                        :type 'text-read-only)
+          (should (equal (efrit-agent--get-input) "abc"))
+          ;; a question rewrites the prompt; still protected
+          (efrit-agent--set-input-prompt "Answer (or 1/2): ")
+          (goto-char efrit-agent--input-start)
+          (should-error (delete-char -1) :type 'text-read-only)
+          (should (get-text-property (1- efrit-agent--input-start) 'efrit-agent-prompt))
+          ;; typing at the marker still works and lands in the input
+          (goto-char (point-max))
+          (insert "d")
+          (should (equal (efrit-agent--get-input) "abcd")))
+      (efrit-agent--clear-input))))
+
+(ert-deftest test-efrit-agent-input-is-a-field-like-comint ()
+  "Transcript and prompt are the output field; C-a/kill-line stop at the prompt,
+C-p still crosses into the transcript, C-c C-u kills the whole input."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (progn
+          (efrit-agent--append-to-conversation "earlier output\n" nil)
+          (should (eq (get-text-property (1- efrit-agent--input-start) 'field) 'output))
+          (should (eq (get-text-property (point-min) 'field) 'output))
+          (goto-char (point-max)) (insert "hello world")
+          ;; plain beginning-of-line honours the field
+          (beginning-of-line)
+          (should (= (point) efrit-agent--input-start))
+          ;; input-bol: after the prompt; again: the true line start
+          (goto-char (point-max)) (efrit-agent-input-bol)
+          (should (= (point) efrit-agent--input-start))
+          (efrit-agent-input-bol)
+          (should (= (point) (let ((inhibit-field-text-motion t)) (line-beginning-position))))
+          ;; kill-line from input start kills the input and nothing else
+          (goto-char efrit-agent--input-start) (kill-line)
+          (should (equal (efrit-agent--get-input) ""))
+          (should (get-text-property (1- efrit-agent--input-start) 'efrit-agent-prompt))
+          ;; line motion crosses fields (inhibit-line-move-field-capture)
+          (insert "xyz") (forward-line -1)
+          (should (eq (get-text-property (point) 'field) 'output))
+          ;; C-c C-u
+          (goto-char (point-max)) (efrit-agent-input-kill)
+          (should (equal (efrit-agent--get-input) ""))
+          (should (equal (car kill-ring) "xyz")))
+      (efrit-agent--clear-input))))
+
+(ert-deftest test-efrit-agent-prompt-does-not-accumulate ()
+  "Resetting the prompt replaces it; it used to append one \"> \" per reset."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (dotimes (_ 3) (efrit-agent--reset-input-prompt))
+    (efrit-agent--set-input-prompt "Answer: ")
+    (efrit-agent--reset-input-prompt)
+    (let ((line (buffer-substring-no-properties
+                 (let ((inhibit-field-text-motion t))
+                   (save-excursion (goto-char (point-max)) (line-beginning-position)))
+                 (point-max))))
+      (should (equal line "> ")))))
+
+(ert-deftest test-efrit-agent-arrows-history-at-edges-motion-inside ()
+  "Up on the first input line recalls history; inside a multi-line input it moves up."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (unwind-protect
+        (let ((efrit-agent--input-history (list "second cmd" "first cmd"))
+              (efrit-agent--global-history nil)
+              (efrit-agent--history-index -1)
+              (efrit-agent--history-temp nil))
+          (goto-char (point-max)) (insert "draft")
+          ;; one-line input: up = previous history, saving the draft
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "second cmd"))
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "first cmd"))
+          ;; down twice: back through history, then the draft returns
+          (efrit-agent-input-down)
+          (should (equal (efrit-agent--get-input) "second cmd"))
+          (efrit-agent-input-down)
+          (should (equal (efrit-agent--get-input) "draft"))
+          ;; multi-line input: up from the second line is line motion
+          (efrit-agent--clear-input)
+          (goto-char (point-max)) (insert "line one\nline two")
+          (efrit-agent-input-up)
+          (should (equal (efrit-agent--get-input) "line one\nline two"))
+          (should (efrit-agent--input-first-line-p)))
+      (efrit-agent--clear-input))))
+
+(ert-deftest test-efrit-agent-user-turn-keeps-prefix-and-text-faces ()
+  "The user block background is layered under the prompt/text faces, not over them."
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (efrit-agent--add-user-message "check limits")
+    (goto-char (point-min)) (search-forward "check")
+    (let ((face (get-text-property (point) 'face)))
+      (should (memq 'efrit-agent-user-message (ensure-list face)))
+      (should (memq 'efrit-agent-user-block (ensure-list face))))
+    (goto-char (point-min)) (search-forward "❯")
+    (should (memq 'efrit-agent-user-prefix (ensure-list (get-text-property (1- (point)) 'face))))))
+
+(ert-deftest test-efrit-agent-review-rows-show-approve-and-reject ()
+  "The reviewer's start and verdict events render as a tool-style row."
+  (require 'efrit-review)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (efrit-publish 'review-start '((:session-id . "s") (:calls . 2) (:model . "m") (:prompt . "P")))
+    (efrit-publish 'review-verdict '((:session-id . "s") (:verdict . approve)))
+    (efrit-publish 'review-start '((:session-id . "s") (:calls . 1) (:model . "m") (:prompt . "P")))
+    (efrit-publish 'review-verdict '((:session-id . "s") (:verdict . reject) (:reason . "wrong file")))
+    (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+           ;; header rows only: the rejected one auto-expands and its
+           ;; body mentions the reviewer too
+           (rows (seq-filter (lambda (l) (string-match-p "[✓✗] review:" l)) (split-string text "\n"))))
+      (should (= (length rows) 2))
+      (should (string-match-p "✓ review: 2 tool calls · m · approved" (nth 0 rows)))
+      (should (string-match-p "✗ review: 1 tool call · m · rejected · wrong file" (nth 1 rows))))
+    ;; d expands in the transcript, inserts in the input
+    (goto-char (point-min)) (search-forward "review")
+    (should (eq (key-binding "d") 'efrit-agent-toggle-expand))
+    (goto-char (point-max)) (efrit-agent--maybe-enable-input-mode)
+    (should (eq (key-binding "d") 'self-insert-command))))
+
+(ert-deftest test-efrit-agent-report-buffer-quits-and-opens-from-row ()
+  (require 'efrit-tool-edit-buffer)
+  (efrit)
+  (unwind-protect
+      (progn
+        (efrit-tool-create-buffer '((name . "*efrit-report: T*") (content . "x\n") (mode . "text-mode")))
+        (with-current-buffer "*efrit-report: T*"
+          (should (eq (key-binding "q") 'quit-window))
+          (should efrit-tool-report-buffer))
+        (with-current-buffer (efrit-agent--get-buffer)
+          (let ((h (make-hash-table :test 'equal)))
+            (puthash "name" "*efrit-report: T*" h)
+            (let ((id (efrit-agent-show-tool-start "buffer_create" h)))
+              (efrit-agent-show-tool-result id "Created buffer '*efrit-report: T*' with 2 characters" t 0.0)))
+          (let ((row (seq-find (lambda (l) (string-match-p "buffer_create" l))
+                               (split-string (buffer-substring-no-properties (point-min) (point-max)) "\n"))))
+            (should (string-match-p "\\*efrit-report: T\\* (2 chars) · o opens" row)))
+          ;; not shown until asked
+          (should-not (get-buffer-window "*efrit-report: T*"))
+          (goto-char (point-min)) (search-forward "buffer_create")
+          (cl-letf (((symbol-function 'select-window) (lambda (w &rest _) w)))
+            (efrit-agent-open-at-point))
+          (should (get-buffer-window "*efrit-report: T*"))))
+    (when (get-buffer "*efrit-report: T*")
+      (ignore-errors (delete-window (get-buffer-window "*efrit-report: T*")))
+      (kill-buffer "*efrit-report: T*"))))
+
+(ert-deftest test-efrit-agent-display-reuses-window ()
+  "Showing the agent buffer twice does not create a second window for it."
+  (efrit)
+  (let* ((buf (efrit-agent--get-buffer))
+         (before (length (window-list))))
+    (efrit-agent-display buf)
+    (let ((after-first (length (window-list))))
+      (efrit-agent-display buf)
+      (efrit-agent-display buf t)
+      (should (= (length (window-list)) after-first))
+      (should (= 1 (length (get-buffer-window-list buf nil t))))
+      (should (<= (- after-first before) 1)))))
+
+(ert-deftest test-efrit-agent-quit-removes-the-split-eshell-style ()
+  "The window efrit made for itself goes away on quit, in every path:
+plain open, redisplay while visible, and reopen after switching away.
+Batch Emacs may refuse to split a tiny frame; skip then."
+  (set-frame-height nil 60)
+  (delete-other-windows)
+  (switch-to-buffer "*scratch*")
+  (let ((buf (progn (efrit) (efrit-agent--get-buffer))))
+    (skip-unless (> (length (window-list)) 1))
+    (cl-flet ((quit-agent ()
+                (select-window (get-buffer-window buf))
+                (efrit-agent-quit)))
+      ;; open + quit
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; open, show again while visible (a session does this), quit
+      (efrit) (efrit-agent-display buf t) (efrit-agent--show-buffer)
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; the window is dedicated and carries a delete-window quit-restore
+      (efrit)
+      (let ((w (get-buffer-window buf)))
+        (should (window-dedicated-p w))
+        (should (eq 'window (car (window-parameter w 'quit-restore)))))
+      (quit-agent)
+      (should (= 1 (length (window-list))))
+      ;; a side-by-side layout: quitting removes only efrit's split
+      (split-window-right)
+      (efrit)
+      (should (= 3 (length (window-list))))
+      (quit-agent)
+      (should (= 2 (length (window-list))))
+      (delete-other-windows)
+      ;; killing the buffer (not quit-window) also removes the split
+      (efrit)
+      (should (= 2 (length (window-list))))
+      (select-window (get-buffer-window buf))
+      (kill-current-buffer)
+      (should (= 1 (length (window-list))))
+      ;; a window made by older code (plain split, not dedicated) is
+      ;; upgraded when M-x efrit finds the buffer already in it
+      (let* ((buf2 (progn (efrit) (efrit-agent--get-buffer)))
+             (w (get-buffer-window buf2)))
+        (set-window-dedicated-p w nil)
+        (efrit)
+        (should (window-dedicated-p w))
+        (select-window w) (kill-current-buffer)
+        (should (= 1 (length (window-list))))))))
+
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here

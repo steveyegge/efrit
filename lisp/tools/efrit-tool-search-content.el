@@ -350,7 +350,7 @@ Returns a standard tool response with search results."
         (signal 'user-error (list "Search pattern is required")))
 
       ;; Resolve path
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'read "search_content"))
              (path (plist-get path-info :path)))
 
         ;; Ensure path is a directory

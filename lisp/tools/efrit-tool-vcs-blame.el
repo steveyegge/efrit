@@ -116,7 +116,7 @@ Returns a standard tool response with blame information per line."
         (signal 'user-error (list "Not a git repository or git not available")))
 
       ;; Resolve path
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'read "vcs_blame"))
              (abs-path (plist-get path-info :path))
              (rel-path (plist-get path-info :path-relative)))
 

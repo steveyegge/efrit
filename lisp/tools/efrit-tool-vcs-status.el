@@ -153,13 +153,16 @@ ARGS is an alist with:
 Returns a standard tool response with repository status."
   (efrit-tool-execute vcs_status args
     (let* ((path-input (alist-get 'path args))
-           (path-info (efrit-resolve-path path-input)))
-      ;; path-info used to bind default-directory in efrit-tool-execute macro
-      (ignore path-info)
+           (path-info (efrit-resolve-path path-input 'read "vcs_status"))
+           ;; git runs where the (sandbox-checked) path points, not in
+           ;; the project root
+           (efrit-tool-git-directory (plist-get path-info :path)))
 
       ;; Check if git is available
       (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
+        (signal 'user-error
+                (list (format "%s is not inside a git repository (or git is not installed)"
+                              (abbreviate-file-name (plist-get path-info :path))))))
 
       ;; Get git status
       (let ((status-result (efrit-tool-run-git '("status" "--porcelain" "-b"))))

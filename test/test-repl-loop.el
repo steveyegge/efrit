@@ -49,7 +49,13 @@ RESPONSES is a form evaluating to a list of mock responses, returned
 in order by the stubbed API call (synchronously).  TOOL-RESULT is the
 string every stubbed tool dispatch returns."
   (declare (indent 2) (debug t))
-  `(let ((test-responses ,responses))
+  `(let ((test-responses ,responses)
+         ;; These tests exercise the loop, not the reviewer (on by
+         ;; default); test-review covers the review path with its own
+         ;; stub.  Left on, the reviewer's unstubbed API call would
+         ;; fail and be approved by policy -- passing, for the wrong
+         ;; reason.
+         (efrit-review-enabled nil))
      (cl-letf (((symbol-function 'efrit-repl-loop--api-call)
                 (lambda (_session _messages callback)
                   (let ((response (pop test-responses)))
@@ -90,6 +96,48 @@ string every stubbed tool dispatch returns."
         (should (= (length messages) 4))
         (should (equal (mapcar (lambda (m) (alist-get 'role m)) messages)
                        '("user" "assistant" "user" "assistant")))))))
+
+(ert-deftest test-repl-loop-sandbox-denial-continues-turn ()
+  "A sandbox denial is a failed tool result: the model answers after it.
+The turn does not end at the denial (it used to), and the model's
+follow-up response is delivered."
+  (require 'efrit-sandbox)
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-tool-use
+                        "tool-1" "shell_exec" '(("command" . "cat ~/x"))))
+               "tool_use")
+              (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "No access to that file; here is what I can do."))
+               "end_turn"))
+        (concat efrit-sandbox-denied-prefix "run shell commands. The user declined.")
+      (efrit-repl-continue session "read my notes"
+                           (lambda (_s reason) (setq turn-reason reason)))
+      (should (equal turn-reason "end_turn"))
+      (should (eq (efrit-repl-session-status session) 'idle))
+      (let ((messages (efrit-repl-session-api-messages session)))
+        (should (= (length messages) 4))
+        ;; the denial went back as an is_error tool_result
+        (let* ((tr (nth 2 messages))
+               (block (aref (alist-get 'content tr) 0)))
+          (should (eq (alist-get 'is_error block) t))
+          (should (string-prefix-p efrit-sandbox-denied-prefix (alist-get 'content block))))))))
+
+(ert-deftest test-repl-loop-c-g-ends-turn ()
+  "C-g during a tool still ends the turn as interrupted."
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-tool-use
+                        "tool-1" "eval_sexp" '(("expr" . "(sleep-for 9)"))))
+               "tool_use"))
+        efrit-loop--interrupt-result
+      (efrit-repl-continue session "wait"
+                           (lambda (_s reason) (setq turn-reason reason)))
+      (should (equal turn-reason "interrupted")))))
 
 (ert-deftest test-repl-loop-waiting-for-user-pauses-turn ()
   "A request_user_input result pauses the turn in waiting status."
@@ -132,6 +180,34 @@ string every stubbed tool dispatch returns."
                            (lambda (_s reason) (setq turn-reason reason)))
       (should (equal turn-reason "session-complete"))
       (should (eq (efrit-repl-session-status session) 'idle)))))
+
+(ert-deftest test-repl-loop-turn-resets-tool-counters ()
+  "Each turn starts with fresh tool counters; they used to span the Emacs process."
+  (require 'efrit-tools)
+  (let ((session (efrit-repl-session-create)))
+    (setq efrit-tools--eval-count 99 efrit-tools--total-call-count 99)
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "ok")) "end_turn"))
+        "unused"
+      (efrit-repl-continue session "hello" #'ignore)
+      (should (= efrit-tools--eval-count 0))
+      (should (= efrit-tools--total-call-count 0)))))
+
+(ert-deftest test-repl-loop-turn-resets-circuit-breaker ()
+  "A tripped breaker from an earlier turn does not block the next one."
+  (require 'efrit-do-circuit-breaker)
+  (let ((session (efrit-repl-session-create)))
+    (setq efrit-do--session-tool-count 30
+          efrit-do--circuit-breaker-tripped "Session limit reached: 30/30")
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "ok")) "end_turn"))
+        "unused"
+      (efrit-repl-continue session "hello" #'ignore)
+      (should (= efrit-do--session-tool-count 0))
+      (should-not efrit-do--circuit-breaker-tripped)
+      (should (car (efrit-do--circuit-breaker-check-limits "read_file" nil))))))
 
 (provide 'test-repl-loop)
 

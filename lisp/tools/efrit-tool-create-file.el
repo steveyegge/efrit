@@ -63,7 +63,7 @@ Returns a standard tool response with creation details."
                               (length content) efrit-tool-create-file-max-size))))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'write "create_file"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative))
              (parent-dir (file-name-directory path)))

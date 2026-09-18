@@ -6,6 +6,8 @@
 (require 'efrit-permissions)
 (require 'efrit-do-dispatch)
 (require 'efrit-do-handlers)
+(require 'efrit-sandbox)
+(defvar efrit-sandbox-enabled)
 
 (defun test-perm--input (&rest kvs)
   (let ((h (make-hash-table :test 'equal)))
@@ -20,8 +22,11 @@
      ,@body))
 
 (defmacro test-perm--fresh (&rest body)
+  "The per-call prompt is the legacy layer; it only runs with the scope
+sandbox off, so these tests bind it off."
   (declare (indent 0))
-  `(let ((efrit-permission-policy '(write exec))
+  `(let ((efrit-sandbox-enabled nil)
+         (efrit-permission-policy '(write exec))
          (efrit-permission-responder-function nil)
          (efrit-permission--session-grants (make-hash-table :test 'equal)))
      ,@body))

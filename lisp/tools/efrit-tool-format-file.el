@@ -115,7 +115,7 @@ Returns a standard tool response with diff showing changes."
         (signal 'user-error (list "Path is required")))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'write "format_file"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative)))
 

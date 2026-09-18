@@ -99,7 +99,7 @@ Returns a standard tool response with file metadata for each path."
         (setq paths (seq-take paths efrit-tool-file-info-max-paths)))
 
       ;; Resolve project root once
-      (let* ((path-info (efrit-resolve-path nil))
+      (let* ((path-info (efrit-resolve-path nil 'read "file_info"))
              (project-root (plist-get path-info :project-root))
              (results (mapcar (lambda (p)
                                (efrit-tool-file-info--single p project-root))

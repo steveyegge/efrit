@@ -78,7 +78,7 @@ Returns a standard tool response with diff showing changes."
         (signal 'user-error (list "old_str and new_str must be different")))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'write "edit_file"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative)))
 

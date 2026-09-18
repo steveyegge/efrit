@@ -17,11 +17,61 @@
 
 (require 'efrit-common)
 (require 'efrit-log)
+(require 'efrit-limits)
 (require 'cl-lib)
 (require 'seq)
 
-;; Forward declaration for function defined in efrit-do.el
-(declare-function efrit-do--extract-error-info "efrit-do")
+
+;;; Result parsing
+;;
+;; Pure string parsers over tool results.  They live here, below
+;; efrit-do, because the loop detector needs them and efrit-do is an
+;; interface-layer module that requires this one.
+
+(defun efrit-do--extract-error-info (result)
+  "Extract error information from RESULT string.
+Returns (error-p . error-msg) where error-p is t if errors found."
+  (when (stringp result)
+    (cond
+     ;; Syntax errors
+     ((string-match "\\[Syntax Error in \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Syntax error in %s: %s" 
+                      (match-string 1 result) 
+                      (match-string 2 result))))
+     ;; Runtime errors
+     ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Runtime error in %s: %s"
+                      (match-string 1 result)
+                      (match-string 2 result))))
+     ;; Efrit-internal dispatch errors (ef-hn6)
+     ((string-match "\\[Efrit internal error: \\(.+\\)\\]" result)
+      (cons t (format "Efrit internal error: %s" (match-string 1 result))))
+     ;; API errors - match the specific format from efrit-do--process-api-response
+     ;; Format: "API Error (type): message" - must have parenthesized type
+     ((string-match "^API Error ([^)]+):" result)
+      (cons t result))
+     ;; General errors - match at start of line to avoid false positives
+     ((string-match "^Error:" result)
+      (cons t result))
+     ;; No error detected
+     (t (cons nil nil)))))
+
+(defun efrit-do--extract-executed-code (result)
+  "Extract the executed code from RESULT string.
+Returns the code string that was executed, or nil if not found."
+  (when (stringp result)
+    (cond
+     ;; Extract from syntax error message
+     ((string-match "\\[Syntax Error in \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from runtime error message
+     ((string-match "\\[Error executing \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from successful execution message
+     ((string-match "\\[Executed: \\([^]]+\\)\\]" result)
+      (match-string 1 result))
+     ;; No code found
+     (t nil))))
 
 ;;; Customization
 
@@ -209,7 +259,10 @@ was modified with an error loop warning."
 ;;; Circuit Breaker Implementation
 
 (defun efrit-do--circuit-breaker-reset ()
-  "Reset circuit breaker state for a new session."
+  "Reset circuit breaker state for a new session or REPL turn.
+Every counter here is process-global; without this call at the start
+of each REPL turn, 30 tool calls spread over any number of turns
+tripped the breaker for the rest of the Emacs session."
   (setq efrit-do--session-tool-count 0)
   (setq efrit-do--circuit-breaker-tripped nil)
   (setq efrit-do--last-tool-called nil)
@@ -244,6 +297,10 @@ Converts hash tables to sorted alists for order-independent comparison."
     (mapcar #'efrit-do--normalize-for-hash obj))
    (t obj)))
 
+(defun efrit-do--tool-call-cap ()
+  "The tool-call cap in force: `efrit-do-max-tool-calls-per-session' unless raised."
+  (efrit-limits-effective 'max-tool-calls efrit-do-max-tool-calls-per-session))
+
 (defun efrit-do--circuit-breaker-check-limits (tool-name &optional tool-input)
   "Check circuit breaker limits before executing TOOL-NAME with TOOL-INPUT.
 Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
@@ -265,12 +322,18 @@ Uses efrit--safe-execute for error handling."
                  (cons nil (format "Circuit breaker active: %s"
                                    efrit-do--circuit-breaker-tripped)))
 
-                ;; Check session-wide limit
-                ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                ;; Check the per-turn tool-call cap.  At the cap, ask
+                ;; before tripping: a long task is not a loop.  A
+                ;; raise (once / session / project) lifts the effective
+                ;; cap and the call proceeds.
+                ((let ((cap (efrit-do--tool-call-cap)))
+                   (and (> cap 0)
+                        (>= efrit-do--session-tool-count cap)
+                        (not (efrit-limits-ask-to-raise 'max-tool-calls cap))))
                  (setq efrit-do--circuit-breaker-tripped
-                       (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
+                       (format "Tool-call limit for this turn reached: %d/%d (efrit-do-max-tool-calls-per-session). Last tool: %s (consecutive: %d)"
                                efrit-do--session-tool-count
-                               efrit-do-max-tool-calls-per-session
+                               (efrit-do--tool-call-cap)
                                (or efrit-do--last-tool-called "none")
                                efrit-do--tool-call-count))
                  (cons nil efrit-do--circuit-breaker-tripped))

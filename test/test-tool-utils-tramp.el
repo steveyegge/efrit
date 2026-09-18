@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'tramp)   ; must precede ert-x, which defines the "mock"
 (require 'ert-x)   ; method only when tramp is already loaded (Emacs 29+)
 (require 'efrit-tool-utils)
@@ -53,10 +54,16 @@ must be expanded inside an `ert-deftest' body."
         (should-not (plist-get info :remote))))))
 
 (ert-deftest test-tramp-local-outside-root-signals ()
+  "Outside the root: the scope sandbox asks; with no prompt it denies.
+With the scope sandbox off, the legacy prefix check signals."
   (let ((root (make-temp-file "efrit-local-" t)))
     (test-tramp--with-root root
-      (should-error (efrit-resolve-path "/etc/passwd")
-                    :type 'efrit-sandbox-violation))))
+      (let ((efrit-sandbox-request-function nil))
+        (should-error (efrit-resolve-path "/etc/passwd")
+                      :type 'efrit-sandbox-denied))
+      (let ((efrit-sandbox-enabled nil))
+        (should-error (efrit-resolve-path "/etc/passwd")
+                      :type 'efrit-sandbox-violation)))))
 
 ;;; Remote root
 
@@ -88,25 +95,28 @@ No connection is opened: the path does not exist, so
   (let* ((root (test-tramp--mock-dir))
          (local (file-remote-p root 'localname)))
     (test-tramp--with-root root
-      (should-error (efrit-resolve-path
-                     (concat "/sudo::" local "/does-not-exist"))
-                    :type 'efrit-sandbox-violation))))
+      (let ((efrit-sandbox-enabled nil))
+        (should-error (efrit-resolve-path
+                       (concat "/sudo::" local "/does-not-exist"))
+                      :type 'efrit-sandbox-violation)))))
 
 (ert-deftest test-tramp-remote-root-rejects-local-escape ()
   "Under a remote root, /etc/passwd resolves remotely, and is still outside."
   (let ((root (test-tramp--mock-dir)))
     (test-tramp--with-root root
-      (should-error (efrit-resolve-path "/etc/passwd")
-                    :type 'efrit-sandbox-violation))))
+      (let ((efrit-sandbox-enabled nil))
+        (should-error (efrit-resolve-path "/etc/passwd")
+                      :type 'efrit-sandbox-violation)))))
 
 (ert-deftest test-tramp-local-root-rejects-remote-path ()
   "A local root never contains a remote path."
   (let ((root (make-temp-file "efrit-local-" t))
         (remote (test-tramp--mock-dir)))
     (test-tramp--with-root root
-      (should-error (efrit-resolve-path
-                     (concat (file-remote-p remote) root "/f"))
-                    :type 'efrit-sandbox-violation))))
+      (let ((efrit-sandbox-enabled nil))
+        (should-error (efrit-resolve-path
+                       (concat (file-remote-p remote) root "/f"))
+                      :type 'efrit-sandbox-violation)))))
 
 (ert-deftest test-tramp-path-in-directory-p-host-mismatch ()
   (should-not (efrit-tool--path-in-directory-p "/mock:a:/tmp/x" "/mock:b:/tmp/"))

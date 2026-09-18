@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'json)
 
 ;; Add load paths for test
@@ -220,6 +221,21 @@
   "Test that response is JSON encodable."
   (let ((response (efrit-tool-vcs-status '())))
     (should (stringp (json-encode response)))))
+
+
+(ert-deftest test-vcs-status-runs-in-the-given-path ()
+  "vcs_status on a path outside the project reports on THAT path.
+It used to check the path with the sandbox and then run git in the
+project root anyway; / then answered with the project's status."
+  (let ((outside (make-temp-file "efrit-vcs-out-" t)))
+    (unwind-protect
+        (let* ((r (efrit-tool-vcs-status `((path . ,outside))))
+               (ok (cdr (assoc 'success r))))
+          ;; a fresh temp dir is not a repository: an error naming it,
+          ;; not the project's clean status
+          (should-not (eq ok t))
+          (should (string-match-p "not inside a git repository" (format "%S" r))))
+      (delete-directory outside t))))
 
 (provide 'test-tool-vcs-status)
 

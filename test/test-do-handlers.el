@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'json)
 
 ;; Add load paths for test
@@ -168,8 +169,15 @@ by design (see `efrit-do-forbidden-shell-patterns')."
       (should (string-match-p "hello" result)))))
 
 (ert-deftest test-handle-shell-exec-blocked ()
-  "Test shell-exec blocks dangerous command."
-  (let ((efrit-do-shell-security-enabled t))
+  "Without a shell grant the sandbox denies; with the sandbox off the
+legacy whitelist blocks rm."
+  (let ((efrit-sandbox-request-function nil)
+        (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--once-grant nil))
+    (should-error (efrit-do--handle-shell-exec "rm important.txt")
+                  :type 'efrit-sandbox-denied))
+  (let ((efrit-sandbox-enabled nil) (efrit-do-shell-security-enabled t))
     (let ((result (efrit-do--handle-shell-exec "rm important.txt")))
       (should (stringp result))
       (should (string-match-p "SECURITY" result))

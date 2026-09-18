@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'efrit-context-sources)
 (require 'efrit-repl-session)
 

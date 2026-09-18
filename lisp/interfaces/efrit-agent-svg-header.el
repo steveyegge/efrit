@@ -51,7 +51,8 @@
 (defvar efrit-default-model)
 (declare-function efrit-agent--status-string "efrit-agent-core")
 (declare-function efrit-agent--format-elapsed "efrit-agent-core")
-(declare-function efrit-agent--spinner-frame "efrit-agent-core")
+(require 'efrit-agent-spinner)
+(defvar efrit-agent--spinner-index)
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -90,6 +91,12 @@ propertized string; `none' hides the header."
   "Face for the project directory in the graphical header."
   :group 'efrit-agent-header)
 
+(defface efrit-agent-header-border
+  '((((background dark)) :foreground "#4c566a")
+    (t :foreground "#c0c6d0"))
+  "Colour (foreground) of the rule drawn along the bottom of the header."
+  :group 'efrit-agent-header)
+
 (defface efrit-agent-header-icon
   '((((background dark)) :background "#3b4252" :foreground "#eceff4")
     (t :background "#d8dee9" :foreground "#2e3440"))
@@ -106,32 +113,40 @@ propertized string; `none' hides the header."
          (rgb (and (stringp name) (color-name-to-rgb name))))
     (if rgb (apply #'color-rgb-to-hex (append rgb '(2))) "#808080")))
 
-(defun efrit-agent-svg--font-size ()
-  "Pixel size of the default font, or the char height if unknown."
-  (or (when-let* (((display-graphic-p))
-                  (font (face-attribute 'default :font))
-                  ((fontp font))
-                  (size (font-get font :size))
-                  ((and (numberp size) (> size 0))))
-        size)
-      (frame-char-height)))
+(defcustom efrit-agent-header-text-scale 1.0
+  "Multiplier on the header's text size relative to the buffer text.
+1.0 matches the default face; raise or lower it if the header looks
+out of proportion on your display."
+  :type 'number
+  :group 'efrit-agent-header)
 
-(defun efrit-agent-svg--text-width (node)
-  "Pixel width of text NODE: each tspan's text plus its dx gap."
-  (seq-reduce (lambda (total child)
-                (if (and (consp child) (eq (dom-tag child) 'tspan))
-                    (+ total
-                       (string-to-number (format "%s" (or (dom-attr child 'dx) 0)))
-                       (string-pixel-width (or (car (dom-children child)) "")))
-                  total))
-              (dom-children node) 0))
+(defun efrit-agent-svg--font-size ()
+  "Font size for the header SVG so its text matches the buffer text.
+The SVG is drawn at :scale 1 in the same units as `frame-char-height',
+so the font's own pixel size is the right value; fall back to a
+fraction of the char height when the font object has no size."
+  (let ((size (or (when-let* (((display-graphic-p))
+                              (font (face-attribute 'default :font))
+                              ((fontp font))
+                              (px (font-get font :size))
+                              ((and (numberp px) (> px 0))))
+                    px)
+                  (* 0.8 (frame-char-height)))))
+    (max 8 (round (* size efrit-agent-header-text-scale)))))
 
 (defun efrit-agent-svg--content-width (svg)
-  "Rightmost pixel any text row in SVG reaches."
-  (seq-reduce (lambda (w node)
-                (max w (+ (string-to-number (format "%s" (dom-attr node 'x)))
-                          (efrit-agent-svg--text-width node))))
-              (dom-by-tag svg 'text) 0))
+  "Rightmost pixel any text run in SVG reaches (absolute x plus its width)."
+  (let ((w 0))
+    (dolist (node (dom-by-tag svg 'text))
+      ;; a text node with a direct string child (the icon glyph)
+      (when (stringp (car (dom-children node)))
+        (setq w (max w (+ (string-to-number (format "%s" (dom-attr node 'x)))
+                          (string-pixel-width (car (dom-children node)))))))
+      (dolist (child (dom-children node))
+        (when (and (consp child) (eq (dom-tag child) 'tspan))
+          (setq w (max w (+ (string-to-number (format "%s" (or (dom-attr child 'x) 0)))
+                            (string-to-number (format "%s" (or (dom-attr child 'textLength) 0)))))))))
+    w))
 
 (defun efrit-agent-svg--window-width ()
   "Widest window showing this buffer, else the frame, in pixels."
@@ -146,6 +161,14 @@ propertized string; `none' hides the header."
               (fboundp 'efrit-repl-session-id))
          (efrit-repl-session-id efrit-agent--repl-session))
         ((boundp 'efrit-agent--session-id) efrit-agent--session-id)))
+
+(defun efrit-agent-svg--status-word (status)
+  "STATUS without its leading glyph: the word after the first space.
+The glyph is one token, then whitespace, in both display styles."
+  (let ((s (substring-no-properties status)))
+    (if (string-match "\\`[^[:space:]]+[[:space:]]+" s)
+        (substring s (match-end 0))
+      s)))
 
 (defun efrit-agent-svg--model ()
   "Collect everything the header shows into one alist (also the cache key)."
@@ -163,9 +186,16 @@ propertized string; `none' hides the header."
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
+      ;; The header is one SVG, so the spinner is drawn into it.  While
+      ;; a request is in flight the arc replaces the status glyph and
+      ;; the label is the status word itself ("Working"), so the slot
+      ;; keeps its text and width instead of swapping to "thinking...".
       (:spinner . ,(and efrit-agent--thinking-label
-                        (format "%s %s" (efrit-agent--spinner-frame)
-                                efrit-agent--thinking-label)))
+                        (efrit-agent-svg--status-word status)))
+      (:spinner-index . ,(and efrit-agent--thinking-label
+                              (mod efrit-agent--spinner-index efrit-agent-spinner-steps)))
+      (:spinner-color . ,(and efrit-agent--thinking-label
+                              (efrit-agent-spinner--hex 'efrit-agent-spinner)))
       (:elapsed . ,(and efrit-agent--start-time (efrit-agent--format-elapsed)))
       (:tools . ,(and tools (> tools 0) (format "%d tools" tools)))
       (:mode . ,(and (boundp 'efrit-agent-display-mode)
@@ -182,24 +212,69 @@ propertized string; `none' hides the header."
 
 (defun efrit-agent-svg--row (x y font-size family segments)
   "Build a text NODE at X,Y from SEGMENTS, a list of (TEXT . FACE).
-Segments are separated by ➤ in the default foreground."
+Segments are separated by ➤ in the default foreground.  A segment
+whose TEXT is (:spinner INDEX COLOR LABEL) reserves an arc slot drawn
+afterwards by `efrit-agent-svg--place-spinners' and shows LABEL.
+
+Every tspan gets an ABSOLUTE x, computed here from the widths Emacs
+measures with `string-pixel-width'.  Relative `dx' positioning was
+wrong twice over: the renderer's advance for the previous run differs
+from Emacs's measurement, and with `textLength' some renderers do not
+advance at all, piling every run at the row start.  With absolute x
+the text, the separators and the arc are placed by one calculation,
+and `textLength' merely keeps each run inside its cell."
   (let ((node (dom-node 'text `((x . ,x) (y . ,y)
                                 (font-size . ,font-size)
                                 (font-family . ,family))))
+        (cursor x)
+        (gap 8)
         (first t))
-    (dolist (seg segments)
-      (when (and (car seg) (not (string-empty-p (car seg))))
-        (unless first
-          (dom-append-child node (dom-node 'tspan
-                                           `((fill . ,(efrit-agent-svg--hex 'default))
-                                             (dx . "8"))
-                                           "➤")))
-        (dom-append-child node (dom-node 'tspan
-                                         `((fill . ,(efrit-agent-svg--hex (cdr seg)))
-                                           ,@(unless first '((dx . "8"))))
-                                         (car seg)))
-        (setq first nil)))
+    (cl-flet ((put-run (text fill &optional extra)
+                (let ((w (max 1 (string-pixel-width text))))
+                  (dom-append-child node (dom-node 'tspan
+                                                   `((x . ,(format "%d" cursor))
+                                                     (fill . ,fill)
+                                                     (textLength . ,(format "%d" w))
+                                                     (lengthAdjust . "spacingAndGlyphs")
+                                                     ,@extra)
+                                                   text))
+                  (setq cursor (+ cursor w gap)))))
+      (dolist (seg segments)
+        (let* ((text (car seg))
+               (spin (and (consp text) (eq (car text) :spinner) text))
+               (label (if spin (nth 3 spin) text)))
+          (when (and label (not (string-empty-p label)))
+            (unless first
+              (put-run "➤" (efrit-agent-svg--hex 'default)))
+            (when spin
+              ;; An empty run marking the arc's left edge; the arc is a
+              ;; font-size square, so advance by that plus the gap
+              (dom-append-child node (dom-node 'tspan
+                                               `((x . ,(format "%d" cursor))
+                                                 (efrit-spinner . ,spin))
+                                               ""))
+              (setq cursor (+ cursor font-size gap)))
+            (put-run label (efrit-agent-svg--hex (cdr seg)))
+            (setq first nil)))))
     node))
+
+(defun efrit-agent-svg--place-spinners (svg font-size)
+  "Draw the arc for every tspan in SVG that carries `efrit-spinner'.
+The tspan's absolute x is the arc's left edge; the arc is a FONT-SIZE
+square centred on the letters beside it (baseline minus ~0.35em)."
+  (dolist (row (dom-by-tag svg 'text))
+    (let ((y (string-to-number (format "%s" (dom-attr row 'y)))))
+      (dolist (child (dom-children row))
+        (when (and (consp child) (eq (dom-tag child) 'tspan))
+          (when-let* ((spin (dom-attr child 'efrit-spinner)))
+            (let* ((x (string-to-number (format "%s" (dom-attr child 'x))))
+                   (size font-size)
+                   (frame (efrit-agent-spinner--svg size (nth 1 spin) (nth 2 spin)
+                                                    (efrit-agent-svg--hex 'default :background)))
+                   (g (dom-node 'g `((transform . ,(format "translate(%.1f,%.1f)"
+                                                           x (- y (* 0.35 size) (/ size 2.0))))))))
+              (dolist (n (dom-children frame)) (dom-append-child g n))
+              (svg--append svg g))))))))
 
 (defun efrit-agent-svg--build (model)
   "Build the SVG DOM for MODEL (pure; no image support needed)."
@@ -210,10 +285,16 @@ Segments are separated by ➤ in the default foreground."
          (icon (* 2 ch))
          (icon-x 6)
          (text-x (+ icon-x icon 10))
-         (total-h (+ icon pad pad))
+         (border 1)
+         (total-h (+ icon pad pad border))
          (y1 (+ pad ch (/ (- ch fs) 2) (- (/ ch 4))))
          (y2 (+ y1 ch))
-         (svg (svg-create (alist-get :width model) total-h)))
+         (width (alist-get :width model))
+         (svg (svg-create width total-h)))
+    ;; Bottom border: the header's edge is part of the graphic, not a
+    ;; row of characters in the buffer
+    (svg-rectangle svg 0 (- total-h border) width border
+                   :fill (efrit-agent-svg--hex 'efrit-agent-header-border))
     ;; Icon tile
     (svg-rectangle svg icon-x pad icon icon :rx 6
                    :fill (efrit-agent-svg--hex 'efrit-agent-header-icon :background))
@@ -232,13 +313,18 @@ Segments are separated by ➤ in the default foreground."
     (svg--append svg (efrit-agent-svg--row
                       text-x y2 fs family
                       `((,(alist-get :directory model) . efrit-agent-header-directory)
-                        (,(or (alist-get :spinner model) (alist-get :status model))
+                        (,(if (alist-get :spinner model)
+                              (list :spinner (alist-get :spinner-color model)
+                                    (alist-get :spinner-index model)
+                                    (alist-get :spinner model))
+                            (alist-get :status model))
                          . ,(alist-get :status-face model))
                         (,(alist-get :elapsed model) . font-lock-comment-face)
                         (,(alist-get :tools model) . font-lock-comment-face)
                         (,(and (alist-get :mode model) (format "[%s]" (alist-get :mode model)))
                          . font-lock-comment-face)
                         (,(alist-get :session model) . font-lock-comment-face))))
+    (efrit-agent-svg--place-spinners svg fs)
     ;; Shrink the canvas to what was drawn: every pixel is re-blitted on
     ;; each spinner tick.  Overshoot is transparent, undershoot clips.
     (dom-set-attribute svg 'width
@@ -248,9 +334,14 @@ Segments are separated by ➤ in the default foreground."
     svg))
 
 (defun efrit-agent-svg--render (model)
-  "Rasterise MODEL into a propertized string carrying the SVG image."
+  "Rasterise MODEL into a propertized string carrying the SVG image.
+The SVG is laid out in the frame's character units, so it must be
+shown at `:scale 1': `svg-insert-image' leaves the scale to
+`image-scaling-factor', which is 2 on HiDPI displays and drew the
+whole header at twice the body text.  (The spinner already did this.)"
   (let ((svg (efrit-agent-svg--build model)))
-    (propertize (concat " " (with-temp-buffer (svg-insert-image svg) (buffer-string)))
+    (propertize (concat " "
+                        (propertize " " 'display (svg-image svg :ascent 'center :scale 1)))
                 'help-echo "efrit agent")))
 
 ;;; Cache and entry point

@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
 (require 'dom)
@@ -240,6 +241,10 @@ Returns standard tool response with search results.
 Note: Search queries are sent to external services.
 Do not include sensitive user data in queries."
   (efrit-tool-execute web_search args
+    (efrit-sandbox-check 'net t "web_search"
+                         (format "search %S%s" (or (alist-get 'query args) "")
+                                 (if-let* ((site (alist-get 'site args)))
+                                     (format " (site: %s)" site) "")))
     (let* ((query (alist-get 'query args))
            (site (alist-get 'site args))
            (max-results (or (alist-get 'max_results args) 5)))

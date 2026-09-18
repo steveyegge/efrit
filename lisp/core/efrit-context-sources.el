@@ -242,9 +242,11 @@ produced output."
         (let ((parts nil))
           (with-current-buffer buf
             (dolist (src efrit-context-sources)
-              (let ((fn (if (functionp src)
-                            src
-                          (alist-get src efrit-context--builtin-sources))))
+              ;; Builtin names first: `position' is also a function
+              ;; (the cl alias of `cl-position'), so functionp alone
+              ;; would call it with one argument and fail.
+              (let ((fn (or (alist-get src efrit-context--builtin-sources)
+                            (and (functionp src) src))))
                 (when fn
                   (condition-case err
                       (let ((text (save-excursion
@@ -269,6 +271,18 @@ plain INPUT is what is shown in the conversation."
     (if ctx
         (concat ctx "\n\n" input)
       input)))
+
+;;; Sandbox integration
+;;
+;; The sandbox exempts the user's target buffer and efrit's own UI
+;; buffers from the `buffer' capability check.  It cannot depend on
+;; this file (that would be a cycle), so it reads two injected
+;; functions; set them here, where both are defined.
+
+(with-eval-after-load 'efrit-sandbox
+  (setq efrit-sandbox-target-buffer-function #'efrit-context-target-buffer
+        efrit-sandbox-agent-buffer-p-function
+        (lambda (buf) (funcall efrit-context--agent-buffer-p-function buf))))
 
 (provide 'efrit-context-sources)
 

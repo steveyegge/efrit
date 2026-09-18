@@ -147,7 +147,7 @@ Returns a standard tool response with file listing."
                           efrit-tool-project-files-max-default))
            (offset (or (alist-get 'offset args) 0))
            ;; Resolve path with sandbox check
-           (path-info (efrit-resolve-path path-input))
+           (path-info (efrit-resolve-path path-input 'read "project_files"))
            (root (plist-get path-info :path))
            (project-root (plist-get path-info :project-root))
            (warnings '())

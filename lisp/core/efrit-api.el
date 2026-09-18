@@ -86,6 +86,51 @@ Set a value to `:delete' to remove a key efrit sends by default."
   :type '(alist :key-type string :value-type sexp)
   :group 'efrit)
 
+;;; Request context for error messages
+;;
+;; "HTTP error: curl exit 7" tells the user nothing about which host
+;; efrit was talking to or on whose behalf.  Every request site binds
+;; `efrit-api-request-purpose'; every failure is wrapped by
+;; `efrit-api-describe-failure', which prefixes the purpose, the
+;; endpoint (scheme://host/path -- never the query string or key),
+;; the model and the transport.
+
+(defvar efrit-api-request-purpose nil
+  "Why the request in flight is being made, for error messages.
+A short phrase such as \"the model's next turn\", \"reviewing the
+proposed tool calls\", \"listing models\".  Bound dynamically by the
+caller around the request; nil reads as \"an API request\".")
+
+(defun efrit-api-display-url (url)
+  "URL reduced to scheme://host[:port]/path for display.
+The query string and fragment are dropped: they can carry keys."
+  (condition-case nil
+      (let* ((u (url-generic-parse-url url))
+             (path (car (url-path-and-query u))))
+        (format "%s://%s%s%s" (url-type u) (url-host u)
+                (if-let* ((p (url-port-if-non-default u))) (format ":%d" p) "")
+                (or path "")))
+    (error "<unparsable url>")))
+
+(defun efrit-api-describe-request (&optional url model transport purpose)
+  "One line naming a request: PURPOSE, URL, MODEL, TRANSPORT.
+Defaults: the messages endpoint, `efrit-default-model', the configured
+transport, `efrit-api-request-purpose'."
+  (format "%s → %s (model %s, via %s)"
+          (or purpose efrit-api-request-purpose "an API request")
+          (efrit-api-display-url (or url (efrit-common-get-api-url)))
+          (or model (and (boundp 'efrit-default-model) efrit-default-model) "?")
+          (or transport
+              (if (bound-and-true-p efrit-api-streaming) "curl (streaming)" "url-retrieve"))))
+
+(defun efrit-api-describe-failure (error-text &rest args)
+  "ERROR-TEXT prefixed with the request context; ARGS as for `efrit-api-describe-request'.
+The result is what the user sees in the agent buffer, so it says what
+was attempted before it says what went wrong."
+  (format "%s failed.\n%s"
+          (apply #'efrit-api-describe-request args)
+          error-text))
+
 (defun efrit-api-apply-extra-body (body)
   "Return BODY (an alist) with `efrit-api-extra-body' merged in."
   (if (null efrit-api-extra-body)
@@ -201,7 +246,13 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
                    (efrit-api-apply-extra-body request-data)))
              (url-request-method "POST")
              (url-request-extra-headers (plist-get req :headers))
-             (url-request-data (efrit-api-encode-request (plist-get req :body))))
+             (url-request-data (efrit-api-encode-request (plist-get req :body)))
+             ;; captured now: the callback runs later, outside the
+             ;; caller's dynamic bindings
+             (describe-args (list (plist-get req :url)
+                                  (alist-get "model" request-data nil nil #'equal)
+                                  "url-retrieve"
+                                  efrit-api-request-purpose)))
         (url-retrieve
          (plist-get req :url)
          (lambda (status)
@@ -221,15 +272,21 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
                        (let ((response (efrit-api-parse-response)))
                          (funcall callback response)))
                    (error
-                    (if error-callback
-                        (funcall error-callback (error-message-string url-err))
-                      (error "%s" (error-message-string url-err)))))
+                    (let ((msg (apply #'efrit-api-describe-failure
+                                      (error-message-string url-err) describe-args)))
+                      (if error-callback
+                          (funcall error-callback msg)
+                        (error "%s" msg)))))
                (when (buffer-live-p response-buffer)
                  (kill-buffer response-buffer)))))
          nil t t))
     (error
+     ;; Before the request left: no key, bad URL, encoding failure
      (if error-callback
-         (funcall error-callback (error-message-string err))
+         (funcall error-callback
+                  (efrit-api-describe-failure (error-message-string err)
+                                              nil (alist-get "model" request-data nil nil #'equal)
+                                              "url-retrieve"))
        (signal (car err) (cdr err))))))
 
 ;;; Sync Request
@@ -250,7 +307,11 @@ Returns the parsed response hash-table, or signals an error."
                            (plist-get req :url)
                            nil t (or timeout 60))))
     (unless response-buffer
-      (error "Failed to get response from API (timeout or connection error)"))
+      (error "%s" (efrit-api-describe-failure
+                   (format "No response within %ds (timeout or connection error)" (or timeout 60))
+                   (plist-get req :url)
+                   (alist-get "model" request-data nil nil #'equal)
+                   "url-retrieve (sync)")))
     (with-current-buffer response-buffer
       (unwind-protect
           (efrit-api-parse-response)

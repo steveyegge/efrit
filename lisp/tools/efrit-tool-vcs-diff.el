@@ -114,7 +114,7 @@ Returns a standard tool response with diff output."
       ;; Build git diff args
       (let* ((diff-args (list "diff"))
              (path-resolved (when path-input
-                             (plist-get (efrit-resolve-path path-input) :path-relative))))
+                             (plist-get (efrit-resolve-path path-input 'read "vcs_diff") :path-relative))))
 
         ;; Add context lines
         (push (format "-U%d" context-lines) diff-args)

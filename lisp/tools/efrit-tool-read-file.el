@@ -170,7 +170,7 @@ Returns a standard tool response with file contents."
         (signal 'user-error (list "Path is required")))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'read "read_file"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative)))
 

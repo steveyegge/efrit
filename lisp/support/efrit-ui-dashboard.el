@@ -88,8 +88,9 @@ When nil, uses ASCII alternatives for better TTY compatibility."
       (efrit-dashboard-mode)
       (efrit-dashboard-refresh)
       (efrit-dashboard-setup-auto-refresh))
-    (display-buffer buffer)
-    (select-window (get-buffer-window buffer))))
+    ;; A dedicated popup: `q' (efrit-dashboard-quit) removes the window
+    (pop-to-buffer buffer '((display-buffer-reuse-window display-buffer-at-bottom)
+                            (dedicated . t)))))
 
 (defun efrit-dashboard-refresh ()
   "Refresh the dashboard content."
@@ -477,7 +478,9 @@ or :malformed if JSON parsing fails."
 
     (setq buffer-read-only t)
     (goto-char (point-min))
-    (display-buffer (current-buffer))))
+    (pop-to-buffer (current-buffer) '((display-buffer-reuse-window display-buffer-at-bottom)
+                                      (window-height . fit-window-to-buffer)
+                                      (dedicated . t)))))
 
 ;;; Initialization
 

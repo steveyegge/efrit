@@ -281,6 +281,12 @@ Returns a standard tool response with:
       ;; Validate
       (unless changes
         (signal 'user-error (list "changes list is required")))
+      ;; Every target must be writable within the granted scope before
+      ;; anything is shown or applied
+      (mapc (lambda (change)
+              (when-let* ((f (alist-get 'file change)))
+                (efrit-resolve-path f 'write "show_diff_preview")))
+            (append changes nil))
 
       (when (zerop (length changes))
         (signal 'user-error (list "changes list cannot be empty")))

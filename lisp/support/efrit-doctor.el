@@ -22,6 +22,7 @@
 ;;   6. Caching        cache_control accepted by the endpoint (with 5)
 ;;   7. Sandbox        project root, remote host, data directory
 ;;   8. Tramp          remote root has git/rg/sh on the remote PATH
+;;   8b. Review        second-model review on/off, model, failure policy
 ;;   9. Permissions    policy sane, responder callable
 ;;  10. Context        sources resolve, snapshot renders
 ;;  11. UI             agent buffer mode, SVG header support
@@ -48,6 +49,9 @@
 (require 'efrit-do-prompt)
 (require 'efrit-permissions)
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
+(require 'efrit-review)
+(require 'efrit-instructions)
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
@@ -59,6 +63,9 @@
 (declare-function efrit-permission-tool-class "efrit-permissions")
 (declare-function efrit-permission-summarize "efrit-permissions")
 (declare-function efrit-config--ensure-directories "efrit-config")
+(declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+(declare-function efrit-sandbox-store-file "efrit-sandbox-store")
+(declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
 
 (defvar efrit-api-auth-scheme)
 (defvar efrit-api-base-url)
@@ -415,9 +422,77 @@ carries a cache_control block, which is the caching probe."
 
 ;;; 9. Permissions
 
+(defun efrit-doctor--check-sandbox-scope ()
+  (efrit-doctor--layer "Sandbox scope"
+    (require 'efrit-sandbox-store)
+    (if (not efrit-sandbox-enabled)
+        (efrit-doctor--fail "Scope sandbox is OFF"
+                            "Every tool -- eval_sexp, shell_exec, file writes anywhere -- runs unchecked.  Only the legacy per-call permission prompt stands between the model and your disk."
+                            "Enable sandbox" (lambda () (setq efrit-sandbox-enabled t)))
+      (let* ((root (efrit-sandbox-project-root))
+             (file (efrit-sandbox-store-file root))
+             (grants (progn (efrit-sandbox-store-ensure-loaded root) (efrit-sandbox-grants root)))
+             (project (cl-remove-if-not (lambda (g) (eq (plist-get g :scope) 'project)) grants))
+             (session (cl-remove-if-not (lambda (g) (eq (plist-get g :scope) 'session)) grants)))
+        (efrit-doctor--ok (format "Sandbox on: read inside %s by default" (abbreviate-file-name root)))
+        (efrit-doctor--info (format "%d project grant(s) in %s, %d session grant(s)"
+                                    (length project)
+                                    (if (file-exists-p file) (abbreviate-file-name file) "(no file yet)")
+                                    (length session))
+                            (if grants
+                                (mapconcat (lambda (g) (format "%s %s %s" (plist-get g :scope) (plist-get g :cap)
+                                                               (let ((tg (plist-get g :target)))
+                                                                 (if (eq tg t) "" (efrit-sandbox--target-label tg)))))
+                                           grants "\n")
+                              "M-x efrit-sandbox to review or add grants."))
+        (when (and (file-exists-p file) (/= (logand (file-modes file) #o077) 0))
+          (efrit-doctor--warn (format "%s is group/world readable" (abbreviate-file-name file))
+                              "It lists what the model may touch; keep it private." "chmod 600"
+                              (lambda () (set-file-modes file #o600))))
+        (dolist (g project)
+          (when (and (memq (plist-get g :cap) '(read write))
+                     (stringp (plist-get g :target))
+                     (member (plist-get g :target)
+                             (list "/" (efrit-sandbox-canonical "~"))))
+            (efrit-doctor--warn (format "Project grant: %s under %s" (plist-get g :cap) (plist-get g :target))
+                                "That is the whole filesystem / home directory.  Narrow it in M-x efrit-sandbox.")))
+        (unless (or (null efrit-sandbox-request-function)
+                    (functionp efrit-sandbox-request-function))
+          (efrit-doctor--fail "efrit-sandbox-request-function is not a function"
+                              "Requests would all be denied."))
+        (when (null efrit-sandbox-request-function)
+          (efrit-doctor--warn "No sandbox prompt installed"
+                              "Anything outside the default scope is silently denied.  (require 'efrit-sandbox-ui) installs the prompt."
+                              "Install prompt"
+                              (lambda () (require 'efrit-sandbox-ui)
+                                (setq efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))))))))
+
+(defun efrit-doctor--check-review ()
+  (efrit-doctor--layer "Review"
+    (if (not efrit-review-enabled)
+        (efrit-doctor--warn "Second-model review is off"
+                            "Write/exec tool calls run without a reviewer call judging them against your request first.  On by default; you turned it off."
+                            "Enable review" (lambda () (setq efrit-review-enabled t)))
+      (let ((model (or efrit-review-model efrit-default-model)))
+        (efrit-doctor--ok (format "Review on: %s judges %s tool calls"
+                                  model
+                                  (mapconcat #'symbol-name efrit-review-classes "/")))
+        (when (equal model efrit-default-model)
+          (efrit-doctor--info "Reviewer is the same model as the proposer"
+                              "It catches slips and misread intent, not shared misjudgement.  Set efrit-review-model to a different model for a more independent second opinion."))
+        (when (eq efrit-review-on-failure 'approve)
+          (efrit-doctor--info "A failed review call approves the turn"
+                              "efrit-review-on-failure is `approve': a review outage lets work continue under the sandbox alone.  Set it to `reject' where a missed review is worse than a stalled turn."))
+        (when (< efrit-review-max-rejections 1)
+          (efrit-doctor--fail "efrit-review-max-rejections is below 1"
+                              "Every rejection would hand the turn to you at once; the proposer never gets to revise."
+                              "Set to 2" (lambda () (setq efrit-review-max-rejections 2))))))))
+
 (defun efrit-doctor--check-permissions ()
   (efrit-doctor--layer "Permissions"
     (cond
+     ((bound-and-true-p efrit-sandbox-enabled)
+      (efrit-doctor--info "Per-call permission prompt inactive: the scope sandbox owns consent"))
      ((null efrit-permission-policy)
       (efrit-doctor--warn "Permission policy is nil"
                           "Every tool, including eval_sexp and shell_exec, runs without asking."
@@ -466,7 +541,26 @@ carries a cache_control block, which is the caching probe."
               (efrit-doctor--warn (format "Prompt hook %S returned %s" fn (type-of r)) "Must return a string or nil.")))
         (error (efrit-doctor--warn (format "Prompt hook %S signalled" fn) (error-message-string err)))))
     (when efrit-system-prompt-functions
-      (efrit-doctor--ok (format "%d system-prompt hook(s) callable" (length efrit-system-prompt-functions))))))
+      (efrit-doctor--ok (format "%d system-prompt hook(s) callable" (length efrit-system-prompt-functions))))
+    ;; Instruction files (AGENTS.md / CLAUDE.md), layered like Claude Code
+    (let* ((located (efrit-instructions-locate))
+           (text (and located (efrit-instructions-text))))
+      (cond
+       ((null located)
+        (efrit-doctor--info "No AGENTS.md / CLAUDE.md applies"
+                            (format "Looked in the user files, each directory above the project, and the project root for %s."
+                                    (mapconcat #'identity efrit-instructions-files ", "))))
+       (t
+        (efrit-doctor--ok (format "%d instruction file(s), %d chars in the prompt"
+                                  (length located) (length (or text "")))
+                          (mapconcat (lambda (e) (format "%-9s %s" (cdr e) (abbreviate-file-name (car e))))
+                                     located "\n"))
+        (when (and text (string-match-p "\\[omitted:" text))
+          (efrit-doctor--warn "Instruction files exceed efrit-instructions-max-total-size"
+                              "Less specific files were replaced by a stub.  Raise the limit or shorten the files."))
+        (when (and text (string-match-p "\\[import not found:" text))
+          (efrit-doctor--warn "An @import in an instruction file points at a missing file"
+                              "M-x efrit-instructions-show lists the imports as the model sees them.")))))))
 
 ;;; 11. UI
 
@@ -579,6 +673,8 @@ endpoint, model and prompt-caching setting work end to end."
       (efrit-doctor--check-live)))
   (efrit-doctor--check-transport)
   (efrit-doctor--check-sandbox)
+  (efrit-doctor--check-sandbox-scope)
+  (efrit-doctor--check-review)
   (efrit-doctor--check-tramp)
   (efrit-doctor--check-permissions)
   (efrit-doctor--check-context)
