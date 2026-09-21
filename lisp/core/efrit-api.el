@@ -16,16 +16,21 @@
 ;; - Async and sync API request functions
 ;; - Response parsing utilities
 ;;
-;; Both efrit-chat-api.el and efrit-executor.el should use this layer
+;; The loop engine and the executor use this layer
 ;; instead of duplicating HTTP logic.
 
 ;;; Code:
 
 (require 'json)
 (require 'url)
+(defvar url-show-status)
 (require 'cl-lib)
 (require 'efrit-common)
 (require 'efrit-log)
+(declare-function efrit-response-usage "efrit-chat-response")
+(declare-function efrit-response-error "efrit-chat-response")
+(declare-function efrit-response-stop-reason "efrit-chat-response")
+(declare-function efrit-error-message "efrit-chat-response")
 
 (declare-function efrit-log "efrit-log")
 (declare-function efrit-log-debug "efrit-log")
@@ -176,12 +181,60 @@ Applies header customization from `efrit-api-custom-headers' and
 
 ;;; JSON Encoding
 
+(defvar efrit-api--last-body nil
+  "The bytes of the last request body, kept for `efrit-api-explain-invalid-json'.")
+
 (defun efrit-api-encode-request (data)
   "Encode DATA as JSON with proper Unicode escaping for HTTP transmission.
 Returns a UTF-8 encoded string suitable for url-request-data."
   (let* ((json-string (json-encode data))
          (escaped-json (efrit-common-escape-json-unicode json-string)))
-    (encode-coding-string escaped-json 'utf-8)))
+    (setq efrit-api--last-body (encode-coding-string escaped-json 'utf-8))))
+
+(defun efrit-api--invalid-json-p (message)
+  "Non-nil if the API's error MESSAGE says the request body was not JSON."
+  (and (stringp message) (string-match-p "Invalid JSON\\|invalid json\\|JSON parse" message)))
+
+(defun efrit-api-save-last-body ()
+  "Write the last request body to a file in `efrit-data-directory'; return its path.
+The file is what left this Emacs, byte for byte, so it can be checked
+with another parser: jq . FILE, or python3 -m json.tool FILE."
+  (interactive)
+  (unless efrit-api--last-body (user-error "No request has been sent yet"))
+  (let ((file (expand-file-name (format-time-string "request-body-%Y%m%d-%H%M%S.json")
+                                (if (boundp 'efrit-data-directory)
+                                    (symbol-value 'efrit-data-directory)
+                                  temporary-file-directory))))
+    (make-directory (file-name-directory file) t)
+    (with-file-modes #o600
+      (with-temp-file file
+        (set-buffer-multibyte nil)
+        (insert efrit-api--last-body)))
+    (when (called-interactively-p 'any) (message "Request body saved to %s" file))
+    file))
+
+(defun efrit-api-explain-invalid-json ()
+  "What is wrong with the last request body, as far as Emacs can tell.
+Parses the bytes that were sent with `json-parse-string' and reports
+the result, the size, and any escape or control character a stricter
+parser could object to.  Returns the report string."
+  (let* ((body (or efrit-api--last-body (user-error "No request has been sent yet")))
+         (text (decode-coding-string body 'utf-8))
+         (parse (condition-case e (and (json-parse-string text) "parses") (error (format "%S" e))))
+         (non-ascii (cl-count-if (lambda (c) (> c 127)) text))
+         (controls (cl-count-if (lambda (c) (and (< c 32) (not (memq c '(9 10 13))))) text))
+         (odd (let ((n 0) (i 0))
+                (while (string-match "\\\\u[0-9A-Fa-f]\\{4\\}[0-9A-Fa-f]" text i)
+                  (setq n (1+ n) i (match-end 0)))
+                n))
+         (lone (let ((n 0) (i 0))
+                 (while (string-match "\\\\u[dD][89abAB][0-9A-Fa-f]\\{2\\}\\(?:[^\\\\]\\|\\\\[^u]\\|\\\\u[^dD]\\|\\\\u[dD][0-7]\\)" text i)
+                   (setq n (1+ n) i (match-end 0)))
+                 n))
+         (report (format "last request body: %d bytes, %s by Emacs; non-ASCII %d, raw controls %d, 5+ digit escapes %d, lone high surrogates %d; saved to %s"
+                         (length body) parse non-ascii controls odd lone (efrit-api-save-last-body))))
+    (efrit-log 'warn "%s" report)
+    report))
 
 ;;; Response Parsing
 
@@ -205,6 +258,11 @@ Must be called with point in a url-retrieve response buffer."
         (if-let* ((error-obj (gethash "error" response)))
             (let ((error-type (gethash "type" error-obj))
                   (error-msg (gethash "message" error-obj)))
+              ;; the body we sent is the evidence; keep it and say where
+              (when (efrit-api--invalid-json-p error-msg)
+                (setq error-msg (format "%s -- %s" error-msg
+                                        (condition-case nil (efrit-api-explain-invalid-json)
+                                          (error "could not inspect the last body")))))
               (error "API Error (%s): %s" error-type error-msg))
           response)))))
 
@@ -220,9 +278,12 @@ response buffer."
                    (decode-coding-region (point) (point-max) 'utf-8 t)
                    :object-type 'hash-table)))
         (when-let* ((error-obj (gethash "error" body)))
-          (format "API Error (%s): %s"
-                  (or (gethash "type" error-obj) "unknown")
-                  (or (gethash "message" error-obj) "unknown error")))))))
+          (let ((msg (or (gethash "message" error-obj) "unknown error")))
+            (when (efrit-api--invalid-json-p msg)
+              (setq msg (format "%s -- %s" msg
+                                (condition-case nil (efrit-api-explain-invalid-json)
+                                  (error "could not inspect the last body")))))
+            (format "API Error (%s): %s" (or (gethash "type" error-obj) "unknown") msg)))))))
 
 (defun efrit-api-extract-content (response)
   "Extract content array from API RESPONSE hash-table."
@@ -234,10 +295,98 @@ response buffer."
 
 ;;; Async Request
 
+(defun efrit-api--log-request (request-data transport)
+  "Log the outgoing request: purpose, model, size, TRANSPORT.  Returns `float-time'."
+  (let* ((messages (alist-get "messages" request-data nil nil #'equal))
+         (tools (alist-get "tools" request-data nil nil #'equal)))
+    (efrit-log 'info "api → %s: %s, %d message(s), %d tool(s), via %s"
+               (alist-get "model" request-data nil nil #'equal)
+               (or efrit-api-request-purpose "request")
+               (length messages) (length tools) transport))
+  (float-time))
+
+(defun efrit-api--log-response (response started &optional purpose)
+  "Log RESPONSE: stop reason, tokens, elapsed since STARTED, for PURPOSE."
+  (let* ((usage (and response (efrit-response-usage response)))
+         (err (and response (efrit-response-error response))))
+    (if err
+        (efrit-log 'warn "api ← error after %.1fs: %s (%s)"
+                   (- (float-time) started) (efrit-error-message err)
+                   (or purpose efrit-api-request-purpose "request"))
+      (efrit-log 'info "api ← %s in %.1fs: in=%s out=%s cache_read=%s cache_write=%s (%s)"
+                 (or (and response (efrit-response-stop-reason response)) "?")
+                 (- (float-time) started)
+                 (and usage (gethash "input_tokens" usage))
+                 (and usage (gethash "output_tokens" usage))
+                 (and usage (gethash "cache_read_input_tokens" usage))
+                 (and usage (gethash "cache_creation_input_tokens" usage))
+                 (or purpose efrit-api-request-purpose "request")))))
+
+(defcustom efrit-api-inline-system-on-refusal t
+  "When non-nil, a request refused before generation is retried once
+with its system prompt folded into the first user message.
+Some routes refuse any request that carries a `system' field (the
+stop reason is refusal, no output, in about a second) while the same
+text as part of the user message is answered.  The retry is logged;
+the response of the retry carries the key `efrit-inlined-system' so a
+caller can tell."
+  :type 'boolean
+  :group 'efrit)
+
+(defun efrit-api--refused-p (response)
+  "Non-nil if RESPONSE is a pre-generation refusal."
+  (and (hash-table-p response)
+       (equal (gethash "stop_reason" response) "refusal")))
+
+(defun efrit-api-inline-system (request-data)
+  "REQUEST-DATA with its system prompt moved into the first user message.
+Returns nil when there is no system prompt to move."
+  (let ((system (alist-get "system" request-data nil nil #'equal)))
+    (when system
+      (let* ((text (cond ((stringp system) system)
+                         ((vectorp system)
+                          (mapconcat (lambda (b) (or (alist-get "text" b nil nil #'equal) "")) system "\n"))
+                         (t (format "%s" system))))
+             (messages (append (alist-get "messages" request-data nil nil #'equal) nil))
+             (first (car messages))
+             (content (alist-get "content" first nil nil #'equal))
+             (new-first
+              (if (stringp content)
+                  `(("role" . "user") ("content" . ,(concat text "\n\n---\n\n" content)))
+                ;; a block vector: prepend a text block
+                `(("role" . "user")
+                  ("content" . ,(vconcat (vector `(("type" . "text") ("text" . ,text)))
+                                         content))))))
+        (append (cl-remove-if (lambda (c) (member (car c) '("system" "messages"))) request-data)
+                `(("messages" . ,(vconcat (cons new-first (cdr messages))))))))))
+
 (defun efrit-api-request-async (request-data callback &optional error-callback)
   "Send REQUEST-DATA to Claude API asynchronously.
 Calls CALLBACK with (RESPONSE) on success.
-Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
+Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil.
+A refusal of a request carrying a system prompt is retried once with
+the prompt inlined, as `efrit-api-request-sync' does."
+  (let ((purpose efrit-api-request-purpose))
+    (efrit-api--request-async-1
+     request-data
+     (lambda (response)
+       (if (and efrit-api-inline-system-on-refusal
+                (efrit-api--refused-p response)
+                (alist-get "system" request-data nil nil #'equal))
+           (let ((efrit-api-request-purpose purpose))
+             (efrit-log 'warn "api: refused with a system prompt; retrying with it inlined (%s)"
+                        (or purpose "request"))
+             (efrit-api--request-async-1
+              (efrit-api-inline-system request-data)
+              (lambda (r2)
+                (when (hash-table-p r2) (puthash "efrit-inlined-system" t r2))
+                (funcall callback r2))
+              error-callback))
+         (funcall callback response)))
+     error-callback)))
+
+(defun efrit-api--request-async-1 (request-data callback &optional error-callback)
+  "One asynchronous request; see `efrit-api-request-async'."
   (condition-case err
       (let* ((api-key (efrit-common-get-api-key))
              (req (efrit-api-apply-transforms
@@ -252,7 +401,9 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
              (describe-args (list (plist-get req :url)
                                   (alist-get "model" request-data nil nil #'equal)
                                   "url-retrieve"
-                                  efrit-api-request-purpose)))
+                                  efrit-api-request-purpose))
+             (purpose efrit-api-request-purpose)
+             (started (efrit-api--log-request request-data "url-retrieve")))
         (url-retrieve
          (plist-get req :url)
          (lambda (status)
@@ -270,10 +421,12 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
                          (error "%s" (or (efrit-api--error-from-body)
                                          (format "HTTP error: %s" http-err))))
                        (let ((response (efrit-api-parse-response)))
+                         (efrit-api--log-response response started purpose)
                          (funcall callback response)))
                    (error
                     (let ((msg (apply #'efrit-api-describe-failure
                                       (error-message-string url-err) describe-args)))
+                      (efrit-log 'warn "api ← failed after %.1fs: %s" (- (float-time) started) msg)
                       (if error-callback
                           (funcall error-callback msg)
                         (error "%s" msg)))))
@@ -294,7 +447,79 @@ Calls ERROR-CALLBACK with (ERROR-MESSAGE) on failure, or signals error if nil."
 (defun efrit-api-request-sync (request-data &optional timeout)
   "Send REQUEST-DATA to Claude API synchronously.
 TIMEOUT is optional timeout in seconds (default 60).
-Returns the parsed response hash-table, or signals an error."
+Returns the parsed response hash-table, or signals an error.
+A refusal of a request carrying a system prompt is retried once with
+the prompt inlined (`efrit-api-inline-system-on-refusal')."
+  (let ((response (efrit-api--request-sync-1 request-data timeout)))
+    (if (and efrit-api-inline-system-on-refusal
+             (efrit-api--refused-p response)
+             (alist-get "system" request-data nil nil #'equal))
+        (let ((inlined (efrit-api-inline-system request-data)))
+          (efrit-log 'warn "api: refused with a system prompt; retrying with it inlined (%s)"
+                     (or efrit-api-request-purpose "request"))
+          (let ((r2 (efrit-api--request-sync-1 inlined timeout)))
+            (when (hash-table-p r2) (puthash "efrit-inlined-system" t r2))
+            r2))
+      response)))
+
+(defcustom efrit-api-sync-status t
+  "When non-nil, a synchronous request shows its progress in the echo area.
+A spinner, the purpose of the request and the seconds elapsed, redrawn
+while the request is in flight.  The Contacting host message of
+url.el is suppressed either way: it named the endpoint and then sat
+there for the whole request."
+  :type 'boolean
+  :group 'efrit)
+
+(defconst efrit-api--sync-spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
+  "Text spinner frames for the synchronous request status.")
+
+(defun efrit-api--sync-status (purpose started timeout frame)
+  "The echo-area line for a synchronous request: spinner, PURPOSE, elapsed."
+  (let ((elapsed (- (float-time) started)))
+    (format "%s %s… %ds%s  (C-g stops the wait)"
+            (aref efrit-api--sync-spinner-frames (mod frame (length efrit-api--sync-spinner-frames)))
+            (or purpose "waiting for the API")
+            (round elapsed)
+            (if (and timeout (> timeout 0)) (format "/%ds" timeout) ""))))
+
+(defun efrit-api--retrieve-and-wait (url timeout purpose started)
+  "Fetch URL with `url-retrieve', waiting up to TIMEOUT seconds.
+Returns the response buffer, or nil on timeout.  Unlike
+`url-retrieve-synchronously' the wait lets timers and redisplay run,
+so the mode-line spinner turns and the status line is redrawn (with
+PURPOSE and the seconds since STARTED) instead of Emacs looking hung.
+The process is deleted on timeout or C-g so no callback fires later."
+  (let* ((done nil)
+         (result nil)
+         (buffer (url-retrieve url (lambda (_status) (setq done t result (current-buffer)))
+                               nil t t))
+         (deadline (and timeout (> timeout 0) (+ (float-time) timeout)))
+         (frame 0)
+         (message-log-max nil))
+    (unwind-protect
+        (progn
+          (while (and (not done) (or (null deadline) (< (float-time) deadline)))
+            (when efrit-api-sync-status
+              (message "%s" (efrit-api--sync-status purpose started timeout frame))
+              (cl-incf frame))
+            (accept-process-output nil 0.2)
+            (sit-for 0.05 t))
+          (when efrit-api-sync-status (message nil))
+          (and done result))
+      (unless done
+        ;; timeout or quit: stop the transfer, and its callback with it
+        (when (and buffer (buffer-live-p buffer))
+          (when-let* ((proc (get-buffer-process buffer)))
+            (set-process-query-on-exit-flag proc nil)
+            (set-process-sentinel proc nil)
+            (set-process-filter proc nil)
+            (delete-process proc))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buffer)))))))
+
+(defun efrit-api--request-sync-1 (request-data &optional timeout)
+  "One synchronous request; see `efrit-api-request-sync'."
   (let* ((api-key (efrit-common-get-api-key))
          (req (efrit-api-apply-transforms
                (efrit-common-get-api-url)
@@ -303,9 +528,11 @@ Returns the parsed response hash-table, or signals an error."
          (url-request-method "POST")
          (url-request-extra-headers (plist-get req :headers))
          (url-request-data (efrit-api-encode-request (plist-get req :body)))
-         (response-buffer (url-retrieve-synchronously
-                           (plist-get req :url)
-                           nil t (or timeout 60))))
+         (url-show-status nil)
+         (started (efrit-api--log-request request-data "url-retrieve (sync)"))
+         (response-buffer (efrit-api--retrieve-and-wait
+                           (plist-get req :url) (or timeout 60)
+                           efrit-api-request-purpose started)))
     (unless response-buffer
       (error "%s" (efrit-api-describe-failure
                    (format "No response within %ds (timeout or connection error)" (or timeout 60))
@@ -314,7 +541,9 @@ Returns the parsed response hash-table, or signals an error."
                    "url-retrieve (sync)")))
     (with-current-buffer response-buffer
       (unwind-protect
-          (efrit-api-parse-response)
+          (let ((response (efrit-api-parse-response)))
+            (efrit-api--log-response response started)
+            response)
         (kill-buffer)))))
 
 ;;; Prompt Caching

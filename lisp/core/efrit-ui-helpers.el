@@ -21,10 +21,19 @@
 ;; And a string helper: `efrit-fence-for' returns a code fence longer
 ;; than any backtick run in the text, so model output can be embedded
 ;; in a prompt without breaking out of it.
+;;
+;; `efrit-ui-badge' is a small coloured pill (an SVG image over a plain
+;; word) for severities and verdicts in reports; on a text display, or
+;; when the properties are stripped, the word itself remains.
 
 ;;; Code:
 
 (require 'subr-x)
+(require 'color)
+(declare-function svg-create "svg")
+(declare-function svg-rectangle "svg")
+(declare-function svg-text "svg")
+(declare-function svg-image "svg")
 
 (defvar efrit-edit-in-buffer-map
   (let ((map (make-sparse-keymap)))
@@ -76,6 +85,8 @@ map puts the mode map first.")
 
 (defun efrit-show-preview (name text &optional mode)
   "Display TEXT in a popup buffer NAME, in a window fitted to its size.
+TEXT is a string, or a function called in the emptied buffer to insert
+the content itself (for reports with faces, images, and buttons).
 MODE is an optional major mode (e.g. `diff-mode'); without it the
 buffer is in `efrit-preview-mode'.  Either way the buffer is
 read-only and `q' dismisses it: the window is deleted, not left
@@ -86,7 +97,7 @@ buffer is reused across calls."
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert text)
+        (if (functionp text) (funcall text) (insert text))
         (goto-char (point-min)))
       (let ((wanted (if (and mode (fboundp mode)) mode #'efrit-preview-mode)))
         (unless (eq major-mode wanted)
@@ -110,6 +121,43 @@ previews shown beside a prompt that is still reading keys."
   (let ((win (efrit-show-preview name text mode)))
     (when (window-live-p win) (select-window win))
     win))
+
+(defun efrit-ui-badge-available-p ()
+  "Non-nil when an SVG badge can be displayed here."
+  (and (display-graphic-p) (image-type-available-p 'svg)))
+
+(defun efrit-ui--face-hex (face attribute)
+  "FACE's ATTRIBUTE as #rrggbb, resolving inheritance; grey when unknown."
+  (let* ((name (let ((v (face-attribute face attribute nil t)))
+                 (if (stringp v) v (face-attribute 'default attribute nil t))))
+         (rgb (and (stringp name)
+                   (condition-case nil (color-name-to-rgb name) (error nil)))))
+    (if rgb (apply #'color-rgb-to-hex (append rgb '(2))) "#808080")))
+
+(defun efrit-ui-badge (text face)
+  "TEXT as a small pill in FACE's colours: a string with an image on it.
+The image is a `display' property over the plain TEXT, so a text
+terminal, `buffer-substring-no-properties', and the kill ring all see
+the word.  FACE's :background is the pill, :foreground the letters;
+without SVG the string carries FACE instead."
+  (let ((word (propertize text 'face face)))
+    (if (not (efrit-ui-badge-available-p))
+        word
+      (require 'svg)
+      (let* ((height (max 12 (round (* 1.05 (default-font-height)))))
+             (font-size (round (* 0.62 height)))
+             (family (face-attribute 'default :family))
+             (char-w (default-font-width))
+             (width (+ (* (length text) (round (* 0.66 font-size))) char-w))
+             (svg (svg-create width height)))
+        (svg-rectangle svg 0 1 width (- height 2) :rx (/ height 2.0)
+                       :fill (efrit-ui--face-hex face :background))
+        (svg-text svg text
+                  :x (/ width 2.0) :y (/ height 2.0)
+                  :text-anchor "middle" :dominant-baseline "central"
+                  :font-family family :font-weight "bold" :font-size font-size
+                  :fill (efrit-ui--face-hex face :foreground))
+        (propertize word 'display (svg-image svg :ascent 'center :scale 1))))))
 
 (defun efrit-fence-for (text)
   "Return a backtick fence longer than any run of backticks in TEXT.

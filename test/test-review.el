@@ -18,6 +18,8 @@
 (require 'efrit-repl-loop)
 (require 'efrit-do)
 
+(defvar efrit-project-root)
+
 ;;; Helpers (content blocks as the API delivers them: hash tables)
 
 (defun test-review--text (text)
@@ -193,6 +195,59 @@ received in `test-review--requests'.  A string starting with
         (efrit-review-turn "s" nil content (lambda (v) (setq got v)))
         (should (eq (car got) 'reject))))))
 
+(ert-deftest test-review-failure-policy-per-class ()
+  "The default fails closed for exec and open for write; a batch with
+both fails closed."
+  (let ((efrit-review-on-failure '((exec . reject) (t . approve))))
+    (should (eq 'approve (efrit-review-failure-policy '(write))))
+    (should (eq 'reject (efrit-review-failure-policy '(exec))))
+    (should (eq 'reject (efrit-review-failure-policy '(write exec))))
+    (should (eq 'approve (efrit-review-failure-policy nil)))
+    (let ((edit (vector (test-review--tool-use "1" "edit_file" '(("path" . "a")))))
+          (shell (vector (test-review--tool-use "2" "shell_exec" '(("command" . "ls")))))
+          (got nil))
+      (test-review--with-reviewer '("ERROR:boom")
+        (efrit-review-turn "s" nil edit (lambda (v) (setq got v)))
+        (should (eq (car got) 'approve)))
+      (test-review--with-reviewer '("ERROR:boom")
+        (efrit-review-turn "s" nil shell (lambda (v) (setq got v)))
+        (should (eq (car got) 'reject))
+        (should (string-match-p "nothing was run" (cdr got))))))
+  ;; a class with no entry and no t entry approves
+  (let ((efrit-review-on-failure '((exec . reject))))
+    (should (eq 'approve (efrit-review-failure-policy '(net))))))
+
+(ert-deftest test-review-project-override-file ()
+  "A project's settings.json can turn review off or change its classes;
+the customization values apply when the file says nothing."
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-rev-" t)))
+         (efrit-project-root root)
+         (efrit-data-directory (expand-file-name "data" root))
+         (efrit-settings--cache (make-hash-table :test 'equal))
+         (efrit-review-enabled t)
+         (efrit-review-classes '(write exec net)))
+    (unwind-protect
+        (progn
+          (should (efrit-review-enabled-p))
+          (should (equal (efrit-review-effective-classes) '(write exec net)))
+          (efrit-review-set-project-override nil nil)
+          (should-not (efrit-review-enabled-p))
+          (should (equal (plist-get (efrit-review-project-override) :enabled) nil))
+          (efrit-review-set-project-override 'unset '(write))
+          (should (efrit-review-enabled-p))
+          (should (equal (efrit-review-effective-classes) '(write)))
+          ;; a shell call is not reviewable under the narrowed classes
+          (should-not (efrit-review-applies-p
+                       (vector (test-review--tool-use "1" "shell_exec" '(("command" . "ls"))))))
+          ;; unset both removes the section
+          (efrit-review-set-project-override 'unset nil)
+          (should-not (efrit-settings-get root "review"))
+          ;; a bad classes list in the file falls back to the option
+          (efrit-settings-put root "review" (let ((h (make-hash-table :test 'equal)))
+                                              (puthash "classes" '("write" "bogus") h) h))
+          (should (equal (efrit-review-effective-classes) '(write exec net))))
+      (delete-directory root t))))
+
 (ert-deftest test-review-rejection-counter ()
   (clrhash efrit-review--rejections)
   (should (= 1 (efrit-review-note-verdict "s" 'reject)))
@@ -217,7 +272,7 @@ Records each dispatched tool name in `test-review--dispatched'."
                     (if response
                         (funcall callback response nil)
                       (funcall callback nil "mock response queue empty")))))
-               ((symbol-function 'efrit-do--execute-tool)
+               ((symbol-function 'efrit-do--execute-tool-string)
                 (lambda (tool-item)
                   (push (gethash "name" tool-item) test-review--dispatched)
                   ,tool-result))

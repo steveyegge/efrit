@@ -22,6 +22,7 @@
 (require 'efrit-agent-render)
 (require 'efrit-do-dispatch)
 (require 'efrit-sandbox)   ; efrit-sandbox-denied-prefix
+(declare-function efrit-do-completion-message "efrit-do-dispatch")
 (require 'efrit-review)    ; efrit-review-rejected-prefix
 
 ;; Forward declarations
@@ -100,9 +101,7 @@ SUCCESS-P indicates if the tool succeeded."
      ((string-match-p "session_complete" tool-name)
       (replace-regexp-in-string
        "[\n\r]+" " "
-       (if (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" result-str)
-           (match-string 1 result-str)
-         result-str)))
+       (or (efrit-do-completion-message result-str) result-str)))
      ;; A report buffer: name it and say how to open it
      ((and success-p (member tool-name '("buffer_create" "create_buffer")))
       (if (string-match "Created buffer '\\([^']+\\)' with \\([0-9]+\\) characters" result-str)
@@ -200,9 +199,7 @@ Returns nil if no annotations or unknown kind."
 
 (defun efrit-agent--session-complete-message (result)
   "The user-facing message inside a session_complete RESULT string, or nil."
-  (let ((s (format "%s" (or result ""))))
-    (when (string-match "\\[SESSION-COMPLETE: \\(\\(?:.\\|\n\\)*\\)\\]" s)
-      (string-trim (match-string 1 s)))))
+  (efrit-do-completion-message (format "%s" (or result ""))))
 
 (defun efrit-agent--turn-has-streamed-text-p ()
   "Non-nil if the assistant streamed prose in this turn, before point.

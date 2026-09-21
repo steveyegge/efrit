@@ -24,6 +24,7 @@
 (require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
+(declare-function libxml-parse-html-region "xml.c")
 (require 'dom)
 (require 'cl-lib)
 
@@ -124,8 +125,8 @@ Options:
         (let* ((link-node (car (dom-by-class result-node "result__a")))
                (snippet-node (car (dom-by-class result-node "result__snippet")))
                (url (when link-node (dom-attr link-node 'href)))
-               (title (when link-node (dom-texts link-node)))
-               (snippet (when snippet-node (dom-texts snippet-node))))
+               (title (when link-node (efrit-tool--dom-text link-node)))
+               (snippet (when snippet-node (efrit-tool--dom-text snippet-node))))
           ;; DuckDuckGo uses redirect URLs, extract actual URL
           (when (and url (string-match "uddg=\\([^&]+\\)" url))
             (setq url (url-unhex-string (match-string 1 url))))

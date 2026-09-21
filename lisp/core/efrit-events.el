@@ -81,12 +81,29 @@ every event.  FN is added at most once per TYPE.  Returns FN."
   (when-let* ((cell (assq type efrit-events--subscribers)))
     (setcdr cell (delq fn (cdr cell)))))
 
+(defun efrit-events--brief (data)
+  "DATA for the debug log: keys with short values, long strings cut."
+  (mapconcat (lambda (cell)
+               (let ((v (cdr cell)))
+                 (format "%s=%s" (car cell)
+                         (cond ((stringp v)
+                                (let ((one (replace-regexp-in-string "\n" "⏎" v)))
+                                  (if (> (length one) 60) (concat (substring one 0 60) "…") one)))
+                               ((hash-table-p v) (format "#<hash %d>" (hash-table-count v)))
+                               ((bufferp v) (buffer-name v))
+                               ((and (consp v) (proper-list-p v) (> (length v) 5))
+                                (format "(%d items)" (length v)))
+                               (t (let ((s (format "%S" v)))
+                                    (if (> (length s) 60) (concat (substring s 0 60) "…") s)))))))
+             data " "))
+
 (defun efrit-publish (type &optional data)
   "Publish an event of TYPE with DATA (an alist of :keyword . value).
 :type and :time are added.  Subscribers to TYPE and to `t' are called
 in registration order; errors are logged and swallowed.  Returns the
 event alist."
   (let ((event (append `((:type . ,type) (:time . ,(current-time))) data)))
+    (efrit-log 'debug "event %s %s" type (efrit-events--brief data))
     (dolist (fn (append (cdr (assq type efrit-events--subscribers))
                         (cdr (assq t efrit-events--subscribers))))
       (condition-case err

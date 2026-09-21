@@ -19,11 +19,8 @@
 ;; Require extracted modules
 (require 'efrit-do-prompt)
 (require 'efrit-do-dispatch)
+(require 'efrit-result-struct)
 
-;; Declare external functions from efrit-chat (optional dependency)
-(declare-function efrit--setup-buffer "efrit-chat")
-(declare-function efrit--display-message "efrit-chat")
-(declare-function efrit--insert-prompt "efrit-chat")
 (declare-function efrit-api-build-headers "efrit-api")
 
 ;; Declare external functions from efrit-executor
@@ -76,7 +73,6 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-todo)
-(require 'efrit-chat)
 (require 'efrit-progress)
 (require 'efrit-tool-utils)
 (require 'efrit-do-circuit-breaker)
@@ -170,9 +166,6 @@ the traditional progress buffer."
 (defvaralias 'efrit-do-retry-on-errors 'efrit-retry-on-errors
   "Alias to `efrit-retry-on-errors' in efrit-config.el.")
 
-;; Use centralized model configuration from efrit-config
-(defvar efrit-model)  ;; Forward declaration for efrit-chat's alias
-
 (defcustom efrit-api-channel nil
   "API channel to use. Can be \\='ai-efrit or nil for default."
   :type '(choice (const :tag "Default" nil)
@@ -187,9 +180,6 @@ the traditional progress buffer."
 
 (defvar efrit-do-history nil
   "History of executed commands.")
-
-(defvar efrit-do--last-result nil
-  "Result of the last executed command.")
 
 ;; TODO state is now managed by efrit-todo.el
 ;; Keep backward-compatible variable aliases
@@ -489,7 +479,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                    ((string= type "tool_use")
                     (setq message-text 
                           (concat message-text 
-                                  (efrit-do--execute-tool item))))))))
+                                  (efrit-tool-result-text
+                                   (efrit-do--execute-tool item)))))))))
             
             (or message-text "Command executed"))))
     (error
@@ -1058,64 +1049,6 @@ This includes: history, context, results buffer, TODOs, and conversations."
      ((eq choice ?t) (efrit-do-clear-todos))
      ((eq choice ?a) (efrit-do-clear-all))
      ((eq choice ?q) (message "Reset cancelled")))))
-
-;;;###autoload
-(defun efrit-do-to-chat (&optional n)
-  "Convert recent efrit-do context to efrit-chat session.
-Include last N commands (default 5)."
-  (interactive "P")
-  (require 'efrit-chat)
-  (let* ((count (or n 5))
-         (items (efrit-do--get-context-items count))
-         (buffer (efrit--setup-buffer)))
-    
-    (if (not items)
-        (message "No efrit-do context to convert")
-      
-      (with-current-buffer buffer
-        (setq buffer-read-only nil)
-        (let ((inhibit-read-only t))
-          ;; Clear existing content and history
-          (erase-buffer)
-          (setq-local efrit--message-history nil)
-          
-          ;; Add context summary
-          (efrit--display-message 
-           (format "Chat session from %d recent efrit-do commands:" (length items))
-           'system)
-          
-          ;; Convert each context item to conversation
-          (dolist (item items) ; Show oldest first (items already in oldest-first order)
-            (let ((command (efrit-context-item-command item))
-                  (result (efrit-context-item-result item))
-                  (timestamp (efrit-context-item-timestamp item)))
-              
-              ;; Display user command
-              (efrit--display-message 
-               (format "[%s] %s" 
-                       (format-time-string "%H:%M:%S" timestamp)
-                       command)
-               'user)
-              
-              ;; Display result (truncated if too long)
-              (efrit--display-message 
-               (truncate-string-to-width result 500 nil nil t)
-               'assistant)))
-          
-          ;; Build history in correct order for efrit-chat (newest first)
-          ;; Process items in reverse order so newest ends up first
-          (dolist (item items)
-            (let ((command (efrit-context-item-command item))
-                  (result (efrit-context-item-result item)))
-              (push `((role . "assistant") (content . ,result)) efrit--message-history)
-              (push `((role . "user") (content . ,command)) efrit--message-history)))
-          
-          ;; Insert prompt for new input
-          (efrit--insert-prompt)))
-      
-      ;; Switch to the chat buffer
-      (switch-to-buffer buffer)
-      (message "Converted %d efrit-do commands to chat session" (length items)))))
 
 ;;; Initialization
 

@@ -46,7 +46,6 @@
 (require 'json)
 (require 'cl-lib)
 (require 'auth-source)
-(require 'efrit-tools-prompt)
 (require 'efrit-todo)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
@@ -647,9 +646,6 @@ Arguments:
     
     ;; Return both the processed text and results
     (cons processed-text (nreverse results))))
-
-;;; Updated System Prompt
-;; NOTE: efrit-tools-system-prompt has been moved to efrit-tools-prompt.el
 
 ;;; Pure Tools for Claude to Use Explicitly
 

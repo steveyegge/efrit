@@ -34,6 +34,9 @@
 (declare-function efrit-session-id "efrit-session")
 (declare-function efrit-agent--begin-session "efrit-agent-core")
 (declare-function efrit-agent-toggle-expand "efrit-agent")
+(declare-function efrit-agent-mode "efrit-agent")
+(declare-function efrit-agent--init-regions "efrit-agent")
+(declare-function efrit-agent--setup-regions "efrit-agent")
 
 ;;; REPL Session State
 ;;
@@ -46,6 +49,8 @@ Unlike efrit-session which completes after each command, this session
 persists and accumulates conversation context.")
 
 ;;; Question Display
+
+(declare-function efrit-agent-question-menu "efrit-agent-input")
 
 (defun efrit-agent--add-question (question &optional options)
   "Add a QUESTION from Claude to the conversation region.
@@ -308,7 +313,9 @@ Returns nil if no options or N is out of range."
   (let ((map (make-sparse-keymap)))
     ;; Sending input
     (define-key map (kbd "RET") #'efrit-agent-input-send-or-newline)
-    (define-key map (kbd "S-<return>") #'newline)
+    (define-key map (kbd "S-<return>") #'efrit-agent-input-newline)
+    (define-key map (kbd "M-<return>") #'efrit-agent-input-newline)
+    (define-key map (kbd "C-j") #'efrit-agent-input-newline)
     (define-key map (kbd "C-c C-c") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-s") #'efrit-agent-input-send)
     (define-key map (kbd "C-c C-k") #'efrit-agent-input-clear)
@@ -359,18 +366,18 @@ Key bindings:
 (defun efrit-agent-input-send-or-newline ()
   "RET, context-sensitive.
 In the conversation region: toggle the tool call at point, as the
-help text has always promised.  In the input region: send the input
-if it is a single line, otherwise insert a newline.  Use S-RET to
-always insert a newline."
+help text has always promised.  In the input region: send the input,
+from any line of it.  S-RET, M-RET and C-j insert a newline
+\(`efrit-agent-input-newline'), the convention of chat clients."
   (interactive)
-  (if (not (efrit-agent--in-input-region-p))
-      (efrit-agent-toggle-expand)
-    (let ((input (efrit-agent--get-input)))
-      (if (and input (not (string-match-p "\n" input)))
-          ;; Single line - send it
-          (efrit-agent-input-send)
-        ;; Multi-line or empty - insert newline
-        (newline)))))
+  (if (efrit-agent--in-input-region-p)
+      (efrit-agent-input-send)
+    (efrit-agent-toggle-expand)))
+
+(defun efrit-agent-input-newline ()
+  "Insert a newline in the input without sending."
+  (interactive "*")
+  (newline))
 
 (defun efrit-agent-input-send ()
   "Send the current input using the persistent REPL session model.
@@ -400,9 +407,11 @@ If no REPL session exists, creates one automatically."
       ;; Use REPL session model
       (efrit-agent--repl-send input))))
 
-(defun efrit-agent--repl-send (input)
+(defun efrit-agent--repl-send (input &optional api-input)
   "Send INPUT to the REPL session.
-Creates a new REPL session if needed, otherwise continues the existing one."
+Creates a new REPL session if needed, otherwise continues the existing one.
+API-INPUT, when given, is what the model receives in place of INPUT
+\(see `efrit-repl-continue').  Returns non-nil if the turn started."
   ;; Ensure we have a REPL session
   (unless efrit-agent--repl-session
     (setq efrit-agent--repl-session (efrit-repl-session-create default-directory))
@@ -413,21 +422,23 @@ Creates a new REPL session if needed, otherwise continues the existing one."
       ;; Idle - continue with new input
       ('idle
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: continuing conversation"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: continuing conversation")
+       t)
 
       ;; Paused - resume and continue
       ('paused
        (efrit-repl-session-resume session)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: resumed and continuing"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: resumed and continuing")
+       t)
 
       ;; Working - can't send right now
       ('working
        (message "Efrit: session is busy, please wait")
        ;; TODO: Queue input for later
-       )
+       nil)
 
       ;; Waiting for specific input (question)
       ('waiting
@@ -437,15 +448,41 @@ Creates a new REPL session if needed, otherwise continues the existing one."
        (setq efrit-agent--pending-question nil)
        (efrit-agent--reset-input-prompt)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)
-       (message "Efrit: response sent"))
+                            #'efrit-agent--on-turn-complete api-input)
+       (message "Efrit: response sent")
+       t)
 
       ;; Unknown state
       (_
        (message "Efrit: unknown session state, resetting")
        (efrit-repl-session-reset session)
        (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete)))))
+                            #'efrit-agent--on-turn-complete api-input)
+       t))))
+
+;;;###autoload
+(defun efrit-submit (shown &optional api-input)
+  "Start a REPL turn from Lisp: show SHOWN in the conversation, send API-INPUT.
+For packages that prepare a prompt over data they gathered (a mail
+reader over selected messages, say): SHOWN is the short line the user
+sees as their turn, API-INPUT (default SHOWN) the full text the model
+receives, with the usual editor-context block prepended.  Opens the
+agent buffer if needed.  Returns non-nil if the turn started; nil
+when the session is busy, in which case nothing was sent."
+  (require 'efrit-agent)
+  (let ((buffer (efrit-agent--get-buffer)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent-mode))
+      (unless (and efrit-agent--conversation-end
+                   (marker-position efrit-agent--conversation-end))
+        (efrit-agent--init-regions)
+        (efrit-agent--setup-regions))
+      (let ((started (progn
+                       (efrit-agent--add-user-message shown)
+                       (efrit-agent--repl-send shown api-input))))
+        (efrit-agent-display buffer nil)
+        started))))
 
 (defun efrit-agent--on-turn-complete (session stop-reason)
   "Callback when a REPL turn completes.
@@ -492,7 +529,7 @@ Saves asynchronously to avoid blocking the UI."
 On the prompt line that is just after the prompt (like `comint-bol');
 on a continuation line of a multi-line input it is the line start.
 A second press goes to the real beginning of line."
-  (interactive)
+  (interactive "^")
   (let* ((true-bol (let ((inhibit-field-text-motion t)) (line-beginning-position)))
          (field-start (field-beginning (point) t)))
     (if (and (> field-start true-bol) (/= (point) field-start))
@@ -511,16 +548,21 @@ A second press goes to the real beginning of line."
 (defun efrit-agent-input-up ()
   "Previous history entry on the first input line; otherwise the previous line.
 The shell convention: an up arrow in a one-line input recalls history,
-in a multi-line input it moves up until it reaches the top."
-  (interactive)
-  (if (efrit-agent--input-first-line-p)
+in a multi-line input it moves up until it reaches the top.  With
+shift held (S-<up>) it only moves, extending the selection: history
+recall would destroy the text being selected."
+  (interactive "^")
+  (if (and (efrit-agent--input-first-line-p)
+           (not this-command-keys-shift-translated))
       (efrit-agent-input-history-prev)
     (let ((line-move-visual nil)) (line-move -1 t))))
 
 (defun efrit-agent-input-down ()
-  "Next history entry on the last input line; otherwise the next line."
-  (interactive)
-  (if (efrit-agent--input-last-line-p)
+  "Next history entry on the last input line; otherwise the next line.
+With shift held it only moves, like `efrit-agent-input-up'."
+  (interactive "^")
+  (if (and (efrit-agent--input-last-line-p)
+           (not this-command-keys-shift-translated))
       (efrit-agent-input-history-next)
     (let ((line-move-visual nil)) (line-move 1 t))))
 

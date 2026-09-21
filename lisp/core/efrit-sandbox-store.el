@@ -50,18 +50,31 @@
 The remainder is the buffer name; it deserializes to (buffer . NAME).
 Chosen because it cannot be confused with an absolute file path.")
 
+(defconst efrit-sandbox-store--shell-target-prefix "shell:"
+  "A JSON target string with this prefix is a command-list shell grant.
+The remainder is the command names separated by spaces; it
+deserializes to (shell NAME...).  Command names cannot contain spaces.")
+
 (defun efrit-sandbox-store--target-to-json (target)
-  "Serialize grant TARGET (t, a path, or (buffer . NAME)) for JSON."
-  (if (and (consp target) (eq (car target) 'buffer))
-      (concat efrit-sandbox-store--buffer-target-prefix (cdr target))
-    target))
+  "Serialize grant TARGET (t, a path, (buffer . NAME), or (shell NAME...)) for JSON."
+  (cond
+   ((and (consp target) (eq (car target) 'buffer))
+    (concat efrit-sandbox-store--buffer-target-prefix (cdr target)))
+   ((efrit-sandbox-shell-target-p target)
+    (concat efrit-sandbox-store--shell-target-prefix (mapconcat #'identity (cdr target) " ")))
+   (t target)))
 
 (defun efrit-sandbox-store--target-from-json (target)
-  "Deserialize a JSON TARGET back to t, a path, or (buffer . NAME)."
-  (if (and (stringp target)
-           (string-prefix-p efrit-sandbox-store--buffer-target-prefix target))
-      (cons 'buffer (substring target (length efrit-sandbox-store--buffer-target-prefix)))
-    target))
+  "Deserialize a JSON TARGET back to t, a path, (buffer . NAME), or (shell NAME...)."
+  (cond
+   ((and (stringp target)
+         (string-prefix-p efrit-sandbox-store--buffer-target-prefix target))
+    (cons 'buffer (substring target (length efrit-sandbox-store--buffer-target-prefix))))
+   ((and (stringp target)
+         (string-prefix-p efrit-sandbox-store--shell-target-prefix target))
+    (cons 'shell (split-string (substring target (length efrit-sandbox-store--shell-target-prefix))
+                               " " t)))
+   (t target)))
 
 (defun efrit-sandbox-store--valid-grant (g)
   "Return a grant plist for JSON object G (a hash table), or nil if invalid."
@@ -77,7 +90,10 @@ Chosen because it cannot be confused with an absolute file path.")
                      (and (stringp target) (file-name-absolute-p target))
                      ;; a fileless-buffer target
                      (and (eq cap-sym 'buffer) (consp target)
-                          (stringp (cdr target)) (not (string-empty-p (cdr target))))))
+                          (stringp (cdr target)) (not (string-empty-p (cdr target))))
+                     ;; a command-list shell target with at least one name
+                     (and (eq cap-sym 'shell) (efrit-sandbox-shell-target-p target)
+                          (cdr target))))
         (list :cap cap-sym :target target :scope 'project)))))
 
 (defun efrit-sandbox-store--parse (file)

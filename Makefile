@@ -5,7 +5,7 @@ EMACS = emacs
 EMACS_BATCH = $(EMACS) --batch --no-init-file
 LOAD_PATH = -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L lisp/dev
 PACKAGE_NAME = efrit
-VERSION = 0.3.0
+VERSION = 0.4.1
 
 # Source files
 EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el lisp/tools/*.el)
@@ -88,7 +88,6 @@ lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Core module dependencies
-lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc lisp/interfaces/efrit-agent.elc
 lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 lisp/core/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Support module dependencies
@@ -108,7 +107,7 @@ lisp/%.elc: lisp/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -120,7 +119,7 @@ lisp/core/%.elc: lisp/core/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -132,7 +131,7 @@ lisp/support/%.elc: lisp/support/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -144,7 +143,7 @@ lisp/interfaces/%.elc: lisp/interfaces/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -156,7 +155,7 @@ lisp/tools/%.elc: lisp/tools/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -202,7 +201,7 @@ lint: checkdoc lint-defun lint-toplevel
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $(EL_FILES)
 	@echo "✅ Code style and warnings checks passed"
@@ -266,7 +265,7 @@ lint-defun:
 # kill-emacs on load) are excluded.  Tests needing a real API key or
 # a git repo with history are expected to be skipped or to fail in a
 # bare checkout; see TEST_KNOWN_FAILING for the current list.
-ERT_TEST_FILES := $(filter-out test/test-fibonacci-scenario.el,$(wildcard test/test-*.el))
+ERT_TEST_FILES := $(wildcard test/test-*.el)
 ERT_LOAD_ARGS  := $(foreach f,$(ERT_TEST_FILES),-l $(f))
 
 # Autoloads.  package.el only scans lisp/ itself, so the commands that
@@ -353,7 +352,6 @@ coverage-simple: compile
 	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
 		--eval "(require 'efrit)" \
 		--eval "(require 'efrit-do)" \
-		--eval "(require 'efrit-chat)" \
 		--eval "(require 'efrit-coverage)" \
 		--eval "(efrit-coverage-simple-start)" \
 		--eval "(efrit-config-data-file \"test\")" \

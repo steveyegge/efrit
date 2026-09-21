@@ -34,7 +34,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'efrit-config)
-(require 'efrit-chat)
+(require 'efrit-do)
 
 ;; Declare coverage functions (loaded on demand)
 (declare-function efrit-coverage-simple-start "efrit-coverage")
@@ -254,33 +254,6 @@ Returns (validator-name pass-p message)."
 (defvar efrit-test--current-response nil
   "Stores the response text from the current test.")
 
-(defun efrit-test--wait-for-response (timeout)
-  "Wait for efrit-chat response to complete, up to TIMEOUT seconds.
-Returns t if response completed, nil if timeout."
-  (let ((start-time (current-time))
-        (completed nil))
-    (while (and (not completed)
-                (< (float-time (time-since start-time)) timeout))
-      (sleep-for efrit-test-poll-interval)
-      ;; Check if response is still in progress
-      (when (get-buffer "*efrit-chat*")
-        (with-current-buffer "*efrit-chat*"
-          (when (and (boundp 'efrit--response-in-progress)
-                     (not efrit--response-in-progress))
-            (setq completed t)))))
-    completed))
-
-(defun efrit-test--extract-response ()
-  "Extract Claude's response from the chat buffer."
-  (when (get-buffer "*efrit-chat*")
-    (with-current-buffer "*efrit-chat*"
-      ;; Get buffer contents and extract last assistant response
-      (let ((content (buffer-string)))
-        ;; Simple extraction - get content after last "Claude:" or similar
-        (if (string-match "\\(?:Claude\\|Assistant\\):[[:space:]]*\\(\\(?:.\\|\n\\)*\\)$" content)
-            (string-trim (match-string 1 content))
-          content)))))
-
 (defun efrit-test--run-single (spec)
   "Run a single test SPEC and return an efrit-test-result."
   (let* ((test-id (efrit-test-spec-id spec))
@@ -312,31 +285,16 @@ Returns t if response completed, nil if timeout."
     ;; Execute test if setup succeeded
     (when (eq status 'pass)
       (condition-case err
-          (progn
-            ;; Start fresh chat
-            (efrit-chat)
-
-            ;; Send the prompt
-            (efrit-send-message prompt)
-
-            ;; Wait for response
-            (if (efrit-test--wait-for-response timeout)
-                (progn
-                  (setq response (efrit-test--extract-response))
-                  (setq chat-contents (when (get-buffer "*efrit-chat*")
-                                       (with-current-buffer "*efrit-chat*"
-                                         (buffer-string))))
-
-                  ;; Run validators
-                  (dolist (validator validators)
-                    (let ((result (efrit-test--run-validator validator response)))
-                      (push result validator-results)
-                      (unless (cadr result)  ; pass-p is second element
-                        (setq status 'fail)))))
-
-              ;; Timeout
-              (setq status 'timeout)
-              (setq error-msg (format "Test timed out after %d seconds" timeout))))
+          ;; The synchronous efrit-do path returns the final text; the
+          ;; chat buffer this harness once scraped no longer exists.
+          (let ((efrit-session-timeout timeout))
+            (setq response (efrit-do-sync prompt))
+            (setq chat-contents response)
+            (dolist (validator validators)
+              (let ((result (efrit-test--run-validator validator response)))
+                (push result validator-results)
+                (unless (cadr result)  ; pass-p is second element
+                  (setq status 'fail)))))
 
         (error
          (setq status 'error)

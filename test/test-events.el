@@ -117,5 +117,88 @@
   (should (memq #'efrit-usage--on-api-response
                 (cdr (assq 'api-response efrit-events--subscribers)))))
 
+;;; The agent buffer is driven by the bus alone
+
+(ert-deftest test-events-agent-buffer-renders-from-published-events ()
+  "Every visible thing in the agent buffer arrives as an event: tool rows
+paired by tool-id, text deltas, thinking, questions, status, TODOs.
+No advice is installed on any efrit function."
+  (require 'efrit-agent)
+  (require 'efrit-agent-integration)
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-events*"))
+    (unwind-protect
+        (progn
+          (efrit)
+          (with-current-buffer efrit-agent-buffer-name
+            (efrit-agent--add-user-message "do it")
+            ;; REPL-path shapes: ids pair start and result even when two
+            ;; calls of the same tool interleave
+            (efrit-publish 'status '((:session-id . "s") (:status . working)))
+            (should (eq efrit-agent--status 'working))
+            (efrit-publish 'thinking-start '((:session-id . "s") (:label . "waiting for Claude...")))
+            (should efrit-agent--thinking-indicator)
+            (efrit-publish 'text-delta '((:session-id . "s") (:text . "Hello ")))
+            (efrit-publish 'thinking-stop '((:session-id . "s")))
+            (should-not efrit-agent--thinking-indicator)
+            (efrit-publish 'text-delta '((:session-id . "s") (:text . "there.")))
+            (efrit-publish 'text-end '((:session-id . "s")))
+            (efrit-publish 'tool-start '((:session-id . "s") (:tool-id . "a") (:tool . "read_file")))
+            (efrit-publish 'tool-start '((:session-id . "s") (:tool-id . "b") (:tool . "read_file")))
+            (efrit-publish 'tool-result '((:session-id . "s") (:tool-id . "a") (:tool . "read_file")
+                                          (:result . "first") (:success . t) (:elapsed . 0.5)))
+            (efrit-publish 'tool-result '((:session-id . "s") (:tool-id . "b") (:tool . "read_file")
+                                          (:result . "Error second") (:success . nil) (:elapsed . 0.1)))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "Hello there\\." text))
+              (should (string-match-p "✓ read_file.*0\\.5s" text))
+              (should (string-match-p "✗ read_file.*0\\.1s" text)))
+            ;; efrit-do path shapes: no id, paired by name
+            (efrit-publish 'tool-start '((:session-id . "d") (:tool . "shell_exec")))
+            (efrit-publish 'tool-result '((:session-id . "d") (:tool . "shell_exec") (:result . "ok") (:success . t)))
+            (should (string-match-p "✓ shell_exec" (buffer-string)))
+            (efrit-publish 'message '((:session-id . "d") (:text . "boom") (:kind . error)))
+            (should (string-match-p "Error: boom" (buffer-string)))
+            ;; a question flips status and shows options; the answer flips back
+            (efrit-publish 'question '((:session-id . "s") (:question . "Which?") (:options . ("x" "y"))))
+            (should (eq efrit-agent--status 'waiting))
+            (should (string-match-p "Which\\?" (buffer-string)))
+            (efrit-publish 'question-answered '((:session-id . "s") (:response . "x")))
+            (should (eq efrit-agent--status 'working))
+            (should-not efrit-agent--pending-question)
+            (efrit-publish 'status '((:session-id . "s") (:status . idle)))
+            (should (eq efrit-agent--status 'idle)))
+          ;; no advice anywhere on the functions the old integration wrapped
+          (dolist (f '(efrit-progress-show-tool-start efrit-progress-show-tool-result
+                       efrit-progress-show-message efrit-progress-start-session
+                       efrit-progress-end-session efrit-session-set-pending-question
+                       efrit-session-respond-to-question efrit-do--handle-todo-write
+                       efrit-todo-update-status))
+            (when (fboundp f)
+              (should-not (advice--p (advice--symbol-function f))))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
+(ert-deftest test-events-sources-publish ()
+  "The progress layer, the session and the TODO store publish at the source."
+  (require 'efrit-progress)
+  (require 'efrit-session)
+  (require 'efrit-todo)
+  (let ((seen nil))
+    (cl-flet ((rec (ev) (push (alist-get :type ev) seen)))
+      (efrit-subscribe t #'rec)
+      (unwind-protect
+          (let ((efrit-progress-buffer-enabled nil))
+            (efrit-progress-show-tool-start "read_file" nil)
+            (efrit-progress-show-tool-result "read_file" "ok" t)
+            (efrit-progress-show-message "hi" 'claude)
+            (let ((s (efrit-session-create "sess-1" "cmd")))
+              (efrit-session-set-pending-question s "Q?" '("a"))
+              (efrit-session-respond-to-question s "a"))
+            (let ((efrit-todo--current-todos nil))
+              (efrit-todo-add "x")
+              (efrit-todo-update-status (efrit-todo-item-id (car efrit-todo--current-todos)) 'completed))
+            (dolist (ev '(tool-start tool-result message question question-answered todos-changed))
+              (should (memq ev seen))))
+        (efrit-unsubscribe t #'rec)))))
+
 (provide 'test-events)
 ;;; test-events.el ends here

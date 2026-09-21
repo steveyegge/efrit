@@ -15,9 +15,9 @@
   (declare (indent 0))
   `(let* ((root (file-name-as-directory (make-temp-file "efrit-lim-" t)))
           (efrit-project-root root)
+          (efrit-data-directory (expand-file-name "data" root))
           (efrit-limits--session (make-hash-table :test 'equal))
-          (efrit-limits--project (make-hash-table :test 'equal))
-          (efrit-limits--loaded (make-hash-table :test 'equal))
+          (efrit-settings--cache (make-hash-table :test 'equal))
           (efrit-limits--once (make-hash-table :test 'equal)))
      (unwind-protect (progn ,@body)
        (delete-directory root t))))
@@ -40,8 +40,20 @@
     (let ((file (efrit-limits-file root)))
       (should (file-exists-p file))
       (should (= 0 (logand (file-modes file) #o077)))
-      (clrhash efrit-limits--project) (clrhash efrit-limits--loaded)
-      (should (= 150 (efrit-limits-effective 'max-iterations 100))))))
+      (efrit-settings-forget)
+      (should (= 150 (efrit-limits-effective 'max-iterations 100)))
+      ;; another section in the same file survives a limits save
+      (efrit-settings-put root "review" (let ((h (make-hash-table :test 'equal))) (puthash "enabled" :false h) h))
+      (efrit-limits-set 'max-tool-calls 60 'project)
+      (efrit-settings-forget)
+      (should (hash-table-p (efrit-settings-get root "review")))
+      (should (= 60 (efrit-limits-effective 'max-tool-calls 30)))
+      ;; removing the last override removes the section, not the file
+      (efrit-limits-set 'max-iterations nil 'project)
+      (efrit-limits-set 'max-tool-calls nil 'project)
+      (efrit-settings-forget)
+      (should-not (efrit-settings-get root "limits"))
+      (should (file-exists-p file)))))
 
 (ert-deftest test-limits-bad-file-is-ignored ()
   (test-limits--in-project
@@ -51,7 +63,7 @@
       (should (= 100 (efrit-limits-effective 'max-iterations 100))))
     (let ((file (efrit-limits-file root)))
       (with-temp-file file (insert "not json"))
-      (clrhash efrit-limits--loaded)
+      (efrit-settings-forget)
       (should (= 100 (efrit-limits-effective 'max-iterations 100))))))
 
 (ert-deftest test-limits-ask-noninteractive-stops ()
@@ -100,7 +112,7 @@
                 (lambda (_s _m cb)
                   (let ((r (pop test-responses)))
                     (if r (funcall cb r nil) (funcall cb nil "queue empty")))))
-               ((symbol-function 'efrit-do--execute-tool) (lambda (_i) "1"))
+               ((symbol-function 'efrit-do--execute-tool-string) (lambda (_i) "1"))
                ((symbol-function 'efrit-agent-set-status) #'ignore))
        (unwind-protect (progn ,@body) (clrhash efrit-repl-loop--active)))))
 

@@ -37,11 +37,12 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'efrit-log)
-(require 'efrit-tool-utils)   ; efrit-tool--get-project-root
+(require 'efrit-settings)
+(require 'efrit-events)
 
 (defvar transient-post-exit-hook)
+(declare-function efrit-limits-menu "efrit-limits")
 (declare-function efrit-show-preview "efrit-ui-helpers")
 
 (defgroup efrit-limits nil
@@ -60,9 +61,8 @@ nil restores the old behaviour: the turn ends at the cap."
   :type 'integer
   :group 'efrit-limits)
 
-(defconst efrit-limits--file-name "settings.json")
-(defconst efrit-limits--dir ".efrit")
-(defconst efrit-limits--version 1)
+(defconst efrit-limits-section "limits"
+  "The section of the project settings file this module owns.")
 
 (defconst efrit-limits-known
   '(max-iterations max-tool-calls)
@@ -77,12 +77,6 @@ nil restores the old behaviour: the turn ends at the cap."
 (defvar efrit-limits--session (make-hash-table :test 'equal)
   "Project root -> alist of session overrides.")
 
-(defvar efrit-limits--project (make-hash-table :test 'equal)
-  "Project root -> alist of project overrides loaded from settings.json.")
-
-(defvar efrit-limits--loaded (make-hash-table :test 'equal)
-  "Project roots whose settings file has been read this session.")
-
 (defvar efrit-limits--once (make-hash-table :test 'equal)
   "(root . name) -> one-shot raised value that applies until the next reset.
 A \"continue once\" answer sets it; `efrit-limits-reset-once' clears it
@@ -90,60 +84,33 @@ at the end of the turn.")
 
 (defun efrit-limits-project-root ()
   "The project root overrides are keyed on."
-  (file-name-as-directory (expand-file-name (efrit-tool--get-project-root))))
+  (efrit-settings-project-root))
 
-;;; Persistence
+;;; Persistence (the \"limits\" section of the project settings file)
 
 (defun efrit-limits-file (root)
   "Path of ROOT's settings file."
-  (expand-file-name efrit-limits--file-name (expand-file-name efrit-limits--dir root)))
+  (efrit-settings-file root))
 
-(defun efrit-limits--valid-overrides (obj)
-  "The valid limit alist in a parsed settings OBJ (a hash table), or nil."
-  (when (hash-table-p obj)
-    (let ((limits (gethash "limits" obj)) (out nil))
-      (when (hash-table-p limits)
-        (maphash (lambda (k v)
-                   (let ((name (and (stringp k) (intern k))))
-                     (when (and (memq name efrit-limits-known) (integerp v) (>= v 0))
-                       (push (cons name v) out))))
-                 limits))
-      out)))
+(defun efrit-limits-project-overrides (root)
+  "The valid project overrides for ROOT as an alist (NAME . INTEGER).
+Unknown names and non-integer values in the file are ignored."
+  (let ((limits (efrit-settings-get root efrit-limits-section)) (out nil))
+    (when (hash-table-p limits)
+      (maphash (lambda (k v)
+                 (let ((name (and (stringp k) (intern k))))
+                   (when (and (memq name efrit-limits-known) (integerp v) (>= v 0))
+                     (push (cons name v) out))))
+               limits))
+    out))
 
-(defun efrit-limits-load (root)
-  "Read ROOT's project overrides from disk; never signals."
-  (let ((file (efrit-limits-file root)))
-    (puthash root
-             (and (file-readable-p file)
-                  (condition-case err
-                      (efrit-limits--valid-overrides
-                       (with-temp-buffer
-                         (insert-file-contents file)
-                         (json-parse-buffer :object-type 'hash-table)))
-                    (error
-                     (efrit-log 'warn "limits: %s unreadable (%s), ignoring"
-                                file (error-message-string err))
-                     nil)))
-             efrit-limits--project)
-    (puthash root t efrit-limits--loaded)))
-
-(defun efrit-limits--ensure-loaded (root)
-  (unless (gethash root efrit-limits--loaded)
-    (efrit-limits-load root)))
-
-(defun efrit-limits-save (root)
-  "Write ROOT's project overrides (mode 0600).  efrit's own state, outside the sandbox."
-  (let* ((file (efrit-limits-file root))
-         (limits (gethash root efrit-limits--project))
-         (json (json-encode
-                `((version . ,efrit-limits--version)
-                  (limits . ,(or (mapcar (lambda (c) (cons (symbol-name (car c)) (cdr c))) limits)
-                                 (make-hash-table)))))))
-    (make-directory (file-name-directory file) t)
-    (with-file-modes #o600
-      (with-temp-file file (insert json "\n")))
-    (efrit-log 'info "limits: saved %s" file)
-    file))
+(defun efrit-limits--save-project (root overrides)
+  "Write OVERRIDES (alist) as ROOT's limits section; an empty alist removes it."
+  (efrit-settings-put root efrit-limits-section
+                      (when overrides
+                        (let ((h (make-hash-table :test 'equal)))
+                          (dolist (c overrides) (puthash (symbol-name (car c)) (cdr c) h))
+                          h))))
 
 ;;; Lookup and set
 
@@ -151,22 +118,27 @@ at the end of the turn.")
   "The limit NAME in force for ROOT: once > session > project > DEFAULT.
 DEFAULT is the customization value the caller would otherwise use."
   (let ((root (or root (efrit-limits-project-root))))
-    (efrit-limits--ensure-loaded root)
     (or (gethash (cons root name) efrit-limits--once)
         (alist-get name (gethash root efrit-limits--session))
-        (alist-get name (gethash root efrit-limits--project))
+        (alist-get name (efrit-limits-project-overrides root))
         default)))
 
 (defun efrit-limits-set (name value scope &optional root)
-  "Set limit NAME to VALUE at SCOPE (`once', `session', `project') for ROOT."
+  "Set limit NAME to VALUE at SCOPE (`once', `session', `project') for ROOT.
+A VALUE of nil at `session' or `project' scope removes that override."
   (let ((root (or root (efrit-limits-project-root))))
     (pcase scope
       ('once (puthash (cons root name) value efrit-limits--once))
-      ('session (setf (alist-get name (gethash root efrit-limits--session)) value))
+      ('session
+       (if value
+           (setf (alist-get name (gethash root efrit-limits--session)) value)
+         (setf (alist-get name (gethash root efrit-limits--session) nil t) nil)))
       ('project
-       (efrit-limits--ensure-loaded root)
-       (setf (alist-get name (gethash root efrit-limits--project)) value)
-       (efrit-limits-save root))
+       (let ((overrides (efrit-limits-project-overrides root)))
+         (if value
+             (setf (alist-get name overrides) value)
+           (setf (alist-get name overrides nil t) nil))
+         (efrit-limits--save-project root overrides)))
       (_ (error "Unknown limit scope %S" scope)))
     (efrit-log 'info "limits: %s = %s (%s) for %s" name value scope root)
     value))
@@ -294,7 +266,8 @@ DEFAULT is the customization value the caller would otherwise use."
 (defun efrit-limits--details-text ()
   "The limits in force for this project and where they come from, as text."
   (let* ((root (plist-get efrit-limits--context :root))
-         (file (efrit-limits-file root)))
+         (file (efrit-limits-file root))
+         (project (efrit-limits-project-overrides root)))
     (concat
      (format "Project:  %s\nSettings: %s%s\n\n" (abbreviate-file-name root)
              (abbreviate-file-name file)
@@ -306,7 +279,7 @@ DEFAULT is the customization value the caller would otherwise use."
                   name
                   (if (and var (boundp var)) (symbol-value var) "-")
                   (or (alist-get name (gethash root efrit-limits--session)) "-")
-                  (or (alist-get name (gethash root efrit-limits--project)) "-")
+                  (or (alist-get name project) "-")
                   (or (gethash (cons root name) efrit-limits--once) "-"))))
       efrit-limits-known "\n")
      "\n\nA raise never lowers a limit; M-x efrit-limits-reset-session forgets session raises.")))
@@ -387,14 +360,8 @@ DEFAULT is the customization value the caller would otherwise use."
     (?c 'once) (?s 'session) (?p 'project) (_ nil)))
 
 (defun efrit-limits--note (text face)
-  "Append TEXT in FACE to the agent transcript, like the sandbox notes."
-  (when (and (boundp 'efrit-agent-buffer-name)
-             (get-buffer (symbol-value 'efrit-agent-buffer-name))
-             (fboundp 'efrit-agent--append-to-conversation))
-    (with-current-buffer (symbol-value 'efrit-agent-buffer-name)
-      (funcall 'efrit-agent--append-to-conversation
-               (concat (propertize (concat "  ⏱ " text) 'face face) "\n")
-               (list 'efrit-type 'limits-note)))))
+  "Publish TEXT in FACE as a transcript note (the agent buffer shows it)."
+  (efrit-publish 'note `((:text . ,(concat "⏱ " text)) (:face . ,face) (:kind . limits))))
 
 (defun efrit-limits-ask-to-raise (name current &optional root)
   "Ask whether to go past limit NAME, currently CURRENT, for ROOT.

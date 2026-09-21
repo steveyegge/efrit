@@ -23,7 +23,6 @@
 ;; Conditional requires for efrit subsystems
 (declare-function efrit-do "efrit-do")
 (declare-function efrit-execute "efrit-executor")
-(declare-function efrit-streamlined-send "efrit-chat-streamlined")
 
 ;; Forward declarations for efrit-session functions
 (declare-function efrit-session-active "efrit-session")
@@ -124,7 +123,7 @@ Must match EFRIT_SCHEMA_VERSION in mcp/src/types.ts.")
   "Valid response status values.
 Must match EfritResponseStatus in mcp/src/types.ts.")
 
-(defconst efrit-remote-queue-valid-request-types '("command" "chat" "eval" "status")
+(defconst efrit-remote-queue-valid-request-types '("command" "eval" "status")
   "Valid request type values.
 Must match EfritRequestType in mcp/src/types.ts.")
 
@@ -328,8 +327,6 @@ Includes schema version for protocol compatibility."
                   ((string= request-type "command")
                    (efrit-remote-queue--execute-command content))
 
-                  ((string= request-type "chat")
-                   (efrit-remote-queue--execute-chat content))
 
                   ((string= request-type "eval")
                    (efrit-remote-queue--execute-eval content))
@@ -415,22 +412,6 @@ Returns the result string."
        (format "Command execution failed: %s" (error-message-string err)))))
 
    (t (error "Neither efrit-execute nor efrit-do available"))))
-
-(defun efrit-remote-queue--execute-chat (content)
-  "Execute a chat-type request with CONTENT."
-  (condition-case err
-      (progn
-        ;; Load efrit-chat if not already loaded
-        (unless (fboundp 'efrit-streamlined-send)
-          (require 'efrit-chat))
-        
-        ;; Execute the chat request
-        ;; Note: This is a simplified version - real implementation would need
-        ;; to handle async responses properly
-        (efrit-streamlined-send content)
-        "Chat request sent to efrit-streamlined-send")
-    (error
-     (format "Chat execution failed: %s" (error-message-string err)))))
 
 (defun efrit-remote-queue--execute-eval (content)
   "Execute an eval-type request with CONTENT."

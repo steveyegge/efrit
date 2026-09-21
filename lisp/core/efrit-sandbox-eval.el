@@ -87,10 +87,12 @@
   "Symbols an eval_sexp form may not reference in any position.")
 
 (defconst efrit-sandbox-eval--forbidden-prefixes
-  '("efrit-sandbox" "efrit-permission" "efrit-review" "efrit-limits")
+  '("efrit-sandbox" "efrit-permission" "efrit-review" "efrit-limits" "efrit-settings"
+    "efrit-package-review" "efrit-testdrive")
   "Symbol-name prefixes refused wherever they appear.
-efrit-review and efrit-limits are included so the model cannot switch
-off its own reviewer or raise its own iteration cap from eval_sexp.")
+efrit-review, efrit-limits and efrit-settings are included so the model
+cannot switch off its own reviewer, raise its own iteration cap, or
+rewrite the project settings file from eval_sexp.")
 
 (defun efrit-sandbox-eval--forbidden-p (sym)
   (and (symbolp sym) sym
@@ -192,6 +194,8 @@ outside the sandbox fail before the real operation is even attempted.")
         (cond
          ((null cap) nil)
          ((eq cap 'shell)
+          ;; the command line is not recoverable from the handler
+          ;; arguments in general; ask for the blanket grant
           (efrit-sandbox-check 'shell t "eval_sexp" (format "%s" op)))
          (t
           (dolist (p (efrit-sandbox-eval--op-paths op args))
@@ -207,10 +211,16 @@ outside the sandbox fail before the real operation is even attempted.")
 (defun efrit-sandbox-eval--guard-process (orig &rest args)
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
     (let ((efrit-sandbox-eval--in-guard t))
-      (efrit-sandbox-check 'shell t "eval_sexp"
-                           (format "%s" (or (plist-get args :command)
-                                            (and (stringp (car args)) (car args))
-                                            "process")))))
+      (let* ((command (or (plist-get args :command)
+                          (and (stringp (car args)) (list (car args)))))
+             (line (cond ((and (listp command) command (cl-every #'stringp command))
+                          (mapconcat #'shell-quote-argument command " "))
+                         ((stringp command) command)
+                         (t t))))
+        ;; a process with a known argv is checked like a shell line, so
+        ;; a grant for "git" covers (call-process "git" ...) as well
+        (efrit-sandbox-check 'shell line "eval_sexp"
+                             (if (stringp line) line "process")))))
   ;; A nested advised call (call-process under shell-command-to-string)
   ;; runs with the guard suppressed: the outer check already passed.
   (let ((efrit-sandbox-eval--in-guard t))

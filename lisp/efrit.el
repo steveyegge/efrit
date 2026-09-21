@@ -59,10 +59,6 @@
 ;; (require 'efrit-use-case-tests)
 ;; (require 'efrit-integration-tests)
 
-;; Make external API accessible with clear naming
-(defalias 'efrit-start 'efrit-chat
-  "Start a new Efrit chat session (alias for efrit-chat).")
-
 ;;;###autoload
 (defun efrit ()
   "Open or switch to the Efrit REPL session buffer.
@@ -99,8 +95,6 @@ Use M-x efrit-help for more information."
 ;; Global keymap for Efrit (not bound by default)
 (defvar efrit-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
-    (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
     (define-key map (kbd "a") 'efrit-agent)   ; 'a' for agent buffer
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (async by default)
     (define-key map (kbd "w") 'efrit-do-silently) ; 'w' for background work
@@ -145,7 +139,6 @@ Use M-x efrit-help for more information."
       (insert "  M-x efrit              - Open REPL session buffer (PRIMARY INTERFACE)\n")
       (insert "                           Persistent conversation with Claude\n")
       (insert "                           Recommended for all interactive use\n\n")
-      (insert "  M-x efrit-chat         - Start new chat session (alternative)\n")
       (insert "                           Single-window chat mode\n\n")
       (insert "  M-x efrit-do-sync      - Execute command synchronously (scripting)\n")
       (insert "                           For shell scripts and automation\n\n")
@@ -161,7 +154,6 @@ Use M-x efrit-help for more information."
       (insert "  Set `efrit-enable-global-keymap` to t, or run:\n")
       (insert "  M-x efrit-setup-keybindings\n\n")
       (insert "  Then use C-c C-e prefix:\n")
-      (insert "    C-c C-e c  - efrit-chat (multi-turn chat)\n")
       (insert "    C-c C-e d  - efrit-do (async execution, internal API)\n")
       (insert "    C-c C-e D  - efrit-do-sync (sync execution, scripting)\n")
       (insert "    C-c C-e p  - efrit-do-show-progress\n")
@@ -179,12 +171,6 @@ Use M-x efrit-help for more information."
     (display-buffer (current-buffer))))
 
 ;; For package system (lazy loading)
-;;;###autoload
-(autoload 'efrit-chat "efrit-chat" "Start a new Efrit chat session" t)
-
-;;;###autoload
-(autoload 'efrit-streamlined-send "efrit-chat" "Send message via streamlined chat" t)
-
 ;;;###autoload
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
 
@@ -245,7 +231,6 @@ Shows version, installation status, and basic connectivity."
       (when (not has-api-key)
         (insert "⚠ No API key found. Set ANTHROPIC_API_KEY or configure via efrit-config.\n"))
       (insert "\nQuick Start:\n")
-      (insert "  M-x efrit-chat      - Start interactive chat\n")
       (insert "  M-x efrit-do        - Execute natural language command\n")
       (insert "  M-x efrit-run-tests - Run test suite\n")
       (insert "  M-x efrit-doctor    - Verify configuration (C-u: live API check)\n")
@@ -275,7 +260,34 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-menu "efrit-menu" "Efrit status and command menu." t)
 ;;;###autoload
-(autoload 'efrit-sandbox "efrit-sandbox-ui" "Show and edit sandbox grants for the project." t)
+(autoload 'efrit-sandbox "efrit-permissions-ui" "Show and edit sandbox grants for the project." t)
+;;;###autoload
+(autoload 'efrit-review-package "efrit-package-review"
+  "Review an installed package with efrit and show the report." t)
+;;;###autoload
+(autoload 'efrit-package-review-mode "efrit-package-review"
+  "Have efrit review packages before package-review asks." t)
+;;;###autoload
+(autoload 'efrit-review-all-packages "efrit-package-review-ui"
+  "Review every installed package with efrit; collect the verdicts in one buffer." t)
+;;;###autoload
+(autoload 'efrit-testdrive "efrit-testdrive"
+  "Walk through efrit's live test plan interactively." t)
+;;;###autoload
+(autoload 'efrit-package-review-probe "efrit-package-review"
+  "Send shrinking variants of a package review request to find what the API refuses." t)
+;;;###autoload
+(autoload 'efrit-permissions "efrit-permissions-ui"
+  "Edit grants, review policy and limits for every known project." t)
+;;;###autoload
+(autoload 'efrit-register-tool "efrit-tool-registry"
+  "Offer the model a tool implemented by another package.")
+;;;###autoload
+(autoload 'efrit-list-registered-tools "efrit-tool-registry"
+  "Show the tools other packages have registered with efrit." t)
+;;;###autoload
+(autoload 'efrit-submit "efrit-agent-input"
+  "Start a REPL turn from Lisp with a prepared prompt.")
 ;;;###autoload
 (autoload 'efrit-reload "efrit-reload"
   "Reload every loaded efrit library from source, dependencies first." t)

@@ -10,7 +10,7 @@
 ;;; Commentary:
 
 ;; Automated test specifications converted from the manual testing plan.
-;; These tests exercise efrit-do-async through efrit-chat.
+;; These tests exercise the efrit-do path end to end.
 ;;
 ;; Test tiers:
 ;; - Tier 1: Single-tool smoke tests

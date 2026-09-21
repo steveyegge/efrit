@@ -325,16 +325,41 @@ Example:
               (setq in-word t)))))
       count)))
 
+(defconst efrit-common--replacement-char #xFFFD
+  "U+FFFD, written for a character JSON cannot carry.")
+
+(defun efrit-common--json-escape-char (char)
+  "CHAR (a code point) as JSON \\uXXXX escapes.
+A JSON escape holds exactly four hex digits, so a character above the
+Basic Multilingual Plane is written as a UTF-16 surrogate pair: one
+escape of six digits (\\u1F600 for an emoji) made the whole request
+invalid JSON, and a diff of a Unicode-heavy package tripped it.  A raw
+undecoded byte (Emacs code points #x3FFF80 and up), a lone surrogate,
+or a code point past U+10FFFF has no JSON form and becomes U+FFFD."
+  (cond
+   ((or (> char #x10FFFF) (<= #xD800 char #xDFFF))
+    (format "\\u%04X" efrit-common--replacement-char))
+   ((> char #xFFFF)
+    (let ((v (- char #x10000)))
+      (format "\\u%04X\\u%04X"
+              (+ #xD800 (ash v -10))
+              (+ #xDC00 (logand v #x3FF)))))
+   (t (format "\\u%04X" char))))
+
 (defun efrit-common-escape-json-unicode (json-string)
-  "Escape unicode characters in JSON-STRING for HTTP transmission.
-This prevents multibyte encoding errors when sending to APIs.
-Converts non-ASCII characters to JSON unicode escapes (\\uXXXX)."
+  "Escape non-ASCII characters in JSON-STRING as JSON \\u escapes.
+The result is pure ASCII, so no transport can mis-encode it.  See
+`efrit-common--json-escape-char' for the cases."
   (replace-regexp-in-string
    "[^\x00-\x7F]"
    (lambda (char)
-     (format "\\u%04X" (string-to-char char)))
+     (efrit-common--json-escape-char (string-to-char char)))
    json-string
-   nil    ; FIXEDCASE - preserve case
+   ;; FIXEDCASE must be t: with nil, a match that is an upper-case
+   ;; letter (an O with a stroke, say) makes `replace-match' upcase
+   ;; the replacement, and \u00D8 goes out as \U00D8, which no JSON
+   ;; parser accepts.  Found by a package whose docstrings hold one.
+   t
    t))    ; LITERAL - don't interpret \& and \N in replacement
 
 ;;; Error Recovery

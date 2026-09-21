@@ -536,6 +536,51 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
           (should (efrit-agent--input-first-line-p)))
       (efrit-agent--clear-input))))
 
+(ert-deftest test-efrit-agent-ret-sends-multiline-input-and-shift-selects ()
+  "RET sends from any line of a multi-line input (S-RET made the lines);
+S-<up> on the first line extends the selection instead of recalling history;
+the header hint names the keys."
+  (require 'efrit-agent-input)
+  (efrit)
+  (with-current-buffer (efrit-agent--get-buffer)
+    (let ((sent nil) (efrit-agent--input-history (list "old")))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send) (lambda (input) (setq sent input))))
+        (unwind-protect
+            (progn
+              (goto-char (point-max)) (insert "line one")
+              (efrit-agent-input-newline) (insert "line two")
+              (should (efrit-agent--in-input-region-p))
+              ;; point is on the last line; RET sends the whole thing
+              (efrit-agent-input-send-or-newline)
+              (should (equal sent "line one\nline two"))
+              (should (equal (efrit-agent--get-input) ""))
+              ;; from the first line too
+              (setq sent nil)
+              (goto-char (point-max)) (insert "a") (efrit-agent-input-newline) (insert "b")
+              (goto-char efrit-agent--input-start) (forward-char 1)
+              (efrit-agent-input-send-or-newline)
+              (should (equal sent "a\nb"))
+              ;; shift-up on a one-line input: selection, not history
+              (goto-char (point-max)) (insert "x") (efrit-agent-input-newline) (insert "keep me")
+              (goto-char (point-max))
+              (let ((this-command-keys-shift-translated t)
+                    (shift-select-mode t)
+                    (transient-mark-mode t)
+                    (start (point)))
+                ;; the command loop runs this for an (interactive "^") command
+                (handle-shift-selection)
+                (efrit-agent-input-up)
+                (should (equal (efrit-agent--get-input) "x\nkeep me"))
+                (should (region-active-p))
+                (should (= (mark) start))
+                (should (< (point) start)))
+              (deactivate-mark)
+              ;; the hint names both keys
+              (let ((hint (efrit-agent-input-hint)))
+                (should (string-match-p "RET sends" hint))
+                (should (string-match-p "S-<return> newline" hint))))
+          (efrit-agent--clear-input))))))
+
 (ert-deftest test-efrit-agent-user-turn-keeps-prefix-and-text-faces ()
   "The user block background is layered under the prompt/text faces, not over them."
   (efrit)

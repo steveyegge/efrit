@@ -40,6 +40,7 @@
 (require 'svg)
 (require 'dom)
 (require 'color)
+(require 'efrit-log)
 
 (defvar efrit-agent--status)
 (defvar efrit-agent--thinking-label)
@@ -55,6 +56,7 @@
 (defvar efrit-agent--spinner-index)
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
+(declare-function efrit-agent-input-hint "efrit-agent-render")
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 
@@ -89,6 +91,11 @@ propertized string; `none' hides the header."
 (defface efrit-agent-header-directory
   '((t :inherit font-lock-comment-face))
   "Face for the project directory in the graphical header."
+  :group 'efrit-agent-header)
+
+(defface efrit-agent-header-hint
+  '((t :inherit shadow))
+  "Face for the key hint (RET sends, S-RET newline) in the header."
   :group 'efrit-agent-header)
 
 (defface efrit-agent-header-border
@@ -183,6 +190,9 @@ The glyph is one token, then whitespace, in both display styles."
       (:model . ,(and (boundp 'efrit-default-model) efrit-default-model))
       (:usage . ,(and usage (substring-no-properties usage)))
       (:usage-face . ,(and usage (get-text-property 0 'face usage)))
+      ;; Key hint while nothing is running: the chat-client convention
+      ;; is not the Emacs one, so say it where the eye lands
+      (:hint . ,(and (not efrit-agent--thinking-label) (efrit-agent-input-hint)))
       (:directory . ,(and root (abbreviate-file-name root)))
       (:status . ,(substring-no-properties status))
       (:status-face . ,(or (get-text-property 0 'face status) 'default))
@@ -237,7 +247,11 @@ and `textLength' merely keeps each run inside its cell."
                                                      (textLength . ,(format "%d" w))
                                                      (lengthAdjust . "spacingAndGlyphs")
                                                      ,@extra)
-                                                   text))
+                                                   ;; svg-print writes text nodes
+                                                   ;; verbatim: "S-<return>" in the
+                                                   ;; key hint became a tag and the
+                                                   ;; whole header failed to parse
+                                                   (svg--encode-text text)))
                   (setq cursor (+ cursor w gap)))))
       (dolist (seg segments)
         (let* ((text (car seg))
@@ -308,7 +322,8 @@ square centred on the letters beside it (baseline minus ~0.35em)."
                       text-x y1 fs family
                       `((,(alist-get :name model) . efrit-agent-header-name)
                         (,(alist-get :model model) . efrit-agent-header-model)
-                        (,(alist-get :usage model) . ,(or (alist-get :usage-face model) 'default)))))
+                        (,(alist-get :usage model) . ,(or (alist-get :usage-face model) 'default))
+                        (,(alist-get :hint model) . efrit-agent-header-hint))))
     ;; Row 2: directory ➤ status/spinner ➤ elapsed ➤ tools ➤ mode ➤ session
     (svg--append svg (efrit-agent-svg--row
                       text-x y2 fs family
@@ -349,8 +364,26 @@ whole header at twice the body text.  (The spinner already did this.)"
 (defvar-local efrit-agent-svg--cache nil
   "Hash of model -> rendered header, cleared when it grows past a few dozen.")
 
+(defvar efrit-agent-svg--last-error nil
+  "The last error the header value function caught, for `efrit-doctor'.")
+
 (defun efrit-agent-svg-header ()
-  "Return the header-line string per `efrit-agent-header-style'."
+  "Return the header-line string per `efrit-agent-header-style'.
+Never signals: an error inside a `header-line-format' :eval makes
+redisplay blank the header and set the format to nil for the buffer,
+which showed up as no logo until the next open.  Errors are logged
+and the plain text header is returned instead."
+  (condition-case err
+      (efrit-agent-svg--header-1)
+    (error
+     (setq efrit-agent-svg--last-error (error-message-string err))
+     (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
+     (condition-case nil
+         (efrit-agent--format-header-line)
+       (error " efrit")))))
+
+(defun efrit-agent-svg--header-1 ()
+  "The header string; may signal (see `efrit-agent-svg-header')."
   (pcase efrit-agent-header-style
     ('none nil)
     ('graphical
@@ -362,13 +395,16 @@ whole header at twice the body text.  (The spinner already did this.)"
          (when (> (hash-table-count efrit-agent-svg--cache) 64)
            (clrhash efrit-agent-svg--cache))
          (or (gethash model efrit-agent-svg--cache)
-             (puthash model
-                      (condition-case err
-                          (efrit-agent-svg--render model)
-                        (error
-                         (message "efrit svg header: %s" (error-message-string err))
-                         (efrit-agent--format-header-line)))
-                      efrit-agent-svg--cache)))))
+             ;; A failed render is shown as the text header but NOT
+             ;; cached: caching it pinned the fallback to this model
+             ;; key until something in the header changed, which is
+             ;; why a transient error at startup left a blank header
+             ;; until the first RET.
+             (condition-case err
+                 (puthash model (efrit-agent-svg--render model) efrit-agent-svg--cache)
+               (error
+                (efrit-log 'warn "svg header: %s" (error-message-string err))
+                (efrit-agent--format-header-line)))))))
     (_ (efrit-agent--format-header-line))))
 
 (defun efrit-agent-svg--resize ()

@@ -10,12 +10,6 @@ Efrit is an AI coding agent that brings Claude's intelligence directly into Emac
 
 ## Features
 
-### Conversational Chat (`efrit-chat`)
-Multi-turn conversations with Claude that understand your Emacs context:
-- Ask questions about code, get explanations
-- Refactor with guidance
-- Debug issues interactively
-
 ### Agentic Task Execution (`efrit-do`)
 Execute natural language commands that Claude translates to actions:
 - "Create a buffer with today's date"
@@ -134,17 +128,15 @@ Verify with `M-x efrit-doctor`.
 
 | Mode | Use When | Tools Available |
 |------|----------|-----------------|
-| **`efrit-chat`** | Multi-turn conversations, asking questions, explanations | Buffer-centric (read buffer, search) |
 | **`efrit-do`** | Quick agentic commands, shows progress in minibuffer | Full suite (35+ tools) |
 | **`efrit-agent`** | Complex tasks needing visibility and interaction | Full suite + structured UI |
 
 **Decision guide:**
-- **Just asking?** → `efrit-chat` (conversational, no file changes)
+- **Just asking?** → `M-x efrit` (the same buffer; a question is a turn with read-only tools)
 - **Quick command?** → `efrit-do` (runs in background, shows progress buffer)
 - **Complex task?** → `efrit-agent` (real-time visibility, can guide mid-session)
 
 **Key differences:**
-- `efrit-chat`: Read-only context, conversational UI, retains history
 - `efrit-do`: Fire-and-forget, progress buffer with raw output
 - `efrit-agent`: Interactive session buffer with expandable tool calls, TODO tracking, and mid-session guidance (`i` key)
 
@@ -152,7 +144,6 @@ Verify with `M-x efrit-doctor`.
 
 | Command | Description |
 |---------|-------------|
-| `M-x efrit-chat` | Multi-turn conversational interface |
 | `M-x efrit-do` | Execute natural language command asynchronously with progress buffer |
 | `M-x efrit-agent` | Open the structured agent session buffer |
 | `M-x efrit-do-sync` | Execute natural language command synchronously (blocking) |
@@ -190,10 +181,10 @@ M-x efrit-do RET
 
 **Conversational:**
 ```
-M-x efrit-chat RET
-You: Help me understand how the error handling works in this file
-Assistant: [analyzes current buffer and explains]
-You: Can you refactor it to use condition-case-unless-debug instead?
+M-x efrit RET
+> Help me understand how the error handling works in this file
+[analyzes current buffer and explains]
+> Can you refactor it to use condition-case-unless-debug instead?
 ```
 
 ### Agentic Workflows

@@ -16,7 +16,11 @@
 ;;; Code:
 
 (require 'loaddefs-gen nil t)   ; Emacs 29+
-(require 'autoload)
+;; Emacs 28 fallback; deprecated from 29 where loaddefs-gen is used instead
+(with-suppressed-warnings ((obsolete autoload))
+  (require 'autoload))
+(declare-function loaddefs-generate "loaddefs-gen")
+(declare-function make-directory-autoloads "autoload")
 
 (defconst efrit-gen-autoloads--subdirs '("core" "interfaces" "support" "tools" "dev"))
 
@@ -35,7 +39,8 @@
         (loaddefs-generate dirs out nil prelude)
       ;; Emacs 28: make-directory-autoloads then prepend the prelude
       (let ((generated-autoload-file out))
-        (make-directory-autoloads dirs out))
+        (with-suppressed-warnings ((obsolete make-directory-autoloads))
+          (make-directory-autoloads dirs out)))
       (with-temp-buffer
         (insert-file-contents out)
         (goto-char (point-min))

@@ -133,7 +133,7 @@ and users commonly need to view images from anywhere (Desktop, Downloads, etc.).
 
               ;; Return special image response format
               ;; This will be detected and converted to an image content block
-              ;; by efrit-chat.el
+              ;; by the API layer (efrit-api-build-tool-result)
               `((success . t)
                 (image . ((type . "image")
                           (source . ((type . "base64")

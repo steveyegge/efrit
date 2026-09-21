@@ -20,7 +20,14 @@
 ;;       o  once      this one operation
 ;;       s  session   until this Emacs exits
 ;;       p  project   saved in <project>/.efrit/sandbox.json
-;;       n  no        deny (C-g and q do the same)
+;;       a  any       (shell only) any command, this session
+;;       n  no        deny this one; the model continues
+;;       N  no to all deny this and every request for the rest of the turn
+;;       q  abort     stop the turn (as C-g in a tool); the chat stays
+;;
+;;   A shell request names the commands on the line ("run git, sed");
+;;   a line in `efrit-sandbox-shell-always-ask' (rm -rf, sudo, force
+;;   push, ...) offers only "once" and asks for a typed yes.
 ;;       ?  details   show/hide the full request in the menu
 ;;       y  yank      copy the full request to the kill ring
 ;;       b  buffer    open the full request in a popup (q closes)
@@ -37,9 +44,9 @@
 ;; - A denial is not the end of the turn.  The model gets a tool
 ;;   result saying the access was refused and carries on without it.
 ;;
-;; - `M-x efrit-sandbox' lists every grant in force for the current
-;;   project in a tabulated-list with `d' to revoke, `g' to refresh,
-;;   `s' to add a grant by hand.
+;; - `M-x efrit-sandbox' (efrit-permissions-ui) lists and edits the
+;;   grants in force for the current project; `M-x efrit-permissions'
+;;   does the same for every project plus the policy settings.
 ;;
 ;; - The agent buffer gets a one-line record of each grant and denial,
 ;;   so reading back a transcript shows where the fence moved.
@@ -48,14 +55,13 @@
 
 (require 'cl-lib)
 (require 'seq)
-(require 'tabulated-list)
 (require 'efrit-sandbox)
 (require 'efrit-sandbox-store)
+(require 'efrit-events)
 
 (defvar transient-post-exit-hook)
-(declare-function efrit-agent--append-to-conversation "efrit-agent-core")
+(declare-function efrit-sandbox-ask "efrit-sandbox-ui")
 (declare-function efrit-show-preview "efrit-ui-helpers")
-(defvar efrit-agent-buffer-name)
 
 (defgroup efrit-sandbox-ui nil
   "Sandbox prompts and listing."
@@ -80,14 +86,8 @@
 ;;; Transcript notes
 
 (defun efrit-sandbox-ui--note (text face)
-  "Append a one-line TEXT in FACE to the agent conversation, if it exists."
-  (when (and (boundp 'efrit-agent-buffer-name)
-             (get-buffer efrit-agent-buffer-name)
-             (fboundp 'efrit-agent--append-to-conversation))
-    (with-current-buffer efrit-agent-buffer-name
-      (efrit-agent--append-to-conversation
-       (concat (propertize (concat "  ⛨ " text) 'face face) "\n")
-       (list 'efrit-type 'sandbox-note)))))
+  "Publish a one-line TEXT in FACE as a transcript note."
+  (efrit-publish 'note `((:text . ,(concat "⛨ " text)) (:face . ,face) (:kind . sandbox))))
 
 ;;; The prompt
 
@@ -99,7 +99,11 @@
       ('read (format "read files under %s" (abbreviate-file-name target)))
       ('write (format "write files under %s" (abbreviate-file-name target)))
       ('elisp "evaluate Emacs Lisp (each file/process it touches is still checked)")
-      ('shell "run shell commands (a single grant: any command)")
+      ('shell (cond ((efrit-sandbox-shell-target-p target)
+                     (format "run %s" (efrit-sandbox--target-label target)))
+                    ((and (consp target) (eq (car target) 'command))
+                     (format "run this exact command (asked every time): %s" (cdr target)))
+                    (t "run any shell command")))
       ('net "make network requests")
       (_ (format "%s %s" cap target)))))
 
@@ -167,6 +171,41 @@ each line is chopped to the frame width."
 (defun efrit-sandbox-ui--choose (answer)
   (setq efrit-sandbox-ui--answer answer))
 
+(defun efrit-sandbox-ui--once-only-p ()
+  "Non-nil when the open request can only be granted once (an always-ask shell line)."
+  (and efrit-sandbox-ui--request
+       (efrit-sandbox-request-once-only-p efrit-sandbox-ui--request)))
+
+(defun efrit-sandbox-ui--shell-list-p ()
+  "Non-nil when the open request is for a list of shell commands."
+  (and efrit-sandbox-ui--request
+       (efrit-sandbox-shell-target-p (efrit-sandbox-request-target efrit-sandbox-ui--request))))
+
+(defun efrit-sandbox-ui--once-label ()
+  (if (efrit-sandbox-ui--once-only-p) "once (asks you to confirm the line)" "once"))
+
+(defun efrit-sandbox-ui-allow-once ()
+  "Grant the open request once.
+For an always-ask shell line, first show the exact line and ask for a
+yes: the menu is one keystroke, and one keystroke is not enough for
+rm -rf."
+  (interactive)
+  (let ((req efrit-sandbox-ui--request))
+    (if (and req (efrit-sandbox-request-once-only-p req)
+             (not (yes-or-no-p (format "Run exactly this, once: %s ? "
+                                       (cdr (efrit-sandbox-request-target req))))))
+        (efrit-sandbox-ui--choose nil)
+      (efrit-sandbox-ui--choose 'once))))
+
+(defun efrit-sandbox-ui-widen-to-any-shell ()
+  "Answer the open shell request with a session grant for any command.
+The request's target is widened to t before the grant is recorded;
+always-ask lines stay excluded from it."
+  (interactive)
+  (when efrit-sandbox-ui--request
+    (setf (efrit-sandbox-request-target efrit-sandbox-ui--request) t)
+    (efrit-sandbox-ui--choose 'session)))
+
 (defun efrit-sandbox-ui--exit-recursive-edit ()
   "Leave the recursive edit that waits on the menu, if we are in it."
   (when (and efrit-sandbox-ui--depth
@@ -182,19 +221,29 @@ each line is chopped to the frame width."
           "Allow the sandbox request?"
           [:description efrit-sandbox-ui--menu-description
            ["Allow"
-            ("o" "once" (lambda () (interactive) (efrit-sandbox-ui--choose 'once)))
-            ("s" "for this Emacs session" (lambda () (interactive) (efrit-sandbox-ui--choose 'session)))
+            ("o" efrit-sandbox-ui-allow-once :description efrit-sandbox-ui--once-label)
+            ("s" "for this Emacs session" (lambda () (interactive) (efrit-sandbox-ui--choose 'session))
+             :if-not efrit-sandbox-ui--once-only-p)
             ("p" (lambda () (interactive) (efrit-sandbox-ui--choose 'project))
-             :description efrit-sandbox-ui--project-label)]
+             :description efrit-sandbox-ui--project-label
+             :if-not efrit-sandbox-ui--once-only-p)
+            ("a" "any shell command, for this session" efrit-sandbox-ui-widen-to-any-shell
+             :if efrit-sandbox-ui--shell-list-p)]
            ["Refuse"
             ("n" "no, the model continues without it"
-             (lambda () (interactive) (efrit-sandbox-ui--choose nil)))]
+             (lambda () (interactive) (efrit-sandbox-ui--choose nil)))
+            ("N" "no to this and every request for the rest of the turn"
+             (lambda () (interactive) (efrit-sandbox-deny-rest-of-turn) (efrit-sandbox-ui--choose nil)))
+            ("q" "abort the turn (like C-g; the conversation stays)"
+             (lambda () (interactive) (efrit-sandbox-abort-turn) (efrit-sandbox-ui--choose nil)))]
            ["Details"
             ("?" efrit-sandbox-ui-toggle-details
              :description efrit-sandbox-ui--toggle-label :transient t)
             ("y" "yank details to the kill ring" efrit-sandbox-ui-yank-details :transient t)
             ("b" "open details in a buffer" efrit-sandbox-ui-open-details :transient t)
-            ("l" "grants in force" (lambda () (interactive) (efrit-sandbox (efrit-sandbox-project-root)))
+            ("l" "grants in force" (lambda () (interactive)
+                                     (require 'efrit-permissions-ui)
+                                     (efrit-sandbox (efrit-sandbox-project-root)))
              :transient t)]])
        t))
     (fboundp 'efrit-sandbox-ask)))
@@ -224,17 +273,27 @@ Returns once/session/project or nil.  Closing the menu any other way
 (defun efrit-sandbox-ui--ask-in-echo-area (req)
   "Fallback prompt in the echo area when no menu can be shown."
   (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
+         (once-only (efrit-sandbox-request-once-only-p req))
          (header (format "Efrit (%s) wants to %s\n" tool (efrit-sandbox-ui--scope-word req)))
-         (legend (format "[o]nce  [s]ession  [p]roject %s  [n]o  [?]details "
-                         (abbreviate-file-name (efrit-sandbox-project-root)))))
+         (legend (if once-only
+                     "[o]nce (this line is always asked)  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                   (format "[o]nce  [s]ession  [p]roject %s  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                           (abbreviate-file-name (efrit-sandbox-project-root)))))
+         (keys (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))))
     (unwind-protect
         (catch 'decided
           (while t
-            (pcase (read-char-choice (concat header legend) '(?o ?s ?p ?n ??))
-              (?o (throw 'decided 'once))
+            (pcase (read-char-choice (concat header legend) keys)
+              (?o (throw 'decided
+                         (if (and once-only
+                                  (not (yes-or-no-p (format "Run exactly this, once: %s ? "
+                                                            (cdr (efrit-sandbox-request-target req))))))
+                             nil 'once)))
               (?s (throw 'decided 'session))
               (?p (throw 'decided 'project))
               (?n (throw 'decided nil))
+              (?N (efrit-sandbox-deny-rest-of-turn) (throw 'decided nil))
+              (?q (efrit-sandbox-abort-turn) (throw 'decided nil))
               (?? (efrit-sandbox-ui--show-details req)))))
       (efrit-sandbox-ui--hide-details))))
 
@@ -256,7 +315,10 @@ Returns once/session/project or nil.  Closing the menu any other way
          ('once (format "granted once: %s" what))
          ('session (format "granted for this session: %s" what))
          ('project (format "granted for this project (saved): %s" what))
-         (_ (format "denied: %s" what)))
+         (_ (pcase efrit-sandbox--turn-answer
+              ('abort (format "denied, turn aborted: %s" what))
+              ('deny-all (format "denied, and everything else this turn: %s" what))
+              (_ (format "denied: %s" what)))))
        (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face))
       answer)))
 
@@ -291,9 +353,12 @@ With FONTIFY, an elisp form is fontified as Emacs Lisp (for display)."
     (concat
      (format "%s wants to %s\nProject: %s" (or tool "a tool") (efrit-sandbox-ui--scope-word req)
              (abbreviate-file-name (efrit-sandbox-project-root)))
-     (if (and (stringp target) (not (eq cap 'elisp)))
-         (format "\nGrant:   %s" (abbreviate-file-name target))
-       "")
+     (cond
+      ((and (stringp target) (not (eq cap 'elisp)))
+       (format "\nGrant:   %s" (abbreviate-file-name target)))
+      ((eq cap 'shell)
+       (format "\nGrant:   %s" (efrit-sandbox--target-label target)))
+      (t ""))
      (if detail (format "\n\n%s:\n%s" what body) "")
      "\n\nGrants in force:\n" (efrit-sandbox-ui--grants-text))))
 
@@ -345,92 +410,17 @@ menu is gone; answering the menu removes it too."
     (if (null gs) "  (only the default: read inside the project root)"
       (mapconcat (lambda (g) (format "  %-6s %-8s %s" (plist-get g :cap) (plist-get g :scope)
                                      (let ((tg (plist-get g :target)))
-                                       (if (eq tg t) "" (abbreviate-file-name tg)))))
+                                       (if (eq tg t) "" (efrit-sandbox--target-label tg)))))
                  gs "\n"))))
 
 ;; Install as the default prompt
 (unless efrit-sandbox-request-function
   (setq efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))
 
-;;; Listing
+;;; Listing and editing live in efrit-permissions-ui (`M-x efrit-sandbox',
+;;; `M-x efrit-permissions').  Loaded lazily from the prompt's `l' key.
 
-(defvar efrit-sandbox-list-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "d") #'efrit-sandbox-list-revoke)
-    (define-key map (kbd "s") #'efrit-sandbox-list-add)
-    (define-key map (kbd "g") #'efrit-sandbox-list-refresh)
-    map))
-
-(define-derived-mode efrit-sandbox-list-mode tabulated-list-mode "Efrit-Sandbox"
-  "List of sandbox grants for the current efrit project."
-  (setq tabulated-list-format [("Cap" 7 t) ("Scope" 9 t) ("Target" 60 t)])
-  (setq tabulated-list-padding 2)
-  (tabulated-list-init-header))
-
-(defvar-local efrit-sandbox-list--root nil)
-
-(defun efrit-sandbox-list--entries (root)
-  (let ((i 0))
-    (append
-     (list (list (cl-incf i)
-                 (vector "read" "default" (abbreviate-file-name root))))
-     (mapcar (lambda (g)
-               (list (cons (cl-incf i) g)
-                     (vector (symbol-name (plist-get g :cap))
-                             (symbol-name (plist-get g :scope))
-                             (let ((tg (plist-get g :target)))
-                               (if (eq tg t) "—" (abbreviate-file-name tg))))))
-             (efrit-sandbox-grants root)))))
-
-(defun efrit-sandbox-list-refresh ()
-  "Re-read grants for the buffer's project."
-  (interactive)
-  (efrit-sandbox-store-forget efrit-sandbox-list--root)
-  (efrit-sandbox-store-ensure-loaded efrit-sandbox-list--root)
-  (setq tabulated-list-entries (efrit-sandbox-list--entries efrit-sandbox-list--root))
-  (tabulated-list-print t))
-
-(defun efrit-sandbox-list-revoke ()
-  "Revoke the grant at point."
-  (interactive)
-  (let ((id (tabulated-list-get-id)))
-    (if (not (consp id))
-        (user-error "The default project read cannot be revoked here; set efrit-sandbox-default-project-grants")
-      (let ((g (cdr id)))
-        (when (y-or-n-p (format "Revoke %s %s? " (plist-get g :cap)
-                                (let ((tg (plist-get g :target))) (if (eq tg t) "" tg))))
-          (efrit-sandbox-revoke (plist-get g :cap) (plist-get g :target) efrit-sandbox-list--root)
-          (efrit-sandbox-list-refresh))))))
-
-(defun efrit-sandbox-list-add ()
-  "Add a grant by hand."
-  (interactive)
-  (let* ((cap (intern (completing-read "Capability: " '("read" "write" "elisp" "shell" "net") nil t)))
-         (target (if (memq cap '(read write))
-                     (efrit-sandbox-canonical (read-directory-name "Directory: " efrit-sandbox-list--root))
-                   t))
-         (scope (intern (completing-read "Scope: " '("session" "project") nil t "session"))))
-    (efrit-sandbox-grant cap target scope efrit-sandbox-list--root)
-    (efrit-sandbox-list-refresh)))
-
-;;;###autoload
-(defun efrit-sandbox (&optional root)
-  "Show the sandbox grants for the current project (or ROOT).
-d revokes the grant at point, s adds one, g refreshes."
-  (interactive)
-  (let ((root (or root (efrit-sandbox-project-root))))
-    (with-current-buffer (get-buffer-create "*efrit-sandbox*")
-      (efrit-sandbox-list-mode)
-      (setq efrit-sandbox-list--root root)
-      (setq header-line-format (format " Sandbox for %s   (d revoke, s add, g refresh, q close)"
-                                       (abbreviate-file-name root)))
-      (efrit-sandbox-list-refresh)
-      ;; A popup at the bottom, not a takeover of the user's window:
-      ;; `q' (quit-window, from tabulated-list-mode) then removes it.
-      (pop-to-buffer (current-buffer)
-                     '((display-buffer-reuse-window display-buffer-at-bottom)
-                       (window-height . fit-window-to-buffer)
-                       (dedicated . t))))))
+(declare-function efrit-sandbox "efrit-permissions-ui")
 
 (provide 'efrit-sandbox-ui)
 

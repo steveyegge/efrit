@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-events)
 
 ;; Logging support
 (declare-function efrit-log "efrit-log")
@@ -102,6 +103,7 @@
     (when (eq new-status 'completed)
       (setf (efrit-todo-item-completed-at todo) (current-time)))
     (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
+    (efrit-publish 'todos-changed `((:todos . ,efrit-todo--current-todos)))
     todo))
 
 (defun efrit-todo-find (id)

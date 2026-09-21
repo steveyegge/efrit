@@ -90,6 +90,58 @@
         (efrit-agent-svg-header)
         (should (= renders 3))))))
 
+(ert-deftest test-svg-header-xml-is-well-formed-with-special-chars ()
+  "Text runs are escaped: the key hint contains S-<return>, which
+turned the header into unparsable XML (blank header on every open)."
+  (test-svg--in-agent-buffer
+    (setq efrit-agent--status 'idle efrit-agent--thinking-label nil)
+    (let* ((m (efrit-agent-svg--model))
+           (svg (efrit-agent-svg--build m))
+           (xml (with-temp-buffer (svg-print svg) (buffer-string))))
+      (should (string-match-p "S-<return>" (alist-get :hint m)))
+      (should (string-match-p "S-&lt;return&gt;" xml))
+      ;; the whole document parses
+      (should (with-temp-buffer
+                (insert xml)
+                (car (xml-parse-region (point-min) (point-max))))))))
+
+(ert-deftest test-svg-header-failed-render-is-not-cached ()
+  "A render error shows the text header for that redisplay only; the
+next redisplay tries the SVG again.  Caching the fallback left the
+header blank on startup until the model changed (first RET)."
+  (test-svg--in-agent-buffer
+    (let ((efrit-agent-header-style 'graphical)
+          (fail t) (renders 0))
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (&rest _) t))
+                ;; the text fallback's spinner would also try SVG under the stubs
+                ((symbol-function 'efrit-agent-spinner-frame) (lambda (&rest _) nil))
+                ((symbol-function 'efrit-agent-svg--render)
+                 (lambda (_m) (cl-incf renders) (if fail (error "no display yet") "rendered"))))
+        (let ((h (efrit-agent-svg-header)))
+          (should (stringp h))
+          (should (string-match-p "Working" h)))
+        (setq fail nil)
+        (should (equal (efrit-agent-svg-header) "rendered"))
+        (should (= renders 2))))))
+
+(ert-deftest test-svg-header-fresh-open-has-a-header ()
+  "M-x efrit on a new buffer, and on one whose header was lost, shows the header."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-header*"))
+    (unwind-protect
+        (progn
+          (efrit)
+          (with-current-buffer efrit-agent-buffer-name
+            (should (equal header-line-format '(:eval (efrit-agent-svg-header))))
+            ;; format-mode-line yields "" for :eval in batch; call the value fn
+            (should (string-match-p "Idle" (efrit-agent-svg-header)))
+            ;; lost header (a reload that re-ran the mode elsewhere): restored on open
+            (setq header-line-format nil))
+          (efrit)
+          (with-current-buffer efrit-agent-buffer-name
+            (should header-line-format)))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
 (ert-deftest test-svg-header-falls-back-to-text ()
   (test-svg--in-agent-buffer
     (let ((efrit-agent-header-style 'text))

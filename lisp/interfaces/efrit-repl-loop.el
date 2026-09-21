@@ -34,14 +34,17 @@
 (require 'efrit-repl-session)
 (require 'efrit-loop)
 (require 'efrit-tools)   ; efrit-tools--reset-rate-limits
+(require 'efrit-sandbox)
 (require 'efrit-do-circuit-breaker)   ; efrit-do--circuit-breaker-reset
+(require 'efrit-do-prompt)            ; efrit-do--command-system-prompt
+(require 'efrit-do-schema)            ; efrit-do--get-current-tools-schema
+(require 'efrit-do-dispatch)          ; efrit-do--execute-tool
+(require 'efrit-do-handlers)          ; the handlers efrit-do-dispatch declares
 (require 'efrit-context-sources)
 (require 'efrit-events)
 (require 'efrit-models)
 
-(declare-function efrit-agent-set-status "efrit-agent")
 (defvar efrit-default-model)
-(declare-function efrit-agent--add-error-message "efrit-agent-render")
 
 ;;; Customization
 
@@ -70,7 +73,17 @@ requiring an active efrit-do session (ef-dcn).")
 
 ;;; Engine Adapter
 
-(defvar efrit-repl-loop--adapter
+(defun efrit-repl-loop--system-prompt (session-id)
+  "The command system prompt for SESSION-ID."
+  (efrit-do--command-system-prompt nil nil nil session-id nil))
+
+;; A defconst, not a defvar: the adapter is an instance of the
+;; `efrit-loop-adapter' struct, and when a reload adds a slot to the
+;; struct a defvar would keep the old, shorter instance while the new
+;; accessors index past it (an efrit-reload after adding
+;; system-prompt-fn produced "wrong number of arguments" from the
+;; wrong slot).  A defconst is re-evaluated on every load.
+(defconst efrit-repl-loop--adapter
   (efrit-loop-adapter-create
    :name "REPL session"
    :state-hash efrit-repl-loop--active
@@ -98,6 +111,11 @@ requiring an active efrit-do session (ef-dcn).")
    :wrap-dispatch-fn (lambda (session thunk)
                        (let ((efrit-repl-loop--tool-session session))
                          (funcall thunk)))
+   ;; The prompt, the schema and the dispatcher are the efrit-do
+   ;; interface's; the engine only sees these three functions
+   :system-prompt-fn #'efrit-repl-loop--system-prompt
+   :tools-fn #'efrit-do--get-current-tools-schema
+   :dispatch-fn #'efrit-do--execute-tool
    ;; The agent buffer is this loop's surface: show the activity
    ;; indicator while a request is in flight.
    :thinking-p t
@@ -114,7 +132,7 @@ requiring an active efrit-do session (ef-dcn).")
 
 ;;; Public API
 
-(defun efrit-repl-continue (session user-input &optional on-turn-complete)
+(defun efrit-repl-continue (session user-input &optional on-turn-complete api-input)
   "Continue REPL SESSION with USER-INPUT.
 Adds the user message to the session and runs the agentic loop.
 Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
@@ -122,7 +140,11 @@ Optional ON-TURN-COMPLETE callback is called when Claude finishes the turn.
 An editor-context snapshot (`efrit-context-sources') of the buffer
 the user is working in is taken now, at submit time, and prepended to
 the copy of USER-INPUT sent to the API; the conversation shows the
-plain input.
+plain input.  A caller that has already prepared what the model
+should see passes it as API-INPUT (a string); then USER-INPUT is only
+what the conversation shows and the snapshot is prepended to API-INPUT
+instead.  That is how a package hands efrit a prompt over data it
+gathered itself (see `efrit-submit').
 
 Unlike \\='efrit-do-async-loop\\=', this does not complete the session.
 Instead, it transitions to idle state, preserving conversation context
@@ -140,11 +162,11 @@ Returns the session ID."
       (efrit-repl-session-add-user-message
        session user-input
        (condition-case err
-           (efrit-context-wrap-user-input user-input)
+           (efrit-context-wrap-user-input (or api-input user-input))
          (error
           (efrit-log 'warn "REPL session %s: context snapshot failed: %s"
                      session-id (error-message-string err))
-          nil)))
+          api-input)))
 
       ;; Begin the turn.  The per-turn tool counters live in
       ;; efrit-tools and were never reset, so after ~100 tool calls in
@@ -154,13 +176,12 @@ Returns the session ID."
       ;; Same for the circuit breaker's counters (30 tool calls per
       ;; *turn*, not per Emacs session)
       (efrit-do--circuit-breaker-reset)
+      (efrit-sandbox-begin-turn)
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
                                    (:input . ,user-input)))
 
-      ;; Update agent buffer status
-      (when (fboundp 'efrit-agent-set-status)
-        (efrit-agent-set-status 'working))
+      (efrit-publish 'status `((:session-id . ,session-id) (:status . working)))
 
       ;; Store loop state
       (puthash session-id
@@ -184,7 +205,8 @@ Returns the session ID."
 (defun efrit-repl-loop--api-call (session messages callback)
   "Make async API call to Claude with MESSAGES for REPL SESSION.
 CALLBACK is (lambda (response error) ...) called when complete."
-  (efrit-loop-api-call (efrit-repl-session-id session) messages callback))
+  (efrit-loop-api-call (efrit-repl-session-id session) messages callback
+                       efrit-repl-loop--adapter))
 
 (defun efrit-repl-loop--execute-tools (session content)
   "Execute tools requested in Claude's CONTENT for REPL SESSION."
@@ -197,13 +219,8 @@ CALLBACK is (lambda (response error) ...) called when complete."
     (when buffer
       (if (buffer-live-p buffer)
           ;; Buffer exists and is live - try to display error
-          (with-current-buffer buffer
-            (when (fboundp 'efrit-agent--add-error-message)
-              (condition-case err
-                  (efrit-agent--add-error-message message)
-                (error
-                 (efrit-log 'error "REPL session %s: Error displaying error message: %s"
-                            session-id (error-message-string err))))))
+          (efrit-publish 'error `((:session-id . ,session-id) (:message . ,message)
+                                  (:buffer . ,buffer)))
         ;; Buffer reference is stale - clear it
         (setf (efrit-repl-session-buffer session) nil)))))
 
@@ -272,13 +289,13 @@ Unlike efrit-do-async--stop-loop, this transitions to idle, not complete."
     ;; Update agent buffer status
     ;; Note: "unknown" means Claude finished but with unrecognized stop_reason
     ;; This is normal - treat it as idle, not failed.
-    (when (fboundp 'efrit-agent-set-status)
-      (efrit-agent-set-status
-       (cond
-        ((equal stop-reason "waiting-for-user") 'waiting)
-        ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
-        ((equal stop-reason "interrupted") 'interrupted)
-        (t 'failed))))
+    (efrit-publish 'status
+                   `((:session-id . ,session-id)
+                     (:status . ,(cond
+                                  ((equal stop-reason "waiting-for-user") 'waiting)
+                                  ((member stop-reason '("end_turn" "session-complete" "unknown")) 'idle)
+                                  ((equal stop-reason "interrupted") 'interrupted)
+                                  (t 'failed)))))
 
     ;; Remove from active loops
     (remhash session-id efrit-repl-loop--active)

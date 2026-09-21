@@ -136,5 +136,35 @@ Emacs only after a restart."
       (setq features (delq 'efrit-reload-probe-opt features))
       (delete-directory dir t))))
 
+(ert-deftest test-reload-redefines-lazy-transient-menus ()
+  "A transient prefix defined behind an fboundp guard is void after the
+unbind step, so the guard re-fires and the new keys appear."
+  (skip-unless (require 'transient nil t))
+  (require 'efrit-permissions-ui)
+  (should (fboundp 'efrit-permissions-grant-menu))
+  (should (memq 'efrit-permissions-grant-menu (efrit-reload-transient-prefixes)))
+  (efrit-reload--unbind-transient-prefixes)
+  (should-not (fboundp 'efrit-permissions-grant-menu))
+  ;; the reload brings it back, with RET bound
+  (efrit-reload)
+  (should (fboundp 'efrit-permissions-grant-menu))
+  (should (transient-get-suffix 'efrit-permissions-grant-menu "RET")))
+
+(ert-deftest test-reload-keeps-global-minor-modes-on ()
+  "A global minor mode that was on before the reload is on after it,
+with its advice in place."
+  (require 'efrit-package-review)
+  (skip-unless (fboundp 'package-review))
+  (unwind-protect
+      (progn
+        (efrit-package-review-mode 1)
+        (should efrit-package-review-mode)
+        (should (advice-member-p #'efrit-package-review--around 'package-review))
+        (should (assq 'efrit-package-review-mode (efrit-reload-global-minor-modes)))
+        (efrit-reload)
+        (should efrit-package-review-mode)
+        (should (advice-member-p #'efrit-package-review--around 'package-review)))
+    (efrit-package-review-mode -1)))
+
 (provide 'test-reload)
 ;;; test-reload.el ends here

@@ -18,6 +18,7 @@
 
 (require 'ert)
 (require 'efrit-do)
+(require 'efrit-result-struct)
 
 (ert-deftest test-circuit-breaker-reset ()
   "Test that circuit breaker resets correctly."
@@ -267,7 +268,9 @@
 
       ;; Third should be blocked (session limit)
       (let ((result (efrit-do--execute-tool tool3)))
-        (should (string-match-p "limit for this turn reached" result))))))
+        (should (efrit-tool-result-error-p result))
+        (should (string-match-p "limit for this turn reached"
+                                (efrit-tool-result-text result)))))))
 
 ;;; Error Loop Detection Tests
 

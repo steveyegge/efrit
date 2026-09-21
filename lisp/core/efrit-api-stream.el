@@ -81,6 +81,7 @@ When nil (or curl is missing) the url-retrieve path is used."
   (status-line nil) (http-status nil)
   (finished nil) (partial nil) (cancelled nil)
   (error-body "")
+  (started nil)           ; float-time the request left, for the log
   (context nil))          ; (URL MODEL TRANSPORT PURPOSE) for error messages
 
 (defvar efrit-api-stream--active nil
@@ -241,13 +242,19 @@ When nil (or curl is missing) the url-retrieve path is used."
       (efrit-api-stream--cleanup st)
       (cond
        ((efrit-api-stream-cancelled st)
+        (efrit-log 'info "api ← cancelled after %.1fs (%s)"
+                   (- (float-time) (or (efrit-api-stream-started st) (float-time)))
+                   (or (nth 3 (efrit-api-stream-context st)) "request"))
         (funcall cb nil "interrupted"))
        ;; API-level error event in the stream, or non-2xx with a body
        ((not (string-empty-p (efrit-api-stream-error-body st)))
         (funcall cb nil (efrit-api-stream--fail st (efrit-api-stream--format-error
                                                     (efrit-api-stream-error-body st)))))
        ((efrit-api-stream-finished st)
-        (funcall cb (efrit-api-stream-response st) nil))
+        (let ((response (efrit-api-stream-response st)))
+          (efrit-api--log-response response (efrit-api-stream-started st)
+                                   (nth 3 (efrit-api-stream-context st)))
+          (funcall cb response nil)))
        ;; curl 28 = operation timed out; anything else non-zero is transport
        ((and (/= exit 0) have-content)
         (setf (efrit-api-stream-partial st) t)
@@ -313,6 +320,7 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
                   (cons '("accept" . "text/event-stream") (plist-get req :headers))))
          (st (efrit-api-stream--make :callback callback :on-text on-text
                                      :config-file config
+                                     :started (efrit-api--log-request request-data "curl (streaming)")
                                      ;; captured now; the sentinel runs
                                      ;; outside the caller's bindings
                                      :context (list (plist-get req :url)

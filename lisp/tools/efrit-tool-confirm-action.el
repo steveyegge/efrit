@@ -137,9 +137,12 @@ OPTIONS is list of choices (default [\"Yes\", \"No\"])."
 
 (defun efrit-confirm--get-response-info (action severity)
   "Prompt user for confirmation for INFO severity.
-ACTION is the description. Uses simple y-or-n-p."
+ACTION is the description.  Uses `y-or-n-p', prefixed with SEVERITY
+when it is not the plain `info' level."
   (let ((start-time (current-time))
-        (confirmed (y-or-n-p (format "%s " action))))
+        (confirmed (y-or-n-p (if (memq severity '(nil info))
+                                 (format "%s " action)
+                               (format "[%s] %s " severity action)))))
     (list :confirmed confirmed
           :choice (if confirmed "Yes" "No")
           :response_time_seconds (float-time (time-subtract (current-time) start-time)))))

@@ -21,6 +21,7 @@
 
 ;;; Code:
 
+(require 'parse-time)
 (require 'efrit-tool-utils)
 (require 'cl-lib)
 (require 'iso8601)

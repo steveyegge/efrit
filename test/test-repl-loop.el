@@ -62,7 +62,7 @@ string every stubbed tool dispatch returns."
                     (if response
                         (funcall callback response nil)
                       (funcall callback nil "mock response queue empty")))))
-               ((symbol-function 'efrit-do--execute-tool)
+               ((symbol-function 'efrit-do--execute-tool-string)
                 (lambda (_tool-item) ,tool-result))
                ;; Agent buffer rendering is irrelevant here
                ((symbol-function 'efrit-agent-set-status) #'ignore))
@@ -134,7 +134,7 @@ follow-up response is delivered."
                (vector (test-repl-loop--make-tool-use
                         "tool-1" "eval_sexp" '(("expr" . "(sleep-for 9)"))))
                "tool_use"))
-        efrit-loop--interrupt-result
+        (signal 'quit nil)
       (efrit-repl-continue session "wait"
                            (lambda (_s reason) (setq turn-reason reason)))
       (should (equal turn-reason "interrupted")))))

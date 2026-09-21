@@ -29,6 +29,7 @@
 (require 'efrit-common)
 (require 'efrit-budget)
 (require 'efrit-session-core)
+(require 'efrit-events)
 
 ;;; Customization
 
@@ -373,7 +374,9 @@ OPTIONS is an optional list of choices for the user."
     (setf (efrit-session-status session) 'waiting-for-user)
     (efrit-log 'info "Session %s waiting for user input: %s"
                (efrit-session-id session)
-               (efrit-truncate-string question 60))))
+               (efrit-truncate-string question 60))
+    (efrit-publish 'question `((:session-id . ,(efrit-session-id session))
+                               (:question . ,question) (:options . ,options)))))
 
 (defun efrit-session-get-pending-question (session)
   "Get the pending question from SESSION.
@@ -398,6 +401,8 @@ Clears the pending question and returns the session to active status."
     (setf (efrit-session-status session) 'active)
     (efrit-log 'info "Session %s received user response"
                (efrit-session-id session))
+    (efrit-publish 'question-answered `((:session-id . ,(efrit-session-id session))
+                                        (:response . ,response)))
     response))
 
 (defun efrit-session-waiting-for-user-p (session)

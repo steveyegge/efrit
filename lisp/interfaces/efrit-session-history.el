@@ -21,6 +21,7 @@
 
 ;;; Code:
 
+(require 'parse-time)
 (require 'cl-lib)
 (require 'iso8601)
 (require 'json)

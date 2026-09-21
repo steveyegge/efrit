@@ -82,6 +82,60 @@ a fix to the reloader takes effect in the same invocation.")
                   (push sym out))))
     out))
 
+(defun efrit-reload-transient-prefixes ()
+  "The efrit transient prefix commands defined so far.
+They are defined lazily behind an `fboundp' guard (the sandbox prompt,
+the limits menu, the editor's row menus), so a plain reload keeps the
+old menu with its old keys."
+  (let ((out nil))
+    (when (featurep 'transient)
+      (mapatoms (lambda (sym)
+                  (when (and (fboundp sym)
+                             (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
+                             (get sym 'transient--prefix))
+                    (push sym out)))))
+    out))
+
+(defun efrit-reload--unbind-transient-prefixes ()
+  "Make every efrit transient prefix void so its lazy definition runs again."
+  (let ((syms (efrit-reload-transient-prefixes)))
+    (dolist (sym syms)
+      (fmakunbound sym)
+      (put sym 'transient--prefix nil)
+      (put sym 'transient--layout nil))
+    syms))
+
+(defun efrit-reload-global-minor-modes ()
+  "The efrit global minor modes, as (SYMBOL . ON-P) before a reload.
+A `define-minor-mode' with :global t re-runs its variable's
+`defcustom' on load; its :set function turns the mode off when the
+standard value is nil, dropping the advice the mode installed.  The
+reloader turns the ones that were on back on."
+  (let ((out nil))
+    (mapatoms (lambda (sym)
+                ;; a global minor mode's variable is a boolean defcustom
+                ;; that is not buffer-local; a buffer-local mode
+                ;; (efrit-agent-input-mode) is per buffer and untouched
+                (when (and (fboundp sym) (boundp sym)
+                           (string-prefix-p efrit-reload--feature-prefix (symbol-name sym))
+                           (string-suffix-p "-mode" (symbol-name sym))
+                           (eq (get sym 'custom-type) 'boolean)
+                           (get sym 'standard-value)
+                           (not (local-variable-if-set-p sym)))
+                  (push (cons sym (symbol-value sym)) out))))
+    out))
+
+(defun efrit-reload--restore-global-minor-modes (before)
+  "Turn back on the global minor modes in BEFORE that were on.  Returns them."
+  (let ((restored nil))
+    (dolist (m before)
+      (when (and (cdr m) (fboundp (car m)))
+        (condition-case err
+            (progn (funcall (car m) 1) (push (car m) restored))
+          (error (efrit-log 'warn "reload: could not re-enable %s: %s"
+                            (car m) (error-message-string err))))))
+    restored))
+
 (defun efrit-reload--unbind-keymaps ()
   "Make every efrit keymap variable void so its defvar runs on reload.
 Returns the symbols, for `efrit-reload--rebind-keymaps'."
@@ -202,37 +256,53 @@ re-run either)."
   (let ((load-prefer-newer t)
         (loaded 0)
         (failed nil)
+        (gone nil)
         (start (float-time)))
     ;; Let keymap defvars re-run (see Commentary)
     (let ((maps (efrit-reload--unbind-keymaps))
           (defaults (efrit-reload-option-defaults))
+          (modes (efrit-reload-global-minor-modes))
+          (modes-on nil)
           (reset nil))
+      (efrit-reload--unbind-transient-prefixes)
       (unwind-protect
           (dolist (feature (efrit-reload-features))
             (let ((file (efrit-reload--library-file feature)))
-              (if (null file)
-                  (push (cons feature "no file found") failed)
+              (cond
+               ;; a feature whose file is gone (deleted from the tree
+               ;; since it was loaded) is not a failure: drop it from
+               ;; `features' so the next reload does not see it either
+               ((or (null file)
+                    (not (or (file-exists-p (concat file ".el"))
+                             (file-exists-p (concat file ".elc")))))
+                (setq features (delq feature features))
+                (push feature gone))
+               (t
                 (condition-case err
                     (progn
                       (load file nil (not verbose))
                       (cl-incf loaded))
                   (error
-                   (push (cons feature (error-message-string err)) failed))))))
+                   (push (cons feature (error-message-string err)) failed)))))))
         (efrit-reload--rebind-keymaps maps)
-        (setq reset (efrit-reload--refresh-changed-defaults defaults)))
-      (efrit-reload--report loaded failed reset start))))
+        (setq reset (efrit-reload--refresh-changed-defaults defaults))
+        (setq modes-on (efrit-reload--restore-global-minor-modes modes)))
+      (efrit-reload--report loaded failed reset modes-on start gone))))
 
-(defun efrit-reload--report (loaded failed reset start)
+(defun efrit-reload--report (loaded failed reset modes-on start &optional gone)
   "Revert visiting buffers, then message and log the reload summary.
 LOADED is the library count, FAILED an alist of (FEATURE . ERROR),
-RESET the options whose changed default was adopted, START the
-`float-time' the reload began.  Returns LOADED."
+RESET the options whose changed default was adopted, MODES-ON the
+global minor modes turned back on, START the `float-time' the reload
+began, GONE the features whose file no longer exists.  Returns LOADED."
   (let* ((reverted (efrit-reload--revert-visiting-buffers))
-         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s"
+         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s%s%s"
                           loaded (if (= loaded 1) "y" "ies")
                           (- (float-time) start)
                           (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
                           (if reset (format ", new default for %s" (mapconcat #'symbol-name reset ", ")) "")
+                          (if modes-on (format ", re-enabled %s" (mapconcat #'symbol-name modes-on ", ")) "")
+                          (if gone (format ", dropped %s (file removed)" (mapconcat #'symbol-name gone ", ")) "")
                           (if failed
                               (format "; %d failed: %s" (length failed)
                                       (mapconcat (lambda (f) (format "%s (%s)" (car f) (cdr f)))

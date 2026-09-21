@@ -31,6 +31,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-tool-registry)
 
 ;; Note: Tool dispatch table is in efrit-do.el (maps tool names to handlers)
 ;; This file only contains the JSON schemas sent to Claude.
@@ -849,10 +850,14 @@ Returns a diff showing formatting changes, or a message if file was already form
 (defun efrit-do--get-current-tools-schema (&optional budget)
   "Return full tool schema, optionally with budget hints.
 If BUDGET is provided (an efrit-budget struct), inject budget hints
-into tool descriptions."
-  (if budget
-      (efrit-do--inject-budget-hints efrit-do--tools-schema budget)
-    efrit-do--tools-schema))
+into tool descriptions.  Tools other packages registered through
+`efrit-register-tool' (efrit-tool-registry.el) follow efrit's own."
+  (let ((schema (if budget
+                    (efrit-do--inject-budget-hints efrit-do--tools-schema budget)
+                  efrit-do--tools-schema)))
+    (if (bound-and-true-p efrit-tool-registry)
+        (vconcat schema (efrit-tool-registry-schema))
+      schema)))
 
 (provide 'efrit-do-schema)
 ;;; efrit-do-schema.el ends here

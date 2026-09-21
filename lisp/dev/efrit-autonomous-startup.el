@@ -97,7 +97,6 @@
     (progn
       (require 'efrit-tools)
       (require 'efrit-do)
-      (require 'efrit-chat)
       (require 'efrit-remote-queue)
       (require 'efrit)
       (message "Efrit modules loaded successfully"))

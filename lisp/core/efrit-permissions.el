@@ -55,6 +55,7 @@
 (require 'efrit-events)
 (require 'efrit-ui-helpers)
 (require 'efrit-sandbox)   ; efrit-sandbox-enabled decides whether this layer runs
+(require 'efrit-tool-registry)
 
 (declare-function efrit-tool-audit "efrit-tool-utils")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
@@ -171,8 +172,13 @@ Examples:
 ;;; Classification and summaries
 
 (defun efrit-permission-tool-class (tool)
-  "Return the permission class symbol for TOOL."
-  (or (cdr (assoc tool efrit-permission-tool-classes)) 'read))
+  "Return the permission class symbol for TOOL.
+A tool registered by another package (`efrit-register-tool') carries
+its class with it; efrit's own come from `efrit-permission-tool-classes';
+anything else is a `read'."
+  (or (cdr (assoc tool efrit-permission-tool-classes))
+      (efrit-tool-registry-class tool)
+      'read))
 
 (defun efrit-permission-needed-p (tool)
   "Non-nil if TOOL's class is in `efrit-permission-policy'.

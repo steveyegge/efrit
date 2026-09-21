@@ -58,6 +58,19 @@ The file path is appended to the command."
 (defalias 'efrit-tool-format-file--generate-diff #'efrit-tool-unified-diff
   "Obsolete: use `efrit-tool-unified-diff'.")
 
+;;; Choosing a formatter
+
+(defun efrit-tool-format-file--elisp-file-p (path)
+  "Non-nil if PATH is an Emacs Lisp source file."
+  (string-match-p "\\.el\\'" path))
+
+(defun efrit-tool-format-file--find-formatter (path)
+  "The (COMMAND ARGS...) entry of `efrit-tool-format-file-formatters' for PATH, or nil.
+The first pattern that matches wins; the command's presence on PATH
+is checked later, by `efrit-tool-format-file--run-external'."
+  (cdr (cl-find-if (lambda (entry) (string-match-p (car entry) path))
+                   efrit-tool-format-file-formatters)))
+
 ;;; Elisp Formatting
 
 (defun efrit-tool-format-file--format-elisp (content)

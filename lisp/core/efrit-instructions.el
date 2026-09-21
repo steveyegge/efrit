@@ -57,6 +57,7 @@
 (require 'subr-x)
 (require 'efrit-log)
 (require 'efrit-tool-utils)   ; efrit-tool--get-project-root
+(declare-function efrit-show-popup "efrit-ui-helpers")
 
 (defgroup efrit-instructions nil
   "Loading of project instruction files (AGENTS.md, CLAUDE.md)."

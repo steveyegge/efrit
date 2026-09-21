@@ -5,6 +5,7 @@
 (require 'ert)
 (require 'efrit-permissions)
 (require 'efrit-do-dispatch)
+(require 'efrit-result-struct)
 (require 'efrit-do-handlers)
 (require 'efrit-sandbox)
 (defvar efrit-sandbox-enabled)
@@ -159,8 +160,10 @@ sandbox off, so these tests bind it off."
                                        "input" (test-perm--input "expr" "(delete-file \"x\")")))
                (result (efrit-do--execute-tool item)))
           (should-not ran)
-          (should (string= result efrit-permission-denied-result))
-          (should (string-prefix-p "Error " result)))))))
+          (should (eq (efrit-tool-result-status result) 'denied))
+          (should (efrit-tool-result-error-p result))
+          (should (string= (efrit-tool-result-text result)
+                           efrit-permission-denied-result)))))))
 
 (ert-deftest test-perm-dispatch-allow-runs-tool ()
   (test-perm--fresh
@@ -171,7 +174,8 @@ sandbox off, so these tests bind it off."
       (let* ((item (test-perm--input "id" "t2" "name" "eval_sexp"
                                      "input" (test-perm--input "expr" "(+ 1 1)")))
              (result (efrit-do--execute-tool item)))
-        (should (string-match-p "ran" result))))))
+        (should (eq (efrit-tool-result-status result) 'ok))
+        (should (string-match-p "ran" (efrit-tool-result-text result)))))))
 
 (ert-deftest test-perm-edit-choice-substitutes-input ()
   "Choosing [e] and changing the field makes dispatch run the edited input."

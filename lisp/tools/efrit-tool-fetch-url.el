@@ -26,6 +26,7 @@
 (require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
+(declare-function libxml-parse-html-region "xml.c")
 (require 'shr)
 (require 'dom)
 (require 'cl-lib)
@@ -256,7 +257,7 @@ Currently supports simple selectors: tag, #id, .class"
                       ;; Tag selector
                       (t (dom-by-tag dom (intern selector))))))
           (when nodes
-            (mapconcat (lambda (node) (dom-texts node))
+            (mapconcat (lambda (node) (efrit-tool--dom-text node))
                        (if (listp nodes) nodes (list nodes))
                        "\n\n")))))))
 

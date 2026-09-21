@@ -30,6 +30,7 @@
 (require 'efrit-api)
 (require 'efrit-session)
 (require 'efrit-progress)
+(require 'efrit-result-struct)
 (require 'efrit-chat-response)
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -402,7 +403,7 @@ Returns the tool result string."
     (require 'efrit-do)
     (let ((result
            (condition-case err
-               (efrit-do--execute-tool tool-item)
+               (efrit-tool-result-text (efrit-do--execute-tool tool-item))
              (error
               (let ((error-msg (error-message-string err)))
                 (efrit-progress-show-tool-result tool-name error-msg nil)

@@ -55,21 +55,23 @@ ARGS is an optional hash table of flag arguments.
 POSITIONAL-ARGS is an optional list of positional arguments (e.g., issue IDs).
 Returns (result . success) where result is the output and success is t/nil."
   (let* ((cmd (efrit-tool-beads--build-command command args positional-args))
-         (workspace (or efrit-tool-beads-workspace default-directory))
-         (result nil))
+         (workspace (or efrit-tool-beads-workspace default-directory)))
     (condition-case err
-        (let ((output (shell-command-to-string 
+        (let ((output (shell-command-to-string
                        (format "cd %s && %s 2>&1"
                                (shell-quote-argument workspace)
                                cmd))))
-          (setq result output)
           ;; Try to parse as JSON if it looks like it
           (let ((trimmed (string-trim output)))
             (if (or (string-prefix-p "{" trimmed)
                     (string-prefix-p "[" trimmed))
                 (condition-case json-err
                     (cons (json-read-from-string output) t)
-                  (error (cons output t))) ; Return raw output if JSON parse fails
+                  ;; raw output is still useful; say why it is raw
+                  (error
+                   (efrit-log 'warn "beads %s: output looked like JSON but did not parse (%s)"
+                              command (error-message-string json-err))
+                   (cons output t)))
               (cons output t))))
       (error
        (let ((err-msg (error-message-string err)))

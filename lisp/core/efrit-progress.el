@@ -34,6 +34,7 @@
 (require 'efrit-log)
 (require 'efrit-config)
 (require 'efrit-event)
+(require 'efrit-events)
 
 ;;; Customization
 
@@ -227,6 +228,7 @@ Uses `efrit-truncate-string' with ellipsis counted in max length."
 
 (defun efrit-progress-start-session (session-id command)
   "Start progress tracking for SESSION-ID with COMMAND."
+  (efrit-publish 'session-start `((:session-id . ,session-id) (:command . ,command)))
   ;; Reset state
   (setq efrit-progress--current-session session-id)
   (setq efrit-progress--event-counter 0)
@@ -266,6 +268,7 @@ Uses `efrit-truncate-string' with ellipsis counted in max length."
 
 (defun efrit-progress-end-session (session-id success-p)
   "End progress tracking for SESSION-ID with SUCCESS-P status."
+  (efrit-publish 'session-end `((:session-id . ,session-id) (:success . ,success-p)))
   ;; Emit session-end event
   (efrit-progress--emit-event 'session-end
                               `((success . ,(if success-p t :json-false))))
@@ -287,6 +290,8 @@ Uses `efrit-truncate-string' with ellipsis counted in max length."
 (defun efrit-progress-show-message (message &optional type)
   "Show MESSAGE in progress output with optional TYPE.
 TYPE can be \\='claude, \\='error, \\='success, or nil."
+  (efrit-publish 'message `((:session-id . ,efrit-progress--current-session)
+                            (:text . ,message) (:kind . ,type)))
   ;; Emit text event
   (efrit-progress--emit-event 'text
                               `((message . ,message)
@@ -302,6 +307,8 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
 
 (defun efrit-progress-show-tool-start (tool-name input)
   "Show the start of TOOL-NAME execution with INPUT."
+  (efrit-publish 'tool-start `((:session-id . ,efrit-progress--current-session)
+                               (:tool . ,tool-name) (:input . ,input)))
   ;; Track current tool and timing
   (setq efrit-progress--current-tool tool-name)
   (setq efrit-progress--current-tool-start (current-time))
@@ -364,6 +371,9 @@ TYPE can be \\='claude, \\='error, \\='success, or nil."
 (defun efrit-progress-show-tool-result (tool-name result success-p)
   "Show the RESULT of TOOL-NAME execution.
 SUCCESS-P indicates if the execution was successful."
+  (efrit-publish 'tool-result `((:session-id . ,efrit-progress--current-session)
+                                (:tool . ,tool-name) (:result . ,result)
+                                (:success . ,success-p)))
   ;; Calculate elapsed time for this tool
   (let ((tool-elapsed (if efrit-progress--current-tool-start
                           (float-time (time-subtract

@@ -10,7 +10,7 @@
 
 ;;; Commentary:
 ;; This file contains the tool dispatch table and execution runtime for efrit-do.
-;; Extracted from efrit-do.el to allow other modules (efrit-chat-api.el,
+;; Extracted from efrit-do.el to allow other modules (the loop engine,
 ;; efrit-executor.el) to access tool execution without depending on efrit-do.el.
 
 ;;; Code:
@@ -19,6 +19,8 @@
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-permissions)
 (require 'efrit-sandbox)
+(require 'efrit-result-struct)
+(require 'efrit-tool-registry)
 
 (defvar efrit-repl-loop--tool-session)
 (declare-function efrit-repl-session-id "efrit-repl-session")
@@ -187,16 +189,78 @@ Uses `efrit-do--tool-dispatch-table' for lookup."
         (_
          (efrit-log 'error "Invalid arg-type %s for tool %s" arg-type tool-name)
          (format "\n[Internal error: invalid dispatch for %s]" tool-name)))
-    ;; Unknown tool
-    (progn
-      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-      (format "\n[Unknown tool: %s]" tool-name))))
+    ;; Not one of ours: a tool another package registered, else unknown.
+    (or (efrit-tool-registry-dispatch tool-name tool-input)
+        (progn
+          (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+          (format "\n[Unknown tool: %s]" tool-name)))))
+
+(defconst efrit-do--session-complete-marker "[SESSION-COMPLETE: "
+  "How `efrit-do--handle-session-complete' begins its string (after whitespace).")
+
+(defconst efrit-do--waiting-marker "[WAITING-FOR-USER]"
+  "How `efrit-do--waiting-for-user-marker' begins its string (after whitespace).")
+
+(defun efrit-do--marked-p (text marker)
+  "Non-nil if TEXT, after leading whitespace, starts with MARKER.
+Leading whitespace: the handlers start their strings with a newline,
+and the circuit breaker may prepend a warning line."
+  (and (stringp text)
+       (string-prefix-p marker (string-trim-left text))))
+
+(defun efrit-do-completion-message (text)
+  "The user-facing message in a session_complete TEXT, or nil.
+The text between the marker and the closing bracket the handler
+appended: the LAST bracket, so a bracket inside the message survives
+\(the old greedy regexp ate a trailing bracket of the message)."
+  (when (efrit-do--marked-p text efrit-do--session-complete-marker)
+    (let* ((body (string-trim (string-trim-left text)))
+           (start (length efrit-do--session-complete-marker))
+           (end (if (string-suffix-p "]" body) (1- (length body)) (length body))))
+      (string-trim (substring body start (max start end))))))
+
+(defun efrit-do--classify-result (tool-name text)
+  "Turn handler TEXT for TOOL-NAME into an `efrit-tool-result'.
+The one place the handler strings are interpreted.  Control signals
+are keyed on the tool, not on the text: only session_complete
+completes and only request_user_input waits, so a file whose content
+contains the marker cannot end the turn.  A denial is recognised by
+the prefixes the sandbox and the permission layer stamp."
+  (cond
+   ((string-prefix-p efrit-sandbox-denied-prefix text)
+    (efrit-tool-result-create :status 'denied :text text))
+   ((string-prefix-p efrit-permission-denied-result text)
+    (efrit-tool-result-create :status 'denied :text text))
+   ((and (equal tool-name "session_complete")
+         (efrit-do--marked-p text efrit-do--session-complete-marker))
+    ;; the message is everything between the prefix and the closing
+    ;; bracket the handler itself appended: the last one, not the
+    ;; first, so a bracket inside the message survives
+    (efrit-tool-result-create :status 'ok :signal 'complete :text text
+                              :message (efrit-do-completion-message text)))
+   ((and (equal tool-name "request_user_input")
+         (efrit-do--marked-p text efrit-do--waiting-marker))
+    (efrit-tool-result-create :status 'ok :signal 'waiting :text text
+                              :message (and (string-match "\nQuestion: \\(.*\\)" text)
+                                            (match-string 1 text))))
+   ;; the handlers' own failure spellings
+   ((or (string-match-p "\\`\\(?:\n\\)?\\[\\(?:Error\\|Syntax Error\\|Efrit internal error\\|Unknown tool\\|Internal error\\)" text)
+        (string-match-p "\\`Error[: ]" text)
+        (string-match-p "\\`API Error (" text))
+    (efrit-tool-result-create :status 'error :text text))
+   (t (efrit-tool-result-create :status 'ok :text text))))
 
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
-Returns a formatted string with execution results or empty string on failure.
+Returns an `efrit-tool-result' (see efrit-result-struct.el).
 Applies circuit breaker limits to prevent infinite loops."
+  (efrit-do--classify-result
+   (and tool-item (gethash "name" tool-item))
+   (efrit-do--execute-tool-string tool-item)))
+
+(defun efrit-do--execute-tool-string (tool-item)
+  "The handler string for TOOL-ITEM; see `efrit-do--execute-tool'."
   (if (null tool-item)
       "\n[Error: Tool input cannot be nil]"
     (let* ((tool-name (gethash "name" tool-item))
@@ -226,7 +290,8 @@ Applies circuit breaker limits to prevent infinite loops."
           (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
           (when (fboundp 'efrit-session-track-error)
             (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
-          (cdr breaker-check))
+          ;; a blocked call is a failed tool result, not output
+          (concat "Error " (cdr breaker-check)))
 
          ;; PERMISSION: mutating tools need consent (efrit-permissions).
          ;; A denial is returned as a distinguished tool result; the

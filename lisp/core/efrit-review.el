@@ -50,6 +50,7 @@
 (require 'efrit-chat-response)
 (require 'efrit-permissions)   ; efrit-permission-tool-class
 (require 'efrit-events)
+(require 'efrit-settings)
 
 (defvar efrit-default-model)
 
@@ -93,7 +94,7 @@ carry an action worth judging, and a note there is noise."
                      uses)))
     (cond
      ((null judgeable) nil)
-     ((not efrit-review-enabled) "review off")
+     ((not (efrit-review-enabled-p)) "review off")
      ((not (efrit-review-applies-p content))
       (format "read-only turn (%s)"
               (mapconcat #'identity
@@ -108,15 +109,33 @@ last rejection and decides."
   :type 'integer
   :group 'efrit-review)
 
-(defcustom efrit-review-on-failure 'approve
+(defcustom efrit-review-on-failure '((exec . reject) (t . approve))
   "What to do when the review call itself fails (network, timeout, malformed).
+An alist from permission class to `approve' or `reject'; the entry
+for t is the fallback.  A bare symbol applies to every class.
+
 `approve' lets the turn run and logs the failure; `reject' feeds the
-failure back to the proposer as a rejection.  `approve' is the
-default because a review outage must not stall work the sandbox
-already gates; choose `reject' where a missed review is worse than a
-stalled turn."
-  :type '(choice (const approve) (const reject))
+failure back to the proposer as a rejection.  The default fails
+closed for `exec' (a shell command or eval that nobody reviewed is
+the one place an outage can do damage) and open for the rest, so a
+review outage does not stall edits the sandbox already gates."
+  :type '(choice (const approve) (const reject)
+                 (alist :key-type (choice (const write) (const exec) (const net)
+                                          (const read) (const t))
+                        :value-type (choice (const approve) (const reject))))
   :group 'efrit-review)
+
+(defun efrit-review-failure-policy (classes)
+  "The failure verdict for a batch whose tool calls have CLASSES.
+`reject' if any class maps to reject in `efrit-review-on-failure'."
+  (let ((policy efrit-review-on-failure))
+    (if (symbolp policy)
+        policy
+      (if (cl-some (lambda (class)
+                     (eq 'reject (alist-get class policy (alist-get t policy 'approve))))
+                   (or classes '(t)))
+          'reject
+        'approve))))
 
 (defcustom efrit-review-max-input-chars 4000
   "Longest single tool input shown to the reviewer; longer ones are cut.
@@ -142,13 +161,58 @@ review outcome rather than a tool failure.")
         (push use uses)))
     (nreverse uses)))
 
+;;; Per-project overrides (the "review" section of .efrit/settings.json)
+;;
+;;   "review": {"enabled": false, "classes": ["write", "exec"]}
+;;
+;; Either key may be absent; the customization value applies then.
+
+(defconst efrit-review-settings-section "review"
+  "The section of the project settings file this module owns.")
+
+(defconst efrit-review-all-classes '(write exec net read)
+  "Classes a project may put in its review list.")
+
+(defun efrit-review--project-section (&optional root)
+  (efrit-settings-get (or root (efrit-settings-project-root)) efrit-review-settings-section))
+
+(defun efrit-review-enabled-p (&optional root)
+  "Whether review is on for ROOT: the project override, else `efrit-review-enabled'."
+  (let ((flag (plist-get (efrit-review-project-override root) :enabled)))
+    (if (eq flag 'unset) efrit-review-enabled flag)))
+
+(defun efrit-review-effective-classes (&optional root)
+  "Classes reviewed for ROOT: the project override, else `efrit-review-classes'."
+  (or (plist-get (efrit-review-project-override root) :classes)
+      efrit-review-classes))
+
+(defun efrit-review-project-override (&optional root)
+  "The project override for ROOT as a plist (:enabled BOOL-OR-unset :classes LIST-OR-nil)."
+  (let ((section (efrit-review--project-section root)))
+    (list :enabled (if (hash-table-p section)
+                       (efrit-settings-json-bool (gethash "enabled" section 'unset))
+                     'unset)
+          :classes (and (hash-table-p section)
+                        (efrit-settings-symbol-list (gethash "classes" section)
+                                                    efrit-review-all-classes)))))
+
+(defun efrit-review-set-project-override (enabled classes &optional root)
+  "Write ROOT's review override: ENABLED is t, nil or `unset'; CLASSES a list or nil.
+Both unset removes the section."
+  (let ((root (or root (efrit-settings-project-root)))
+        (h (make-hash-table :test 'equal)))
+    (unless (eq enabled 'unset) (puthash "enabled" (if enabled t :false) h))
+    (when classes (puthash "classes" (mapcar #'symbol-name classes) h))
+    (efrit-settings-put root efrit-review-settings-section
+                        (and (> (hash-table-count h) 0) h))))
+
 (defun efrit-review--reviewable-p (tool-name)
-  "Non-nil if a call to TOOL-NAME is in a reviewed class."
-  (memq (efrit-permission-tool-class tool-name) efrit-review-classes))
+  "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project."
+  (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes)))
 
 (defun efrit-review-applies-p (content)
   "Non-nil if CONTENT (a response content vector) has a reviewable tool call."
-  (and efrit-review-enabled
+  (and (efrit-review-enabled-p)
        (cl-some (lambda (use) (efrit-review--reviewable-p (nth 1 use)))
                 (efrit-review--tool-uses content))))
 
@@ -277,12 +341,22 @@ around the object by taking the first {...} span."
             (push (gethash "text" item) texts)))))
     (string-join (nreverse texts) "")))
 
-(defun efrit-review--failure-verdict (why)
-  "The verdict used when the review call fails, per `efrit-review-on-failure'."
-  (efrit-log 'warn "review: call failed (%s); policy %s" why efrit-review-on-failure)
-  (if (eq efrit-review-on-failure 'reject)
-      (cons 'reject (format "the review could not be completed (%s); nothing was run" why))
-    (cons 'approve nil)))
+(defun efrit-review--failure-verdict (why &optional classes)
+  "The verdict used when the review call fails, per `efrit-review-on-failure'.
+CLASSES are the permission classes of the batch under review."
+  (let ((policy (efrit-review-failure-policy classes)))
+    (efrit-log 'warn "review: call failed (%s); policy %s for %s" why policy classes)
+    (if (eq policy 'reject)
+        (cons 'reject (format "the review could not be completed (%s); nothing was run" why))
+      (cons 'approve nil))))
+
+(defun efrit-review--batch-classes (content)
+  "The distinct reviewable permission classes of the tool calls in CONTENT."
+  (delete-dups
+   (delq nil (mapcar (lambda (use)
+                       (let ((class (efrit-permission-tool-class (nth 1 use))))
+                         (and (memq class (efrit-review-effective-classes)) class)))
+                     (efrit-review--tool-uses content)))))
 
 (defun efrit-review-turn (session-id messages content callback)
   "Review the reviewable tool calls in CONTENT for SESSION-ID, asynchronously.
@@ -292,6 +366,7 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
   (let* ((intent (efrit-review-user-intent messages))
          (proposer (efrit-review--proposer-text content))
          (batch (efrit-review-describe-batch content))
+         (classes (efrit-review--batch-classes content))
          (request (efrit-review--request-data intent proposer batch))
          (done nil)
          (prompt (efrit-review--user-message intent proposer batch))
@@ -319,16 +394,22 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
          (lambda (response)
            (funcall finish
                     (cond
-                     ((null response) (efrit-review--failure-verdict "no response"))
+                     ((null response) (efrit-review--failure-verdict "no response" classes))
                      ((efrit-response-error response)
                       (efrit-review--failure-verdict
-                       (efrit-error-message (efrit-response-error response))))
-                     (t (or (efrit-review-parse-verdict (efrit-review--response-text response))
-                            (efrit-review--failure-verdict "malformed verdict"))))))
+                       (efrit-error-message (efrit-response-error response)) classes))
+                     (t (let ((text (efrit-review--response-text response)))
+                          (efrit-log 'debug "review %s: reviewer said: %s" session-id
+                                     (truncate-string-to-width text 400 nil nil "…"))
+                          (or (efrit-review-parse-verdict text)
+                              (progn
+                                (efrit-log 'warn "review %s: not a verdict: %s" session-id
+                                           (truncate-string-to-width text 400 nil nil "…"))
+                                (efrit-review--failure-verdict "malformed verdict" classes))))))))
          (lambda (error-msg)
-           (funcall finish (efrit-review--failure-verdict error-msg)))))
+           (funcall finish (efrit-review--failure-verdict error-msg classes)))))
       (error
-       (funcall finish (efrit-review--failure-verdict (error-message-string err)))))))
+       (funcall finish (efrit-review--failure-verdict (error-message-string err) classes))))))
 
 ;;; Consecutive rejections
 

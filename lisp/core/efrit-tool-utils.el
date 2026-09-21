@@ -33,6 +33,7 @@
 (require 'cl-lib)
 (require 'url-parse)
 (require 'efrit-config)
+(require 'dom)
 (declare-function efrit-sandbox-check "efrit-sandbox")
 (defvar efrit-sandbox-enabled)
 
@@ -87,6 +88,14 @@ Matched files will trigger warnings or require confirmation."
   "Standard error types for tool responses.")
 
 ;;; Path Handling
+
+;;; HTML text
+(defun efrit-tool--dom-text (node &optional separator)
+  "The text under DOM NODE, joined by SEPARATOR.
+`dom-inner-text' arrived in Emacs 31.1; `dom-texts' works everywhere
+this package supports and is kept behind this name."
+  (with-suppressed-warnings ((obsolete dom-texts))
+    (dom-texts node separator)))
 
 (defun efrit-tool--get-project-root ()
   "Get the project root directory.

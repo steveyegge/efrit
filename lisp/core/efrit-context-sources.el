@@ -35,6 +35,9 @@
 (require 'subr-x)
 (require 'project)
 
+(defvar efrit-sandbox-target-buffer-function)
+(defvar efrit-sandbox-agent-buffer-p-function)
+
 (declare-function flymake-diagnostics "flymake")
 (declare-function flymake-diagnostic-text "flymake")
 (declare-function flymake-diagnostic-type "flymake")

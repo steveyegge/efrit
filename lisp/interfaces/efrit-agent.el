@@ -734,8 +734,9 @@ Display Style:
   Set `efrit-agent-display-style' to 'ascii for terminal compatibility
 
 Input (when in input region):
-  RET            Send single-line input (or newline for multi-line)
-  S-RET          Insert newline (for multi-line input)
+  RET            Send the input (from any line of it)
+  S-RET          Insert a newline (also M-RET, C-j)
+  S-<arrows>     Extend the selection (shift-select works in the input)
   C-c C-c        Send input
   C-c C-s        Send input
   C-c C-k        Clear input
@@ -1185,6 +1186,11 @@ This is the recommended entry point for the REPL-style Efrit interface."
       ;; Initialize mode if not already done
       (unless (derived-mode-p 'efrit-agent-mode)
         (efrit-agent-mode))
+      ;; The header is set by the mode; a buffer that kept the mode
+      ;; across an efrit-reload (or lost the header any other way)
+      ;; gets it again here, so opening always shows the logo
+      (unless header-line-format
+        (efrit-agent--setup-header-line))
       ;; Initialize regions if not set up
       (unless (and efrit-agent--conversation-end
                    (marker-position efrit-agent--conversation-end))
@@ -1193,7 +1199,8 @@ This is the recommended entry point for the REPL-style Efrit interface."
       ;; Set idle state if no active session
       (unless efrit-agent--session-id
         (setq efrit-agent--status 'idle)
-        (setq efrit-agent--start-time nil)))
+        (setq efrit-agent--start-time nil))
+      (force-mode-line-update))
     ;; Display (reusing an existing window) and focus
     (efrit-agent-display buffer t)
     ;; Move point to input region

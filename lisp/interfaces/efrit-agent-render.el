@@ -363,16 +363,31 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
        (concat sep usage))
      ;; Show action hints based on status
      (pcase efrit-agent--status
-       ('idle
-        (concat sep (propertize "Type command at > prompt, RET to start"
-                                'face 'efrit-agent-timestamp)))
-       ('waiting
-        (concat sep (propertize "Type response, C-c C-s to send"
-                                'face 'efrit-agent-timestamp)))
+       ((or 'idle 'waiting)
+        (concat sep (propertize (efrit-agent-input-hint) 'face 'efrit-agent-timestamp)))
        ('working
         (concat sep (propertize "k:cancel M:mode ?:help"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
+
+(defun efrit-agent-input-hint ()
+  "The one-line key hint for the input: how to send and how to break a line.
+Chat clients (Slack, the Claude app) use RET to send and S-RET for a
+newline; efrit does the same, and says so, because an Emacs user
+expects RET to insert a newline.  Bindings are looked up, so a user
+who rebinds them sees their own keys."
+  (let* ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map))
+         (key (lambda (cmd fallback)
+                ;; prefer the shifted/chorded key when several are bound:
+                ;; "S-RET" is what a chat user looks for, "C-j" is not
+                (let* ((keys (and map (where-is-internal cmd map)))
+                       (k (or (cl-find-if (lambda (k) (string-prefix-p "S-" (key-description k)))
+                                          keys)
+                              (car keys))))
+                  (if k (key-description k) fallback)))))
+    (format "%s sends · %s newline · M-p history · ? help"
+            (funcall key 'efrit-agent-input-send-or-newline "RET")
+            (funcall key 'efrit-agent-input-newline "S-RET"))))
 
 (defun efrit-agent--usage-segment ()
   "Token usage indicator for this buffer's session, or nil."

@@ -49,6 +49,37 @@ session_history  - Log all tool calls and results
 dynamic_schemas  - Provide different tool sets per phase
 ```
 
+### Tools from other packages (efrit-tool-registry.el)
+
+A package outside efrit can offer the model tools of its own without
+patching efrit's tables:
+
+```elisp
+(efrit-register-tool "gmail_search"
+  :description "Search the user's Gmail..."   ; what the model reads
+  :input-schema '(("type" . "object") ...)    ; same shape as efrit-do--tools-schema
+  :function #'my-package--search              ; (lambda (input-alist)) -> string
+  :class 'read                                ; read / write / exec / net / control
+  :package 'my-package)
+```
+
+The schema getter appends registered tools after efrit's own, the
+dispatcher falls back to the registry for unknown names, and
+`efrit-permission-tool-class` returns the registered class (so review
+sees writes and execs).  A registered tool is still a Pure Executor
+tool: the model decides when to call it, the function only does what it
+is asked, and consent stays with the sandbox (`efrit-sandbox-check`
+inside the function for anything beyond the package's own data).
+Names must not collide with efrit's own tools.  `M-x
+efrit-list-registered-tools` shows what is registered.
+
+A package can also start a REPL turn with a prompt it prepared:
+`(efrit-submit SHOWN API-INPUT)` shows SHOWN as the user's line in the
+agent buffer and sends API-INPUT (with the editor-context block
+prepended, as for typed input) to the model.  First user: nngmail, which
+sends selected mail with an analysis prompt and registers Gmail search
+and message tools.
+
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 
 ### Directory Structure
@@ -70,7 +101,6 @@ lisp/
 - `efrit-do-handlers` requires `efrit-session`, `efrit-progress` (moved from lazy)
 - `efrit-agent-tools` requires `efrit-do` (moved from lazy)  
 - `efrit-ui-progress` requires `efrit-do` (moved from lazy)
-- `efrit-chat-transparency` requires `efrit-chat-buffer` (moved from lazy)
 
 ### Lazy vs Top-Level Requires
 - **Top-level**: Standard pattern, declare functions that are called in function bodies
@@ -208,7 +238,7 @@ The `efrit-multi-turn.el` module (~320 lines) provided automatic conversation co
 
 **Why it was removed**:
 - Conversation control belongs to Claude, not the client
-- In `efrit-chat`, users manually control multi-turn interactions
+- In the REPL (`M-x efrit`), users control multi-turn interactions
 - In `efrit-do`, Claude can request continuation via tool calls if needed
 - The module was unused (disabled in chat mode, never initialized elsewhere)
 
