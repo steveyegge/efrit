@@ -55,6 +55,7 @@
 (declare-function efrit-api-stream-request "efrit-api-stream")
 (defvar efrit-api-streaming)
 (defvar efrit-default-model)
+(defvar efrit-default-max-tokens)
 
 (defvar efrit-loop--streamed-text nil
   "Dynamically non-nil while handling a response whose text was already streamed.")
@@ -88,6 +89,8 @@ CALLBACK and does the remhash)."
   thinking-p          ; Non-nil to drive the agent thinking indicator.
   handles-waiting-p   ; Non-nil if WAITING-FOR-USER pauses the turn.
   on-end-turn-fn      ; (session content) called on end_turn before finish, or nil.
+  before-request-fn   ; (session) called after tool results are stored, before the
+                      ; next request goes out: the seam for steering text, or nil.
   system-prompt-fn    ; (session-id) -> system prompt string.
   tools-fn            ; () -> tools schema for the request.
   dispatch-fn         ; (tool-item) -> result string; runs one tool.
@@ -237,7 +240,7 @@ engine has no view of which interface owns them."
          (system-prompt (funcall (efrit-loop-adapter-system-prompt-fn adapter) session-id))
          (request-data
           `(("model" . ,efrit-default-model)
-            ("max_tokens" . 8192)
+            ("max_tokens" . ,efrit-default-max-tokens)
             ("messages" . ,(efrit-api-cacheable-messages messages))
             ("system" . ,(efrit-api-cacheable-system system-prompt))
             ("tools" . ,(efrit-api-cacheable-tools
@@ -328,6 +331,20 @@ response's stop_reason."
                     session content)))
         ("end_turn"
          (efrit-log 'info "%s %s: Claude ended turn" name session-id)
+         (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
+           (funcall fn session content))
+         (efrit-loop--finish session adapter "end_turn"))
+        ;; The answer was cut at `efrit-default-max-tokens'.  It is
+        ;; still an answer: end the turn as usual and say what happened,
+        ;; so the user can ask for the rest or raise the limit.
+        ("max_tokens"
+         (efrit-log 'warn "%s %s: answer cut at max_tokens (%s)"
+                    name session-id efrit-default-max-tokens)
+         (efrit-publish 'note
+                        `((:session-id . ,session-id)
+                          (:kind . limits) (:face . warning)
+                          (:text . ,(format "⏱ the answer was cut at %s output tokens (efrit-default-max-tokens); ask for the rest, or raise the limit"
+                                            efrit-default-max-tokens))))
          (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
            (funcall fn session content))
          (efrit-loop--finish session adapter "end_turn"))
@@ -491,6 +508,10 @@ continues the loop."
     (when results
       (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
                session (nreverse results)))
+    ;; Steering: what the user said while the tools ran goes out with
+    ;; their results, so the model reads it before its next step.
+    (when-let* ((fn (efrit-loop-adapter-before-request-fn adapter)))
+      (funcall fn session))
     (cond
      ;; A C-g mid-tool ends the turn cleanly (ef-lx4c): tool_results
      ;; are already recorded above, so the next user input can

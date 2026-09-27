@@ -200,5 +200,28 @@ No advice is installed on any efrit function."
               (should (memq ev seen))))
         (efrit-unsubscribe t #'rec)))))
 
+(ert-deftest test-events-user-waiting-pauses-the-clocks ()
+  "Time inside `efrit-with-user-waiting' is subtracted by
+`efrit-elapsed-working', an enclosing `with-timeout' is suspended
+meanwhile, and nested waits count once."
+  (let ((efrit-user-waiting-seconds 0)
+        (efrit-user-waiting-depth 0)
+        (start (current-time)))
+    (efrit-with-user-waiting
+      (efrit-with-user-waiting (sleep-for 0.1))
+      (sleep-for 0.1))
+    (sleep-for 0.05)
+    (should (<= 0.2 efrit-user-waiting-seconds 0.3))
+    (should (zerop efrit-user-waiting-depth))
+    ;; ~0.25 s elapsed, ~0.2 of it waiting
+    (should (< (efrit-elapsed-working start) 0.1))
+    ;; a clock that started after 0.15 s of earlier waiting subtracts only the rest
+    (should (< 0.1 (efrit-elapsed-working start 0.15) 0.25))
+    ;; the tool's with-timeout does not fire while the user reads
+    (let ((fired nil))
+      (with-timeout (0.05 (setq fired t))
+        (efrit-with-user-waiting (sleep-for 0.15)))
+      (should-not fired))))
+
 (provide 'test-events)
 ;;; test-events.el ends here

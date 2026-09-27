@@ -271,9 +271,19 @@ produced output."
 This is what the REPL sends to the API as the user message; the
 plain INPUT is what is shown in the conversation."
   (let ((ctx (efrit-context-snapshot target)))
-    (if ctx
-        (concat ctx "\n\n" input)
-      input)))
+    (cond
+     ((null ctx) input)
+     ;; Content blocks (an input with images): the context goes into
+     ;; the text block, which is the last one
+     ((vectorp input)
+      (let* ((blocks (append input nil))
+             (last (car (last blocks))))
+        (if (equal (alist-get 'type last) "text")
+            (vconcat (butlast blocks)
+                     (list `((type . "text")
+                             (text . ,(concat ctx "\n\n" (alist-get 'text last))))))
+          (vconcat input (list `((type . "text") (text . ,ctx)))))))
+     (t (concat ctx "\n\n" input)))))
 
 ;;; Sandbox integration
 ;;

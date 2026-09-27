@@ -286,8 +286,27 @@ re-run either)."
                    (push (cons feature (error-message-string err)) failed)))))))
         (efrit-reload--rebind-keymaps maps)
         (setq reset (efrit-reload--refresh-changed-defaults defaults))
-        (setq modes-on (efrit-reload--restore-global-minor-modes modes)))
+        (setq modes-on (efrit-reload--restore-global-minor-modes modes))
+        (efrit-reload--upgrade-sessions))
       (efrit-reload--report loaded failed reset modes-on start gone))))
+
+(declare-function efrit-repl-session-upgrade-all "efrit-repl-session")
+(defvar efrit-agent--repl-session)
+
+(defun efrit-reload--upgrade-sessions ()
+  "Rebuild live REPL sessions whose struct predates the reloaded definition.
+Agent buffers holding an old object get the new one.  See
+`efrit-repl-session-upgrade'."
+  (when (fboundp 'efrit-repl-session-upgrade-all)
+    (when-let* ((swapped (efrit-repl-session-upgrade-all)))
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (when-let* ((old (and (local-variable-p 'efrit-agent--repl-session)
+                                efrit-agent--repl-session))
+                      (new (cdr (assq old swapped))))
+            (setq efrit-agent--repl-session new))))
+      (message "efrit: upgraded %d REPL session struct(s) to the new definition"
+               (length swapped)))))
 
 (defun efrit-reload--report (loaded failed reset modes-on start &optional gone)
   "Revert visiting buffers, then message and log the reload summary.

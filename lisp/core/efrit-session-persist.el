@@ -113,13 +113,15 @@
                                                   (current-time))))))
                  (reverse (efrit-repl-session-conversation session))))
    
-   ;; API messages (for continuations)
+   ;; API messages (for continuations).  The session keeps them with
+   ;; symbol keys ((role . "user") (content . ...)); `assoc' on a
+   ;; string key found nothing and every message was saved as null.
    (cons "api_messages"
          (mapcar (lambda (msg)
                    (list
-                    (cons "role" (cdr (assoc "role" msg)))
-                    (cons "content" (cdr (assoc "content" msg)))))
-                 (reverse (efrit-repl-session-api-messages session))))
+                    (cons "role" (efrit-repl-session--block-get msg "role"))
+                    (cons "content" (efrit-repl-session--block-get msg "content"))))
+                 (efrit-repl-session-api-messages session)))
    
    ;; Metadata
    (cons "metadata"
@@ -154,12 +156,16 @@
                      :timestamp (parse-time-string (cdr (assoc "timestamp" entry)))))
                   conversation-data))
          
-         ;; Build API messages
+         ;; Build API messages, in the shape the session keeps them:
+         ;; symbol keys, content blocks as vectors (json-read gave lists)
          (api-messages
           (mapcar (lambda (msg)
-                    (list
-                     (cons "role" (cdr (assoc "role" msg)))
-                     (cons "content" (cdr (assoc "content" msg)))))
+                    (let ((content (cdr (assoc "content" msg))))
+                      (list
+                       (cons 'role (cdr (assoc "role" msg)))
+                       (cons 'content (if (and (listp content) content (listp (car content)))
+                                          (vconcat content)
+                                        content)))))
                   api-messages-data))
          
          ;; Create session

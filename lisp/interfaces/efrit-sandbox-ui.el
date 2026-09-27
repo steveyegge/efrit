@@ -104,7 +104,9 @@
                     ((and (consp target) (eq (car target) 'command))
                      (format "run this exact command (asked every time): %s" (cdr target)))
                     (t "run any shell command")))
-      ('net "make network requests")
+      ('net (if (efrit-sandbox-host-target-p target)
+                (format "fetch from %s (and its subdomains)" (cdr target))
+              "make network requests"))
       (_ (format "%s %s" cap target)))))
 
 (defvar efrit-sandbox-ui--request nil

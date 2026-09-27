@@ -218,9 +218,14 @@ outside the sandbox fail before the real operation is even attempted.")
                          ((stringp command) command)
                          (t t))))
         ;; a process with a known argv is checked like a shell line, so
-        ;; a grant for "git" covers (call-process "git" ...) as well
+        ;; a grant for "git" covers (call-process "git" ...) as well.
+        ;; The detail names the primitive, so the prompt reads
+        ;; "eval_sexp: call-process emacs ..." and not as if efrit
+        ;; itself wanted to run something.
         (efrit-sandbox-check 'shell line "eval_sexp"
-                             (if (stringp line) line "process")))))
+                             (format "subprocess via %s: %s"
+                                     (or (and (symbolp orig) orig) "make-process")
+                                     (if (stringp line) line "process"))))))
   ;; A nested advised call (call-process under shell-command-to-string)
   ;; runs with the guard suppressed: the outer check already passed.
   (let ((efrit-sandbox-eval--in-guard t))

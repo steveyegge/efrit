@@ -21,8 +21,36 @@ Execute natural language commands that Claude translates to actions:
 A structured, real-time view of agentic sessions with:
 - Session status and elapsed time in header-line
 - Task progress tracking (TODOs) updated by Claude
-- Conversation view with expandable tool calls
-- Interactive input for follow-up commands and mid-session guidance
+- Conversation view with expandable tool calls (folded bodies are
+  searchable: `isearch` honours `search-invisible`)
+- The model's answers rendered as Markdown in place: headers, emphasis,
+  code blocks with the language's fontification, links, block quotes,
+  pipe tables as aligned columns, images (`![alt](file-or-url)`, drawn
+  in the buffer; `+` / `-` / `=` resize the one at point), and file
+  references like `lisp/efrit.el:120` that open the file
+- Select part of an earlier answer and `C-c C-y` quotes it into the
+  input as a `>` block (queued for the next turn when one is running);
+  `C-c C-z` narrows to the last turn (`C-u 3 C-c C-z` the last three),
+  `C-c C-a` widens
+- A Markdown transcript of every session is written as it goes under
+  `efrit-data-directory/transcripts/` (`efrit-transcript-enabled`);
+  `C-c C-f` opens this session's
+- A prompt that is writable at all times.  `RET` while a turn runs
+  queues the input for the next turn; `M-RET` (or `C-u RET`) steers
+  the running turn: the model reads the text with its next tool
+  results.  Both are `efrit-agent-busy-submit-*-function`.  `C-c C-q`
+  lists and drops queued inputs.
+- `@path` mentions complete over the project's files and inline the
+  file for the model; images are attached.  Drag a file onto the buffer
+  to mention it (a screenshot dragged from the OS is kept under
+  `.efrit/dropped/`).
+- `/commands` at the start of the input run efrit's own commands:
+  `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, ...).
+- Lists in the input: `S-RET` on a `- ` or `1. ` line continues the
+  list (on an empty item it ends it), `TAB` / `S-TAB` indent and dedent
+  the item.
+- The diff preview (`show_diff_preview`) opens the file at the change
+  on `o` or `RET`; it finds the hunk by its text, not its line numbers.
 
 **Agent Buffer Keybindings:**
 
@@ -34,7 +62,19 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `TAB` / `S-TAB` | Move between sections |
 | `M-n` / `M-p` | Next / previous tool call |
 | `RET` | Expand/collapse tool at point |
+| `RET` (input) | Send; queue while a turn runs |
+| `M-RET` / `C-u RET` (input) | Steer the running turn |
+| `S-RET` / `C-j` (input) | Newline |
 | `C-c C-c` | Send input / continue session |
+| `C-c C-q` (input) | Show / drop queued inputs |
+| `C-c C-w` | Copy the last answer |
+| `C-c C-i` | Copy the session id |
+| `C-c C-x` | Restart: fresh session, same windows |
+| `C-c C-y` | Quote the region into the input (queued when busy) |
+| `C-c C-z` / `C-c C-a` | Narrow to the last N turns / widen |
+| `C-c C-f` | Open this session's transcript file |
+| `+` / `-` / `=` (transcript), `C-c +` etc. | Resize the image at point, else all |
+| `S-RET` on a list item | Continue the list; `TAB` / `S-TAB` indent it |
 | `C-c C-k` | Cancel session |
 | `C-c C-n` | New session |
 | `C-c C-r` | Resume paused session |
@@ -46,9 +86,9 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-v` | Cycle verbosity (minimal/normal/verbose) |
 | `C-c C-o` | Cycle display mode (minimal/smart/verbose) |
 | `C-c C-g` | Refresh display |
-| `C-c C-q` | Quit buffer (session continues) |
+| `C-c C-q` (conversation) | Quit buffer (session continues) |
 | `1`-`4` | Select option when Claude asks (in input region) |
-| `C-c ?` | Show help |
+| `C-c ?` / `?` (transcript) | The buffer's command menu (transient) |
 
 ### Rich Tool Suite
 Efrit provides Claude with 35+ tools:
@@ -73,6 +113,16 @@ Efrit provides Claude with 35+ tools:
 
 ### AI-to-AI Communication
 Other AI agents (Claude Code, Cursor, etc.) can interact with Efrit via file-based JSON queue for autonomous development.
+
+### Mail and documents (Gnus, Google Drive, Google Calendar, Confluence)
+`efrit-gnus` analyzes selected Gnus articles with a library of two-part
+prompts (`M-x efrit-prompts-manage`), and the model gets `gnus_search`
+and `gnus_articles`. Documents the articles link to, and documents
+related to them (the notes Calendar attached to the meeting, the
+Confluence page with the same title), are fetched through
+`efrit-documents` and its sources; `doc_search` and `doc_fetch` let the
+model look for more. Setup, including which Google APIs to enable in
+the Cloud console, is in [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
 
 ## Installation
 

@@ -27,6 +27,26 @@
       (should (numberp (alist-get :width m)))
       (should (numberp (alist-get :font-size m))))))
 
+(ert-deftest test-svg-header-model-repeats-while-running ()
+  "While a turn runs the model must repeat across spinner cycles, or the
+raster cache never hits: the elapsed time is coarse (every
+`efrit-agent-header-elapsed-step' seconds), and exact once idle."
+  (test-svg--in-agent-buffer
+    (let ((efrit-agent-header-elapsed-step 10))
+      (setq efrit-agent--start-time (time-subtract (current-time) 13))
+      (should (equal "0:10" (alist-get :elapsed (efrit-agent-svg--model))))
+      (setq efrit-agent--start-time (time-subtract (current-time) 19))
+      (should (equal "0:10" (alist-get :elapsed (efrit-agent-svg--model))))
+      ;; Same spinner frame + same coarse elapsed = same key
+      (let ((a (efrit-agent-svg--model)))
+        (setq efrit-agent--start-time (time-subtract (current-time) 17))
+        (should (equal a (efrit-agent-svg--model))))
+      (setq efrit-agent--start-time (time-subtract (current-time) 75))
+      (should (equal "1:10" (alist-get :elapsed (efrit-agent-svg--model))))
+      ;; Idle: exact
+      (setq efrit-agent--thinking-label nil)
+      (should (equal (efrit-agent--format-elapsed) (alist-get :elapsed (efrit-agent-svg--model)))))))
+
 (ert-deftest test-svg-header-build-produces-valid-svg ()
   "The DOM is checked directly so this runs on an Emacs without image support."
   (test-svg--in-agent-buffer

@@ -89,7 +89,7 @@ Each entry contains: (session callback iteration-count)")
    ;; Wall-clock timeout over the whole session (ef-5o5): the session
    ;; completes per command, so session age is the right measure.
    :elapsed-fn (lambda (session)
-                 (float-time (time-since (efrit-session-start-time session))))
+                 (efrit-elapsed-working (efrit-session-start-time session)))
    :timeout-fn (lambda () efrit-session-timeout)
    ;; Dispatch failures never reach efrit-do--execute-tool's own work
    ;; logging, so record them here (ef-c1h)

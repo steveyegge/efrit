@@ -374,9 +374,10 @@ edited the input at the prompt, the edited version is available from
                       (efrit-log 'warn "permission responder signalled: %s"
                                  (error-message-string err))
                       nil))))
-             (t (condition-case nil
-                    (efrit-permission--prompt request)
-                  (quit 'deny))))))
+             (t (efrit-with-user-waiting
+                  (condition-case nil
+                      (efrit-permission--prompt request)
+                    (quit 'deny)))))))
       (pcase decision
         ('allow-tool (efrit-permission--grant session-id tool) (setq decision 'allow))
         ('allow-all (efrit-permission--grant session-id 'all) (setq decision 'allow))

@@ -176,7 +176,20 @@ received in `test-review--requests'.  A string starting with
   (should (equal (car (efrit-review-parse-verdict "{\"verdict\": \"REJECT\"}")) 'reject))
   (should-not (efrit-review-parse-verdict "{\"verdict\": \"maybe\"}"))
   (should-not (efrit-review-parse-verdict "no json here"))
-  (should-not (efrit-review-parse-verdict nil)))
+  (should-not (efrit-review-parse-verdict nil))
+  ;; A second object after the verdict, or one embedded in an example,
+  ;; must not swallow the first (the greedy match did: every review
+  ;; came back "malformed", 2026-09-25)
+  (should (equal (efrit-review-parse-verdict
+                  "{\"verdict\": \"approve\"}\n\nFor the record: {\"note\": \"none\"}")
+                 '(approve . nil)))
+  (should (equal (efrit-review-parse-verdict
+                  "{\"verdict\": \"reject\", \"reason\": \"the call {deletes} x\"}")
+                 '(reject . "the call {deletes} x")))
+  ;; A leading non-verdict object is skipped for a later verdict
+  (should (equal (efrit-review-parse-verdict
+                  "{\"thinking\": 1} {\"verdict\": \"approve\"}")
+                 '(approve . nil))))
 
 (ert-deftest test-review-failure-policy ()
   (let ((content (vector (test-review--tool-use "1" "edit_file" '(("path" . "a"))))))

@@ -24,7 +24,8 @@
 ;; - is cancellable: `efrit-api-stream-cancel' signals the process;
 ;;   remaining tool_use deltas are dropped and the callback gets an
 ;;   `interrupted' error;
-;; - treats a timeout as degraded success when partial content exists
+;; - treats a stall (no data for `efrit-api-stream-stall-seconds')
+;;   as degraded success when partial content exists
 ;;   (minuet's rule): the caller receives what arrived with
 ;;   stop_reason "end_turn" and a :partial marker, rather than nothing.
 ;;
@@ -44,6 +45,7 @@
 (require 'json)
 (require 'efrit-common)
 (require 'efrit-api)
+(require 'efrit-chat-response)   ; efrit-response-usage in the sentinel
 (require 'efrit-log)
 
 (defgroup efrit-api-stream nil
@@ -56,9 +58,16 @@
   :type 'string
   :group 'efrit-api-stream)
 
-(defcustom efrit-api-stream-timeout 300
-  "Seconds without the request completing before it is killed.
-Partial content received by then is delivered as a degraded success."
+(define-obsolete-variable-alias 'efrit-api-stream-timeout
+  'efrit-api-stream-stall-seconds "0.4.1")
+
+(defcustom efrit-api-stream-stall-seconds 300
+  "Seconds without any data arriving before the request is killed.
+A stall guard, not a cap on the whole answer: a long reply that keeps
+streaming is never cut (the old `--max-time' did that at 300 s), a
+dead connection is.  Implemented with curl's `--speed-time' and
+`--speed-limit 1'.  Partial content received before a stall is
+delivered as a degraded success."
   :type 'integer
   :group 'efrit-api-stream)
 
@@ -263,7 +272,7 @@ When nil (or curl is missing) the url-retrieve path is used."
        ((/= exit 0)
         (funcall cb nil (efrit-api-stream--fail
                          st (format "curl exit %d%s%s" exit
-                                    (pcase exit (28 (format " (no response within %ds)" efrit-api-stream-timeout))
+                                    (pcase exit (28 (format " (no data for %ds)" efrit-api-stream-stall-seconds))
                                            (6 " (could not resolve host)")
                                            (7 " (connection refused)") (35 " (TLS handshake failed)")
                                            (56 " (connection reset)") (_ ""))
@@ -331,14 +340,23 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
       (set-buffer-multibyte nil)
       (insert (efrit-api-encode-request (plist-get req :body))))
     (set-file-modes body-file #o600)
-    (let ((proc
+    (let* ((default-directory (if (file-directory-p default-directory)
+                                  default-directory
+                                temporary-file-directory))
+           (proc
+           ;; curl inherits `default-directory'; a caller whose buffer
+           ;; sits in a directory that no longer exists (a deleted
+           ;; project) must not fail the request
            (make-process
             :name "efrit-stream"
             :buffer nil
             :command (list efrit-api-stream-curl-program
                            "--silent" "--show-error" "--no-buffer"
                            "--fail-with-body"
-                           "--max-time" (number-to-string efrit-api-stream-timeout)
+                           ;; Abort only when nothing arrives for the
+                           ;; stall period, never a live stream
+                           "--speed-time" (number-to-string efrit-api-stream-stall-seconds)
+                           "--speed-limit" "1"
                            "--config" config
                            "--data-binary" (concat "@" body-file)
                            "--request" "POST"

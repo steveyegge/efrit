@@ -372,17 +372,14 @@ when the user stops (or nothing can ask).  Never signals."
                                       :step efrit-limits-continue-step :root root))
          (answer (and efrit-limits-ask
                       (not noninteractive)
-                      ;; The circuit-breaker check runs inside the
-                      ;; tool's with-timeout; reading time is not tool time
-                      (let ((suspended (with-timeout-suspend)))
-                        (unwind-protect
-                            (condition-case err
-                                (if (efrit-limits--define-menu)
-                                    (efrit-limits--ask-with-menu)
-                                  (efrit-limits--ask-in-echo-area))
-                              (quit nil)
-                              (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil))
-                          (with-timeout-unsuspend suspended)))))
+                      ;; Reading time is neither tool time nor turn time
+                      (efrit-with-user-waiting
+                        (condition-case err
+                            (if (efrit-limits--define-menu)
+                                (efrit-limits--ask-with-menu)
+                              (efrit-limits--ask-in-echo-area))
+                          (quit nil)
+                          (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil)))))
          (unit (efrit-limits--unit name))
          (result
           (pcase answer

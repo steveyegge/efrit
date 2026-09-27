@@ -385,6 +385,28 @@ the prompt inlined, as `efrit-api-request-sync' does."
          (funcall callback response)))
      error-callback)))
 
+(defcustom efrit-api-async-timeout 300
+  "Seconds an asynchronous request may take before it is abandoned.
+`url-retrieve' has no timeout of its own: a stalled connection (a
+proxy that stops answering, a keep-alive socket the server closed)
+never calls back, and whatever waited on it waits forever.  The
+package review queue hung this way.  Past the limit the transfer is
+deleted and the error callback is called with a timeout message.  nil
+disables the limit."
+  :type '(choice (const :tag "No limit" nil) integer)
+  :group 'efrit)
+
+(defun efrit-api--stop-transfer (buffer)
+  "Delete the transfer behind url-retrieve response BUFFER, and the buffer."
+  (when (and buffer (buffer-live-p buffer))
+    (when-let* ((proc (get-buffer-process buffer)))
+      (set-process-query-on-exit-flag proc nil)
+      (set-process-sentinel proc nil)
+      (set-process-filter proc nil)
+      (delete-process proc))
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer buffer))))
+
 (defun efrit-api--request-async-1 (request-data callback &optional error-callback)
   "One asynchronous request; see `efrit-api-request-async'."
   (condition-case err
@@ -403,36 +425,59 @@ the prompt inlined, as `efrit-api-request-sync' does."
                                   "url-retrieve"
                                   efrit-api-request-purpose))
              (purpose efrit-api-request-purpose)
-             (started (efrit-api--log-request request-data "url-retrieve")))
-        (url-retrieve
-         (plist-get req :url)
-         (lambda (status)
-           ;; The callback can change the current buffer (tools may call
-           ;; pop-to-buffer etc.), so capture the HTTP response buffer now
-           ;; lest the cleanup kill whatever buffer the callback left current.
-           (let ((response-buffer (current-buffer)))
-             (unwind-protect
-                 (condition-case url-err
-                     (progn
-                       (when-let* ((http-err (plist-get status :error)))
-                         ;; The body usually carries the API's JSON error
-                         ;; object, which is far more useful than
-                         ;; url-retrieve's "(error http 400)".
-                         (error "%s" (or (efrit-api--error-from-body)
-                                         (format "HTTP error: %s" http-err))))
-                       (let ((response (efrit-api-parse-response)))
-                         (efrit-api--log-response response started purpose)
-                         (funcall callback response)))
-                   (error
-                    (let ((msg (apply #'efrit-api-describe-failure
-                                      (error-message-string url-err) describe-args)))
-                      (efrit-log 'warn "api ← failed after %.1fs: %s" (- (float-time) started) msg)
-                      (if error-callback
-                          (funcall error-callback msg)
-                        (error "%s" msg)))))
-               (when (buffer-live-p response-buffer)
-                 (kill-buffer response-buffer)))))
-         nil t t))
+             (started (efrit-api--log-request request-data "url-retrieve"))
+             ;; one outcome per request: the response, or the timeout,
+             ;; whichever comes first; the other is ignored
+             (settled nil)
+             (watchdog nil)
+             (transfer nil))
+        (setq transfer
+              (url-retrieve
+               (plist-get req :url)
+               (lambda (status)
+                 ;; The callback can change the current buffer (tools may call
+                 ;; pop-to-buffer etc.), so capture the HTTP response buffer now
+                 ;; lest the cleanup kill whatever buffer the callback left current.
+                 (let ((response-buffer (current-buffer)))
+                   (unwind-protect
+                       (unless settled
+                         (setq settled t)
+                         (when watchdog (cancel-timer watchdog))
+                         (condition-case url-err
+                             (progn
+                               (when-let* ((http-err (plist-get status :error)))
+                                 ;; The body usually carries the API's JSON error
+                                 ;; object, which is far more useful than
+                                 ;; url-retrieve's "(error http 400)".
+                                 (error "%s" (or (efrit-api--error-from-body)
+                                                 (format "HTTP error: %s" http-err))))
+                               (let ((response (efrit-api-parse-response)))
+                                 (efrit-api--log-response response started purpose)
+                                 (funcall callback response)))
+                           (error
+                            (let ((msg (apply #'efrit-api-describe-failure
+                                              (error-message-string url-err) describe-args)))
+                              (efrit-log 'warn "api ← failed after %.1fs: %s" (- (float-time) started) msg)
+                              (if error-callback
+                                  (funcall error-callback msg)
+                                (error "%s" msg))))))
+                     (when (buffer-live-p response-buffer)
+                       (kill-buffer response-buffer)))))
+               nil t t))
+        (when (and efrit-api-async-timeout (> efrit-api-async-timeout 0))
+          (setq watchdog
+                (run-at-time efrit-api-async-timeout nil
+                             (lambda ()
+                               (unless settled
+                                 (setq settled t)
+                                 (efrit-api--stop-transfer transfer)
+                                 (let ((msg (apply #'efrit-api-describe-failure
+                                                   (format "No response within %ds (the connection stalled; the transfer was dropped)"
+                                                           efrit-api-async-timeout)
+                                                   describe-args)))
+                                   (efrit-log 'warn "api ← timed out after %.0fs: %s" (- (float-time) started) msg)
+                                   (when error-callback (funcall error-callback msg))))))))
+        transfer)
     (error
      ;; Before the request left: no key, bad URL, encoding failure
      (if error-callback
@@ -509,14 +554,7 @@ The process is deleted on timeout or C-g so no callback fires later."
           (and done result))
       (unless done
         ;; timeout or quit: stop the transfer, and its callback with it
-        (when (and buffer (buffer-live-p buffer))
-          (when-let* ((proc (get-buffer-process buffer)))
-            (set-process-query-on-exit-flag proc nil)
-            (set-process-sentinel proc nil)
-            (set-process-filter proc nil)
-            (delete-process proc))
-          (let ((kill-buffer-query-functions nil))
-            (kill-buffer buffer)))))))
+        (efrit-api--stop-transfer buffer)))))
 
 (defun efrit-api--request-sync-1 (request-data &optional timeout)
   "One synchronous request; see `efrit-api-request-sync'."

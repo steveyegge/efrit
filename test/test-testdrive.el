@@ -45,12 +45,21 @@
       (should (equal (mapcar #'caddr rs) '(PASS PASS FAIL SKIP FAIL)))
       (should (equal (nth 3 (nth 2 rs)) "saw nothing"))
       (should (string-match-p "error: boom" (nth 3 (nth 4 rs)))))
+    ;; One line per step, the status in its own face; the log tail of
+    ;; a failure is a fenced block rendered as code
     (let ((report (test-td--report)))
-      (should (string-match-p "^\\*\\*\\* passes$" report))
-      (should (string-match-p "^\\*\\* PASS passes  ([0-9.]+s)$" report))
-      (should (string-match-p "^\\*\\* FAIL fails with a note" report))
-      (should (string-match-p "^   saw nothing$" report))
-      (should (string-match-p "^\\*\\* SKIP skips" report)))))
+      (should (string-match-p "^PASS passes  ([0-9.]+s)$" report))
+      (should (string-match-p "^FAIL fails with a note" report))
+      (should (string-match-p "^    saw nothing$" report))
+      (should (string-match-p "^SKIP skips" report))
+      (should-not (string-match-p "^#" report)))
+    (with-current-buffer (efrit-testdrive--buf)
+      (goto-char (point-min))
+      (search-forward "FAIL fails")
+      (should (eq 'efrit-testdrive-fail (get-text-property (match-beginning 0) 'face)))
+      ;; the log tail is a fenced block, rendered as code
+      (search-forward "log\n")
+      (should (memq 'efrit-markdown-code-block (ensure-list (get-text-property (point) 'face)))))))
 
 (ert-deftest test-testdrive-step-flags-slow-and-quits ()
   (test-td--fresh
@@ -130,17 +139,18 @@
       (efrit-unsubscribe t #'efrit-testdrive--on-event))))
 
 (ert-deftest test-testdrive-turn-drives-submit-and-waits ()
-  "The turn driver sends through `efrit-submit' with the project bound
-and returns the turn-complete event; a busy buffer is an error; a
-silent model is a timeout that cancels."
+  "The turn driver sends through `efrit-submit' and returns the
+turn-complete event; a busy buffer is an error; a silent model is a
+timeout that cancels.  (The project root is bound by the runner for
+the whole drive, not per turn.)"
   (test-td--fresh
     (setq efrit-testdrive--root (efrit-testdrive--make-project))
     (efrit-subscribe t #'efrit-testdrive--on-event)
     (unwind-protect
-        (let ((sent nil) (root-seen nil) (cancelled nil))
+        (let ((sent nil) (cancelled nil))
           (cl-letf (((symbol-function 'efrit-submit)
                      (lambda (shown &optional api-input)
-                       (setq sent (list shown api-input) root-seen efrit-project-root)
+                       (setq sent (list shown api-input))
                        ;; the model answers on the next event-loop tick
                        (run-at-time 0.01 nil
                                     (lambda ()
@@ -151,7 +161,6 @@ silent model is a timeout that cancels."
                     ((symbol-function 'efrit-agent-cancel) (lambda () (setq cancelled t))))
             (let ((ev (efrit-testdrive--turn "ping" "say PONG")))
               (should (equal sent '("ping" "say PONG")))
-              (should (equal root-seen efrit-testdrive--root))
               (should (equal (efrit-testdrive--stop-reason ev) "end_turn"))
               (should (equal (efrit-testdrive--reply-text) "PONG"))
               (should (= efrit-testdrive--turns 1))
@@ -175,11 +184,18 @@ silent model is a timeout that cancels."
                 (list 2 "second" 'SKIP nil 0.5)
                 (list 1 "first" 'PASS nil 70.0)))
     (setq efrit-testdrive--turns 4)
+    ;; The summary goes where the marker points: the top, after the title
+    (efrit-testdrive--out "# title")
+    (with-current-buffer (efrit-testdrive--buf)
+      (setq efrit-testdrive--summary-marker (copy-marker (point-max))))
+    (efrit-testdrive--out "later steps")
     (efrit-testdrive--summary)
     (let ((report (test-td--report)))
-      (should (string-match-p "^\\* Summary: 1 PASS, 1 FAIL, 1 SKIP in 72s, 4 model turn(s)$" report))
-      (should (string-match-p "^- SLOW \\[1\\] first: 70s$" report))
-      (should (string-match-p "^- FAIL \\[3\\] third: broke$" report)))))
+      (should (string-match-p "\\`title\n\n?Summary\n" report))
+      (should (string-match-p "^1 PASS, 1 FAIL, 1 SKIP in 72s, 4 model turn(s)$" report))
+      (should (string-match-p "^• FAIL \\[3\\] third: broke$" report))
+      (should (string-match-p "^• SLOW \\[1\\] first: 70s$" report))
+      (should (string-match-p "later steps\\'" (string-trim report))))))
 
 (ert-deftest test-testdrive-declined-sends-nothing ()
   (test-td--fresh
@@ -192,11 +208,42 @@ silent model is a timeout that cancels."
         (should-not efrit-testdrive--root)
         (should (string-match-p "declined; nothing was sent" (test-td--report)))))))
 
+(ert-deftest test-testdrive-grants-and-refuses-unattended ()
+  "The automatic drive grants what a step needs (elisp on t, others on the
+project) and refuses anything else instead of prompting; the refusals
+are listed in the report."
+  (test-td--fresh
+    (setq efrit-testdrive--root (efrit-testdrive--make-project))
+    (unwind-protect
+        (let ((efrit-sandbox-enabled t))
+          (efrit-testdrive--grant 'elisp)
+          (efrit-testdrive--grant 'write)
+          (let ((grants (efrit-sandbox-grants efrit-testdrive--root)))
+            (should (cl-some (lambda (g) (and (eq (plist-get g :cap) 'elisp) (eq (plist-get g :target) t))) grants))
+            (should (cl-some (lambda (g) (and (eq (plist-get g :cap) 'write)
+                                              (equal (plist-get g :target) efrit-testdrive--root)))
+                             grants)))
+          ;; Under the unattended binding an ungranted request is refused, not asked
+          (let ((efrit-project-root efrit-testdrive--root)
+                (efrit-sandbox-request-function #'efrit-testdrive--refuse)
+                (asked nil))
+            (setq efrit-testdrive--unanswered nil)
+            (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (setq asked t) ?o)))
+              (should-error (efrit-sandbox-check 'read "/etc/hosts" "read_file") :type 'efrit-sandbox-denied)
+              (should-not asked)
+              (should (= 1 (length efrit-testdrive--unanswered))))))
+      (efrit-testdrive--cleanup)
+      (setq efrit-testdrive--root nil))))
+
 (ert-deftest test-testdrive-sections-are-well-formed ()
   (dolist (s efrit-testdrive--sections)
     (should (numberp (car s)))
     (should (stringp (cadr s)))
     (should (fboundp (caddr s))))
+  (dolist (s efrit-testdrive--tour-stops)
+    (should (stringp (car s)))
+    (should (fboundp (cadr s))))
+  (should (commandp 'efrit-testdrive-tour))
   ;; the model cannot start a drive from eval_sexp
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(efrit-testdrive)))

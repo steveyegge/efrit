@@ -55,11 +55,16 @@ Chosen because it cannot be confused with an absolute file path.")
 The remainder is the command names separated by spaces; it
 deserializes to (shell NAME...).  Command names cannot contain spaces.")
 
+(defconst efrit-sandbox-store--host-target-prefix "host:"
+  "Prefix of a serialized network host target; the rest is the host name.")
+
 (defun efrit-sandbox-store--target-to-json (target)
-  "Serialize grant TARGET (t, a path, (buffer . NAME), or (shell NAME...)) for JSON."
+  "Serialize grant TARGET (t, a path, (buffer . NAME), (host . NAME), or (shell NAME...)) for JSON."
   (cond
    ((and (consp target) (eq (car target) 'buffer))
     (concat efrit-sandbox-store--buffer-target-prefix (cdr target)))
+   ((and (consp target) (eq (car target) 'host))
+    (concat efrit-sandbox-store--host-target-prefix (cdr target)))
    ((efrit-sandbox-shell-target-p target)
     (concat efrit-sandbox-store--shell-target-prefix (mapconcat #'identity (cdr target) " ")))
    (t target)))
@@ -74,6 +79,9 @@ deserializes to (shell NAME...).  Command names cannot contain spaces.")
          (string-prefix-p efrit-sandbox-store--shell-target-prefix target))
     (cons 'shell (split-string (substring target (length efrit-sandbox-store--shell-target-prefix))
                                " " t)))
+   ((and (stringp target)
+         (string-prefix-p efrit-sandbox-store--host-target-prefix target))
+    (cons 'host (substring target (length efrit-sandbox-store--host-target-prefix))))
    (t target)))
 
 (defun efrit-sandbox-store--valid-grant (g)
@@ -93,7 +101,10 @@ deserializes to (shell NAME...).  Command names cannot contain spaces.")
                           (stringp (cdr target)) (not (string-empty-p (cdr target))))
                      ;; a command-list shell target with at least one name
                      (and (eq cap-sym 'shell) (efrit-sandbox-shell-target-p target)
-                          (cdr target))))
+                          (cdr target))
+                     ;; a network host
+                     (and (eq cap-sym 'net) (efrit-sandbox-host-target-p target)
+                          (not (string-empty-p (cdr target))))))
         (list :cap cap-sym :target target :scope 'project)))))
 
 (defun efrit-sandbox-store--parse (file)

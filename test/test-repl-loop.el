@@ -125,6 +125,73 @@ follow-up response is delivered."
           (should (eq (alist-get 'is_error block) t))
           (should (string-prefix-p efrit-sandbox-denied-prefix (alist-get 'content block))))))))
 
+(ert-deftest test-repl-loop-steer-delivered-with-tool-results ()
+  "A `steer' event during a turn puts its text into the user message
+that carries the next tool results, as a text block after them; a
+`steered' event says so.  Steering that finds no tool round is queued
+when the turn ends."
+  (let* ((session (efrit-repl-session-create))
+         (turn-reason nil) (steered nil)
+         (listener (lambda (e) (push (alist-get :text e) steered))))
+    (efrit-subscribe 'steered listener)
+    (unwind-protect
+        (test-repl-loop--with-mocks
+            (list (test-repl-loop--make-response
+                   (vector (test-repl-loop--make-tool-use
+                            "tool-1" "eval_sexp" '(("expr" . "(+ 2 2)"))))
+                   "tool_use")
+                  (test-repl-loop--make-response
+                   (vector (test-repl-loop--make-text "Done, in French."))
+                   "end_turn"))
+            "4"
+          ;; The mock API is synchronous, so steer before the turn: the
+          ;; event lands on the working session as soon as it exists.
+          (cl-letf* ((orig (symbol-function 'efrit-repl-loop--api-call))
+                     ((symbol-function 'efrit-repl-loop--api-call)
+                      (lambda (s messages callback)
+                        (when (= 1 (length messages))
+                          (efrit-publish 'steer `((:session-id . ,(efrit-repl-session-id s))
+                                                  (:text . "answer in French"))))
+                        (funcall orig s messages callback))))
+            (efrit-repl-continue session "what is 2+2?"
+                                 (lambda (_s reason) (setq turn-reason reason))))
+          (should (equal turn-reason "end_turn"))
+          (should (equal '("answer in French") steered))
+          (let* ((messages (efrit-repl-session-api-messages session))
+                 (results (nth 2 messages))
+                 (blocks (append (alist-get 'content results) nil)))
+            (should (= 4 (length messages)))
+            (should (equal "user" (alist-get 'role results)))
+            (should (= 2 (length blocks)))
+            (should (equal "tool_result" (alist-get 'type (nth 0 blocks))))
+            (should (equal "text" (alist-get 'type (nth 1 blocks))))
+            (should (string-prefix-p efrit-repl-steering-frame (alist-get 'text (nth 1 blocks))))
+            (should (string-suffix-p "answer in French" (alist-get 'text (nth 1 blocks)))))
+          (should-not (efrit-repl-session-steering session))
+          ;; A steer with no tool round left: queued at turn end
+          (efrit-repl-session-steer session "and shorter")
+          (efrit-repl-loop--end-turn session "end_turn")
+          (should (equal '("and shorter") (efrit-repl-session-queue session)))
+          (should-not (efrit-repl-session-steering session)))
+      (efrit-unsubscribe 'steered listener))))
+
+(ert-deftest test-repl-loop-cancelled-request-publishes-turn-complete ()
+  "A stream cancelled by the user ends the turn as interrupted AND
+publishes turn-complete, like every other ending."
+  (let* ((session (efrit-repl-session-create))
+         (seen nil)
+         (listener (lambda (e) (push (alist-get :stop-reason e) seen))))
+    (efrit-subscribe 'turn-complete listener)
+    (unwind-protect
+        (progn
+          (puthash (efrit-repl-session-id session) (list session nil 1) efrit-repl-loop--active)
+          (efrit-repl-session-set-status session 'working)
+          (efrit-repl-loop--on-api-error session "interrupted")
+          (should (equal '("interrupted") seen))
+          (should (eq 'idle (efrit-repl-session-status session))))
+      (efrit-unsubscribe 'turn-complete listener)
+      (clrhash efrit-repl-loop--active))))
+
 (ert-deftest test-repl-loop-c-g-ends-turn ()
   "C-g during a tool still ends the turn as interrupted."
   (let ((session (efrit-repl-session-create))
@@ -155,6 +222,28 @@ follow-up response is delivered."
       (should (eq (efrit-repl-session-status session) 'waiting))
       (should-not (efrit-repl-loop-active-p session)))))
 
+(ert-deftest test-repl-loop-recovers-a-stale-working-session ()
+  "A session left `working' with no loop (a reload dropped the loop
+table) is ended as interrupted the next time something asks whether
+it is busy; a held (pretend-busy) session is left alone."
+  (let ((session (efrit-repl-session-create)) (seen nil))
+    (cl-letf (((symbol-function 'efrit-agent-set-status) #'ignore))
+      (let ((listener (lambda (e) (push (alist-get :stop-reason e) seen))))
+        (efrit-subscribe 'turn-complete listener)
+        (unwind-protect
+            (progn
+              (efrit-repl-session-set-status session 'working)
+              (should (efrit-repl-loop-recover-stale session))
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should (equal '("interrupted") seen))
+              ;; held: not stale
+              (efrit-repl-loop-hold session)
+              (should-not (efrit-repl-loop-recover-stale session))
+              (should (eq 'working (efrit-repl-session-status session)))
+              (efrit-repl-loop-release session)
+              (should (eq 'idle (efrit-repl-session-status session))))
+          (efrit-unsubscribe 'turn-complete listener))))))
+
 (ert-deftest test-repl-loop-api-error-fails-turn ()
   "An API error ends the turn with the api-error reason."
   (let ((session (efrit-repl-session-create))
@@ -180,6 +269,31 @@ follow-up response is delivered."
                            (lambda (_s reason) (setq turn-reason reason)))
       (should (equal turn-reason "session-complete"))
       (should (eq (efrit-repl-session-status session) 'idle)))))
+
+(ert-deftest test-repl-loop-max-tokens-ends-turn-with-note ()
+  "An answer cut at max_tokens ends the turn like end_turn, keeps the
+text, and publishes a note naming the limit."
+  (let ((session (efrit-repl-session-create))
+        (turn-reason nil) (notes nil))
+    (test-repl-loop--with-mocks
+        (list (test-repl-loop--make-response
+               (vector (test-repl-loop--make-text "the first half of a long briefing"))
+               "max_tokens"))
+        "unused"
+      (let ((fn (lambda (event) (push (alist-get :text event) notes))))
+        (efrit-subscribe 'note fn)
+        (unwind-protect
+            (efrit-repl-continue session "brief me"
+                                 (lambda (_s reason) (setq turn-reason reason)))
+          (efrit-unsubscribe 'note fn)))
+      (should (equal turn-reason "end_turn"))
+      (should (eq (efrit-repl-session-status session) 'idle))
+      (should (= 1 (length notes)))
+      (should (string-match-p "cut at [0-9]+ output tokens" (car notes)))
+      (should (string-match-p "efrit-default-max-tokens" (car notes)))
+      ;; The request asked for the configured limit, not a literal.
+      (should (integerp efrit-default-max-tokens))
+      (should (> efrit-default-max-tokens 8192)))))
 
 (ert-deftest test-repl-loop-turn-resets-tool-counters ()
   "Each turn starts with fresh tool counters; they used to span the Emacs process."

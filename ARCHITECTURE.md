@@ -76,9 +76,101 @@ efrit-list-registered-tools` shows what is registered.
 A package can also start a REPL turn with a prompt it prepared:
 `(efrit-submit SHOWN API-INPUT)` shows SHOWN as the user's line in the
 agent buffer and sends API-INPUT (with the editor-context block
-prepended, as for typed input) to the model.  First user: nngmail, which
-sends selected mail with an analysis prompt and registers Gmail search
-and message tools.
+prepended, as for typed input) to the model.  First user: `efrit-gnus.el` (lisp/interfaces), which sends selected
+Gnus articles with an analysis prompt and registers `gnus_groups`,
+`gnus_search` and `gnus_articles`; nngmail adds Gmail-specific tools on
+top of it from its own repository.  A package that runs several turns
+over separate data takes a history mark first
+(`efrit-repl-session-history-mark` on `(efrit-agent-repl-session)`),
+rewinds to it before each turn (`efrit-repl-session-rewind`) and reads
+each answer with `efrit-repl-session-last-answer`; efrit-gnus does this
+per batch, so the model never rereads earlier batches, and sends the
+stitched answers to the closing turn.
+
+While a turn runs the prompt stays writable.  RET routes through
+`efrit-agent-busy-submit-default-function` (queue: the text is kept on
+the session, `efrit-repl-session-queue`, and sent when the turn ends
+well) and M-RET through the override function (steer: the agent buffer
+publishes a `steer` event; `efrit-repl-loop--on-steer` keeps the text
+on the session and the adapter's `before-request-fn`,
+`efrit-repl-loop--deliver-steering`, appends it as text blocks to the
+user message that carries the next tool results, publishing
+`steered`).  Steering that finds no tool round is queued at turn end.
+Both are drawn in the conversation at once, with their own prefix.
+
+Rendering discipline: every programmatic edit of the conversation goes
+through `efrit-agent--with-render` (no undo entries, read-only lifted;
+afterwards the undo list is reset to one entry for the input region)
+and `efrit-agent--seal-rendered` (read-only, `field', `font-lock-face'
+mirrored, `fontified').  Tool bodies fold with the `invisible' property
+(`efrit-tool-body'), and `efrit-agent--isearch-filter' honours
+`search-invisible'.  The model's text is rendered as Markdown in place
+by `efrit-markdown.el` (lisp/interfaces): markup deleted, faces and
+links as text properties, a watermark offset on the first character so
+each streamed chunk renders only from the last safe frontier; fenced
+blocks are fontified with the language's mode and frozen.  Pipe
+tables are a block pass like fences (held back while the last row may
+still grow), each cell rendered on its own before the columns are
+measured; images (`![alt](src)`) keep the alt text and put the picture
+on it as a `display' property, local files and `data:` URLs at once,
+http(s) fetched with `url-retrieve` into a cache, width per image in
+`efrit-markdown-image-width` so `+`/`-`/`=` rescale in place.
+`efrit-agent-mentions.el` adds `@path` completion and expansion,
+`/commands` (`efrit-agent-define-slash-command`), and drag and drop.
+
+`efrit-transcript.el` (lisp/interfaces) subscribes to the same events
+(`turn-start`, `text-delta`/`text-end`, `tool-start`/`tool-result`,
+`steer`, `question`, `error`, `turn-complete`) and appends a Markdown
+file per session under `efrit-data-directory/transcripts/`, so turns
+started from Lisp are recorded too and nothing is held in memory.
+
+A REPL session's `working' status is only meaningful while
+`efrit-repl-loop--active` has its loop.  A reload replaces that table,
+so `efrit-repl-loop-recover-stale` (called from
+`efrit-agent--session-busy-p`) ends such a turn as interrupted instead
+of refusing every later submit as busy; the struct upgrade on reload
+does the same.  Tests and the test drive that need a pretend-busy
+session use `efrit-repl-loop-hold` / `-release`, which register a
+placeholder loop.
+
+The REPL history is also bounded by size: before every request
+`efrit-repl-session-fit-context` estimates the history against the
+model's window (`efrit-usage-window`, per-model via
+`efrit-usage-context-windows`, less `efrit-repl-context-headroom`) and
+elides the oldest tool results, then the oldest user messages, in
+place; a `note` event says what it dropped.  Without this a long
+tool-heavy turn grew past the window and every request after it failed
+with "prompt is too long".
+
+Prompts for such analyses come from `efrit-prompts.el` (lisp/interfaces):
+a library of two-part prompts (one part per batch of items, one over
+everything), with built-ins from `efrit-prompts-define`, the user's own
+in `prompts.json` under `efrit-data-directory`, a transient chooser
+(`efrit-prompts-read`), and a manager/editor (`M-x efrit-prompts-manage`)
+that can ask the model for an improved version.
+
+Documents outside Emacs come through `efrit-documents.el` (lisp/core): a
+source protocol (`efrit-document-source` with match/fetch/metadata/search
+generics), a session cache keyed by the source's modified time, a
+related-documents lookup (title words near a date), and the
+`doc_fetch`/`doc_search`/`doc_sources` tools.  `efrit-documents-gdrive.el`
+is the Google Drive source and `efrit-documents-confluence.el` the
+Confluence one (Atlassian Cloud and self-hosted, one source per site in
+`efrit-documents-confluence-sites`).  `efrit-documents-jira.el` wraps
+the jira.el package as a source and a
+key-mention provider. `efrit-documents-gcalendar.el` is
+not a source but a related-documents provider
+(`efrit-documents-related-functions`): it finds the calendar event an
+item is about by date, title words and people, and returns the event's
+attachments as Drive documents, so a renamed meeting still yields its
+notes.  Sources
+talk to their APIs through `efrit-auth.el`: auth-source lookup by host
+(OAuth2 client fields → oauth2.el consent/refresh/plstore, otherwise a
+bearer or basic secret), and `efrit-auth-request` with retries and typed
+errors.  efrit-gnus expands article links and adds related documents
+through this layer (and, with `gnus-treat-related-documents`, writes
+them as a footnote into the article buffer that a later analysis reads
+back); backends only add expanders for links no source handles.
 
 ## 📦 **MODULE ORGANIZATION & LOAD ORDER**
 

@@ -40,9 +40,11 @@
 (declare-function efrit-review-package "efrit-package-review")
 (declare-function efrit-review-all-packages "efrit-package-review-ui")
 (declare-function efrit-testdrive "efrit-testdrive")
+(declare-function efrit-testdrive-tour "efrit-testdrive")
 (declare-function efrit-log-toggle-debug "efrit-log")
 (defvar efrit-log-level)
 (declare-function efrit-sandbox-reset-session "efrit-sandbox")
+(declare-function efrit-review-probe-refusal "efrit-review")
 
 ;;; Description helpers (all pure, all safe with modules unloaded)
 
@@ -119,7 +121,11 @@
        ("d" "One-shot command" efrit-do)
        ("n" "New conversation" efrit-agent-new-session)
        ("r" "Resume a saved session" efrit-resume)
-       ("k" "Cancel current turn" efrit-agent-cancel)]
+       ("k" "Cancel current turn" efrit-agent-cancel)
+       ("Q" "Show / drop queued inputs" efrit-agent-queue-show)
+       ("y" "Copy last answer" efrit-agent-copy-last-output)
+       ("i" "Copy session id" efrit-agent-copy-session-id)
+       ("N" "Restart in place (fresh session, same windows)" efrit-agent-restart)]
       ["Configuration"
        ("m" efrit-select-model :description efrit-menu--desc-model)
        ("M" "Select model (probe all)" (lambda () (interactive) (efrit-select-model t)))
@@ -129,6 +135,11 @@
         :description (lambda () (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching)))
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
+       ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)
+       ("g" "Document source check: Google Drive" efrit-documents-gdrive-check)
+       ("w" "Document source check: Confluence" efrit-documents-confluence-check)
+       ("K" "Document source check: Google Calendar" efrit-documents-gcalendar-check)
+       ("j" "Document source check: Jira" efrit-documents-jira-check)
        ("P" "Review an installed package" efrit-review-package)
        ("V" "Review all installed packages" efrit-review-all-packages)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
@@ -140,14 +151,17 @@
        ("G" efrit-log-toggle-debug :transient t
         :description (lambda () (format "Debug logging [%s]" (if (eq efrit-log-level 'debug) "on" "off"))))
        ("R" "Reload efrit from source" efrit-reload)
-       ("T" "Test drive (live, costs tokens)" efrit-testdrive)
+       ("F" "Bisect the last refused review request" efrit-review-probe-refusal)
+       ("T" "Test drive: automatic (live, costs tokens)" efrit-testdrive)
+       ("t" "Test drive: the tour (what needs eyes)" efrit-testdrive-tour)
        ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
       ["View"
        ("TAB" "Toggle tool call at point" efrit-agent-toggle-expand)
        ("E" "Expand all tool calls" efrit-agent-expand-all)
        ("C" "Collapse all tool calls" efrit-agent-collapse-all)
        ("v" "Cycle verbosity" efrit-agent-cycle-verbosity :transient t)
-       ("o" "Cycle display mode" efrit-agent-cycle-display-mode :transient t)]])
+       ("o" "Cycle display mode" efrit-agent-cycle-display-mode :transient t)
+       ("q" "Close this menu" transient-quit-one)]])
   "The `efrit-menu' prefix, kept as data (see Commentary).")
 
 (if (require 'transient nil t)

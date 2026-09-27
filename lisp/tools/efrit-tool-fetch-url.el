@@ -41,7 +41,10 @@
 (defcustom efrit-fetch-url-security-level 'allowlist
   "Security level for URL fetching.
 Options:
-  allowlist - Only fetch from approved domains (default)
+  allowlist - Domains in `efrit-fetch-url-allowed-domains' fetch without
+              a prompt; any other domain goes through the sandbox, which
+              asks once / this session / this project for that host
+              (default)
   confirm - Ask user before each fetch
   open - Fetch any URL (not recommended)"
   :type '(choice (const :tag "Allowlist only" allowlist)
@@ -96,10 +99,12 @@ May prompt user depending on security level."
       ('open t)
       ('confirm
        (y-or-n-p (format "Fetch content from %s? " domain)))
+      ;; Not on the list: the sandbox asks for the host, with the usual
+      ;; once / session / project scopes, instead of a dead end that
+      ;; told the user to edit a variable (2026-09-27)
       ('allowlist
-       (if (efrit-fetch-url--domain-allowed-p domain)
-           t
-         (user-error "Domain %s not in allowlist. Add to efrit-fetch-url-allowed-domains or change security level" domain)))
+       (or (efrit-fetch-url--domain-allowed-p domain)
+           (efrit-sandbox-check 'net (cons 'host domain) "fetch_url" (format "GET %s" url))))
       (_ nil))))
 
 ;;; Content Fetching
@@ -280,8 +285,6 @@ Returns standard tool response with:
   truncated - whether content was truncated
   fetch_time - how long it took"
   (efrit-tool-execute fetch_url args
-    (efrit-sandbox-check 'net t "fetch_url"
-                         (format "GET %s" (or (alist-get 'url args) "(no url)")))
     (let* ((url (alist-get 'url args))
            (selector (alist-get 'selector args))
            (format-type (or (alist-get 'format args) "markdown"))

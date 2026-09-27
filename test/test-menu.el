@@ -12,6 +12,11 @@
 (require 'ert)
 (require 'efrit-menu)
 (require 'efrit)
+;; The menu names commands from every interface; load them so the
+;; existence check means something
+(require 'efrit-agent)
+(require 'efrit-log)
+(require 'efrit-sandbox)
 
 (defun test-menu--suffixes (form)
   "Collect (KEY . COMMAND) from every suffix vector in FORM."
@@ -35,6 +40,20 @@
                   (and (consp cmd) (eq (car cmd) 'lambda))))
       (when (symbolp cmd)
         (should (commandp cmd))))))
+
+(ert-deftest test-agent-menu-commands-exist-and-keys-unique ()
+  "The agent buffer menu names real commands, on distinct keys, and each
+description function returns a string without a session."
+  (require 'efrit-agent-menu)
+  (let ((suffixes (test-menu--suffixes efrit-agent-menu--definition)))
+    (should (> (length suffixes) 15))
+    (dolist (s suffixes)
+      (should (and (symbolp (cdr s)) (commandp (cdr s)))))
+    (let ((keys (mapcar #'car suffixes)))
+      (should (= (length keys) (length (delete-dups (copy-sequence keys))))))
+    (with-temp-buffer
+      (should (stringp (efrit-agent-menu--heading)))
+      (should (string-match-p "cancel" (efrit-agent-menu--desc "cancel" 'efrit-agent-cancel))))))
 
 (ert-deftest test-menu-keys-are-unique ()
   (let ((keys (mapcar #'car (test-menu--suffixes efrit-menu--definition))))

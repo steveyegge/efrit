@@ -118,6 +118,8 @@ Returns a string (possibly empty) ready to splice into the prompt."
    "- BATCH MULTIPLE TOOL CALLS when they are independent (e.g., reading several files)\n"
    "- Use eval_sexp for Emacs operations; shell_exec only when the user asked for the shell\n"
    "  or no Emacs facility exists (check with emacs_apropos first)\n"
+   "- eval_sexp evaluates INSIDE the running Emacs you are working in. Never start another\n"
+   "  Emacs (no `emacs --batch`, no call-process/shell-command to emacs): evaluate directly\n"
    "- Keep responses minimal - focus on execution\n"
    "- Each API continuation has a cost - be efficient by combining independent operations\n\n"
 

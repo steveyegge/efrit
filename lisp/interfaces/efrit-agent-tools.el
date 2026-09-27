@@ -250,6 +250,22 @@ marking the end of the turn."
         (point))
     (efrit-agent--render-tool-call-1 tv)))
 
+(defvar efrit-agent-fold-glyph-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'efrit-agent-toggle-expand-at-mouse)
+    (define-key map [mouse-2] #'efrit-agent-toggle-expand-at-mouse)
+    map)
+  "Keys on the ▶/▼ glyph of a tool row.")
+
+(defun efrit-agent-toggle-expand-at-mouse (event)
+  "Fold or unfold the tool row under the mouse EVENT."
+  (interactive "e")
+  (let ((pos (posn-point (event-end event))))
+    (when pos
+      (save-excursion
+        (goto-char pos)
+        (efrit-agent--toggle-tool-expansion)))))
+
 (defun efrit-agent--render-tool-call-1 (tv)
   "Render a regular tool call TV at point (see `efrit-agent--render-tool-call')."
   (let* ((id (efrit-agent-tool-view-id tv))
@@ -288,7 +304,10 @@ marking the end of the turn."
          (start (point)))
     ;; Insert header line
     (insert "  ")
-    (insert (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp))
+    (insert (propertize (format "%s " expand-char) 'face 'efrit-agent-timestamp
+                        'keymap efrit-agent-fold-glyph-map
+                        'mouse-face 'highlight
+                        'help-echo "mouse-1, RET: fold / unfold"))
     (insert (propertize (format "%s " status-char)
                         'face (or status-face
                                   (if running 'efrit-agent-status-working 'efrit-agent-timestamp))))
@@ -318,9 +337,15 @@ marking the end of the turn."
                          (denied 'efrit-agent-timestamp)
                          (t 'efrit-agent-error))))))))
     (insert "\n")
-    ;; Insert expanded body if expanded
-    (when (and expanded-p (or input result))
-      (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations name)))
+    ;; The body is always in the buffer; collapsed means invisible.
+    ;; Folding by deleting and re-rendering meant isearch could not
+    ;; find collapsed output and every toggle rewrote the row.
+    (when (or input result)
+      (let ((body-start (point)))
+        (insert (efrit-agent--format-tool-expansion input result success-p id render-type annotations name))
+        (add-text-properties body-start (point) '(efrit-tool-body t))
+        (unless expanded-p
+          (put-text-property body-start (point) 'invisible 'efrit-tool-body))))
     ;; Apply text properties to the entire region
     (add-text-properties start (point)
                          (list 'efrit-type 'tool-call
@@ -495,7 +520,7 @@ SUCCESS-P indicates if the call succeeded. ELAPSED is optional time.
 Uses the centralized tool-view renderer for consistent display."
   (let ((region (efrit-agent--find-tool-region tool-id)))
     (when region
-      (let* ((inhibit-read-only t)
+      (let* ((inhibit-read-only t) (buffer-undo-list t)
              (start (car region))
              (end (cdr region))
              ;; Get stored properties from the tool call
@@ -920,33 +945,93 @@ Returns formatted string with appropriate faces."
 
 ;;; Tool Expansion Toggle
 
+(defun efrit-agent--tool-body-bounds (start end)
+  "The body of the tool row START..END as (BEGIN . END), or nil when it has none."
+  (when-let* ((b (text-property-any start end 'efrit-tool-body t)))
+    (cons b (or (text-property-not-all b end 'efrit-tool-body t) end))))
+
+(defun efrit-agent--set-tool-expanded (tool-id expanded)
+  "Show or hide the body of the tool row TOOL-ID in place.
+Flips the fold glyph and the `invisible' property; nothing is
+re-rendered.  Returns non-nil when the row exists."
+  (when-let* ((region (efrit-agent--find-tool-region tool-id)))
+    (let* ((start (car region)) (end (cdr region))
+           (body (efrit-agent--tool-body-bounds start end)))
+      (efrit-agent--with-render
+        (put-text-property start end 'efrit-tool-expanded expanded)
+        (when body
+          (if expanded
+              (remove-list-of-text-properties (car body) (cdr body) '(invisible))
+            (put-text-property (car body) (cdr body) 'invisible 'efrit-tool-body)))
+        ;; The glyph: first non-blank of the row
+        (goto-char start)
+        (skip-chars-forward " ")
+        (when (memq (char-after) (list (string-to-char (efrit-agent--char 'expand-collapsed))
+                                       (string-to-char (efrit-agent--char 'expand-expanded))))
+          (let ((props (text-properties-at (point))))
+            (delete-char 1)
+            (insert (apply #'propertize
+                           (efrit-agent--char (if expanded 'expand-expanded 'expand-collapsed))
+                           props)))))
+      t)))
+
 (defun efrit-agent--toggle-tool-expansion ()
   "Toggle expansion of the tool call at point.
 Records the user's preference to override display-mode and Claude's hints.
-Uses the centralized tool-view renderer for consistent display.
 Returns t if toggled, nil if no tool at point."
   (let* ((tool-id (get-text-property (point) 'efrit-id))
          (tool-type (get-text-property (point) 'efrit-type)))
     (when (and tool-id (eq tool-type 'tool-call))
-      (let* ((region (efrit-agent--find-tool-region tool-id))
-             (start (car region))
-             (end (cdr region))
-             (inhibit-read-only t)
-             ;; Build tool-view from existing properties
-             (tv (efrit-agent--tool-view-from-properties start))
-             ;; Toggle expansion state
-             (new-state (not (efrit-agent-tool-view-expanded-p tv))))
-        ;; Record user's explicit preference (overrides display-mode and hints)
+      (let ((new-state (not (get-text-property (point) 'efrit-tool-expanded))))
         (when efrit-agent--expansion-state
           (puthash tool-id new-state efrit-agent--expansion-state))
-        ;; Update the tool-view with new expansion state
-        (setf (efrit-agent-tool-view-expanded-p tv) new-state)
-        ;; Re-render using centralized renderer
-        (save-excursion
-          (goto-char start)
-          (delete-region start end)
-          (efrit-agent--render-tool-call tv))
-        t))))
+        (efrit-agent--set-tool-expanded tool-id new-state)))))
+
+;;; isearch into folded bodies
+;;
+;; Folded text is an `invisible' property, which isearch cannot open
+;; by itself (it only opens overlays).  The filter predicate applies
+;; `search-invisible': nil skips hidden matches, `open' unfolds the row
+;; for the match and remembers it, t accepts without unfolding (lazy
+;; highlight and match counting bind it so, and must not unfold).
+;; When the search ends, the rows it opened fold back, except the one
+;; point ended in.
+
+(defvar-local efrit-agent--isearch-opened nil
+  "Tool ids the current isearch unfolded, most recent first.")
+
+(defun efrit-agent--isearch-filter (beg end)
+  "`isearch-filter-predicate' for the agent buffer."
+  (save-match-data
+    (let ((hidden (or (get-text-property beg 'invisible)
+                      (and (> end beg) (get-text-property (1- end) 'invisible)))))
+      (cond
+       ((not hidden) (isearch-filter-visible beg end))
+       ((null search-invisible) nil)
+       ((eq search-invisible 'open)
+        (let ((id (get-text-property beg 'efrit-id)))
+          (when (and id (efrit-agent--set-tool-expanded id t))
+            (push id efrit-agent--isearch-opened))
+          t))
+       (t t)))))
+
+(defun efrit-agent--isearch-cleanup ()
+  "Fold back the rows isearch opened, except the one point is in."
+  (let ((here (get-text-property (point) 'efrit-id))
+        (before (and (> (point) (point-min)) (get-text-property (1- (point)) 'efrit-id))))
+    (dolist (id efrit-agent--isearch-opened)
+      (unless (or (equal id here) (equal id before))
+        ;; The user may have expanded it by hand meanwhile; only fold
+        ;; what is still marked as opened by us and not preferred open
+        (unless (and efrit-agent--expansion-state
+                     (eq t (gethash id efrit-agent--expansion-state 'not-found)))
+          (efrit-agent--set-tool-expanded id nil))))
+    (setq efrit-agent--isearch-opened nil)))
+
+(defun efrit-agent--setup-isearch ()
+  "Make isearch respect `search-invisible' for folded tool bodies."
+  (setq-local isearch-filter-predicate #'efrit-agent--isearch-filter)
+  (add-hook 'isearch-mode-end-hook #'efrit-agent--isearch-cleanup nil t))
 
 ;;; Display Hints for Tool Results
 ;;
@@ -971,7 +1056,7 @@ Uses the centralized tool-view renderer for consistent display."
     
     (let* ((start (car region))
            (end (cdr region))
-           (inhibit-read-only t)
+           (inhibit-read-only t) (buffer-undo-list t)
            ;; Build tool-view from existing properties
            (tv (efrit-agent--tool-view-from-properties start))
            ;; Check for user override first

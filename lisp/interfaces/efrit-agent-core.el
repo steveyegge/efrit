@@ -342,22 +342,84 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
     (add-text-properties (point-min) efrit-agent--conversation-end
                          '(read-only t field output front-sticky (read-only field)))))
 
+;;; Rendering discipline
+;;
+;; Every programmatic edit of the conversation goes through
+;; `efrit-agent--with-render'.  It binds `buffer-undo-list' to t, so
+;; streamed chunks, spinner ticks and tool re-renders never enter the
+;; undo list (they used to: C-/ in the input walked back through the
+;; model's output), and afterwards resets the list to one entry that
+;; re-records the input as a single insertion -- undo entries are
+;; absolute positions, and the render moved the input.  It also mirrors
+;; `face' to `font-lock-face' and marks the range `fontified', so a
+;; font-lock pass over the buffer neither wipes nor recomputes it.
+
+(defmacro efrit-agent--with-render (&rest body)
+  "Run BODY as a render of the conversation: no undo, read-only lifted.
+Point is preserved.  After BODY the undo list is reset to record the
+input region as one insertion (see the commentary above)."
+  (declare (indent 0) (debug t))
+  `(prog1
+       (let ((inhibit-read-only t)
+             (buffer-undo-list t)
+             (inhibit-modification-hooks nil))
+         (save-excursion ,@body))
+     (efrit-agent--reset-undo-history)))
+
+(defun efrit-agent--reset-undo-history ()
+  "Make the undo list hold only the input region, as one insertion.
+A no-op when undo is disabled in the buffer."
+  (unless (eq buffer-undo-list t)
+    (setq buffer-undo-list
+          (if (and efrit-agent--input-start
+                   (marker-position efrit-agent--input-start)
+                   (< efrit-agent--input-start (point-max)))
+              (list (cons (marker-position efrit-agent--input-start) (point-max)))
+            nil))))
+
+(defun efrit-agent--seal-rendered (start end)
+  "Mark START..END as rendered output: read-only, in the output field,
+faces mirrored to `font-lock-face', and `fontified' so font-lock leaves it."
+  (add-text-properties start end '(read-only t field output fontified t))
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (or (next-single-property-change pos 'face nil end) end))
+            (face (get-text-property pos 'face)))
+        (when face (put-text-property pos next 'font-lock-face face))
+        (setq pos next)))))
+
 (defun efrit-agent--append-to-conversation (text &optional properties)
   "Append TEXT with optional PROPERTIES to the conversation region.
 Inserts just before the conversation-end marker, preserving read-only.
 Does nothing if the conversation-end marker is not initialized."
   (when (and efrit-agent--conversation-end
              (marker-position efrit-agent--conversation-end))
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char efrit-agent--conversation-end)
-        (let ((start (point)))
-          (insert text)
-          ;; Apply any additional properties
-          (when properties
-            (add-text-properties start (point) properties))
-          ;; Make the new text read-only and part of the output field
-          (add-text-properties start (point) '(read-only t field output)))))))
+    (efrit-agent--with-render
+      ;; Insert BEFORE the thinking indicator when it is showing.  The
+      ;; indicator is the last thing in the conversation, its end
+      ;; marker advances on insertion, so text put at conversation-end
+      ;; landed inside it and vanished with it on the next hide: every
+      ;; queued or steer line drawn while the model worked was erased
+      ;; (2026-09-25).
+      (goto-char (efrit-agent--insertion-point))
+      (let ((start (point)))
+        (insert text)
+        (when properties
+          (add-text-properties start (point) properties))
+        (efrit-agent--seal-rendered start (point))
+        ;; The indicator's start marker does not advance; when we
+        ;; inserted at it, move it past the new text
+        (when-let* ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+          (when (and (marker-position (car ind)) (= (marker-position (car ind)) start))
+            (set-marker (car ind) (point))))))))
+
+(defun efrit-agent--insertion-point ()
+  "Where new conversation content goes: the end, or before the thinking line."
+  (let ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+    (if (and ind (marker-position (car ind))
+             (<= (marker-position (car ind)) (marker-position efrit-agent--conversation-end)))
+        (marker-position (car ind))
+      (marker-position efrit-agent--conversation-end))))
 
 (defun efrit-agent--get-input ()
   "Get the current user input from the input region.

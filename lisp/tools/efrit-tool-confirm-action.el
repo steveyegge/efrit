@@ -28,12 +28,17 @@
 (require 'efrit-tool-utils)
 (require 'cl-lib)
 (require 'json)
+(require 'efrit-events)
 
 ;;; Customization
 
-(defcustom efrit-confirm-default-timeout 300
-  "Default timeout in seconds for confirmation prompts (5 minutes)."
-  :type 'integer
+(defcustom efrit-confirm-default-timeout nil
+  "Seconds a confirmation prompt waits before it counts as rejected.
+nil (the default) waits as long as the user takes: a prompt is not a
+hung request, and answering after five minutes must not be a
+rejection (2026-09-27).  The model can still pass timeout_seconds for
+a specific prompt."
+  :type '(choice (const :tag "Wait for the user" nil) integer)
   :group 'efrit-tool-utils)
 
 (defcustom efrit-confirm-log-file
@@ -172,17 +177,22 @@ Requires typing 'yes' explicitly."
 (defun efrit-confirm--prompt-user (action details severity options timeout)
   "Prompt user for confirmation with timeout handling.
 Returns response plist with :confirmed, :choice, :response_time_seconds, :reason."
-  (let ((timeout-seconds (or timeout efrit-confirm-default-timeout)))
+  (let ((timeout-seconds (or timeout efrit-confirm-default-timeout))
+        (ask (lambda ()
+               (efrit-with-user-waiting
+                 (pcase severity
+                   ('danger (efrit-confirm--get-response-danger action details))
+                   ('warning (efrit-confirm--get-response-warning action details options))
+                   (_ (efrit-confirm--get-response-info action severity)))))))
     (condition-case nil
-        (with-timeout (timeout-seconds
-                       (list :confirmed nil
-                             :choice nil
-                             :reason "timeout"
-                             :response_time_seconds timeout-seconds))
-          (pcase severity
-            ('danger (efrit-confirm--get-response-danger action details))
-            ('warning (efrit-confirm--get-response-warning action details options))
-            (_ (efrit-confirm--get-response-info action severity))))
+        (if (and timeout-seconds (> timeout-seconds 0))
+            (with-timeout (timeout-seconds
+                           (list :confirmed nil
+                                 :choice nil
+                                 :reason "timeout"
+                                 :response_time_seconds timeout-seconds))
+              (funcall ask))
+          (funcall ask))
       (quit
        ;; User pressed C-g
        (list :confirmed nil

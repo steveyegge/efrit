@@ -30,9 +30,29 @@
   :prefix "efrit-usage-")
 
 (defcustom efrit-usage-context-window 200000
-  "Context window size assumed for the fill indicator."
+  "Context window size assumed when `efrit-usage-context-windows' has no entry.
+Used by the fill indicator and by the REPL's context guard
+\(`efrit-repl-session-fit-context')."
   :type 'integer
   :group 'efrit-usage)
+
+(defcustom efrit-usage-context-windows
+  '(("fable" . 1000000))
+  "Context window per model: (REGEXP . TOKENS), matched against the model name.
+The first match wins; no match means `efrit-usage-context-window'.
+Models that serve a larger window only behind a beta header are not
+listed; add them here when the endpoint has that enabled."
+  :type '(alist :key-type regexp :value-type integer)
+  :group 'efrit-usage)
+
+(defvar efrit-default-model)
+
+(defun efrit-usage-window (&optional model)
+  "The context window of MODEL (default `efrit-default-model'), in tokens."
+  (let ((model (or model (bound-and-true-p efrit-default-model) "")))
+    (or (cdr (seq-find (lambda (cell) (string-match-p (car cell) model))
+                       efrit-usage-context-windows))
+        efrit-usage-context-window)))
 
 (defcustom efrit-usage-warn-fraction 0.6
   "Fill fraction at which the indicator turns to the warning face."
@@ -106,20 +126,21 @@
   "Return a propertized header-line segment for SESSION-ID, or nil."
   (when-let* ((u (efrit-usage-for session-id)))
     (let* ((ctx (efrit-usage-context u))
-           (frac (min 1.0 (/ ctx (float efrit-usage-context-window))))
+           (window (efrit-usage-window))
+           (frac (min 1.0 (/ ctx (float window))))
            (bar (aref efrit-usage--bars
                       (min 7 (floor (* frac 8)))))
            (face (cond ((>= frac efrit-usage-danger-fraction) 'error)
                        ((>= frac efrit-usage-warn-fraction) 'warning)
                        (t 'success)))
            (help (format "Context: %d of %d tokens (%.0f%%)\nRequests: %d\nInput: %d  Output: %d\nCache read: %d  Cache write: %d"
-                         ctx efrit-usage-context-window (* 100 frac)
+                         ctx window (* 100 frac)
                          (efrit-usage-requests u)
                          (efrit-usage-input u) (efrit-usage-output u)
                          (efrit-usage-cache-read u) (efrit-usage-cache-write u))))
       (propertize (format "%s/%s %s"
                           (efrit-usage-compact-number ctx)
-                          (efrit-usage-compact-number efrit-usage-context-window)
+                          (efrit-usage-compact-number window)
                           bar)
                   'face face 'help-echo help))))
 

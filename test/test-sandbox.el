@@ -69,6 +69,37 @@
       (setq test-sb--answers '(nil))
       (should-error (efrit-sandbox-check 'shell t) :type 'efrit-sandbox-denied))))
 
+(ert-deftest test-sb-net-host-grants ()
+  "A net request for a host is granted per host: the grant covers that
+host and its subdomains, not other sites; a project grant round-trips
+through the store; a blanket t grant covers every host."
+  (test-sb--in-project
+    (let ((asked nil)
+          (answer 'session))
+      (let ((efrit-sandbox-request-function
+             (lambda (req) (push (efrit-sandbox-request-target req) asked) answer)))
+        (should (efrit-sandbox-check 'net '(host . "emacsredux.com") "fetch_url"))
+        (should (equal '((host . "emacsredux.com")) asked))
+        (should (efrit-sandbox-allowed-p 'net '(host . "emacsredux.com")))
+        (should (efrit-sandbox-allowed-p 'net '(host . "www.emacsredux.com")))
+        (should-not (efrit-sandbox-allowed-p 'net '(host . "notemacsredux.com")))
+        (should-not (efrit-sandbox-allowed-p 'net '(host . "example.org")))
+        (should-not (efrit-sandbox-allowed-p 'net t))
+        ;; the prompt text names the site
+        (should (string-match-p "emacsredux.com"
+                                (efrit-sandbox-ui--scope-word
+                                 (efrit-sandbox-request-create :cap 'net :target '(host . "emacsredux.com")))))
+        ;; project scope persists and reloads as a host target
+        (setq answer 'project)
+        (should (efrit-sandbox-check 'net '(host . "example.org")))
+        (clrhash efrit-sandbox--project-grants)
+        (clrhash efrit-sandbox-store--loaded)
+        (efrit-sandbox-store-ensure-loaded root)
+        (should (efrit-sandbox-allowed-p 'net '(host . "docs.example.org")))
+        ;; a blanket grant covers any host
+        (efrit-sandbox-grant 'net t 'session root)
+        (should (efrit-sandbox-allowed-p 'net '(host . "anything.net")))))))
+
 (ert-deftest test-sb-prompt-N-denies-rest-of-turn-and-q-aborts ()
   "N: this and every further request this turn is denied without a prompt.
 q: the tool is interrupted (quit), which the loop turns into an ended turn.

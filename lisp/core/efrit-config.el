@@ -179,9 +179,11 @@ Set to 0 to disable this specific limit."
 ;; Backwards compatibility alias - declare it before the variable
 (defvaralias 'efrit-max-tokens 'efrit-default-max-tokens)
 
-(defcustom efrit-default-max-tokens 8192
-  "Default maximum tokens for responses.
-Claude 3.5 Sonnet supports up to 8192 tokens with beta headers."
+(defcustom efrit-default-max-tokens 32768
+  "Most output tokens the model may produce in one response.
+Every request efrit sends uses this.  A long briefing over a hundred
+articles ran past 8192 and was cut; current Claude models allow far
+more.  Lower it if your endpoint or model rejects the value."
   :type 'integer
   :group 'efrit)
 

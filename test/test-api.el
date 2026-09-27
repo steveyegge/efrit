@@ -137,5 +137,55 @@ be checked against the same bytes."
               (should (equal (buffer-string) efrit-api--last-body)))))
       (delete-directory root t))))
 
+(ert-deftest test-api-async-request-times-out-and-reports ()
+  "A stalled async request is abandoned after `efrit-api-async-timeout':
+the transfer is deleted, the error callback gets a timeout message, and a
+late response is ignored."
+  (let ((efrit-api-async-timeout 1) (got nil) (deleted nil) (late-callback nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _)
+                 (setq late-callback callback)
+                 (let ((buf (generate-new-buffer " *stalled*")))
+                   (start-process "stall" buf "sleep" "30")
+                   buf)))
+              ((symbol-function 'delete-process)
+               (lambda (p) (setq deleted t) (set-process-query-on-exit-flag p nil)
+                 (ignore-errors (kill-process p))))
+              ((symbol-function 'efrit-common-get-api-key) (lambda () "sk-ant-test-key-0123456789"))
+              ((symbol-function 'efrit-common-get-api-url) (lambda () "https://x/v1/messages")))
+      (efrit-api--request-async-1 '(("model" . "m") ("messages" . []))
+                                  (lambda (_r) (setq got 'response))
+                                  (lambda (msg) (setq got msg)))
+      (should-not got)
+      (with-timeout (5 (ert-fail "watchdog did not fire"))
+        (while (not got) (sleep-for 0.1)))
+      (should (stringp got))
+      (should (string-match-p "No response within 1s" got))
+      (should deleted)
+      ;; the connection answering afterwards changes nothing
+      (with-temp-buffer
+        (insert "HTTP/1.1 200 OK\n\n{\"content\":[]}")
+        (funcall late-callback nil))
+      (should (stringp got))))
+  ;; a normal answer cancels the watchdog: no late timeout message
+  (let ((efrit-api-async-timeout 1) (got nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _)
+                 (let ((buf (generate-new-buffer " *quick*")))
+                   (run-at-time 0.05 nil (lambda ()
+                                          (with-current-buffer buf
+                                            (insert "HTTP/1.1 200 OK\n\n{\"content\":[],\"stop_reason\":\"end_turn\"}")
+                                            (funcall callback nil))))
+                   buf)))
+              ((symbol-function 'efrit-common-get-api-key) (lambda () "sk-ant-test-key-0123456789"))
+              ((symbol-function 'efrit-common-get-api-url) (lambda () "https://x/v1/messages")))
+      (efrit-api--request-async-1 '(("model" . "m") ("messages" . []))
+                                  (lambda (_r) (push 'response got))
+                                  (lambda (msg) (push msg got)))
+      (with-timeout (5 (ert-fail "no response"))
+        (while (not got) (sleep-for 0.05)))
+      (sleep-for 1.3)
+      (should (equal got '(response))))))
+
 (provide 'test-api)
 ;;; test-api.el ends here

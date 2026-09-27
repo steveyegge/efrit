@@ -286,8 +286,59 @@ Executes all ERT tests and displays results in a buffer."
 (autoload 'efrit-list-registered-tools "efrit-tool-registry"
   "Show the tools other packages have registered with efrit." t)
 ;;;###autoload
+(autoload 'efrit-documents-ensure-tools "efrit-documents"
+  "Register the document tools (doc_fetch, doc_search, doc_sources) with efrit." t)
+;;;###autoload
+(autoload 'efrit-documents-list-sources "efrit-documents"
+  "Say which document sources are registered and whether they work." t)
+;;;###autoload
+(autoload 'efrit-documents-gdrive-check "efrit-documents-gdrive"
+  "Check that Google Drive is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-documents-gcalendar-check "efrit-documents-gcalendar"
+  "Check that Google Calendar is reachable as a related-documents provider." t)
+;;;###autoload
+(autoload 'efrit-documents-jira-check "efrit-documents-jira"
+  "Check that Jira is reachable as a document source (through jira.el)." t)
+;;;###autoload
+(autoload 'efrit-documents-confluence-check "efrit-documents-confluence"
+  "Check that each configured Confluence site is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-auth-reauthorize "efrit-auth"
+  "Run the OAuth2 consent flow again for an auth-source host." t)
+;;;###autoload
+(autoload 'efrit-auth-check "efrit-auth"
+  "Describe the credentials auth-source holds for a host." t)
+;;;###autoload
+(autoload 'efrit-prompts-manage "efrit-prompts"
+  "List and edit efrit's two-part prompts for analyses over many items." t)
+;;;###autoload
+(autoload 'efrit-prompts-edit "efrit-prompts"
+  "Edit one of efrit's two-part prompts, or write a new one." t)
+;;;###autoload
+(autoload 'efrit-prompts-read "efrit-prompts"
+  "Ask the user for a two-part prompt; returns (ITEM . SUMMARY).")
+;;;###autoload
+(autoload 'efrit-gnus-analyze "efrit-gnus"
+  "Ask efrit about the selected articles in a Gnus summary." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-unread "efrit-gnus"
+  "Ask efrit about every unread article of a Gnus group." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-search "efrit-gnus"
+  "Ask efrit about the results of a Gnus search." t)
+;;;###autoload
+(autoload 'efrit-gnus-ensure-tools "efrit-gnus"
+  "Register the Gnus tools (gnus_groups, gnus_search, gnus_articles) with efrit." t)
+;;;###autoload
 (autoload 'efrit-submit "efrit-agent-input"
   "Start a REPL turn from Lisp with a prepared prompt.")
+(autoload 'efrit-testdrive-tour "efrit-testdrive"
+  "Walk through what only eyes can check in the agent buffer." t)
+(autoload 'efrit-agent-menu "efrit-agent-menu"
+  "The agent buffer's command menu." t)
+(autoload 'efrit-agent-repl-session "efrit-agent-input"
+  "The agent buffer's REPL session, created if needed.")
 ;;;###autoload
 (autoload 'efrit-reload "efrit-reload"
   "Reload every loaded efrit library from source, dependencies first." t)

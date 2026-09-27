@@ -525,7 +525,7 @@ Claude remembers previous tool calls and their results."
                (api-messages (efrit-session-get-api-messages-for-continuation session))
                (request-data
                 `(("model" . ,efrit-default-model)
-                  ("max_tokens" . 8192)
+                  ("max_tokens" . ,efrit-default-max-tokens)
                   ("messages" . ,(efrit-api-cacheable-messages api-messages))
                   ("system" . ,(efrit-api-cacheable-system system-prompt))
                   ("tools" . ,(efrit-api-cacheable-tools
@@ -645,7 +645,7 @@ Returns the final result string."
                    efrit-executor-session-timeout))
       (let* ((request-data
               `(("model" . ,efrit-default-model)
-                ("max_tokens" . 8192)
+                ("max_tokens" . ,efrit-default-max-tokens)
                 ("messages" . ,(efrit-api-cacheable-messages messages))
                 ("system" . ,(efrit-api-cacheable-system system-prompt))
                 ("tools" . ,(efrit-api-cacheable-tools
@@ -766,7 +766,7 @@ Calls optional CALLBACK with the result when complete."
            (system-prompt (efrit-executor--build-system-prompt session-id "[]"))
            (request-data
             `(("model" . ,efrit-default-model)
-              ("max_tokens" . 8192)
+              ("max_tokens" . ,efrit-default-max-tokens)
               ("messages" . ,(efrit-api-cacheable-messages
                               (vector `(("role" . "user")
                                         ("content" . ,command)))))
@@ -859,7 +859,7 @@ Continues the API call chain with the user's response in context."
                              base-system-prompt))
              (request-data
               `(("model" . ,efrit-default-model)
-                ("max_tokens" . 8192)
+                ("max_tokens" . ,efrit-default-max-tokens)
                 ("messages" . ,(efrit-api-cacheable-messages messages))
                 ("system" . ,(efrit-api-cacheable-system system-prompt))
                 ("tools" . ,(efrit-api-cacheable-tools

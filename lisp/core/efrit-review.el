@@ -298,7 +298,7 @@ Reject a batch when any call:
 - touches secrets, credentials, or another project.
 Approve otherwise. Ordinary imperfection is not a reason to reject; the user reviews results.
 
-Answer with one JSON object and nothing else:
+Answer with one JSON object and nothing else -- no prose before it, no code fence:
 {\"verdict\": \"approve\"} or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
   "System prompt for the reviewer.")
 
@@ -312,7 +312,7 @@ Answer with one JSON object and nothing else:
 (defun efrit-review--request-data (intent proposer-text batch)
   "The API request for one review.  No tools: the reviewer only answers."
   `(("model" . ,(or efrit-review-model efrit-default-model))
-    ("max_tokens" . 400)
+    ("max_tokens" . 1024)
     ("system" . ,(efrit-api-cacheable-system efrit-review--system-prompt))
     ("messages" . [(("role" . "user")
                     ("content" . ,(efrit-review--user-message intent proposer-text batch)))])))
@@ -321,15 +321,35 @@ Answer with one JSON object and nothing else:
   "Parse the reviewer's TEXT into (VERDICT . REASON), or nil if malformed.
 VERDICT is a symbol from `efrit-review-verdicts'.  Tolerates prose
 around the object by taking the first {...} span."
-  (when (and (stringp text) (string-match "{\\(?:.\\|\n\\)*}" text))
-    (condition-case nil
-        (let* ((obj (json-parse-string (match-string 0 text) :object-type 'alist))
-               (verdict (alist-get 'verdict obj))
-               (reason (alist-get 'reason obj))
-               (sym (and (stringp verdict) (intern (downcase verdict)))))
-          (when (memq sym efrit-review-verdicts)
-            (cons sym (and (stringp reason) reason))))
-      (error nil))))
+  (when (stringp text)
+    ;; The first balanced {...}: the greedy span to the LAST brace broke
+    ;; when the reviewer added a second object or an example after its
+    ;; verdict, and every review then failed as malformed (2026-09-25).
+    (let ((start (string-search "{" text)) (obj nil))
+      (while (and start (not obj))
+        (let ((depth 0) (i start) (end nil) (in-string nil) (escaped nil))
+          (while (and (< i (length text)) (not end))
+            (let ((c (aref text i)))
+              (cond
+               (escaped (setq escaped nil))
+               ((and in-string (eq c ?\\)) (setq escaped t))
+               ((eq c ?\") (setq in-string (not in-string)))
+               ((and (not in-string) (eq c ?{)) (cl-incf depth))
+               ((and (not in-string) (eq c ?}))
+                (cl-decf depth)
+                (when (zerop depth) (setq end (1+ i))))))
+            (cl-incf i))
+          (when end
+            (condition-case nil
+                (let* ((parsed (json-parse-string (substring text start end) :object-type 'alist))
+                       (verdict (alist-get 'verdict parsed))
+                       (reason (alist-get 'reason parsed))
+                       (sym (and (stringp verdict) (intern (downcase verdict)))))
+                  (when (memq sym efrit-review-verdicts)
+                    (setq obj (cons sym (and (stringp reason) reason)))))
+              (error nil)))
+          (setq start (and (not obj) (string-search "{" text (1+ start))))))
+      obj)))
 
 (defun efrit-review--response-text (response)
   "The concatenated text of RESPONSE's content blocks."
@@ -398,6 +418,14 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                      ((efrit-response-error response)
                       (efrit-review--failure-verdict
                        (efrit-error-message (efrit-response-error response)) classes))
+                     ;; The endpoint refused the review request itself
+                     ;; (stop_reason refusal, no text).  That is an
+                     ;; outage of the reviewer, not a judgement of the
+                     ;; calls; say so, and keep the request for a probe.
+                     ((efrit-api--refused-p response)
+                      (setq efrit-review--last-refused-request request)
+                      (efrit-log 'warn "review %s: the endpoint refused the review request; M-x efrit-review-probe-refusal bisects it" session-id)
+                      (efrit-review--failure-verdict "the endpoint refused the review request" classes))
                      (t (let ((text (efrit-review--response-text response)))
                           (efrit-log 'debug "review %s: reviewer said: %s" session-id
                                      (truncate-string-to-width text 400 nil nil "…"))
@@ -410,6 +438,60 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
            (funcall finish (efrit-review--failure-verdict error-msg classes)))))
       (error
        (funcall finish (efrit-review--failure-verdict (error-message-string err) classes))))))
+
+;;; Refusal probe
+;;
+;; A route that pre-filters requests can refuse the review call while
+;; the proposer's own calls go through.  On 2026-09-20 the trigger was
+;; a line of comma-separated char codes; on 2026-09-25 every review of
+;; an `eval_sexp' batch was refused.  Guessing at the cause was wrong
+;; every time; bisecting the message is not.
+
+(defvar efrit-review--last-refused-request nil
+  "The last review request the endpoint refused, for `efrit-review-probe-refusal'.")
+
+(defun efrit-review--probe-send (message)
+  "Send MESSAGE as the reviewer's user message; return `refused', `ok' or an error string."
+  (condition-case err
+      (let* ((req `(("model" . ,(or efrit-review-model efrit-default-model))
+                    ("max_tokens" . 16)
+                    ("messages" . [(("role" . "user") ("content" . ,message))])))
+             (efrit-api-request-purpose "review refusal probe")
+             (r (efrit-api-request-sync req 60)))
+        (if (efrit-api--refused-p r) 'refused 'ok))
+    (error (error-message-string err))))
+
+(defun efrit-review-probe-refusal ()
+  "Bisect the last refused review request down to the lines that trigger it.
+Sends the reviewer's user message without a system prompt, then
+halves, until one line (or an inseparable pair) remains.  Costs a few
+tiny requests.  Shows the result in a popup."
+  (interactive)
+  (unless efrit-review--last-refused-request
+    (user-error "No refused review request recorded yet"))
+  (require 'efrit-ui-helpers)
+  (let* ((msg (alist-get "content" (aref (alist-get "messages" efrit-review--last-refused-request nil nil #'equal) 0)
+                         nil nil #'equal))
+         (lines (split-string msg "\n"))
+         (log nil)
+         (note (lambda (fmt &rest args) (push (apply #'format fmt args) log))))
+    (funcall note "whole message (%d lines): %s" (length lines) (efrit-review--probe-send msg))
+    (funcall note "system prompt alone: %s" (efrit-review--probe-send efrit-review--system-prompt))
+    (when (eq 'refused (efrit-review--probe-send msg))
+      (let ((suspect lines))
+        (while (> (length suspect) 1)
+          (let* ((half (/ (length suspect) 2))
+                 (a (seq-take suspect half)) (b (seq-drop suspect half))
+                 (ra (efrit-review--probe-send (string-join a "\n")))
+                 (rb (efrit-review--probe-send (string-join b "\n"))))
+            (funcall note "%d lines: first half %s, second half %s" (length suspect) ra rb)
+            (setq suspect (cond ((eq ra 'refused) a)
+                                ((eq rb 'refused) b)
+                                (t (funcall note "neither half alone is refused: the trigger needs both") nil)))))
+        (when suspect
+          (funcall note "TRIGGER: %S" (car suspect)))))
+    (efrit-show-popup "*efrit-review-probe*"
+                      (concat "Review refusal probe\n\n" (string-join (nreverse log) "\n") "\n\n--- message ---\n" msg))))
 
 ;;; Consecutive rejections
 

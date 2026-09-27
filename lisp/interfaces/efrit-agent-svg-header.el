@@ -177,8 +177,28 @@ The glyph is one token, then whitespace, in both display styles."
         (substring s (match-end 0))
       s)))
 
+(defcustom efrit-agent-header-elapsed-step 10
+  "Seconds between changes of the elapsed time in the graphical header
+while a turn runs.  The header is one raster image, re-drawn whenever
+anything in it changes; an elapsed counter ticking every second (and
+changing width) made the spinner's twelve frames never repeat, so the
+cache missed on nearly every tick.  Once the turn is over the exact
+time is shown."
+  :type 'integer)
+
+(defun efrit-agent-svg--elapsed ()
+  "The elapsed time for the header: coarse while running, exact after."
+  (when efrit-agent--start-time
+    (if (and efrit-agent--thinking-label (> efrit-agent-header-elapsed-step 1))
+        (let* ((secs (floor (float-time (time-subtract (current-time) efrit-agent--start-time))))
+               (secs (* efrit-agent-header-elapsed-step (/ secs efrit-agent-header-elapsed-step))))
+          (format "%d:%02d" (/ secs 60) (% secs 60)))
+      (efrit-agent--format-elapsed))))
+
 (defun efrit-agent-svg--model ()
-  "Collect everything the header shows into one alist (also the cache key)."
+  "Collect everything the header shows into one alist (also the cache key).
+Values that change often (the spinner frame, the elapsed time) are
+kept coarse so the cache repeats: see `efrit-agent-header-elapsed-step'."
   (let* ((tools (and (boundp 'efrit-agent--activities)
                      (cl-count-if (lambda (a) (eq (plist-get a :type) 'tool))
                                   efrit-agent--activities)))
@@ -206,7 +226,7 @@ The glyph is one token, then whitespace, in both display styles."
                               (mod efrit-agent--spinner-index efrit-agent-spinner-steps)))
       (:spinner-color . ,(and efrit-agent--thinking-label
                               (efrit-agent-spinner--hex 'efrit-agent-spinner)))
-      (:elapsed . ,(and efrit-agent--start-time (efrit-agent--format-elapsed)))
+      (:elapsed . ,(efrit-agent-svg--elapsed))
       (:tools . ,(and tools (> tools 0) (format "%d tools" tools)))
       (:mode . ,(and (boundp 'efrit-agent-display-mode)
                      (format "%s" efrit-agent-display-mode)))
@@ -392,7 +412,9 @@ and the plain text header is returned instead."
        (let ((model (efrit-agent-svg--model)))
          (unless efrit-agent-svg--cache
            (setq efrit-agent-svg--cache (make-hash-table :test #'equal)))
-         (when (> (hash-table-count efrit-agent-svg--cache) 64)
+         ;; A full spinner cycle at one elapsed step is 12 entries; a
+         ;; minute of running is 72.  Keep a few minutes.
+         (when (> (hash-table-count efrit-agent-svg--cache) 256)
            (clrhash efrit-agent-svg--cache))
          (or (gethash model efrit-agent-svg--cache)
              ;; A failed render is shown as the text header but NOT

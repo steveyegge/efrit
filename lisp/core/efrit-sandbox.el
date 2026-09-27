@@ -58,6 +58,7 @@
 (require 'efrit-log)
 (require 'efrit-tool-utils)   ; efrit-project-root, efrit-tool--get-project-root
 (require 'efrit-settings)
+(require 'efrit-events)
 
 (declare-function efrit-sandbox-store-save "efrit-sandbox-store")
 (declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
@@ -398,8 +399,21 @@ An always-ask LINE is covered only by an exact (command . LINE) grant."
            (or (eq gt t)
                ;; a fileless-buffer target: (buffer . NAME), matched exactly
                (and (consp target) (consp gt) (equal target gt))
+               ;; a network host: (host . NAME) covers NAME and its subdomains
+               (and (efrit-sandbox-host-target-p target) (efrit-sandbox-host-target-p gt)
+                    (efrit-sandbox-host-under-p (cdr target) (cdr gt)))
                (and (stringp target) (stringp gt)
                     (efrit-sandbox--under-p target gt)))))))
+
+(defun efrit-sandbox-host-target-p (target)
+  "Non-nil if TARGET is a network host grant target, (host . NAME)."
+  (and (consp target) (eq (car target) 'host) (stringp (cdr target))))
+
+(defun efrit-sandbox-host-under-p (host domain)
+  "Non-nil if HOST is DOMAIN or a subdomain of it."
+  (let ((host (downcase host)) (domain (downcase domain)))
+    (or (string= host domain)
+        (string-suffix-p (concat "." domain) host))))
 
 (defun efrit-sandbox--always-denied-p (target)
   (and (stringp target)
@@ -471,7 +485,10 @@ For a path outside the root, suggest its directory (so the next file
 alongside is covered) but never anything above the user's home for
 write."
   (cond
-   ((memq cap '(elisp net)) t)
+   ((eq cap 'elisp) t)
+   ;; net: the host asked for, so a grant covers that site and its
+   ;; subdomains, not the whole internet; t stays t
+   ((eq cap 'net) target)
    ;; shell: the commands on the line; an always-ask line is granted
    ;; exactly, once (see `efrit-sandbox-shell-always-ask')
    ((eq cap 'shell)
@@ -610,21 +627,18 @@ conversation stays and the next input continues it."
   (setq efrit-sandbox--turn-answer 'abort))
 
 (defun efrit-sandbox--ask-without-clock (req)
-  "Call `efrit-sandbox-request-function' on REQ with tool timeouts paused.
-The check runs inside the tool's `with-timeout'; the time the user
-spends reading the prompt must not count against the tool, or an
-out-of-project read that waits 30 s for an answer times out the
-moment it is granted.  `with-timeout-suspend' is what the debugger
-uses for the same reason.  Returns the chosen scope or nil."
-  (let ((suspended (with-timeout-suspend)))
-    (unwind-protect
-        (condition-case err
-            (funcall efrit-sandbox-request-function req)
-          (quit nil)
-          (error
-           (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
-           nil))
-      (with-timeout-unsuspend suspended))))
+  "Call `efrit-sandbox-request-function' on REQ with efrit's clocks paused.
+The check runs inside the tool's `with-timeout' and the turn's wall
+clock; the time the user spends reading the prompt must not count
+against either (`efrit-with-user-waiting').  Returns the chosen scope
+or nil."
+  (efrit-with-user-waiting
+    (condition-case err
+        (funcall efrit-sandbox-request-function req)
+      (quit nil)
+      (error
+       (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
+       nil))))
 
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.
@@ -704,6 +718,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
          (mapconcat #'identity (cdr target) ", "))
         ((and (consp target) (eq (car target) 'command))
          (format "exactly: %s" (cdr target)))
+        ((efrit-sandbox-host-target-p target) (cdr target))
         ((stringp target) (abbreviate-file-name target))
         ((eq target t) "any")
         (t (format "%s" target))))

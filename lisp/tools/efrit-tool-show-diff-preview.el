@@ -24,6 +24,7 @@
 (require 'efrit-tool-utils)
 (require 'diff-mode)
 (require 'cl-lib)
+(require 'efrit-events)
 
 ;;; Customization
 
@@ -32,9 +33,11 @@
   :type 'string
   :group 'efrit-tool-utils)
 
-(defcustom efrit-diff-preview-timeout-seconds 300
-  "Timeout for user response in seconds (default 5 minutes)."
-  :type 'integer
+(defcustom efrit-diff-preview-timeout-seconds nil
+  "Seconds the diff preview waits for a decision before it counts as rejected.
+nil (the default) waits as long as the user takes: reviewing a diff
+for ten minutes is not a rejection (2026-09-27)."
+  :type '(choice (const :tag "Wait for the user" nil) integer)
   :group 'efrit-tool-utils)
 
 ;;; Internal variables
@@ -135,8 +138,10 @@ Returns the diff as a string."
     (define-key map (kbd "n") #'efrit-diff-preview-reject)
     (define-key map (kbd "q") #'efrit-diff-preview-reject)
     (define-key map (kbd "SPC") #'efrit-diff-preview-toggle-change)
-    (define-key map (kbd "RET") #'efrit-diff-preview-toggle-change)
+    (define-key map (kbd "RET") #'efrit-diff-preview-toggle-or-open)
     (define-key map (kbd "s") #'efrit-diff-preview-apply-selected)
+    (define-key map (kbd "o") #'efrit-diff-preview-open-file)
+    (define-key map (kbd "C-c C-o") #'efrit-diff-preview-open-file)
     map)
   "Keymap for `efrit-diff-preview-mode'.")
 
@@ -156,9 +161,121 @@ Returns the diff as a string."
                               (length efrit-diff-preview--changes))
                     "ALL-OR-NOTHING")))
     (concat " Efrit Diff Preview | " mode-str
-            " | [a]pprove [r]eject"
+            " | [a]pprove [r]eject [o]pen file at change"
             (when (eq efrit-diff-preview--apply-mode 'selective)
               " [SPC]toggle [s]apply-selected"))))
+
+;;; Opening the file at the change
+;;
+;; The hunk's line numbers are relative to the old_content the model
+;; sent, which is often a fragment of the file, so they are not
+;; trusted.  The hunk's old-side text (context plus removed lines) is
+;; searched for in the file instead, then its new-side text in case
+;; the change was applied already.  Lifted from agent-shell's
+;; agent-shell-diff.el (xenodium), issue 347 there.
+
+(defun efrit-diff-preview--hunk-header-at-point ()
+  "Position of the `@@' header of the hunk point is in, or nil."
+  (save-excursion
+    (beginning-of-line)
+    (catch 'result
+      (while t
+        (cond ((looking-at "^@@") (throw 'result (point)))
+              ((memq (char-after) '(?\s ?- ?+ ?\\))
+               (unless (zerop (forward-line -1)) (throw 'result nil)))
+              (t (throw 'result nil)))))))
+
+(defun efrit-diff-preview--hunk-anchor (header-pos target-pos)
+  "The hunk at HEADER-POS as (OLD-BLOCK NEW-BLOCK OFFSET).
+OLD-BLOCK is the old-side text (context and removed lines), NEW-BLOCK
+the new-side text.  OFFSET is the old-side line to land on: the line
+at TARGET-POS when given, else the hunk's first change."
+  (save-excursion
+    (goto-char header-pos)
+    (forward-line 1)
+    (let ((old-lines nil) (new-lines nil) (seen 0) (offset nil) (first-change nil))
+      (while (and (not (eobp)) (memq (char-after) '(?\s ?- ?+ ?\\)))
+        (let ((char (char-after))
+              (text (buffer-substring-no-properties (1+ (line-beginning-position)) (line-end-position)))
+              (at-target (and target-pos (= (line-beginning-position) target-pos))))
+          (pcase char
+            (?\\ nil)
+            (?\s (when at-target (setq offset seen))
+                 (push text old-lines) (push text new-lines) (cl-incf seen))
+            (?- (when at-target (setq offset seen))
+                (unless first-change (setq first-change seen))
+                (push text old-lines) (cl-incf seen))
+            (?+ (when at-target (setq offset seen))
+                (unless first-change (setq first-change seen))
+                (push text new-lines))))
+        (forward-line 1))
+      (list (and old-lines (string-join (nreverse old-lines) "\n"))
+            (and new-lines (string-join (nreverse new-lines) "\n"))
+            (or offset first-change 0)))))
+
+(defun efrit-diff-preview--file-at-point ()
+  "The file of the change point is in, from its `=== Change N: FILE' line."
+  (save-excursion
+    (end-of-line)
+    (when (re-search-backward "^=+ Change [0-9]+: \\(.*?\\) (\\(?:NEW FILE\\|DELETED\\|MODIFIED\\)) " nil t)
+      (match-string-no-properties 1))))
+
+(defun efrit-diff-preview--target-at-point ()
+  "The file and anchors of the hunk at point, or the nearest one.
+A list (FILE OLD-BLOCK NEW-BLOCK OFFSET); FILE alone when point is not
+near a hunk."
+  (save-excursion
+    (let* ((header (efrit-diff-preview--hunk-header-at-point))
+           (on-body (and header (/= header (line-beginning-position))))
+           (near (or header
+                     (save-excursion (and (re-search-forward "^@@" nil t) (line-beginning-position)))
+                     (save-excursion (and (re-search-backward "^@@" nil t) (line-beginning-position))))))
+      (if near
+          (cons (save-excursion (goto-char near) (efrit-diff-preview--file-at-point))
+                (efrit-diff-preview--hunk-anchor near (and on-body (line-beginning-position))))
+        (list (efrit-diff-preview--file-at-point) nil nil 0)))))
+
+(defun efrit-diff-preview--search-block (block)
+  "Start of the first occurrence of BLOCK in the current buffer, or nil."
+  (when (and block (not (string-empty-p block)))
+    (save-excursion
+      (goto-char (point-min))
+      (and (search-forward block nil t) (match-beginning 0)))))
+
+(defvar efrit-diff-preview--root nil
+  "The directory relative file names in the preview resolve against.")
+
+(defun efrit-diff-preview--root ()
+  "Where relative file names in the preview resolve: the root the tool
+ran with, else `default-directory'."
+  (or efrit-diff-preview--root default-directory))
+
+(defun efrit-diff-preview-open-file ()
+  "Open the file of the change at point, at the changed lines.
+The old-side text of the hunk is searched for first (the change is
+usually not applied yet), then the new-side text.  A file that does
+not exist yet (NEW FILE) opens empty."
+  (interactive)
+  (pcase-let ((`(,file ,old-block ,new-block ,offset) (efrit-diff-preview--target-at-point)))
+    (unless file (user-error "No change at point"))
+    ;; The user opens the file, not the model: no sandbox check
+    (let ((path (expand-file-name file (efrit-diff-preview--root))))
+      (find-file-other-window path)
+      (if-let* ((pos (or (efrit-diff-preview--search-block old-block)
+                         (efrit-diff-preview--search-block new-block))))
+          (progn (goto-char pos) (forward-line offset))
+        (goto-char (point-min))
+        (when (or old-block new-block)
+          (message "Changed text not found in %s; at the top" (file-name-nondirectory path))))
+      (deactivate-mark t)
+      (recenter))))
+
+(defun efrit-diff-preview-toggle-or-open ()
+  "RET: toggle the change's selection in selective mode, else open its file."
+  (interactive)
+  (if (eq efrit-diff-preview--apply-mode 'selective)
+      (efrit-diff-preview-toggle-change)
+    (efrit-diff-preview-open-file)))
 
 ;;; Interactive Commands
 
@@ -296,6 +413,7 @@ Returns a standard tool response with:
         (setq changes (append changes nil)))
 
       ;; Initialize state
+      (setq efrit-diff-preview--root (efrit-resolve-path-simple nil))
       (setq efrit-diff-preview--changes changes)
       (setq efrit-diff-preview--result nil)
       (setq efrit-diff-preview--waiting t)
@@ -308,13 +426,15 @@ Returns a standard tool response with:
       ;; Display the diff
       (efrit-diff-preview--display changes description apply-mode-sym)
 
-      ;; Wait for user response (with timeout)
+      ;; Wait for the user's decision; the time does not count against
+      ;; the turn or the tool
       (let ((start-time (float-time))
             (timeout efrit-diff-preview-timeout-seconds))
-        (while (and efrit-diff-preview--waiting
-                    (< (- (float-time) start-time) timeout))
-          (sit-for 0.1)
-          (redisplay))
+        (efrit-with-user-waiting
+          (while (and efrit-diff-preview--waiting
+                      (or (not timeout) (< (- (float-time) start-time) timeout)))
+            (sit-for 0.1)
+            (redisplay)))
 
         ;; Handle timeout
         (when efrit-diff-preview--waiting
