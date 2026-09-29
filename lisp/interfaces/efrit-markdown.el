@@ -205,12 +205,18 @@ in the background into `efrit-markdown-image-cache-directory'."
          (target (efrit-markdown-link-at-point pos)))
     (pcase target
       ((pred stringp) (browse-url target))
-      (`(,file ,line ,column)
+      (`(,file ,line ,column . ,rest)
        (funcall efrit-markdown-open-file-function file)
        (when line
          (goto-char (point-min))
          (forward-line (1- line))
-         (when column (move-to-column column))))
+         (when column (move-to-column column))
+         ;; a range: select it, so the lines stand out
+         (when-let* ((end (car rest)))
+           (when (> end line)
+             (push-mark (point) t t)
+             (forward-line (- end line)) (end-of-line)
+             (exchange-point-and-mark)))))
       (_ (user-error "No link here")))))
 
 (defun efrit-markdown--linkify (start end target help)
@@ -252,17 +258,25 @@ nil.  With COMPLETE, an open fence at the end is rendered as is."
           (goto-char fence-start)))))
     open))
 
-(defconst efrit-markdown--table-row-regexp "^[ \t]*|.*|[ \t]*$"
-  "A pipe table row: starts and ends with a bar.")
+(defconst efrit-markdown--table-row-regexp "^[ \t]*|?[^\n|]*|[^\n]*$"
+  "A pipe table row: at least one bar; the outer bars are optional
+\(GitHub allows `a | b' rows, and models write them).")
 
 (defconst efrit-markdown--table-separator-regexp
-  "^[ \t]*|\\(?:[ \t]*:?-+:?[ \t]*|\\)+[ \t]*$"
-  "The row under the header: bars, dashes, optional colons.")
+  "^[ \t]*|?\\(?:[ \t]*:?-+:?[ \t]*|\\)*[ \t]*:?-+:?[ \t]*|?[ \t]*$"
+  "The row under the header: dashes with optional colons, bar-separated,
+outer bars optional.  Must contain at least one bar overall to be a
+separator (checked by the caller).")
 
 (defun efrit-markdown--table-cells (line)
-  "LINE's cells, trimmed, without the outer bars; `\\|' stays a bar."
-  (let* ((inner (string-trim (string-trim line) "|" "|"))
-         (parts (split-string (replace-regexp-in-string "\\\\|" "\x00" inner t t) "|")))
+  "LINE's cells, trimmed; `\\|' stays a bar.
+A leading or trailing bar is a border, not an empty cell: rows may
+have them or not, and models mix the two forms in one table
+\(`| Fruit | Count |' over `apple | 3 |', 2026-09-28)."
+  (let* ((trimmed (string-trim line))
+         (escaped (replace-regexp-in-string "\\\\|" "\x00" trimmed t t))
+         (inner (string-trim (string-trim escaped "|" "|")))
+         (parts (split-string inner "|")))
     (mapcar (lambda (c) (string-trim (replace-regexp-in-string "\x00" "|" c t t))) parts)))
 
 (defun efrit-markdown--table-alignments (separator)
@@ -345,9 +359,23 @@ may still grow (its last row touches END) unless COMPLETE."
                 (re-search-forward efrit-markdown--table-row-regexp end t))
       (let ((table-start (match-beginning 0)))
         (forward-line 1)
-        (if (not (and (< (point) end) (looking-at efrit-markdown--table-separator-regexp)
-                      (not (efrit-markdown--span-frozen-p table-start (point)))))
-            (goto-char (max (1+ table-start) (point)))
+        (cond
+         ;; A bar row that is the last (or next-to-last, unfinished)
+         ;; line of a streaming region may be a header whose separator
+         ;; has not arrived: hold the frontier there, or the watermark
+         ;; moves past the header and the table is never seen as one
+         ;; (2026-09-28: rendered as "│ Fruit │ Count" over plain rows)
+         ((and (not complete)
+               (or (>= (point) end)
+                   (and (< (point) end)
+                        (>= (save-excursion (goto-char (point)) (line-end-position)) end))))
+          (setq open table-start))
+         ((not (and (< (point) end)
+                    (looking-at efrit-markdown--table-separator-regexp)
+                    (string-match-p "|" (match-string 0))
+                    (not (efrit-markdown--span-frozen-p table-start (point)))))
+          (goto-char (max (1+ table-start) (point))))
+         (t
           (forward-line 1)
           (while (and (< (point) end) (looking-at efrit-markdown--table-row-regexp))
             (forward-line 1))
@@ -355,7 +383,7 @@ may still grow (its last row touches END) unless COMPLETE."
             (if (and (not complete) (>= table-end end))
                 (setq open table-start)
               (efrit-markdown--render-table table-start table-end)
-              (efrit-markdown--set-frozen table-start (point) t))))))
+              (efrit-markdown--set-frozen table-start (point) t)))))))
     open))
 
 (defun efrit-markdown--set-frozen (start end value)
@@ -405,8 +433,78 @@ LANG, on a block background, with the language as a small label."
                              append (list k v))))
           (when keep (add-text-properties start end keep)))
         (efrit-markdown--add-face start end 'efrit-markdown-code-block)
-        (add-text-properties start end (list efrit-markdown--frozen t 'fontified t))
+        ;; One id per block, and the body text kept raw, so commands
+        ;; can act on "the block at point" without re-reading the
+        ;; fontified display
+        (add-text-properties start end (list efrit-markdown--frozen t 'fontified t
+                                             'efrit-markdown-block
+                                             (list (or lang "")
+                                                   (concat (string-trim-right body "\n+") "\n"))))
         (goto-char end)))))
+
+;;;; Code blocks as things
+
+(defun efrit-markdown-block-at (&optional pos)
+  "The code block at POS (default point) as (LANG . BODY), or nil."
+  (when-let* ((b (get-text-property (or pos (point)) 'efrit-markdown-block)))
+    (cons (nth 0 b) (nth 1 b))))
+
+(defun efrit-markdown-blocks (&optional start end)
+  "Every code block in START..END (default the buffer), in order, as (LANG . BODY)."
+  (let ((pos (or start (point-min))) (end (or end (point-max))) (out nil) (last nil))
+    (while (setq pos (text-property-not-all pos end 'efrit-markdown-block nil))
+      (let ((b (get-text-property pos 'efrit-markdown-block)))
+        (unless (eq b last)
+          (push (cons (nth 0 b) (nth 1 b)) out)
+          (setq last b)))
+      (setq pos (or (next-single-property-change pos 'efrit-markdown-block nil end) end)))
+    (nreverse out)))
+
+(defun efrit-markdown--block-label (block n)
+  "A completion label for BLOCK number N: its language and first line."
+  (format "%d: [%s] %s" n (if (string-empty-p (car block)) "code" (car block))
+          (truncate-string-to-width (car (split-string (cdr block) "\n" t)) 60 nil nil "…")))
+
+(defun efrit-markdown-read-block (&optional prompt)
+  "The block at point, else one chosen by completion over the buffer's blocks."
+  (or (efrit-markdown-block-at)
+      (let ((blocks (efrit-markdown-blocks)))
+        (cond
+         ((null blocks) (user-error "No code block here"))
+         ((null (cdr blocks)) (car blocks))
+         (t (let* ((labels (cl-loop for b in blocks for i from 1 collect (cons (efrit-markdown--block-label b i) b)))
+                   (choice (completing-read (or prompt "Code block: ") labels nil t)))
+              (cdr (assoc choice labels))))))))
+
+(defun efrit-markdown-copy-block ()
+  "Copy the code block at point (or a chosen one) to the kill ring."
+  (interactive)
+  (let ((block (efrit-markdown-read-block "Copy block: ")))
+    (kill-new (cdr block))
+    (message "Copied %d lines of %s" (length (split-string (cdr block) "\n" t))
+             (if (string-empty-p (car block)) "code" (car block)))))
+
+(defun efrit-markdown-insert-block-other-window (&optional then-return)
+  "Insert the code block at point (or a chosen one) at point in the other window.
+The other window's buffer gets the text at its point; focus stays here
+unless THEN-RETURN is nil and a prefix argument was given."
+  (interactive "P")
+  (let* ((block (efrit-markdown-read-block "Insert block: "))
+         (here (current-buffer))
+         (win (seq-find (lambda (w) (not (eq (window-buffer w) here)))
+                        (list (next-window nil 'no-minibuf) (get-mru-window nil nil t))))
+         (target (and win (window-buffer win))))
+    (unless target
+      (user-error "No other window to insert into"))
+    (with-current-buffer target
+      (when buffer-read-only (user-error "%s is read-only" (buffer-name)))
+      (save-excursion
+        (goto-char (window-point win))
+        (insert (cdr block))
+        (unless (string-suffix-p "\n" (cdr block)) (insert "\n"))
+        (set-window-point win (point))))
+    (message "Inserted %d lines into %s" (length (split-string (cdr block) "\n" t)) (buffer-name target))
+    (when then-return (select-window win))))
 
 (defun efrit-markdown--pass-regexp (start end regexp function)
   "Call FUNCTION at every match of REGEXP in START..END outside frozen text.
@@ -633,9 +731,21 @@ is drawn over it (`display'), fetched first when remote."
        (goto-char e)))))
 
 (defconst efrit-markdown--file-ref-body
-  "\\(\\(?:~\\|\\.\\{1,2\\}\\)?/?\\(?:[[:alnum:]_.-]+/\\)*[[:alnum:]_-]+\\.[[:alnum:]]+\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\|#L\\([0-9]+\\)\\)?"
-  "A path with an extension, optionally `:LINE', `:LINE:COL' or `#LNN'.
-Group 1 path, 2 line, 3 column, 4 line (the #L form).")
+  "\\(\\(?:~\\|\\.\\{1,2\\}\\)?/?\\(?:[[:alnum:]_.-]+/\\)*[[:alnum:]_-]+\\.[[:alnum:]]+\\)\\(?::L?\\([0-9]+\\)\\(?::\\([0-9]+\\)\\|-L?\\([0-9]+\\)\\)?\\|#L\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\)?"
+  "A path with an extension, optionally `:LINE', `:LINE:COL', `:L1-L2',
+`#LNN' or `#L1-L2'.  Group 1 path, 2 line, 3 column, 4 end line
+\\(the : form), 5 line and 6 end line (the #L form).")
+
+(defun efrit-markdown--file-ref-target (file)
+  "The link target for the file reference just matched: (FILE LINE COL END-LINE)."
+  (let ((line (or (match-string 2) (match-string 5)))
+        (col (match-string 3))
+        (end (or (match-string 4) (match-string 6))))
+    (append (list file (and line (string-to-number line))
+                  (and col (string-to-number col)))
+            ;; a fourth element only for a range: (FILE LINE COL) stays
+            ;; the shape other code and tests know
+            (and end (list (string-to-number end))))))
 
 (defconst efrit-markdown--file-ref-regexp
   (concat "\\(?:^\\|[^[:alnum:]_/.-]\\)" efrit-markdown--file-ref-body)
@@ -659,13 +769,9 @@ Group 1 path, 2 line, 3 column, 4 line (the #L form).")
   (while (re-search-forward efrit-markdown--file-ref-in-code-regexp end t)
     (let* ((s (match-beginning 1)) (e (match-end 0))
            (path (match-string 1))
-           (line (or (match-string 2) (match-string 4)))
-           (col (match-string 3))
            (file (efrit-markdown--file-ref-file path)))
       (when (and file (not (get-text-property s 'efrit-markdown-target)))
-        (efrit-markdown--linkify s e
-                                 (list file (and line (string-to-number line))
-                                       (and col (string-to-number col)))
+        (efrit-markdown--linkify s e (efrit-markdown--file-ref-target file)
                                  (concat "open " (abbreviate-file-name file))))
       (goto-char e))))
 
@@ -677,13 +783,9 @@ Group 1 path, 2 line, 3 column, 4 line (the #L form).")
       (unless (or (efrit-markdown--span-frozen-p s e)
                   (get-text-property s 'efrit-markdown-target))
         (let* ((path (match-string 1))
-               (line (or (match-string 2) (match-string 4)))
-               (col (match-string 3))
                (file (efrit-markdown--file-ref-file path)))
           (when file
-            (efrit-markdown--linkify s e
-                                     (list file (and line (string-to-number line))
-                                           (and col (string-to-number col)))
+            (efrit-markdown--linkify s e (efrit-markdown--file-ref-target file)
                                      (concat "open " (abbreviate-file-name file))))))
       (goto-char e))))
 

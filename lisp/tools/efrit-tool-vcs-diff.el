@@ -19,7 +19,9 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
 (require 'cl-lib)
+(defvar vc-git-diff-switches)
 
 ;;; Customization
 
@@ -30,49 +32,23 @@
 
 ;;; Parsing Functions
 
-(defun efrit-tool-vcs-diff--parse-stat-line (line)
-  "Parse a line from git diff --stat.
-Returns plist with :path, :insertions, :deletions or nil."
-  (when (string-match "^ \\(.+?\\) +\\| +\\([0-9]+\\) \\([+-]+\\)$" line)
-    (let* ((path (string-trim (match-string 1 line)))
-           (changes (string-to-number (match-string 2 line)))
-           (bar (match-string 3 line))
-           (insertions (length (replace-regexp-in-string "-" "" bar)))
-           (deletions (length (replace-regexp-in-string "\\+" "" bar))))
-      ;; Scale the counts based on actual number
-      (when (> changes 0)
-        (let ((insert-pct (/ (float insertions) (+ insertions deletions)))
-              (delete-pct (/ (float deletions) (+ insertions deletions))))
-          (setq insertions (round (* changes insert-pct)))
-          (setq deletions (round (* changes delete-pct)))))
-      (list :path path
-            :insertions insertions
-            :deletions deletions))))
-
-(defun efrit-tool-vcs-diff--parse-numstat-line (line)
-  "Parse a line from git diff --numstat.
-Returns plist with :path, :insertions, :deletions or nil."
-  (when (string-match "^\\([0-9]+\\|-\\)\t\\([0-9]+\\|-\\)\t\\(.+\\)$" line)
-    (let ((insertions (match-string 1 line))
-          (deletions (match-string 2 line))
-          (path (match-string 3 line)))
-      (list :path path
-            :insertions (if (equal insertions "-") 0 (string-to-number insertions))
-            :deletions (if (equal deletions "-") 0 (string-to-number deletions))))))
-
-(defun efrit-tool-vcs-diff--get-numstat (args)
-  "Get file statistics using git diff --numstat with ARGS.
-Returns list of file stats."
-  (let ((result (efrit-tool-run-git (append args '("--numstat")))))
-    (when (plist-get result :success)
-      (let ((lines (split-string (plist-get result :output) "\n" t)))
-        (mapcar (lambda (line)
-                  (let ((parsed (efrit-tool-vcs-diff--parse-numstat-line line)))
-                    (when parsed
-                      `((path . ,(plist-get parsed :path))
-                        (insertions . ,(plist-get parsed :insertions))
-                        (deletions . ,(plist-get parsed :deletions))))))
-                lines)))))
+(defun efrit-tool-vcs-diff--file-stats (diff)
+  "Per-file insertions and deletions read off the unified DIFF text.
+A list of ((path . NAME) (insertions . N) (deletions . N)), in order."
+  (let ((stats nil) (current nil))
+    (dolist (line (split-string diff "\n"))
+      (cond
+       ((string-match "\\`diff --git a/\\(.*\\) b/" line)
+        (setq current (list (cons 'path (match-string 1 line))
+                            (cons 'insertions 0) (cons 'deletions 0)))
+        (push current stats))
+       ((string-prefix-p "+++ " line))
+       ((string-prefix-p "--- " line))
+       ((and current (string-prefix-p "+" line))
+        (cl-incf (alist-get 'insertions current)))
+       ((and current (string-prefix-p "-" line))
+        (cl-incf (alist-get 'deletions current)))))
+    (nreverse stats)))
 
 (defun efrit-tool-vcs-diff--get-summary (file-stats)
   "Calculate summary from FILE-STATS list."
@@ -99,76 +75,43 @@ ARGS is an alist with:
   commit        - diff against specific commit (optional)
   context_lines - lines of context (default: 3)
 
-Returns a standard tool response with diff output."
+Through VC (`efrit-vcs-diff'); context_lines is honoured via
+`vc-git-diff-switches' for Git.  Returns a standard tool response."
   (efrit-tool-execute vcs_diff args
     (let* ((path-input (alist-get 'path args))
            (staged (alist-get 'staged args))
            (commit (alist-get 'commit args))
            (context-lines (or (alist-get 'context_lines args) 3))
-           (warnings '()))
-
-      ;; Check if git is available
-      (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
-
-      ;; Build git diff args
-      (let* ((diff-args (list "diff"))
-             (path-resolved (when path-input
-                             (plist-get (efrit-resolve-path path-input 'read "vcs_diff") :path-relative))))
-
-        ;; Add context lines
-        (push (format "-U%d" context-lines) diff-args)
-
-        ;; Handle staged vs unstaged vs commit
-        (cond
-         (commit
-          (push commit diff-args))
-         (staged
-          (push "--staged" diff-args)))
-
-        ;; Add path if specified
-        (when path-resolved
-          (push "--" diff-args)
-          (push path-resolved diff-args))
-
-        ;; Finalize args (reverse because we pushed)
-        (setq diff-args (nreverse diff-args))
-
-        ;; Get the diff
-        (let ((diff-result (efrit-tool-run-git diff-args)))
-          (unless (plist-get diff-result :success)
-            (signal 'user-error (list "git diff failed"
-                                      (plist-get diff-result :error))))
-
-          (let* ((diff-output (plist-get diff-result :output))
-                 (truncated nil)
-                 ;; Get file stats using same base args
-                 (stat-base-args (cond
-                                  (commit (list "diff" commit))
-                                  (staged '("diff" "--staged"))
-                                  (t '("diff"))))
-                 (stat-args (if path-resolved
-                               (append stat-base-args (list "--" path-resolved))
-                             stat-base-args))
-                 (file-stats (efrit-tool-vcs-diff--get-numstat stat-args))
-                 (summary (efrit-tool-vcs-diff--get-summary file-stats)))
-
-            ;; Truncate if too large
-            (when (> (length diff-output) efrit-tool-vcs-diff-max-size)
-              (setq diff-output (substring diff-output 0 efrit-tool-vcs-diff-max-size))
-              (setq truncated t)
-              (push (format "Diff truncated at %dKB" (/ efrit-tool-vcs-diff-max-size 1000))
-                    warnings))
-
-            (efrit-tool-success
-             `((diff . ,diff-output)
-               (summary . ,summary)
-               (files . ,(vconcat (seq-remove #'null file-stats)))
-               (truncated . ,(if truncated t :json-false))
-               (diff_type . ,(cond (commit (format "vs %s" commit))
-                                   (staged "staged")
-                                   (t "unstaged"))))
-             warnings)))))))
+           (path-info (efrit-resolve-path path-input 'read "vcs_diff"))
+           (path (plist-get path-info :path))
+           (root (or (efrit-vcs-root (if (file-directory-p path) path (file-name-directory path)))
+                     (signal 'user-error (list "Not inside a version-controlled tree"))))
+           (files (and path-input (not (equal (file-name-as-directory path) root)) (list path)))
+           (warnings '())
+           (diff-output
+            (condition-case err
+                (let ((vc-git-diff-switches (list (format "-U%d" context-lines))))
+                  (cond
+                   (staged (efrit-vcs-diff-staged files root))
+                   (t (efrit-vcs-diff files commit nil root))))
+              (efrit-vcs-error (signal 'user-error (cdr err)))))
+           (truncated nil)
+           (file-stats (efrit-tool-vcs-diff--file-stats diff-output))
+           (summary (efrit-tool-vcs-diff--get-summary file-stats)))
+      (when (> (length diff-output) efrit-tool-vcs-diff-max-size)
+        (setq diff-output (substring diff-output 0 efrit-tool-vcs-diff-max-size))
+        (setq truncated t)
+        (push (format "Diff truncated at %dKB" (/ efrit-tool-vcs-diff-max-size 1000))
+              warnings))
+      (efrit-tool-success
+       `((diff . ,diff-output)
+         (summary . ,summary)
+         (files . ,(vconcat file-stats))
+         (truncated . ,(if truncated t :json-false))
+         (diff_type . ,(cond (commit (format "vs %s" commit))
+                             (staged "staged")
+                             (t "unstaged"))))
+       warnings))))
 
 (provide 'efrit-tool-vcs-diff)
 

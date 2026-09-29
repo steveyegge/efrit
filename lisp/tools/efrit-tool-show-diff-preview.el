@@ -54,6 +54,9 @@ for ten minutes is not a rejection (2026-09-27)."
 (defvar efrit-diff-preview--selected-indices nil
   "Indices of changes selected for application in selective mode.")
 
+(defvar efrit-diff-preview--edited nil
+  "Indices of changes the user edited in ediff this preview.")
+
 (defvar efrit-diff-preview--apply-mode nil
   "Current apply mode: 'all_or_nothing or 'selective.")
 
@@ -142,6 +145,8 @@ Returns the diff as a string."
     (define-key map (kbd "s") #'efrit-diff-preview-apply-selected)
     (define-key map (kbd "o") #'efrit-diff-preview-open-file)
     (define-key map (kbd "C-c C-o") #'efrit-diff-preview-open-file)
+    (define-key map (kbd "E") #'efrit-diff-preview-ediff)
+    (define-key map (kbd "e") #'efrit-diff-preview-ediff)
     map)
   "Keymap for `efrit-diff-preview-mode'.")
 
@@ -279,6 +284,19 @@ not exist yet (NEW FILE) opens empty."
 
 ;;; Interactive Commands
 
+(defun efrit-diff-preview--user-edits ()
+  "The user_edits value of the result: the edited changes, or :json-false.
+Each is (index file new_content) so the model applies the user's text,
+not its own proposal."
+  (if (null efrit-diff-preview--edited)
+      :json-false
+    (vconcat
+     (mapcar (lambda (i)
+               (let ((c (nth i efrit-diff-preview--changes)))
+                 `((index . ,i) (file . ,(alist-get 'file c))
+                   (new_content . ,(alist-get 'new_content c)))))
+             (sort (copy-sequence efrit-diff-preview--edited) #'<)))))
+
 (defun efrit-diff-preview-approve ()
   "Approve the proposed changes."
   (interactive)
@@ -287,7 +305,7 @@ not exist yet (NEW FILE) opens empty."
           (selected_changes . ,(if (eq efrit-diff-preview--apply-mode 'selective)
                                    (vconcat efrit-diff-preview--selected-indices)
                                  (vconcat (number-sequence 0 (1- (length efrit-diff-preview--changes))))))
-          (user_edits . :json-false)))
+          (user_edits . ,(efrit-diff-preview--user-edits))))
   (setq efrit-diff-preview--waiting nil)
   (message "Changes approved."))
 
@@ -329,23 +347,124 @@ not exist yet (NEW FILE) opens empty."
     (setq efrit-diff-preview--result
           `((approved . t)
             (selected_changes . ,(vconcat (sort efrit-diff-preview--selected-indices #'<)))
-            (user_edits . :json-false)))
+            (user_edits . ,(efrit-diff-preview--user-edits))))
     (setq efrit-diff-preview--waiting nil)
     (message "Applied %d selected changes." (length efrit-diff-preview--selected-indices))))
 
 (defun efrit-diff-preview--change-at-point ()
   "Return the index of the change at point, or nil if not on a change."
   (save-excursion
+    (end-of-line)
     (when (re-search-backward "^=+ Change \\([0-9]+\\):" nil t)
       (1- (string-to-number (match-string 1))))))
 
+;;; Editing a change in ediff before accepting
+;;
+;; `E' on a change opens ediff: A is the file as it is (the change's
+;; old_content, or the file on disk for a new file an empty buffer),
+;; B is the proposal.  The user merges hunks or types in B.  On quit,
+;; "Accept?" makes B's final text the change's new_content: the
+;; preview is redrawn and the tool result carries user_edits with the
+;; edited content, so the model applies what the user settled on.
+;; After claude-code-ide's openDiff handler (2026-09-28): our ediff is
+;; told apart from a foreign one by `eq' on buffer B in the startup
+;; hook, side windows are deleted first ("Cannot split side window"),
+;; and the response is finished off a timer so ediff has torn down.
+
+(defvar efrit-diff-preview--ediff-b nil
+  "Buffer B of the ediff we opened, while it runs.")
+(defvar efrit-diff-preview--ediff-index nil)
+
+(declare-function ediff-buffers "ediff")
+(defvar ediff-buffer-B)
+(defvar ediff-window-setup-function)
+
+(defun efrit-diff-preview--buffer-for-content (name content file)
+  "A buffer NAME holding CONTENT (nil: empty), in FILE's major mode."
+  (let ((buf (generate-new-buffer name)))
+    (with-current-buffer buf
+      (when content (insert content))
+      (let ((buffer-file-name (expand-file-name file (efrit-diff-preview--root))))
+        (condition-case nil (set-auto-mode) (error (fundamental-mode))))
+      (set-buffer-modified-p nil)
+      (goto-char (point-min)))
+    buf))
+
+(defun efrit-diff-preview-ediff ()
+  "Edit the change at point in ediff; accepting on quit keeps your edits."
+  (interactive)
+  (require 'ediff)
+  (let* ((index (or (efrit-diff-preview--change-at-point) (user-error "Not on a change")))
+         (change (nth index efrit-diff-preview--changes))
+         (file (alist-get 'file change))
+         (a (efrit-diff-preview--buffer-for-content (format "*efrit A: %s*" file)
+                                                    (alist-get 'old_content change) file))
+         (b (efrit-diff-preview--buffer-for-content (format "*efrit B: %s*" file)
+                                                    (alist-get 'new_content change) file))
+         (config (current-window-configuration)))
+    (setq efrit-diff-preview--ediff-b b
+          efrit-diff-preview--ediff-index index)
+    ;; ediff cannot split a side window: take them down for its run
+    (dolist (w (window-list))
+      (when (window-parameter w 'window-side) (ignore-errors (delete-window w))))
+    (add-hook 'ediff-quit-hook #'efrit-diff-preview--ediff-quit)
+    (let ((ediff-window-setup-function 'ediff-setup-windows-plain))
+      (ediff-buffers a b
+                     (list (lambda ()
+                             ;; our ediff only, not a foreign one
+                             (when (eq ediff-buffer-B efrit-diff-preview--ediff-b)
+                               (setq-local efrit-diff-preview--ediff-config config)
+                               (ignore-errors (ediff-next-difference)))))))))
+
+(defvar-local efrit-diff-preview--ediff-config nil)
+(declare-function ediff-next-difference "ediff-util")
+(defvar ediff-buffer-A)
+(defvar ediff-control-buffer)
+
+(defun efrit-diff-preview--ediff-quit ()
+  "On our ediff's quit: ask, take B's text as the change, clean up."
+  (when (and efrit-diff-preview--ediff-b
+             (eq ediff-buffer-B efrit-diff-preview--ediff-b))
+    (let* ((b efrit-diff-preview--ediff-b)
+           (a ediff-buffer-A)
+           (index efrit-diff-preview--ediff-index)
+           (config efrit-diff-preview--ediff-config)
+           (text (with-current-buffer b (buffer-substring-no-properties (point-min) (point-max)))))
+      (setq efrit-diff-preview--ediff-b nil efrit-diff-preview--ediff-index nil)
+      (remove-hook 'ediff-quit-hook #'efrit-diff-preview--ediff-quit)
+      ;; off ediff's own teardown: it is still deleting its buffers
+      (run-at-time 0 nil #'efrit-diff-preview--ediff-finish index text a b config))))
+
+(defun efrit-diff-preview--ediff-finish (index text a b config)
+  (unwind-protect
+      (let ((change (nth index efrit-diff-preview--changes)))
+        (when (and change
+                   (not (equal text (alist-get 'new_content change)))
+                   (y-or-n-p (format "Accept your edits to change %d? " (1+ index))))
+          (setf (alist-get 'new_content change) text)
+          (cl-pushnew index efrit-diff-preview--edited)
+          (when-let* ((buf (get-buffer efrit-diff-preview-buffer-name)))
+            (with-current-buffer buf
+              (let ((inhibit-read-only t) (pos (point)))
+                (efrit-diff-preview--redraw)
+                (goto-char (min pos (point-max))))))
+          (message "Change %d now carries your edits; a/y applies them" (1+ index))))
+    (when (buffer-live-p a) (kill-buffer a))
+    (when (buffer-live-p b) (kill-buffer b))
+    (when (window-configuration-p config) (set-window-configuration config))
+    (when-let* ((buf (get-buffer efrit-diff-preview-buffer-name)))
+      (pop-to-buffer buf))))
+
 ;;; Display Functions
 
-(defun efrit-diff-preview--display (changes description apply-mode)
-  "Display CHANGES with DESCRIPTION in preview buffer using APPLY-MODE."
-  (let ((buffer (get-buffer-create efrit-diff-preview-buffer-name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
+(defvar efrit-diff-preview--description nil)
+
+(defun efrit-diff-preview--redraw ()
+  "Draw the preview of the current changes into the current buffer."
+  (let ((changes efrit-diff-preview--changes)
+        (description efrit-diff-preview--description)
+        (apply-mode efrit-diff-preview--apply-mode))
+    (let ((inhibit-read-only t))
         (erase-buffer)
         ;; Header
         (insert "Efrit Proposed Changes\n")
@@ -355,17 +474,31 @@ not exist yet (NEW FILE) opens empty."
                                          "Selective (choose which changes to apply)"
                                        "All-or-nothing")))
         (insert (format "Number of changes: %d\n" (length changes)))
-        (insert "\nPress 'a' or 'y' to approve all, 'r' or 'n' to reject")
+        (insert "\nPress 'a' or 'y' to approve all, 'r' or 'n' to reject, 'E' to edit a change in ediff")
         (when (eq apply-mode 'selective)
           (insert "\nPress SPC to toggle selection, 's' to apply selected"))
         (insert "\n")
         ;; Each change
         (cl-loop for change in changes
                  for i from 0
-                 do (insert (efrit-diff-preview--format-change change i)))
+                 do (insert (efrit-diff-preview--format-change change i))
+                 when (memq i efrit-diff-preview--edited)
+                 do (insert (propertize "  (edited by you in ediff)\n" 'face 'warning)))
         ;; Footer
         (insert "\n" (make-string 60 ?=) "\n")
-        (insert "END OF PROPOSED CHANGES\n"))
+        (insert "END OF PROPOSED CHANGES\n"))))
+
+(defun efrit-diff-preview--display (changes description apply-mode)
+  "Display CHANGES with DESCRIPTION in preview buffer using APPLY-MODE."
+  (setq efrit-diff-preview--description description
+        efrit-diff-preview--edited nil)
+  (let ((buffer (get-buffer-create efrit-diff-preview-buffer-name)))
+    (with-current-buffer buffer
+      ;; `efrit-diff-preview--changes' and `--apply-mode' are set by the
+      ;; tool before calling; the redraw reads them
+      (setq efrit-diff-preview--changes changes
+            efrit-diff-preview--apply-mode apply-mode)
+      (efrit-diff-preview--redraw)
       (efrit-diff-preview-mode)
       (goto-char (point-min)))
     ;; Display buffer

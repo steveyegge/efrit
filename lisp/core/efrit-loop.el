@@ -113,8 +113,9 @@ CALLBACK and does the remhash)."
 REASON is the engine's stop reason; the adapter translates it to its
 own conventions.  ERROR-MESSAGE and COMPLETION-MESSAGE are surfaced to
 the user where the session type supports it."
-  ;; A "continue once" raise of a limit lasts for this turn only
-  (efrit-limits-reset-once)
+  ;; A "continue once" raise of a limit lasts for this turn only.
+  ;; This session's project only: another session's raise stands.
+  (efrit-limits-reset-once (efrit-limits-project-root))
   (efrit-publish 'turn-complete
                  `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                    (:stop-reason . ,reason)
@@ -282,6 +283,20 @@ engine has no view of which interface owns them."
          (efrit-log 'error "API request failed: %s" error-msg)
          (funcall callback nil error-msg))))))
 
+(defun efrit-loop--mark-partial (content)
+  "CONTENT with a trailing note in its last text block: the answer was cut.
+The model reads its own history next turn; without the note it would
+continue as if it had finished."
+  (let ((out (copy-sequence content)) (marked nil))
+    (cl-loop for i from (1- (length out)) downto 0
+             for item = (aref out i)
+             when (and (not marked) (hash-table-p item) (equal (gethash "type" item) "text"))
+             do (let ((blk (copy-hash-table item)))
+                  (puthash "text" (concat (gethash "text" blk) "\n[answer cut short here]") blk)
+                  (aset out i blk)
+                  (setq marked t)))
+    out))
+
 (defun efrit-loop-handle-response (session adapter response)
   "Handle API RESPONSE for SESSION using ADAPTER.
 Streams text content to the agent buffer, then dispatches on the
@@ -330,10 +345,32 @@ response's stop_reason."
            (funcall (efrit-loop-adapter-execute-tools-fn adapter)
                     session content)))
         ("end_turn"
-         (efrit-log 'info "%s %s: Claude ended turn" name session-id)
-         (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
-           (funcall fn session content))
-         (efrit-loop--finish session adapter "end_turn"))
+         (cond
+          ;; The user cancelled mid-answer: what arrived is kept in
+          ;; the history, marked, and the turn ends as interrupted
+          ((efrit-response-cancelled-p response)
+           (efrit-log 'info "%s %s: turn cancelled; partial answer kept" name session-id)
+           (efrit-publish 'note
+                          `((:session-id . ,session-id)
+                            (:kind . interrupted) (:face . warning)
+                            (:text . "⏹ cancelled; the answer above is incomplete")))
+           (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
+             (funcall fn session (efrit-loop--mark-partial content)))
+           (efrit-loop--finish session adapter "interrupted"))
+          ((efrit-response-partial-p response)
+           (efrit-log 'warn "%s %s: stream ended early; partial answer kept" name session-id)
+           (efrit-publish 'note
+                          `((:session-id . ,session-id)
+                            (:kind . interrupted) (:face . warning)
+                            (:text . "⏹ the stream ended early; the answer above is incomplete")))
+           (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
+             (funcall fn session (efrit-loop--mark-partial content)))
+           (efrit-loop--finish session adapter "end_turn"))
+          (t
+           (efrit-log 'info "%s %s: Claude ended turn" name session-id)
+           (when-let* ((fn (efrit-loop-adapter-on-end-turn-fn adapter)))
+             (funcall fn session content))
+           (efrit-loop--finish session adapter "end_turn"))))
         ;; The answer was cut at `efrit-default-max-tokens'.  It is
         ;; still an answer: end the turn as usual and say what happened,
         ;; so the user can ask for the rest or raise the limit.

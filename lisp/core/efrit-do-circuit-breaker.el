@@ -165,6 +165,14 @@ Stores reason for tripping as a string.")
   "List of recent error signatures for pattern analysis.
 Each entry is (error-hash . error-message).")
 
+(require 'efrit-events)
+;; one session's runaway must not trip, or reset, another's breaker
+(efrit-session-local 'efrit-do--session-tool-count 'efrit-do--circuit-breaker-tripped
+                     'efrit-do--last-tool-called 'efrit-do--tool-call-count
+                     'efrit-do--last-tool-input 'efrit-do--identical-call-count
+                     'efrit-do--last-error-hash 'efrit-do--same-error-count
+                     'efrit-do--error-history)
+
 ;;; Error Loop Detection Functions
 
 (defun efrit-do--hash-error-message (error-msg)

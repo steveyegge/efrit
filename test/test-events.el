@@ -10,7 +10,7 @@
   "Run BODY with a private subscriber table and no idle timer."
   (declare (indent 0))
   `(let ((efrit-events--subscribers nil)
-         (efrit-events--idle-timer nil)
+         (efrit-events--idle-timers (make-hash-table :test 'equal))
          (efrit-idle-delay nil))
      ,@body))
 
@@ -51,7 +51,7 @@
     (let ((efrit-idle-delay 0.05) (idle nil))
       (efrit-subscribe 'idle (lambda (ev) (setq idle ev)))
       (efrit-publish 'turn-complete '((:session-id . "s7")))
-      (should (timerp efrit-events--idle-timer))
+      (should (timerp (gethash "s7" efrit-events--idle-timers)))
       (sleep-for 0.2)
       (should idle)
       (should (equal (alist-get :session-id idle) "s7"))
@@ -222,6 +222,34 @@ meanwhile, and nested waits count once."
       (with-timeout (0.05 (setq fired t))
         (efrit-with-user-waiting (sleep-for 0.15)))
       (should-not fired))))
+
+(ert-deftest test-events-idle-timers-are-per-session ()
+  "Session B's traffic does not cancel A's idle timer; the session-local
+variables are swapped by `efrit-with-session'."
+  (test-events--isolated
+    (let ((efrit-idle-delay 0.05) (idle nil))
+      (efrit-subscribe 'idle (lambda (ev) (push (alist-get :session-id ev) idle)))
+      (efrit-publish 'turn-complete '((:session-id . "A")))
+      (efrit-publish 'tool-start '((:session-id . "B")))
+      (efrit-publish 'text-delta '((:session-id . "B")))
+      (sleep-for 0.2)
+      (should (equal '("A") idle))))
+  ;; session-local values
+  (defvar test-events--counter 0)
+  (let ((efrit-session-local-variables '((test-events--counter . 0)))
+        (efrit-session--locals (make-hash-table :test 'equal)))
+    (setq test-events--counter 100)
+    (efrit-with-session "A" (setq test-events--counter 1))
+    (efrit-with-session "B" (should (= 0 test-events--counter)) (setq test-events--counter 2))
+    (should (= 100 test-events--counter))
+    (efrit-with-session "A"
+      (should (= 1 test-events--counter))
+      ;; nested other session: swapped in and back out
+      (efrit-with-session "B" (should (= 2 test-events--counter)) (cl-incf test-events--counter))
+      (should (= 1 test-events--counter)))
+    (efrit-with-session "B" (should (= 3 test-events--counter)))
+    ;; a note published as A carries A's id
+    (should (equal "A" (alist-get :session-id (efrit-with-session "A" (efrit-publish 'note '((:text . "x")))))))))
 
 (provide 'test-events)
 ;;; test-events.el ends here

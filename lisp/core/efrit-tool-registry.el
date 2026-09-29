@@ -149,8 +149,10 @@ Errors in the tool become an error result: the model is told and the
 turn continues."
   (when-let* ((tool (efrit-registered-tool-get name)))
     (condition-case err
-        (let ((result (funcall (efrit-registered-tool-function tool)
-                               (efrit-tool-registry-input->alist input))))
+        (let ((result (efrit-tool-registry--with-user-context
+                       (lambda ()
+                         (funcall (efrit-registered-tool-function tool)
+                                  (efrit-tool-registry-input->alist input))))))
           (cond ((stringp result) result)
                 ((null result) "")
                 (t (format "%S" result))))
@@ -158,6 +160,26 @@ turn continues."
        (when (fboundp 'efrit-log)
          (efrit-log 'warn "registered tool %s failed: %s" name (error-message-string err)))
        (format "\n[Error: %s failed: %s]" name (error-message-string err))))))
+
+(declare-function efrit-context-target-buffer "efrit-context-sources")
+
+(defun efrit-tool-registry--with-user-context (thunk)
+  "Call THUNK with the user's target buffer current.
+A tool runs from a process sentinel, in whatever buffer happened to be
+current; a registered tool that reads \"the current buffer\" (a mail
+reader's article, the file being edited) means the user's.  The
+project root is already the session's (`efrit-repl-loop--with-session');
+`default-directory' follows the target buffer only when the session
+set none.  After claude-code-ide's with-session-context (2026-09-28)."
+  (let ((target (and (require 'efrit-context-sources nil t)
+                     (fboundp 'efrit-context-target-buffer)
+                     (efrit-context-target-buffer))))
+    (if (buffer-live-p target)
+        (let ((dir default-directory))
+          (with-current-buffer target
+            (let ((default-directory dir))
+              (funcall thunk))))
+      (funcall thunk))))
 
 (defun efrit-tool-registry-class (name)
   "Permission class of registered tool NAME, or nil if not registered."

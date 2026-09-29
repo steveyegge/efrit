@@ -41,11 +41,16 @@
 (require 'dnd)
 (require 'efrit-log)
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
+(require 'efrit-brief)
+(require 'imenu)
 
 (declare-function efrit-agent--in-input-region-p "efrit-agent-core")
 (declare-function efrit-agent--get-input "efrit-agent-core")
 (declare-function efrit-agent--clear-input "efrit-agent-core")
 (declare-function efrit-agent-new-conversation "efrit-agent-input")
+(declare-function efrit-agent-regenerate "efrit-agent-input")
+(declare-function efrit-preset-apply "efrit-presets")
 (declare-function efrit-agent-restart "efrit-agent-input")
 (declare-function efrit-agent-queue-show "efrit-agent-input")
 (declare-function efrit-agent-copy-last-output "efrit-agent-input")
@@ -94,16 +99,76 @@ not match: the character before the @ must not be a word character.")
       (format "@\"%s\"" path)
     (concat "@" path)))
 
+(defconst efrit-agent-mention-range-regexp "\\`\\(.+?\\)#L\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\'"
+  "A path with a line range: `path#L10-L20' or `path#L10' (GitHub's form).")
+
+(defun efrit-agent-mention-split (path)
+  "PATH split as (FILE START END): the range when it has one, else nils."
+  (if (string-match efrit-agent-mention-range-regexp path)
+      (list (match-string 1 path)
+            (string-to-number (match-string 2 path))
+            (if (match-string 3 path) (string-to-number (match-string 3 path))
+              (string-to-number (match-string 2 path))))
+    (list path nil nil)))
+
 (defun efrit-agent-mentions-in (text)
-  "The paths mentioned in TEXT, in order, duplicates removed."
+  "The paths mentioned in TEXT, in order, duplicates removed.
+A path may carry a range, `path#L10-L20'; `efrit-agent-mention-split'
+takes it apart."
   (let ((out nil) (start 0))
     (while (string-match efrit-agent-mention-regexp text start)
-      (let ((path (or (match-string 1 text) (match-string 2 text))))
+      (let ((path (or (match-string 1 text) (match-string 2 text)))
+            (at (or (match-beginning 1) (match-beginning 2))))
         ;; Trailing punctuation of the sentence is not part of a bare path
         (setq path (string-trim-right path "[.,;:!?)]+"))
-        (unless (member path out) (push path out)))
+        ;; verbatim text (a pasted diff, a quoted error) is data: an @
+        ;; inside it is not a mention
+        (unless (or (member path out) (efrit-verbatim-p text at))
+          (push path out)))
       (setq start (match-end 0)))
     (nreverse out)))
+
+(defun efrit-agent-mention-range-text (file start end)
+  "The text for a range mention: what to say and which lines of FILE.
+Returns (LABEL . TEXT); TEXT is lines START..END of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let* ((total (count-lines (point-min) (point-max)))
+           (start (max 1 (min start total)))
+           (end (max start (min end total))))
+      (goto-char (point-min)) (forward-line (1- start))
+      (let ((b (point)))
+        (forward-line (- end start -1))
+        (cons (format "lines %d-%d of %d" start end total)
+              (string-trim-right (buffer-substring-no-properties b (point))))))))
+
+;;;###autoload
+(defun efrit-agent-mention-range (start end)
+  "Put a mention of the region's lines of this file into the agent input.
+`@path#L10-L20': the model gets those lines, not the whole file, and
+not a quote of the text (cheaper than `efrit-agent-quote-region' for a
+long region, and the model can read around it)."
+  (interactive "r")
+  (unless buffer-file-name (user-error "This buffer visits no file"))
+  (let* ((root (ignore-errors (efrit-tool--get-project-root)))
+         (path (if (and root (string-prefix-p (file-name-as-directory root) buffer-file-name))
+                   (file-relative-name buffer-file-name root)
+                 buffer-file-name))
+         (l1 (line-number-at-pos start))
+         (l2 (line-number-at-pos (max start (1- end))))
+         (mention (efrit-agent-mention-text (format "%s#L%d-L%d" path l1 l2))))
+    (deactivate-mark)
+    (require 'efrit-agent)
+    (require 'efrit-agent-input)
+    (let ((buf (efrit-agent-target-buffer)))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (unless (or (bobp) (memq (char-before) '(?\s ?\n))) (insert " "))
+        (insert mention " "))
+      (efrit-agent-display buf t))))
+
+(declare-function efrit-agent-target-buffer "efrit-agent-input")
+(declare-function efrit-agent-display "efrit-agent-core")
 
 (defun efrit-agent-mention--resolve (path)
   "PATH as an absolute file name, relative to the project root when relative."
@@ -129,18 +194,26 @@ of files that do not exist stay as written: the model can ask.
 Images are left to `efrit-agent-mentions-content-blocks'."
   (let ((blocks nil))
     (dolist (path (efrit-agent-mentions-in text))
-      (let ((file (efrit-agent-mention--resolve path)))
+      (pcase-let* ((`(,bare ,start ,end) (efrit-agent-mention-split path))
+                   (file (efrit-agent-mention--resolve bare)))
         (when (and (file-regular-p file) (file-readable-p file)
                    (not (efrit-agent-mention--image-p file)))
           (condition-case err
-              (push (format "%s\n```%s\n%s\n```"
-                            (efrit-agent-mention-text path)
-                            (or (file-name-extension file) "")
-                            (efrit-agent-mention--clip
-                             (string-trim-right
-                              (with-temp-buffer
-                                (insert-file-contents file)
-                                (buffer-string)))))
+              (push (if start
+                        ;; a range: only those lines, labelled
+                        (let ((r (efrit-agent-mention-range-text file start end)))
+                          (format "%s (%s)\n```%s\n%s\n```"
+                                  (efrit-agent-mention-text path) (car r)
+                                  (or (file-name-extension file) "")
+                                  (efrit-agent-mention--clip (cdr r))))
+                      (format "%s\n```%s\n%s\n```"
+                              (efrit-agent-mention-text path)
+                              (or (file-name-extension file) "")
+                              (efrit-agent-mention--clip
+                               (string-trim-right
+                                (with-temp-buffer
+                                  (insert-file-contents file)
+                                  (buffer-string))))))
                     blocks)
             (error
              (efrit-log 'warn "mention: cannot read %s: %s" file (error-message-string err)))))))
@@ -153,7 +226,7 @@ Images are left to `efrit-agent-mentions-content-blocks'."
 Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (data . D))))."
   (let (blocks)
     (dolist (path (efrit-agent-mentions-in text))
-      (let ((file (efrit-agent-mention--resolve path)))
+      (let ((file (efrit-agent-mention--resolve (car (efrit-agent-mention-split path)))))
         (when (and (file-regular-p file) (efrit-agent-mention--image-p file))
           (let ((type (pcase (downcase (or (file-name-extension file) ""))
                         ("jpg" "image/jpeg") ("jpeg" "image/jpeg") ("png" "image/png")
@@ -181,13 +254,7 @@ Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (dat
       (if (equal root (car efrit-agent-mention--files-cache))
           (cdr efrit-agent-mention--files-cache)
         (let* ((default-directory root)
-               (git (and (file-directory-p (expand-file-name ".git" root))
-                         (executable-find "git")
-                         (with-temp-buffer
-                           (when (zerop (call-process "git" nil t nil "ls-files" "--cached"
-                                                      "--others" "--exclude-standard"))
-                             (split-string (buffer-string) "\n" t)))))
-               (files (or git
+               (files (or (efrit-vcs-files root)
                           (let ((all (directory-files-recursively root "." nil
                                                                   (lambda (d) (not (string-match-p "/\\.\\|/node_modules\\'" d))))))
                             (mapcar (lambda (f) (file-relative-name f root))
@@ -209,12 +276,79 @@ Each is ((type . \"image\") (source . ((type . \"base64\") (media_type . M) (dat
                   (point-min)))
       (memq (char-before pos) '(?\s ?\t ?\n))))
 
+(defun efrit-agent-mention--file-symbols (file)
+  "The definitions of FILE as ((LABEL START END) ...), from imenu.
+LABEL is the symbol name (\"Class.method\" for nested entries), START
+and END its 1-based line range (END: the line before the next
+definition, or the file's last line)."
+  (let ((buf (find-file-noselect file)))
+    (with-current-buffer buf
+      (let* ((index (condition-case nil
+                        (progn (setq imenu--index-alist nil) (imenu--make-index-alist t))
+                      (error nil)))
+             (flat (efrit-agent-mention--flatten-imenu index))
+             (sorted (sort flat (lambda (a b) (< (cdr a) (cdr b)))))
+             (last-line (line-number-at-pos (point-max)))
+             (out nil))
+        (while sorted
+          (let* ((this (pop sorted))
+                 (start (line-number-at-pos (cdr this)))
+                 (end (if sorted (max start (1- (line-number-at-pos (cdr (car sorted))))) last-line)))
+            (push (list (car this) start end) out)))
+        (nreverse out)))))
+
+(defun efrit-agent-mention--flatten-imenu (index &optional prefix)
+  "INDEX as a flat list of (LABEL . POSITION)."
+  (let (out)
+    (dolist (entry index)
+      (let ((name (car entry)) (val (cdr entry)))
+        (cond
+         ((or (equal entry imenu--rescan-item) (equal name (car-safe imenu--rescan-item))) nil)
+         ((imenu--subalist-p entry)
+          (setq out (nconc out (efrit-agent-mention--flatten-imenu val name))))
+         ((or (number-or-marker-p val) (overlayp val))
+          (push (cons (if prefix (concat prefix "." name) name)
+                      (if (overlayp val) (overlay-start val) val))
+                out))
+         ((and (consp val) (number-or-marker-p (car val)))
+          (push (cons (if prefix (concat prefix "." name) name) (car val)) out)))))
+    (nreverse out)))
+
+(defun efrit-agent-mention-symbol-completion-at-point ()
+  "After `@path', complete `#symbol' from the file's definitions.
+Accepting rewrites the mention as `@path#Lstart-Lend', the range of
+that definition (after ai-code-interface, 2026-09-28)."
+  (when (efrit-agent--in-input-region-p)
+    (save-excursion
+      (let ((end (point)))
+        (when (re-search-backward "@\\([^[:space:]\"\n#]+\\)#\\([^[:space:]\n]*\\)\\=" (line-beginning-position) t)
+          (let* ((at (match-beginning 0))
+                 (path (match-string-no-properties 1))
+                 (start (match-beginning 2))
+                 (file (efrit-agent-mention--resolve path)))
+            (when (and (efrit-agent-mention--at-word-start-p at)
+                       (file-regular-p file))
+              (let ((symbols (efrit-agent-mention--file-symbols file)))
+                (list start end
+                      (completion-table-dynamic (lambda (_) (mapcar #'car symbols)))
+                      :exclusive 'no
+                      :annotation-function
+                      (lambda (label) (when-let* ((s (assoc label symbols)))
+                                        (format "  lines %d-%d" (nth 1 s) (nth 2 s))))
+                      :exit-function
+                      (lambda (label status)
+                        (when (eq status 'finished)
+                          (when-let* ((s (assoc label symbols)))
+                            (delete-region at (point))
+                            (insert (efrit-agent-mention-text (format "%s#L%d-L%d" path (nth 1 s) (nth 2 s)))))
+                          (insert " "))))))))))))
+
 (defun efrit-agent-mention-completion-at-point ()
   "Complete `@path' from the project's files."
   (when (efrit-agent--in-input-region-p)
     (save-excursion
       (let ((end (point)))
-        (when (re-search-backward "@\\(\"[^\"\n]*\\|[^[:space:]\"\n]*\\)\\=" (line-beginning-position) t)
+        (when (re-search-backward "@\\(\"[^\"\n]*\\|[^[:space:]\"\n#]*\\)\\=" (line-beginning-position) t)
           (let ((at (match-beginning 0)))
             (when (efrit-agent-mention--at-word-start-p at)
               (let ((start (1+ at))
@@ -314,6 +448,13 @@ typo should not cost a turn."
                                         (setq efrit-default-model args)
                                         (message "Model: %s" args))))
   (efrit-agent-define-slash-command "mode" "Cycle the tool display mode" (lambda (_) (efrit-agent-cycle-display-mode)))
+  (efrit-agent-define-slash-command "preset" "Apply a preset (/preset NAME, or choose)"
+                                    (lambda (args)
+                                      (require 'efrit-presets)
+                                      (if (string-empty-p args)
+                                          (call-interactively #'efrit-preset-apply)
+                                        (efrit-preset-apply (intern args)))))
+  (efrit-agent-define-slash-command "regenerate" "Ask the last question again" (lambda (_) (efrit-agent-regenerate)))
   (efrit-agent-define-slash-command "verbosity" "Cycle the verbosity" (lambda (_) (efrit-agent-cycle-verbosity)))
   (efrit-agent-define-slash-command "expand" "Expand every tool row" (lambda (_) (efrit-agent-expand-all)))
   (efrit-agent-define-slash-command "collapse" "Collapse every tool row" (lambda (_) (efrit-agent-collapse-all)))
@@ -392,6 +533,9 @@ The OS deletes a dragged screenshot soon after the drop."
 (defun efrit-agent-mentions-setup ()
   "Install the completion functions and drop handling in the agent buffer."
   (add-hook 'completion-at-point-functions #'efrit-agent-slash-completion-at-point -10 t)
+  ;; the symbol capf first: it matches only "@path#…", the file one
+  ;; stops at "#"
+  (add-hook 'completion-at-point-functions #'efrit-agent-mention-symbol-completion-at-point -6 t)
   (add-hook 'completion-at-point-functions #'efrit-agent-mention-completion-at-point -5 t)
   (efrit-agent-dnd-enable))
 

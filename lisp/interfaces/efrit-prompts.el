@@ -58,6 +58,7 @@
 (require 'efrit-config)
 (require 'efrit-log)
 (require 'efrit-api)
+(require 'efrit-ask)
 (require 'efrit-chat-response)
 
 (declare-function efrit-settings-write-json "efrit-settings")
@@ -468,28 +469,20 @@ nil summary.  `e' opens the manager and asks again when it closes."
 
 ;;;; Suggestions from the model
 
-(defun efrit-prompts--suggest-request (name item summary purpose)
-  "The API request asking for a better ITEM and SUMMARY for prompt NAME.
+(defun efrit-prompts--suggest-prompt (name item summary purpose)
+  "The question asking for a better ITEM and SUMMARY for prompt NAME.
 SUMMARY nil means a single prompt: the model is asked to leave the
 SUMMARY block empty."
-  `(("model" . ,(or efrit-prompts-suggest-model efrit-default-model))
-    ;; Two parts under 120 words each need ~400 tokens.  The rest is
-    ;; room for thinking when the endpoint or `efrit-api-extra-body'
-    ;; turns it on: at 1200 a thinking model spent it all and returned
-    ;; no text (2026-09-26).
-    ("max_tokens" . 4096)
-    ("system" . ,(efrit-api-cacheable-system efrit-prompts-suggest-instructions))
-    ("messages" . [(("role" . "user")
-                    ("content" . ,(format "Prompt name: %s\n%s\nCurrent ITEM part:\n%s\n\n%s"
-                                          name
-                                          (if (and purpose (not (string-empty-p purpose)))
-                                              (format "What the user wants from it: %s\n" purpose)
-                                            "")
-                                          item
-                                          (if summary
-                                              (format "Current SUMMARY part:\n%s\n\nImprove both parts."
-                                                      (if (string-empty-p summary) "(none yet)" summary))
-                                            "This is a single-task prompt with no SUMMARY part. Improve the ITEM part. Still write the === SUMMARY === line, with nothing after it."))))])))
+  (format "Prompt name: %s\n%s\nCurrent ITEM part:\n%s\n\n%s"
+          name
+          (if (and purpose (not (string-empty-p purpose)))
+              (format "What the user wants from it: %s\n" purpose)
+            "")
+          item
+          (if summary
+              (format "Current SUMMARY part:\n%s\n\nImprove both parts."
+                      (if (string-empty-p summary) "(none yet)" summary))
+            "This is a single-task prompt with no SUMMARY part. Improve the ITEM part. Still write the === SUMMARY === line, with nothing after it.")))
 
 (defun efrit-prompts-parse-suggestion (text)
   "Parse the model's TEXT into (ITEM . SUMMARY), or nil if it is not in the format.
@@ -501,49 +494,25 @@ too (2026-09-26)."
     (cons (string-trim (match-string 1 text))
           (string-trim (or (match-string 2 text) "")))))
 
-(defun efrit-prompts--response-text (response)
-  "The concatenated text blocks of RESPONSE."
-  (let ((content (efrit-response-content response)) (texts nil))
-    (when content
-      (dotimes (i (length content))
-        (let ((item (aref content i)))
-          (when (and (hash-table-p item) (equal (gethash "type" item) "text"))
-            (push (gethash "text" item) texts)))))
-    (string-join (nreverse texts) "")))
-
-(defun efrit-prompts--describe-bad-answer (response text)
-  "Why RESPONSE with TEXT could not be parsed, for the user."
-  (let* ((content (efrit-response-content response))
-         (types (and content (mapcar (lambda (b) (and (hash-table-p b) (gethash "type" b)))
-                                     (append content nil))))
-         (stop (efrit-response-stop-reason response)))
-    (cond
-     ((equal stop "max_tokens")
-      (format "the answer was cut at max_tokens before any text (blocks: %s)"
-              (mapconcat (lambda (x) (format "%s" x)) types ", ")))
-     ((string-empty-p text)
-      (format "the model returned no text (stop_reason %s, blocks: %s)"
-              stop (mapconcat (lambda (x) (format "%s" x)) types ", ")))
-     (t (format "the model did not answer in the expected format: %s"
-                (truncate-string-to-width text 200 nil nil "…"))))))
-
 (defun efrit-prompts-suggest (name item summary purpose callback)
   "Ask the model for a better version of prompt NAME's ITEM and SUMMARY.
 PURPOSE is optional free text on what the user wants.  CALLBACK gets
-\(ITEM . SUMMARY), or a string naming the failure."
-  (let ((efrit-api-request-purpose (format "suggesting improvements to the prompt %S" name)))
-    (efrit-api-request-async
-     (efrit-prompts--suggest-request name item summary purpose)
-     (lambda (response)
-       (funcall callback
-                (cond
-                 ((null response) "no response")
-                 ((efrit-response-error response)
-                  (efrit-error-message (efrit-response-error response)))
-                 (t (let ((text (efrit-prompts--response-text response)))
-                      (or (efrit-prompts-parse-suggestion text)
-                          (efrit-prompts--describe-bad-answer response text)))))))
-     (lambda (error-message) (funcall callback (format "%s" error-message))))))
+\(ITEM . SUMMARY), or a string naming the failure.  A side request
+\(`efrit-ask-once'): a second suggestion asked before the first
+answers supersedes it."
+  (efrit-ask-once
+   (efrit-prompts--suggest-prompt name item summary purpose)
+   (lambda (text message)
+     (funcall callback
+              (cond
+               ((null text) message)
+               ((efrit-prompts-parse-suggestion text))
+               (t (format "the model did not answer in the expected format: %s"
+                          (truncate-string-to-width text 200 nil nil "…"))))))
+   :system efrit-prompts-suggest-instructions
+   :purpose (format "suggesting improvements to the prompt %S" name)
+   :key (format "efrit-prompts-suggest %s" name)
+   :model efrit-prompts-suggest-model))
 
 ;;;; The editor
 

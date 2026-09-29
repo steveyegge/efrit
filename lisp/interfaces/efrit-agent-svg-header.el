@@ -57,6 +57,7 @@
 (declare-function efrit-agent--format-header-line "efrit-agent-render")
 (declare-function efrit-agent--usage-segment "efrit-agent-render")
 (declare-function efrit-agent-input-hint "efrit-agent-render")
+(declare-function efrit-context-describe "efrit-context-sources")
 (declare-function efrit-repl-session-id "efrit-repl-session")
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 
@@ -232,6 +233,10 @@ kept coarse so the cache repeats: see `efrit-agent-header-elapsed-step'."
                      (format "%s" efrit-agent-display-mode)))
       (:session . ,(when-let* ((id (efrit-agent-svg--session-id)))
                      (truncate-string-to-width id 12 nil nil "…")))
+      ;; what the next turn carries as editor context (target file,
+      ;; point or region), or that it was dismissed
+      (:context . ,(and (fboundp 'efrit-context-describe)
+                        (ignore-errors (efrit-context-describe))))
       (:width . ,(efrit-agent-svg--window-width))
       (:char-height . ,(frame-char-height))
       (:font-size . ,(efrit-agent-svg--font-size))
@@ -358,6 +363,7 @@ square centred on the letters beside it (baseline minus ~0.35em)."
                         (,(alist-get :tools model) . font-lock-comment-face)
                         (,(and (alist-get :mode model) (format "[%s]" (alist-get :mode model)))
                          . font-lock-comment-face)
+                        (,(alist-get :context model) . efrit-agent-header-directory)
                         (,(alist-get :session model) . font-lock-comment-face))))
     (efrit-agent-svg--place-spinners svg fs)
     ;; Shrink the canvas to what was drawn: every pixel is re-blitted on

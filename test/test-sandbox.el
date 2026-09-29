@@ -17,7 +17,7 @@
           (efrit-sandbox-request-function nil)
           (efrit-sandbox--session-grants (make-hash-table :test 'equal))
           (efrit-sandbox--project-grants (make-hash-table :test 'equal))
-          (efrit-sandbox--once-grant nil)
+          (efrit-sandbox--turn-state (make-hash-table :test (quote equal)))
           (efrit-sandbox-store--loaded (make-hash-table :test 'equal)))
      (unwind-protect (progn ,@body)
        (delete-directory root t))))
@@ -430,6 +430,277 @@ an exact-line target is never persisted."
                 (goto-char (point-max)) (insert "!") (save-buffer) (kill-buffer)))
             (should (string-prefix-p "changed!" (with-temp-buffer (insert-file-contents inside) (buffer-string)))))
         (ignore-errors (delete-file outside))))))
+
+(ert-deftest test-sb-eval-load-and-load-path-are-not-gated ()
+  "`(require ...)' / `load' of a library inside a sandboxed eval never
+prompts: `load' is not a gated op, and reading under `load-path' or
+`data-directory' is exempt.  A relative name is not checked against
+`default-directory' (a remote root made that a spurious remote read)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (lib (locate-library "subr-x")))
+      ;; require (the inspector refuses a literal `load'): no prompt, it works
+      (should (eq 'subr-x (efrit-sandbox-eval-form '(progn (require 'subr-x) 'subr-x))))
+      (should (eq 'repeat (efrit-sandbox-eval-form '(progn (require 'repeat) 'repeat))))
+      ;; reading a load-path file explicitly: exempt
+      (should (stringp (efrit-sandbox-eval-form
+                        `(with-temp-buffer (insert-file-contents ,lib) (buffer-substring 1 10)))))
+      (should (efrit-sandbox-eval--exempt-p lib))
+      (should-not (efrit-sandbox-eval--exempt-p (expand-file-name "x.el" root)))
+      ;; a relative name with a remote default-directory: nothing checked
+      ;; on the remote (the check would have been recorded as a request)
+      (let ((default-directory "/ssh:nowhere.invalid:/tmp/"))
+        (should-not (efrit-sandbox-eval--op-paths 'copy-file '("a" "b")))
+        (should-not (efrit-sandbox-eval--op-paths 'insert-file-contents '("relative.txt")))
+        (should (equal '("/abs/x") (efrit-sandbox-eval--op-paths 'insert-file-contents '("/abs/x")))))
+      (should-not asked))))
+
+(ert-deftest test-sb-eval-require-after-load-forms-do-not-prompt ()
+  "A `require' inside eval whose after-load form (the user's config)
+switches into a buffer visiting a file outside the project asks for
+nothing; the same switch written by the model still does."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((outside (make-temp-file "efrit-sb-outside-" nil ".el" ";; user config\n"))
+           (buf (find-file-noselect outside))
+           (libdir (make-temp-file "efrit-sb-lib-" t))
+           (feature (intern (format "efrit-sb-fake-%d" (random 100000))))
+           (lib (expand-file-name (format "%s.el" feature) libdir))
+           (asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil)))
+      (unwind-protect
+          (progn
+            (with-temp-file lib (insert (format "(provide '%s)\n" feature)))
+            ;; the "user's config": on load of FEATURE, look at the outside buffer
+            (eval `(with-eval-after-load ',feature
+                     (with-current-buffer ,buf (buffer-size)))
+                  t)
+            (let ((load-path (cons libdir load-path)))
+              (should (eq feature (efrit-sandbox-eval-form `(progn (require ',feature) ',feature)))))
+            (should-not asked)
+            ;; the model doing the same switch itself is still checked
+            (should-error (efrit-sandbox-eval-form `(with-current-buffer ,buf (buffer-size)))
+                          :type 'efrit-sandbox-denied)
+            (should (equal (list (efrit-sandbox-canonical outside)) asked)))
+        (kill-buffer buf)
+        (ignore-errors (delete-file outside))
+        (ignore-errors (delete-directory libdir t))))))
+
+(ert-deftest test-sb-edit-before-allow-runs-the-edited-input-once ()
+  "A prompt function that edits the request makes the tool run the
+edited text, once, whatever scope it also chose; the edited text is
+consumed by the asking tool only."
+  (test-sb--in-project
+    (let* ((efrit-sandbox-request-function
+            (lambda (req)
+              (when (efrit-sandbox-request-editable-p req)
+                (setf (efrit-sandbox-request-edited req) "(+ 40 2)"))
+              'session)))
+      (efrit-sandbox-store-ensure-loaded root)
+      ;; eval: the edited form is what runs
+      (should (= 42 (efrit-sandbox-eval-form '(+ 1 1))))
+      ;; consumed: no leftover for another tool
+      (should-not (efrit-sandbox-take-edited-input "shell_exec"))
+      ;; and the grant was downgraded to once: the next eval asks again
+      (should-not (efrit-sandbox-allowed-p 'elisp t))
+      ;; editability: shell and elisp with a detail; not a read
+      (should (efrit-sandbox-request-editable-p
+               (efrit-sandbox-request-create :cap 'shell :target '(shell "ls") :tool "shell_exec" :detail "ls -l")))
+      (should-not (efrit-sandbox-request-editable-p
+                   (efrit-sandbox-request-create :cap 'read :target "/x" :tool "read_file" :detail "read /x"))))))
+
+(ert-deftest test-sb-no-prompt-with-quits-inhibited ()
+  "A request that would need a prompt while `inhibit-quit' is set is
+denied without calling the prompt function."
+  (test-sb--in-project
+    (let* ((asked 0)
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) 'session)))
+      (let ((inhibit-quit t))
+        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied))
+      (should (= 0 asked))
+      (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
+      (should (= 1 asked)))))
+
+(ert-deftest test-sb-remote-host-policy ()
+  "Remote files never get the local project's default grants; the
+per-host policy decides: allow needs no grant, deny refuses without a
+prompt, ask offers every scope, once forces a one-time grant.  The
+policy also governs buffers visiting remote files and shell commands
+in a remote root.  No TRAMP connection is made (paths are on a host
+that does not exist; nothing here touches the file)."
+  (test-sb--in-project
+    (let* ((asked nil) (answer 'session)
+           ;; when efrit-context-sources is loaded, the "target buffer"
+           ;; is the current one: that would allow any buffer here
+           (efrit-sandbox-target-buffer-function nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (cons (efrit-sandbox-request-cap req)
+                                      (efrit-sandbox-request-target req))
+                                asked)
+              answer))
+           (efrit-sandbox-remote-hosts
+            '(("open-box" . (:read allow :write ask))
+              ("locked-" . (:read deny :write deny))
+              ("careful\\.example\\.org" . (:read ask :write once))))
+           (efrit-sandbox-remote-default '(:read ask :write once))
+           (open "/ssh:me@open-box:/srv/app/x.txt")
+           (locked "/ssh:locked-1:/etc/hosts")
+           (careful "/ssh:careful.example.org:/home/me/notes.txt")
+           (unknown "/ssh:somewhere.invalid:/tmp/f"))
+      ;; The sandbox must decide lexically for remote paths: any
+      ;; attempt to open a connection is the bug this guards against
+      (require 'tramp)
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec))))
+        ;; policies resolve by identity, host, host suffix
+        (should (eq 'allow (efrit-sandbox-remote-policy open 'read)))
+        (should (eq 'ask (efrit-sandbox-remote-policy open 'write)))
+        (should (eq 'deny (efrit-sandbox-remote-policy locked 'read)))
+        (should (eq 'once (efrit-sandbox-remote-policy careful 'write)))
+        (should (eq 'ask (efrit-sandbox-remote-policy unknown 'read)))
+        (should (eq 'once (efrit-sandbox-remote-policy unknown 'write)))
+        (should-not (efrit-sandbox-remote-policy (expand-file-name "a" root) 'read))
+        ;; allow: no grant, no prompt
+        (should (efrit-sandbox-allowed-p 'read open))
+        (should (efrit-sandbox-check 'read open "read_file"))
+        (should-not asked)
+        ;; deny: refused, no prompt
+        (should-error (efrit-sandbox-check 'read locked "read_file") :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'write locked "write_file") :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; ask: prompts; a session grant covers the directory, not the host
+        (should (efrit-sandbox-check 'read careful "read_file"))
+        (should (equal '(read . "/ssh:careful.example.org:/home/me/") (car asked)))
+        (should (efrit-sandbox-allowed-p 'read "/ssh:careful.example.org:/home/me/other"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:careful.example.org:/etc/passwd"))
+        ;; once: the answer "session" is downgraded to a one-time grant
+        (setq asked nil)
+        (should (efrit-sandbox-check 'write careful "write_file"))
+        (should (efrit-sandbox-request-once-only-p
+                 (efrit-sandbox-request-create :cap 'write :target careful)))
+        (should-not (efrit-sandbox-allowed-p 'write careful))
+        ;; a remote root does not make its own files free to read
+        (let ((efrit-project-root "/ssh:somewhere.invalid:/proj/"))
+          (cl-letf (((symbol-function 'efrit-tool--get-project-root)
+                     (lambda () efrit-project-root)))
+            ;; project grants live with the project, on the host; do
+            ;; not fetch them here
+            (puthash "/ssh:somewhere.invalid:/proj/" t efrit-sandbox-store--loaded)
+            (puthash "/ssh:locked-2:/proj/" t efrit-sandbox-store--loaded)
+            (setq asked nil)
+            (should-not (efrit-sandbox-allowed-p 'read "/ssh:somewhere.invalid:/proj/file.el"
+                                                 "/ssh:somewhere.invalid:/proj/"))
+            (should (efrit-sandbox-check 'read "/ssh:somewhere.invalid:/proj/file.el" "read_file"))
+            (should (equal '(read . "/ssh:somewhere.invalid:/proj/") (car asked)))
+            ;; shell in a once-write root: granted once only
+            (should (efrit-sandbox-request-once-only-p
+                     (efrit-sandbox-request-create :cap 'shell :target '(shell "ls"))))
+            ;; shell in a deny-write root: refused
+            (let ((efrit-project-root "/ssh:locked-2:/proj/"))
+              (should-error (efrit-sandbox-check 'shell "ls" "shell_exec") :type 'efrit-sandbox-denied))))
+        ;; a buffer visiting a remote file follows the read policy
+        (cl-letf (((symbol-function 'efrit-sandbox-buffer-target) (lambda (_b) open)))
+          (with-temp-buffer
+            (rename-buffer "x.txt")
+            (should (efrit-sandbox-buffer-allowed-p (current-buffer)))))
+        (cl-letf (((symbol-function 'efrit-sandbox-buffer-target)
+                   (lambda (_b) "/ssh:careful.example.org:/var/log/syslog")))
+          (with-temp-buffer
+            (rename-buffer "syslog")
+            (should-not (efrit-sandbox-buffer-allowed-p (current-buffer)))))
+        ;; the prompt names the host
+        (should (string-match-p "ON HOST careful.example.org"
+                                (efrit-sandbox-ui--scope-word
+                                 (efrit-sandbox-request-create :cap 'write :target careful))))))))
+
+(ert-deftest test-sb-remote-policy-reaches-the-tools-and-eval ()
+  "The host policy is what the file tools (through `efrit-resolve-path')
+and the eval file-name handler see, with the right capability, and a
+`once' grant is consumed by the one access it was given for.  The
+hosts do not exist: every step must decide without connecting."
+  (test-sb--in-project
+    (require 'tramp)
+    (let* ((asked nil) (answer 'session)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (cons (efrit-sandbox-request-cap req)
+                                      (efrit-sandbox-request-target req))
+                                asked)
+              answer))
+           (efrit-sandbox-remote-hosts
+            '(("free-box" . (:read allow :write ask))
+              ("locked-box" . (:read deny :write deny))
+              ("careful-box" . (:read ask :write once))))
+           (efrit-sandbox-remote-default '(:read ask :write once))
+           (free "/ssh:free-box:/srv/a.txt")
+           (locked "/ssh:locked-box:/etc/shadow")
+           (careful "/ssh:careful-box:/home/me/f.txt"))
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec)))
+                ;; resolve-path probes existence to follow symlinks; a
+                ;; remote probe would connect
+                ((symbol-function 'file-exists-p) (lambda (f) (not (file-remote-p f))))
+                ((symbol-function 'file-truename) #'identity))
+        ;; read_file on an allow host: no prompt, resolves
+        (should (equal free (plist-get (efrit-resolve-path free 'read "read_file") :path)))
+        (should-not asked)
+        ;; write on the same host: ask (policy per capability)
+        (should (efrit-resolve-path free 'write "edit_file"))
+        (should (equal '(write . "/ssh:free-box:/srv/") (car asked)))
+        ;; a deny host: the tool is refused before any access, both caps
+        (setq asked nil)
+        (should-error (efrit-resolve-path locked 'read "read_file") :type 'efrit-sandbox-denied)
+        (should-error (efrit-resolve-path locked 'write "edit_file") :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; the eval handler: the same policy, same denial, no prompt
+        (efrit-sandbox-grant 'elisp t 'session)
+        (should-error (efrit-sandbox-eval-form `(insert-file-contents ,locked))
+                      :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-eval-form `(write-region "x" nil ,locked))
+                      :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; eval on an allow host reaches the primitive (which fails on
+        ;; the fake host, proving the sandbox let it through)
+        (should-error (efrit-sandbox-eval-form `(insert-file-contents ,free)) :type 'error)
+        (should-not asked)
+        ;; once: the first write asks and passes; the very next one asks again
+        (should (efrit-resolve-path careful 'write "edit_file"))
+        (should (= 1 (length asked)))
+        (should (efrit-resolve-path careful 'write "edit_file"))
+        (should (= 2 (length asked)))
+        ;; whereas ask + session: the second read of the directory is free
+        (setq asked nil)
+        (should (efrit-resolve-path careful 'read "read_file"))
+        (should (efrit-resolve-path "/ssh:careful-box:/home/me/g.txt" 'read "read_file"))
+        (should (= 1 (length asked)))))))
+
+(ert-deftest test-sb-remote-project-grant-persists-per-host ()
+  "An `ask' host answered with the project scope stores the remote
+target; after a reload it still covers that host's directory and
+nothing on another host."
+  (test-sb--in-project
+    (require 'tramp)
+    (let* ((efrit-sandbox-request-function (lambda (_req) 'project))
+           (efrit-sandbox-remote-hosts nil)
+           (efrit-sandbox-remote-default '(:read ask :write ask))
+           (there "/ssh:box-a:/data/set1/file.csv"))
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec))))
+        (should (efrit-sandbox-check 'read there "read_file"))
+        (should (file-exists-p (efrit-sandbox-store-file root)))
+        (clrhash efrit-sandbox--project-grants)
+        (clrhash efrit-sandbox-store--loaded)
+        (efrit-sandbox-store-ensure-loaded root)
+        (let ((g (efrit-sandbox-grants root)))
+          (should (= 1 (length g)))
+          (should (equal "/ssh:box-a:/data/set1/" (plist-get (car g) :target))))
+        (should (efrit-sandbox-allowed-p 'read "/ssh:box-a:/data/set1/other.csv"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:box-a:/data/set2/x"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:box-b:/data/set1/file.csv"))
+        (should-not (efrit-sandbox-allowed-p 'write there))))))
 
 (ert-deftest test-sb-eval-processes-need-shell ()
   (test-sb--in-project

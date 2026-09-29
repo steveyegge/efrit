@@ -5,6 +5,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'efrit-markdown)
+(defvar efrit-project-root)
 
 (defun test-md--faces (text)
   "The faces of the rendered TEXT, as ((SUBSTRING . FACE) ...) per run."
@@ -150,6 +151,20 @@ unfinished table is held back while streaming."
     (goto-char (point-max)) (insert "\n\nend\n")
     (efrit-markdown-render (point-min) (point-max) t)
     (should (string-prefix-p "a │ b\n─────\n1 │ 2\n" (substring-no-properties (buffer-string)))))
+  ;; mixed borders: header with outer bars, rows without a leading one
+  (let ((s (efrit-markdown-render-string "| Fruit | Count |\n|---|---|\napple | 3 |\nkiwi | 12 |")))
+    (should (equal "Fruit │ Count\n─────────────\napple │ 3\nkiwi  │ 12\n" (substring-no-properties s)))
+    (should (test-md--has-face s 'efrit-markdown-table-header "Fruit")))
+  ;; streaming: the header row arrives before its separator; the
+  ;; frontier must wait there or the header is rendered as prose and
+  ;; the table never forms (2026-09-28 live: "│ Fruit │ Count")
+  (with-temp-buffer
+    (dolist (chunk '("Here:\n\n| Fruit " "| Count |\n" "|---|---|\n" "apple | 3 |\n" "kiwi | 12 |" "\n\nend\n"))
+      (goto-char (point-max)) (insert chunk)
+      (efrit-markdown-render (point-min) (point-max) nil))
+    (efrit-markdown-render (point-min) (point-max) t)
+    (should (equal "Here:\n\nFruit │ Count\n─────────────\napple │ 3\nkiwi  │ 12\n\nend\n"
+                   (substring-no-properties (buffer-string)))))
   ;; a lone bar line without a separator is not a table
   (should (equal "| not | table |" (substring-no-properties (efrit-markdown-render-string "| not | table |"))))
   (let ((efrit-markdown-tables nil))
@@ -212,6 +227,23 @@ file or a text display shows the alt only; remote sources are fetched."
     (should (equal "**raw**" (substring-no-properties (efrit-markdown-render-string "**raw**")))))
   (should (equal "just words 2*3=6 and a_b_c"
                  (substring-no-properties (efrit-markdown-render-string "just words 2*3=6 and a_b_c")))))
+
+(ert-deftest test-markdown-file-reference-ranges ()
+  "`path#L3-L5' and `path:L3-L5' link with an end line; a single line does not."
+  (let* ((dir (file-name-as-directory (make-temp-file "efrit-md-" t)))
+         (file (expand-file-name "r.el" dir))
+         (default-directory dir)
+         ;; relative refs resolve against the project root when
+         ;; efrit-tool-utils is loaded (another test file may load it)
+         (efrit-project-root dir))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "a\nb\nc\nd\ne\n"))
+          (let ((s (efrit-markdown-render-string "see r.el#L3-L5 and r.el:L2-L4 and r.el:4")))
+            (should (equal (list file 3 nil 5) (get-text-property (string-search "r.el#" s) 'efrit-markdown-target s)))
+            (should (equal (list file 2 nil 4) (get-text-property (string-search "r.el:L2" s) 'efrit-markdown-target s)))
+            (should (equal (list file 4 nil) (get-text-property (string-search "r.el:4" s) 'efrit-markdown-target s)))))
+      (delete-directory dir t))))
 
 (provide 'test-markdown)
 ;;; test-markdown.el ends here

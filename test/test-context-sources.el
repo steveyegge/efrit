@@ -49,8 +49,9 @@
     (let* ((efrit-context-sources '(region))
            (efrit-context-region-max-chars 10)
            (snap (efrit-context-snapshot (current-buffer))))
-      (should (string-match-p "\\[truncated\\]" snap))
-      (should (string-match-p "<<<REGION\nxxxxxxxxxx\n\\.\\.\\." snap)))))
+      (should (string-match-p "\\[truncated around point\\]" snap))
+      ;; point is at the end: the window keeps the last 10 chars
+      (should (string-match-p "<<<REGION\n\\.\\.\\.\nxxxxxxxxxx\n>>>" snap)))))
 
 (ert-deftest test-ctx-snapshot-nil-when-no-sources ()
   (test-ctx--with-buffer "ctx-none" "x"

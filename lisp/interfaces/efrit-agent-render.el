@@ -252,6 +252,11 @@ Call this when Claude's message is complete."
       ;; The final pass: what was held back (the last line, an open
       ;; fence) is rendered now
       (efrit-agent--render-markdown (nth 1 efrit-agent--streaming-message) end-marker t)
+      ;; a closing "Next steps" list becomes buttons (efrit-next-steps)
+      (when (fboundp 'efrit-next-steps-mark)
+        (ignore-errors
+          (efrit-next-steps-mark (marker-position (nth 1 efrit-agent--streaming-message))
+                                 (marker-position end-marker))))
       (save-excursion
         (goto-char (marker-position end-marker))
         ;; Add trailing newlines for spacing
@@ -401,6 +406,8 @@ This provides smooth updates for changing thinking status."
 
 ;;; Header Line (status bar at top of window)
 
+(declare-function efrit-context-describe "efrit-context-sources")
+
 (defun efrit-agent--format-header-line ()
   "Format the header-line for display.
 Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
@@ -435,6 +442,12 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
      ;; Live context-window usage from the API's own numbers
      (when-let* ((usage (efrit-agent--usage-segment)))
        (concat sep usage))
+     ;; What the next turn will carry as editor context (the target
+     ;; buffer, its point or region), and whether it was dismissed
+     (when-let* ((ctx (and (fboundp 'efrit-context-describe)
+                           (ignore-errors (efrit-context-describe)))))
+       (concat sep (propertize ctx 'face 'efrit-agent-session-id
+                               'help-echo "Editor context sent with the next turn; C-c C-; dismisses it")))
      ;; Show action hints based on status
      (pcase efrit-agent--status
        ((or 'idle 'waiting)
@@ -455,12 +468,16 @@ who rebinds them sees their own keys."
                 ;; prefer the shifted/chorded key when several are bound:
                 ;; "S-RET" is what a chat user looks for, "C-j" is not
                 (let* ((keys (and map (where-is-internal cmd map)))
-                       (k (or (cl-find-if (lambda (k) (string-prefix-p "S-" (key-description k)))
-                                          keys)
-                              (car keys))))
-                  (if k (key-description k) fallback)))))
+                       (descs (mapcar #'key-description keys))
+                       ;; "S-RET" over "S-<return>", "RET" over "<return>":
+                       ;; the plain names read better; the shifted one first
+                       (k (or (cl-find-if (lambda (d) (and (string-prefix-p "S-" d) (not (string-match-p "<" d)))) descs)
+                              (cl-find-if (lambda (d) (string-prefix-p "S-" d)) descs)
+                              (cl-find-if (lambda (d) (not (string-match-p "<" d))) descs)
+                              (car descs))))
+                  (or k fallback)))))
     (format "%s sends · %s newline · %s steers · C-c ? menu"
-            (funcall key 'efrit-agent-input-send-or-newline "RET")
+            (funcall key 'efrit-agent-input-send "RET")
             (funcall key 'efrit-agent-input-newline "S-RET")
             (funcall key 'efrit-agent-input-send-override "M-RET"))))
 

@@ -124,6 +124,30 @@ http(s) fetched with `url-retrieve` into a cache, width per image in
 file per session under `efrit-data-directory/transcripts/`, so turns
 started from Lisp are recorded too and nothing is held in memory.
 
+Version control is reached only through `efrit-vcs.el` (lisp/core),
+which uses Emacs's VC layer (`vc-responsible-backend`, `vc-call-backend`
+for root / diff / print-log / annotate-command, `vc-dir-status-files`),
+`project-files` for file lists, and the `diff` library for text diffs.
+No tool runs `git` itself: VC handles TRAMP, coding systems and the
+user's own settings, and keeps its buffers in sync.  Checkpoints are
+Git stashes named `efrit-checkpoint ID: DESCRIPTION` (through
+`vc-git-stash`) so they are recognisable in `git stash list` and Magit;
+without Git the checkpoint is a file snapshot under
+`.efrit/checkpoints/ID/`.  User-facing views (`efrit-vcs-show-status`,
+`-show-diff`) open Magit when it is loaded, else `vc-dir` / `vc-diff`.
+The rule generalises: whenever Emacs has core functionality for a job,
+efrit reuses it instead of shelling out (tzz, 2026-09-28).
+
+Remote paths are a separate regime in the sandbox: `efrit-sandbox-remote-policy`
+(per host, `efrit-sandbox-remote-hosts` then `efrit-sandbox-remote-default`)
+decides allow / ask / once / deny for `read` and `write`; project
+default grants never cover a remote file; a shell in a remote root
+follows that host's write policy; buffers visiting remote files follow
+its read policy.  `efrit-sandbox-canonical` and `efrit-sandbox-abbreviate`
+are lexical for remote names (Emacs's `abbreviate-file-name` on a TRAMP
+path opens the connection to ask about case sensitivity), so deciding
+never connects.
+
 A REPL session's `working' status is only meaningful while
 `efrit-repl-loop--active` has its loop.  A reload replaces that table,
 so `efrit-repl-loop-recover-stale` (called from
@@ -132,6 +156,139 @@ of refusing every later submit as busy; the struct upgrade on reload
 does the same.  Tests and the test drive that need a pretend-busy
 session use `efrit-repl-loop-hold` / `-release`, which register a
 placeholder loop.
+
+Side requests go through `efrit-ask-once` (lisp/core/efrit-ask.el):
+one prompt, one callback, off any session, from a hidden buffer so the
+caller's buffer may die meanwhile.  Asks with the same `:key`
+supersede each other (the older reply is dropped as "superseded").
+`efrit-ask-candidates` asks for N answers separated by
+`<endCompletion>` and the candidates panel (`efrit-candidates-choose`,
+efrit-candidates.el) lets the user pick; the raw text is kept in a
+table keyed by hash and never re-read from the display.  Users of the
+side channel: prompt suggestions (`efrit-prompts-suggest`),
+`efrit-rewrite-region` (editable-region markers, diff via
+`efrit-vcs-diff-strings`, replace only if the region is unchanged),
+`efrit-commit-message` (staged diff via `efrit-vcs-diff-staged`).
+`efrit-scope-run` is not a side request: it fills a library prompt
+(`{{{:key}}}` placeholders) and runs it as a turn in the agent buffer.
+
+Keys in the agent buffer that depend on context (`RET`, `TAB`, the
+digits) are `menu-item` bindings with a `:filter`, so `key-binding`
+and `C-h k` show the command that will run and a key that does not
+apply falls through to the next keymap; there is no dispatcher
+command.  `efrit-agent-regenerate` rewinds the session history to
+before the last user message (`efrit-repl-session-rewind`), resends
+it, and deletes the old exchange from the transcript only when the new
+turn ends well.  Rendered code blocks carry an `efrit-markdown-block`
+property (language and raw body) so the copy and insert commands act
+on "the block at point" without re-reading fontified text.
+
+Before `eval_sexp` parses a form, `efrit-elisp-fix` balances it
+(strays closers dropped, missing closers appended, an open string
+closed) when `read` fails, and the tool result tells the model what
+was fixed.  `efrit-buffer-watch` records a tick or `track-changes`
+state when `read_buffer` runs; `edit_buffer` refuses positional edits
+when the buffer changed since.  A sandbox prompt for a shell line or
+an elisp form can be edited before allowing (`e`); the edited text is
+handed to the asking tool once through `efrit-sandbox-take-edited-input`
+and the scope is forced to `once`.
+
+Text sent "around a point" goes through `efrit-text-window`
+(lisp/core): a character budget split by ratio before and after,
+whole lines only, the slack given to the short side.  Users: the
+rewrite context, long scopes, the region context source.
+`efrit-text-window-header` names the language and indentation for
+code prompts.  The rewrite prompt sends the after-context first so the
+editable region ends the message (minuet's suffix-first for Claude).
+
+A cancelled stream that already produced text delivers it: the
+response carries `efrit_cancelled` (`efrit_partial` for a stream the
+server ended early), `efrit-loop-handle-response` appends
+"[answer cut short here]" to the last text block, records it in the
+history, publishes a `note`, and ends the turn as interrupted.  A
+stream cancelled before any text still ends with "interrupted" and no
+history entry.
+
+`efrit-inline-diff` (lisp/interfaces) draws a proposed change as
+overlays in the buffer: hunks parsed from the diff library's unified
+output (`efrit-vcs-diff-strings`), removed lines faced, added lines as
+one `after-string` per hunk (separate overlays sharing an anchor
+render in no promised order).  `efrit-rewrite-region' uses it when
+`efrit-rewrite-preview' is `inline'.
+
+`efrit-edit-history-mode` (lisp/core) keeps a snapshot per buffer and,
+through an `efrit-throttle` (debounce + minimum interval + skip after
+our own commands), diffs the buffer against it when a burst of edits
+is over; entries feed the `edit-history` context source newest first
+within a budget.  Anything automatic in efrit that can call the API
+must go through `efrit-throttle`.
+
+Several sessions (2026-09-28, after the multi-session audit in
+for-tzz).  Rendering is routed by the event's `:session-id`:
+`efrit-agent-buffer-for` finds the session's buffer, the integration
+subscribers and the `efrit-agent-show-*` wrappers take a buffer, and
+`efrit-publish` stamps `efrit-current-session-id` on events that
+carry none (sandbox and limits notes, todo changes).  The loops run
+tool dispatch and API callbacks as the session's code
+(`efrit-repl-loop--with-session`): `efrit-current-session-id` bound,
+`default-directory` and `efrit-project-root` set to the session's
+root, so the sandbox, limits and shell see the right project whatever
+buffer the sentinel fired in.  Per-turn state that used to be global
+is session-local: `efrit-session-local` registers a variable and
+`efrit-with-session` swaps its value in and out per session (tool
+counters, circuit breaker, todos, permission input, waiting seconds);
+the sandbox keeps once grant, edited input and the standing N/q
+answer in `efrit-sandbox--turn-state` keyed by session.  Streams carry
+their session id and `efrit-agent-cancel` cancels only its own.  The
+idle timer is per session.  Modal prompts (sandbox, limits) are one
+at a time (`efrit-with-prompt-turn`): a second session's request that
+arrives while one is up is denied with a note instead of nesting a
+`recursive-edit` inside the first.  `efrit-agent-instances.el` gives
+each project its buffers (`*efrit[proj]*`, `[proj:N]`, `[proj:name]`),
+side-window slots per project, and a per-tab toggle kept in a frame
+parameter.  `efrit-submit` and `efrit-agent-repl-session` take a
+buffer.  Left global on purpose: settings and presets, grant tables
+(keyed by root: two sessions in one project share grants), caches.
+
+Navigation tools (`efrit-tool-navigate.el`) run Emacs's own xref,
+imenu and tree-sitter in a buffer visiting the file, so the user's
+backend answers; project.el's "Select project" prompt is turned into
+an error there, since a prompt from a tool would hang the turn.
+`show_location` finds a range by text anchors.  The system prompt
+states the coordinate convention (lines 1-based, columns 0-based).
+Registered tools (`efrit-register-tool`) run with the user's target
+buffer current.  The diff preview's `E` opens ediff on a change;
+accepting on quit replaces the change's `new_content` with buffer B's
+text and the result's `user_edits` carries it, so the model applies
+what the user settled on.  `efrit-context-describe` is the header's
+context label; `efrit-context-dismiss` removes the file-bound
+sources for the current target until another file or a region.
+Range mentions `@path#L10-L20` inline only those lines.
+
+ai-code-interface batch (2026-09-28).  `efrit-brief` builds labelled
+briefs; a `question` brief also arms `efrit-brief-question-turn`,
+which `efrit-sandbox-check` reads first: write/shell/elisp are
+refused with a note, no prompt, until `efrit-sandbox-end-turn` at the
+turn's end.  `efrit-prompt-suffix-functions` runs in
+`efrit-agent--api-input-for` after mention expansion; grill-me and
+next-steps-ask are providers.  `efrit-verbatim` text is skipped by the
+mention scanner.  `efrit-diagnostics-baseline` sits in the dispatcher:
+before a write tool it records the file's diagnostics (once per turn),
+after it appends the new ones to the result.  `efrit-tool-last-error`
+advises `command-error-default-function`; `efrit-eval-observe` wraps
+`eval_sexp`.  `efrit-next-steps` marks the closing list at
+stream end.  `efrit-context-pins` are a per-root table rendered by the
+`pins` source.  `efrit-commands` holds the user commands,
+`efrit-prompts-library` the blame/log prompts and the refactoring
+catalog (`{{{?name|Prompt|default}}}` placeholders in
+`efrit-scope-fill`).  `efrit-magit` and `efrit-agent-dashboard` are
+UI over the same paths.
+
+`efrit-notify` (off by default) subscribes to `turn-complete` and
+notifies when a turn of at least `efrit-notify-min-seconds` ends while
+the agent buffer is not the selected window: `alert` if installed,
+else `notifications-notify`, else `message`.  `efrit-presets` are
+named plists applied with `efrit-preset-apply` (only the keys present).
 
 The REPL history is also bounded by size: before every request
 `efrit-repl-session-fit-context` estimates the history against the

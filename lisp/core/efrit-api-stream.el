@@ -91,7 +91,8 @@ When nil (or curl is missing) the url-retrieve path is used."
   (finished nil) (partial nil) (cancelled nil)
   (error-body "")
   (started nil)           ; float-time the request left, for the log
-  (context nil))          ; (URL MODEL TRANSPORT PURPOSE) for error messages
+  (context nil)           ; (URL MODEL TRANSPORT PURPOSE) for error messages
+  (session-id nil))       ; `efrit-current-session-id' when the request left
 
 (defvar efrit-api-stream--active nil
   "List of in-flight `efrit-api-stream' structs.")
@@ -201,6 +202,10 @@ When nil (or curl is missing) the url-retrieve path is used."
                 (make-hash-table :test 'equal)))
         (blocks (sort (copy-sequence (efrit-api-stream-blocks st))
                       (lambda (a b) (< (car a) (car b))))))
+    ;; A cancelled stream keeps only its text: a tool call cut in half
+    ;; cannot run, and the API would want a result for it
+    (when (efrit-api-stream-cancelled st)
+      (setq blocks (cl-remove-if-not (lambda (b) (equal (gethash "type" (cdr b)) "text")) blocks)))
     ;; tool_use blocks that never got content_block_stop: finalize input
     (dolist (b blocks)
       (let ((blk (cdr b)))
@@ -219,6 +224,8 @@ When nil (or curl is missing) the url-retrieve path is used."
       (puthash "usage" (efrit-api-stream-usage st) resp))
     (when (efrit-api-stream-partial st)
       (puthash "efrit_partial" t resp))
+    (when (efrit-api-stream-cancelled st)
+      (puthash "efrit_cancelled" t resp))
     resp))
 
 ;;; Process plumbing
@@ -251,10 +258,16 @@ When nil (or curl is missing) the url-retrieve path is used."
       (efrit-api-stream--cleanup st)
       (cond
        ((efrit-api-stream-cancelled st)
-        (efrit-log 'info "api ← cancelled after %.1fs (%s)"
+        (efrit-log 'info "api ← cancelled after %.1fs (%s)%s"
                    (- (float-time) (or (efrit-api-stream-started st) (float-time)))
-                   (or (nth 3 (efrit-api-stream-context st)) "request"))
-        (funcall cb nil "interrupted"))
+                   (or (nth 3 (efrit-api-stream-context st)) "request")
+                   (if have-content "; keeping the partial answer" ""))
+        ;; Text already shown to the user stays in the history too,
+        ;; marked as cut, so the next turn does not lose it (minuet
+        ;; keeps partial output on timeout; a cancel is the same case)
+        (if (efrit-api-stream--text-blocks-p st)
+            (funcall cb (efrit-api-stream-response st) nil)
+          (funcall cb nil "interrupted")))
        ;; API-level error event in the stream, or non-2xx with a body
        ((not (string-empty-p (efrit-api-stream-error-body st)))
         (funcall cb nil (efrit-api-stream--fail st (efrit-api-stream--format-error
@@ -287,6 +300,16 @@ When nil (or curl is missing) the url-retrieve path is used."
                            st (if (string-empty-p (efrit-api-stream-buffer st))
                                   "Empty response from endpoint"
                                 (efrit-api-stream--format-error (efrit-api-stream-buffer st))))))))))
+
+(defun efrit-api-stream--text-blocks-p (st)
+  "Non-nil if ST holds at least one text block with content.
+Tool_use blocks are not kept on cancel: a half-built call has nothing
+to execute and no result to pair with."
+  (cl-some (lambda (b)
+             (let ((blk (cdr b)))
+               (and (equal (gethash "type" blk) "text")
+                    (not (string-empty-p (or (gethash "text" blk) ""))))))
+           (efrit-api-stream-blocks st)))
 
 (defun efrit-api-stream--fail (st text)
   "TEXT prefixed with the request context recorded in ST."
@@ -329,6 +352,7 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
                   (cons '("accept" . "text/event-stream") (plist-get req :headers))))
          (st (efrit-api-stream--make :callback callback :on-text on-text
                                      :config-file config
+                                     :session-id (bound-and-true-p efrit-current-session-id)
                                      :started (efrit-api--log-request request-data "curl (streaming)")
                                      ;; captured now; the sentinel runs
                                      ;; outside the caller's bindings
@@ -374,8 +398,13 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
 
 (defun efrit-api-stream-cancel (&optional st)
   "Cancel stream ST, or every active stream when nil.
-The callback receives error \"interrupted\"."
-  (dolist (s (if st (list st) (copy-sequence efrit-api-stream--active)))
+ST may also be a session id: then the streams of that session.
+The callback receives error \"interrupted\", or the partial answer."
+  (dolist (s (cond
+              ((efrit-api-stream-p st) (list st))
+              ((stringp st) (cl-remove-if-not (lambda (x) (equal (efrit-api-stream-session-id x) st))
+                                              efrit-api-stream--active))
+              (t (copy-sequence efrit-api-stream--active))))
     (setf (efrit-api-stream-cancelled s) t)
     (when-let* ((p (efrit-api-stream-process s)))
       (when (process-live-p p)

@@ -174,7 +174,7 @@ legacy whitelist blocks rm."
   (let ((efrit-sandbox-request-function nil)
         (efrit-sandbox--session-grants (make-hash-table :test 'equal))
         (efrit-sandbox--project-grants (make-hash-table :test 'equal))
-        (efrit-sandbox--once-grant nil))
+        (efrit-sandbox--turn-state (make-hash-table :test (quote equal))))
     (should-error (efrit-do--handle-shell-exec "rm important.txt")
                   :type 'efrit-sandbox-denied))
   (let ((efrit-sandbox-enabled nil) (efrit-do-shell-security-enabled t))

@@ -18,6 +18,7 @@
 (require 'efrit-log)
 (require 'efrit-do-circuit-breaker)
 (require 'efrit-permissions)
+(require 'efrit-diagnostics-baseline)
 (require 'efrit-sandbox)
 (require 'efrit-result-struct)
 (require 'efrit-tool-registry)
@@ -133,6 +134,12 @@
     ("emacs_apropos"      . (efrit-do--handle-emacs-apropos . :tool-input))
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
     ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input))
+    ("xref_references"    . (efrit-do--handle-xref-references . :tool-input))
+    ("xref_apropos"       . (efrit-do--handle-xref-apropos . :tool-input))
+    ("imenu_symbols"      . (efrit-do--handle-imenu-symbols . :tool-input))
+    ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
+    ("show_location"      . (efrit-do--handle-show-location . :tool-input))
+    ("get_last_error"     . (efrit-do--handle-get-last-error . :tool-input))
     ("read_image"         . (efrit-do--handle-read-image . :tool-input))
     ("format_file"        . (efrit-do--handle-format-file . :tool-input))
     ;; Issue tracking tools (beads)
@@ -318,10 +325,15 @@ Applies circuit breaker limits to prevent infinite loops."
 
           ;; Circuit breaker allows execution - record the call
           (efrit-do--circuit-breaker-record-call tool-name tool-input)
+          ;; A write: remember the file's diagnostics before it, so the
+          ;; result can say what the edit broke (efrit-diagnostics-baseline)
+          (efrit-diagnostics-baseline-before-tool tool-name tool-input)
 
           ;; If there's a warning message, prepend it to the result
           (let* ((warning (cdr breaker-check))
-                 (result (condition-case err
+                 (result (efrit-diagnostics-baseline-after-tool
+                          tool-name tool-input
+                          (condition-case err
                              (efrit-do--dispatch-tool tool-name tool-input input-str)
                            ;; The scope sandbox refused and the user
                            ;; declined to widen it: a distinguished
@@ -330,7 +342,7 @@ Applies circuit breaker limits to prevent infinite loops."
                            (efrit-sandbox-denied
                             (efrit-log 'info "Sandbox denied %s" tool-name)
                             (concat efrit-sandbox-denied-prefix
-                                    (efrit-sandbox-denied-tool-result (cadr err))))))
+                                    (efrit-sandbox-denied-tool-result (cadr err)))))))
                  ;; Check result for error loops and inject warnings if needed
                  (loop-check (efrit-do--error-loop-check-result result))
                  (final-result (cdr loop-check))

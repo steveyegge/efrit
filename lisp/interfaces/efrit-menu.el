@@ -82,6 +82,24 @@
 
 ;;; Toggle commands
 
+(defconst efrit-menu-saved-settings
+  '(efrit-default-model efrit-api-streaming efrit-api-prompt-caching efrit-sandbox-enabled
+    efrit-review-enabled efrit-agent-header-style efrit-agent-verbosity efrit-agent-display-mode
+    efrit-log-level)
+  "The settings the menu's toggles change, saved together by `efrit-menu-save-settings'.")
+
+(defun efrit-menu-save-settings ()
+  "Save the menu's toggles (`efrit-menu-saved-settings') to the custom file.
+Toggling in the menu changes the running Emacs only; this makes it
+stick (claude-code-ide's Save suffix, 2026-09-28)."
+  (interactive)
+  (let ((saved nil))
+    (dolist (var efrit-menu-saved-settings)
+      (when (boundp var)
+        (customize-save-variable var (symbol-value var))
+        (push (symbol-name var) saved)))
+    (message "Saved %d settings to %s" (length saved) (or custom-file user-init-file))))
+
 (defun efrit-menu-toggle-streaming ()
   "Toggle `efrit-api-streaming'."
   (interactive)
@@ -143,6 +161,7 @@
        ("P" "Review an installed package" efrit-review-package)
        ("V" "Review all installed packages" efrit-review-all-packages)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
+       ("S" "Save these settings (customize-save-variable)" efrit-menu-save-settings)
        ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]
      [["Diagnostics"
        ("D" "Doctor (static)" efrit-doctor)

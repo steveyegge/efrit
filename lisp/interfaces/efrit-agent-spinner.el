@@ -148,12 +148,14 @@ is unavailable so callers can fall back to text frames."
   :group 'efrit-agent-spinner)
 
 (defun efrit-agent-spinner--busy-buffer ()
-  "The agent buffer with a request in flight, or nil."
-  (when (boundp 'efrit-agent-buffer-name)
-    (let ((buf (get-buffer efrit-agent-buffer-name)))
-      (and buf (buffer-live-p buf)
-           (buffer-local-value 'efrit-agent--thinking-label buf)
-           buf))))
+  "An agent buffer with a request in flight, or nil.
+Any of them: with several sessions the mode line shows that efrit
+works somewhere; clicking it goes to that buffer."
+  (when (fboundp 'efrit-agent-buffers)
+    (cl-find-if (lambda (buf) (buffer-local-value 'efrit-agent--thinking-label buf))
+                (efrit-agent-buffers))))
+
+(declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defun efrit-agent-spinner-mode-line-string ()
   "The mode-line text: the spinner frame while efrit works, else nil.

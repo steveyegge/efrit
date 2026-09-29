@@ -19,29 +19,49 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
 (require 'cl-lib)
 
 ;;; Constants
 
-(defconst efrit-tool-vcs-log--field-sep "\x1e"
-  "Record separator for git log format.")
+(defun efrit-tool-vcs-log--parse (text)
+  "Commits in VC's log TEXT (the backend's default format), newest first.
+Each is an alist with hash, short_hash, author, email, date (ISO 8601
+when parseable, else as written), subject."
+  (let ((commits nil) (current nil) (body nil))
+    (cl-flet ((finish ()
+                (when current
+                  (let ((subject (car (cl-remove-if #'string-empty-p (nreverse body)))))
+                    (push (cons 'subject (or subject "")) current))
+                  (push (nreverse current) commits)
+                  (setq current nil body nil))))
+      (dolist (line (split-string text "\n"))
+        (cond
+         ((string-match "\\`commit \\([0-9a-f]+\\)" line)
+          (finish)
+          (let ((hash (match-string 1 line)))
+            (setq current (list (cons 'short_hash (substring hash 0 (min 7 (length hash))))
+                                (cons 'hash hash)))))
+         ((null current))
+         ((string-match "\\`Author: *\\(.*?\\) *<\\([^>]*\\)>" line)
+          (push (cons 'author (match-string 1 line)) current)
+          (push (cons 'email (match-string 2 line)) current))
+         ((string-match "\\`Author: *\\(.*\\)" line)
+          (push (cons 'author (match-string 1 line)) current))
+         ((string-match "\\`Date: *\\(.*\\)" line)
+          (let* ((raw (match-string 1 line))
+                 (time (ignore-errors (date-to-time raw))))
+            (push (cons 'date (if time (format-time-string "%FT%T%z" time) raw)) current)))
+         ((string-match "\\`    \\(.*\\)" line)
+          (push (match-string 1 line) body))))
+      (finish))
+    (nreverse commits)))
 
-(defconst efrit-tool-vcs-log--commit-sep "\x1f"
-  "Unit separator between commits.")
-
-;;; Parsing Functions
-
-(defun efrit-tool-vcs-log--parse-commit (line)
-  "Parse a commit LINE from git log output.
-Returns alist with commit info or nil."
-  (let ((fields (split-string line efrit-tool-vcs-log--field-sep)))
-    (when (>= (length fields) 6)
-      `((full_hash . ,(nth 0 fields))
-        (hash . ,(nth 1 fields))
-        (author_name . ,(nth 2 fields))
-        (author_email . ,(nth 3 fields))
-        (date . ,(nth 4 fields))
-        (message . ,(nth 5 fields))))))
+(defun efrit-tool-vcs-log--since-p (commit since)
+  "Non-nil if COMMIT's date is at or after SINCE (a date string)."
+  (let ((cutoff (ignore-errors (date-to-time since)))
+        (date (ignore-errors (date-to-time (alist-get 'date commit)))))
+    (or (null cutoff) (null date) (not (time-less-p date cutoff)))))
 
 ;;; Main Tool Function
 
@@ -49,67 +69,50 @@ Returns alist with commit info or nil."
   "Get commit history.
 
 ARGS is an alist with:
-  path   - file or directory for filtered history (optional)
+  path   - file or directory to filter by (default: whole repository)
   count  - number of commits (default: 10)
-  since  - date filter (e.g., '1 week ago')
-  author - author filter
-  grep   - commit message search
+  since  - only commits at or after this date
+  author - only commits whose author name or email contains this
+  grep   - only commits whose subject contains this
 
-Returns a standard tool response with commit list."
+Through VC (`efrit-vcs-log'); the filters are applied here, so more
+entries than COUNT are read when filtering.  Returns a standard tool
+response with a `commits' vector."
   (efrit-tool-execute vcs_log args
     (let* ((path-input (alist-get 'path args))
            (count (or (alist-get 'count args) 10))
            (since (alist-get 'since args))
            (author (alist-get 'author args))
-           (grep (alist-get 'grep args)))
-
-      ;; Check if git is available
-      (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
-
-      ;; Build git log args with custom format
-      ;; Format: full_hash|short_hash|author_name|author_email|date|subject
-      (let* ((format-str (concat "%H" efrit-tool-vcs-log--field-sep
-                                 "%h" efrit-tool-vcs-log--field-sep
-                                 "%an" efrit-tool-vcs-log--field-sep
-                                 "%ae" efrit-tool-vcs-log--field-sep
-                                 "%aI" efrit-tool-vcs-log--field-sep
-                                 "%s" efrit-tool-vcs-log--commit-sep))
-             (path-resolved (when path-input
-                             (plist-get (efrit-resolve-path path-input 'read "vcs_log") :path-relative)))
-             ;; Build args list directly in correct order
-             (log-args (append
-                        (list "log"
-                              (format "--format=%s" format-str)
-                              "-n" (number-to-string count))
-                        (when since (list (format "--since=%s" since)))
-                        (when author (list (format "--author=%s" author)))
-                        (when grep (list (format "--grep=%s" grep)))
-                        (when path-resolved (list "--" path-resolved)))))
-
-        ;; Get the log
-        (let ((log-result (efrit-tool-run-git log-args)))
-          (unless (plist-get log-result :success)
-            (signal 'user-error (list "git log failed"
-                                      (plist-get log-result :error))))
-
-          (let* ((output (plist-get log-result :output))
-                 (commit-strings (split-string output efrit-tool-vcs-log--commit-sep t "[\n\r]+"))
-                 (commits (seq-remove #'null
-                                      (mapcar #'efrit-tool-vcs-log--parse-commit
-                                              commit-strings))))
-
-            (efrit-tool-success
-             `((commits . ,(vconcat commits))
-               (count . ,(length commits))
-               ,@(when path-resolved
-                   `((filtered_by_path . ,path-resolved)))
-               ,@(when since
-                   `((since . ,since)))
-               ,@(when author
-                   `((author_filter . ,author)))
-               ,@(when grep
-                   `((message_filter . ,grep)))))))))))
+           (grep (alist-get 'grep args))
+           (path-info (efrit-resolve-path path-input 'read "vcs_log"))
+           (path (plist-get path-info :path))
+           (root (or (efrit-vcs-root (if (file-directory-p path) path (file-name-directory path)))
+                     (signal 'user-error (list "Not inside a version-controlled tree"))))
+           (files (and path-input (not (equal (file-name-as-directory path) root)) (list path)))
+           (filtering (or since author grep))
+           (text (condition-case err
+                     (efrit-vcs-log files (if filtering (* 20 count) count) nil root)
+                   (efrit-vcs-error (signal 'user-error (cdr err)))))
+           (commits (efrit-tool-vcs-log--parse text)))
+      (when since
+        (setq commits (cl-remove-if-not (lambda (c) (efrit-tool-vcs-log--since-p c since)) commits)))
+      (when author
+        (setq commits (cl-remove-if-not
+                       (lambda (c) (or (string-match-p (regexp-quote author) (or (alist-get 'author c) ""))
+                                       (string-match-p (regexp-quote author) (or (alist-get 'email c) ""))))
+                       commits)))
+      (when grep
+        (setq commits (cl-remove-if-not
+                       (lambda (c) (string-match-p (regexp-quote grep) (or (alist-get 'subject c) "")))
+                       commits)))
+      (setq commits (seq-take commits count))
+      (efrit-tool-success
+       `((commits . ,(vconcat commits))
+         (count . ,(length commits))
+         ,@(when files `((filtered_by_path . ,(file-relative-name path root))))
+         ,@(when since `((since . ,since)))
+         ,@(when author `((author_filter . ,author)))
+         ,@(when grep `((message_filter . ,grep))))))))
 
 (provide 'efrit-tool-vcs-log)
 

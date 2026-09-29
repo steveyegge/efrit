@@ -239,6 +239,8 @@ Set `efrit-sandbox-enabled' to nil to get the per-call prompt back."
   "The tool input to actually run after the latest `efrit-permission-check'.
 Equal to the input passed in unless the user chose [e]dit at the prompt.")
 
+(efrit-session-local 'efrit-permission--last-request 'efrit-permission-last-input)
+
 (defcustom efrit-permission-preview t
   "When non-nil, show a diff/content preview before asking about write tools."
   :type 'boolean

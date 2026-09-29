@@ -22,6 +22,7 @@
 
 (require 'efrit-tool-utils)
 (require 'efrit-common)
+(require 'project)
 (require 'cl-lib)
 (require 'json)
 
@@ -230,13 +231,12 @@ a :warnings list telling Claude to narrow the scope."
          ;; project root: gating on the project root and running
          ;; ls-files there returned garbage paths (and silent zero
          ;; matches) whenever path pointed elsewhere (ef-b10b).
-         (files (or (when (and (efrit-tool-executable-find "git" path)
-                               (locate-dominating-file path ".git"))
-                      (let ((default-directory path))
-                        (with-temp-buffer
-                          (when (eq 0 (efrit-tool-call-process "git" nil t nil "ls-files"))
-                            (mapcar (lambda (f) (expand-file-name f path))
-                                    (split-string (buffer-string) "\n" t))))))
+         (files (or (when-let* ((project (project-current nil path)))
+                      ;; the project's own file list (VC-aware,
+                      ;; ignores honoured), narrowed to PATH
+                      (cl-remove-if-not
+                       (lambda (f) (string-prefix-p (file-name-as-directory path) f))
+                       (project-files project)))
                     ;; Never descend into VCS/build/dependency dirs: on a
                     ;; big non-git root (observed: a 27-clone container
                     ;; dir) the unpruned walk froze Emacs for minutes.

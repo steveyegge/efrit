@@ -27,6 +27,7 @@
 (require 'efrit-repl-session)
 (require 'efrit-repl-loop)
 (require 'efrit-agent-mentions)
+(require 'efrit-brief)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
@@ -55,9 +56,11 @@ persists and accumulates conversation context.")
 (declare-function efrit-agent-question-menu "efrit-agent-input")
 (declare-function transient--emergency-exit "transient")
 (declare-function transient-active-prefix "transient")
+(declare-function efrit-agent--turn-starts "efrit-agent")
 
-(defvar efrit-agent--question-menu-timer nil
-  "The timer that will open the question menu, or nil.")
+(defvar-local efrit-agent--question-menu-timer nil
+  "The timer that will open this buffer's question menu, or nil.
+Buffer-local: another session's question must not cancel it.")
 
 (defun efrit-agent--add-question (question &optional options)
   "Add a QUESTION from Claude to the conversation region.
@@ -133,8 +136,12 @@ the menu stood over an idle buffer, 2026-09-25) and exits the menu if
 it is showing.  `transient-current-command' is bound only while a
 suffix runs, so `transient-active-prefix' is the check."
   (efrit-agent--cancel-question-menu-timer)
+  ;; only a menu that answers into THIS buffer; another session's
+  ;; menu stays up
   (when (and (fboundp 'transient-active-prefix)
-             (transient-active-prefix '(efrit-agent-question-menu)))
+             (transient-active-prefix '(efrit-agent-question-menu))
+             (or (null efrit-agent--question-menu-buffer)
+                 (eq efrit-agent--question-menu-buffer (current-buffer))))
     ;; `transient-quit-one' is an empty command: the exit happens in
     ;; transient's pre-command hook when the USER invokes it.  Called
     ;; from Lisp it did nothing and the menu stayed up (2026-09-26).
@@ -317,33 +324,28 @@ Returns nil if no options or N is out of range."
         (setq efrit-agent--status 'working)
         t))))
 
-(defun efrit-agent-input-select-option-1 ()
-  "Select the first option when waiting for input."
-  (interactive)
-  (if (efrit-agent--select-option 1)
-      (efrit-agent--clear-input)
-    (insert "1")))  ; Type "1" if not in waiting state
+(defun efrit-agent-input--option-available-p (n)
+  "Non-nil when a pending question has an option N to pick."
+  (and (eq efrit-agent--status 'waiting)
+       (> (length (cadr efrit-agent--pending-question)) (1- n))))
 
-(defun efrit-agent-input-select-option-2 ()
-  "Select the second option when waiting for input."
-  (interactive)
-  (if (efrit-agent--select-option 2)
+(defun efrit-agent-input-select-option (n)
+  "Answer the pending question with its option N."
+  (interactive "p")
+  (if (efrit-agent--select-option n)
       (efrit-agent--clear-input)
-    (insert "2")))  ; Type "2" if not in waiting state
+    (user-error "No pending question with an option %d" n)))
 
-(defun efrit-agent-input-select-option-3 ()
-  "Select the third option when waiting for input."
-  (interactive)
-  (if (efrit-agent--select-option 3)
-      (efrit-agent--clear-input)
-    (insert "3")))  ; Type "3" if not in waiting state
+(defun efrit-agent-input--option-item (n)
+  "A menu-item for digit N: the option command while a question has
+option N, else nothing (the key falls through and types the digit)."
+  (let ((cmd (lambda () (interactive) (efrit-agent-input-select-option n))))
+    (list 'menu-item (format "option %d" n) cmd
+          :filter (lambda (c) (and (efrit-agent-input--option-available-p n) c)))))
 
-(defun efrit-agent-input-select-option-4 ()
-  "Select the fourth option when waiting for input."
-  (interactive)
-  (if (efrit-agent--select-option 4)
-      (efrit-agent--clear-input)
-    (insert "4")))  ; Type "4" if not in waiting state
+(defun efrit-agent-input--tab-filter (cmd)
+  "The TAB command: CMD (indent) on a list item, else `completion-at-point'."
+  (if (efrit-agent-input--list-item) cmd #'completion-at-point))
 
 ;;; Input Minor Mode
 ;;
@@ -353,7 +355,13 @@ Returns nil if no options or N is out of range."
 (defvar efrit-agent-input-mode-map
   (let ((map (make-sparse-keymap)))
     ;; Sending input
-    (define-key map (kbd "RET") #'efrit-agent-input-send-or-newline)
+    ;; RET sends from the input; in the read-only conversation the
+    ;; major mode's RET (toggle the row) applies: the item filters to
+    ;; nothing there, so the minor mode does not shadow it
+    (define-key map (kbd "RET") '(menu-item "" efrit-agent-input-send
+                                            :filter efrit-agent-input--ret-filter))
+    (define-key map [return] '(menu-item "" efrit-agent-input-send
+                                         :filter efrit-agent-input--ret-filter))
     (define-key map (kbd "S-<return>") #'efrit-agent-input-newline)
     (define-key map (kbd "M-<return>") #'efrit-agent-input-send-override)
     (define-key map (kbd "C-j") #'efrit-agent-input-newline)
@@ -388,13 +396,22 @@ Returns nil if no options or N is out of range."
     (define-key map (kbd "<up>") #'efrit-agent-input-up)
     (define-key map (kbd "<down>") #'efrit-agent-input-down)
     ;; Completion
-    (define-key map (kbd "TAB") #'efrit-agent-input-tab)
+    ;; On a list item TAB indents it; elsewhere it completes
+    (define-key map (kbd "TAB") '(menu-item "" efrit-agent-input-indent-item
+                                            :filter efrit-agent-input--tab-filter))
+    (define-key map [tab] '(menu-item "" efrit-agent-input-indent-item
+                                      :filter efrit-agent-input--tab-filter))
     ;; Quick option selection (1-4 when waiting for question response)
     ;; Only effective when status is 'waiting' (checked in handler)
-    (define-key map (kbd "1") #'efrit-agent-input-select-option-1)
-    (define-key map (kbd "2") #'efrit-agent-input-select-option-2)
-    (define-key map (kbd "3") #'efrit-agent-input-select-option-3)
-    (define-key map (kbd "4") #'efrit-agent-input-select-option-4)
+    ;; The digit answers a pending question; otherwise the binding
+    ;; resolves to nothing and the key types the digit.  A menu-item
+    ;; :filter decides at lookup time, so `C-h k 1' tells the truth
+    ;; and no command has to fake `self-insert-command' (after
+    ;; copilot-nes-mode-map, 2026-09-28).
+    (define-key map (kbd "1") (efrit-agent-input--option-item 1))
+    (define-key map (kbd "2") (efrit-agent-input--option-item 2))
+    (define-key map (kbd "3") (efrit-agent-input--option-item 3))
+    (define-key map (kbd "4") (efrit-agent-input--option-item 4))
     map)
   "Keymap for `efrit-agent-input-mode'.")
 
@@ -411,19 +428,17 @@ Key bindings:
     ;; Set up completion when mode is enabled
     (efrit-agent--setup-completion)))
 
-(defun efrit-agent-input-send-or-newline (&optional override)
-  "RET, context-sensitive.
-In the conversation region: toggle the tool call at point, as the
-help text has always promised.  In the input region: send the input,
-from any line of it.  While a turn runs, the input is queued or
-steered (see `efrit-agent-busy-submit-default-function'); with
-OVERRIDE (a prefix argument, or M-RET) the other one.  S-RET and C-j
-insert a newline (`efrit-agent-input-newline'), the convention of
-chat clients."
-  (interactive "P")
-  (if (efrit-agent--in-input-region-p)
-      (efrit-agent-input-send override)
-    (efrit-agent-toggle-expand)))
+(defun efrit-agent-input--ret-filter (cmd)
+  "RET: CMD (send) in the input region; nil elsewhere, so the major
+mode's RET (`efrit-agent-toggle-expand') is what runs.  Sending
+while a turn runs queues or steers (`efrit-agent-busy-submit-default-function');
+M-RET does the other one.  S-RET and C-j insert a newline."
+  (and (efrit-agent--in-input-region-p) cmd))
+
+(define-obsolete-function-alias 'efrit-agent-input-send-or-newline
+  #'efrit-agent-input-send "0.4.1"
+  "RET is a menu-item that resolves to `efrit-agent-input-send' in the
+input and to the major mode's binding elsewhere.")
 
 (defun efrit-agent-input-send-override ()
   "Send the input the other way round from RET while a turn runs.
@@ -483,13 +498,6 @@ list ends.  Idea from agent-shell's list-edit mode."
   (save-excursion
     (beginning-of-line)
     (insert (make-string efrit-agent-input-list-indent ?\s))))
-
-(defun efrit-agent-input-tab ()
-  "TAB in the input: indent a list item, else complete (@file, /command)."
-  (interactive "*")
-  (if (efrit-agent-input--list-item)
-      (efrit-agent-input-indent-item)
-    (completion-at-point)))
 
 (defun efrit-agent-input-dedent-item ()
   "Move the list item on this input line left one step; nothing elsewhere."
@@ -575,8 +583,12 @@ what was discussed previously.
 If the REPL session is idle, a new turn starts with the input.  If it
 is working, `efrit-agent-busy-submit-default-function' decides (queue
 by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
-\(steer by default).  If no REPL session exists, one is created."
+\(steer by default).  If no REPL session exists, one is created.
+Idle, a prefix argument (OVERRIDE) means \"grill me\": the model asks
+its clarifying questions before acting (`efrit-grill-me')."
   (interactive "P")
+  (when (and override (not (efrit-agent--session-busy-p)))
+    (setq efrit-grill-me t))
   (let ((input (efrit-agent--get-input)))
     (cond
      ((or (null input) (string-empty-p (string-trim input)))
@@ -602,17 +614,20 @@ by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
           (goto-char efrit-agent--input-start))
         (efrit-agent--repl-send input (efrit-agent--api-input-for input)))))))
 
-(defun efrit-agent--api-input-for (input)
-  "What the model receives for INPUT: mentions expanded, images attached.
-A string when there are no images; else a vector of content blocks
+(defun efrit-agent--api-input-for (input &optional command)
+  "What the model receives for INPUT: mentions expanded, images attached,
+the prompt suffixes (`efrit-prompt-suffix-functions') appended.
+COMMAND names the command that produced INPUT, for the providers.  A
+string when there are no images; else a vector of content blocks
 \(the image blocks, then the text) that `efrit-repl-continue' passes
 through.  Returns nil when INPUT needs no change, so the caller's
 default applies."
-  (let ((text (efrit-agent-mentions-expand input))
-        (images (efrit-agent-mentions-content-blocks input)))
+  (let* ((expanded (efrit-agent-mentions-expand input))
+         (text (efrit-prompt-apply-suffixes expanded (or command this-command)))
+         (images (efrit-agent-mentions-content-blocks input)))
     (cond
-     (images (vconcat images (list `((type . "text") (text . ,text)))))
-     ((not (equal text input)) text))))
+     (images (vconcat images (list `((type . "text") (text . ,(substring-no-properties text))))))
+     ((not (equal text input)) (substring-no-properties text)))))
 
 (defun efrit-agent--send-queued (session)
   "Start the next queued input of SESSION as a turn, keeping the user's draft.
@@ -709,12 +724,23 @@ API-INPUT, when given, is what the model receives in place of INPUT
                             #'efrit-agent--on-turn-complete api-input)
        t))))
 
-(defun efrit-agent-repl-session ()
-  "The REPL session of the agent buffer, created if the buffer has none.
-For packages that drive several turns through `efrit-submit' and need
-the session's history marks (`efrit-repl-session-history-mark')."
+(defun efrit-agent-target-buffer (&optional buffer)
+  "The agent buffer a Lisp caller means: BUFFER, the current one when
+it is an agent buffer, else the default agent buffer, created."
   (require 'efrit-agent)
-  (with-current-buffer (efrit-agent--get-buffer)
+  (cond
+   ((bufferp buffer) buffer)
+   ((stringp buffer) (get-buffer-create buffer))
+   ((derived-mode-p 'efrit-agent-mode) (current-buffer))
+   (t (efrit-agent--get-buffer))))
+
+(defun efrit-agent-repl-session (&optional buffer)
+  "The REPL session of agent BUFFER, created if the buffer has none.
+BUFFER defaults per `efrit-agent-target-buffer'.  For packages that
+drive several turns through `efrit-submit' and need the session's
+history marks (`efrit-repl-session-history-mark')."
+  (require 'efrit-agent)
+  (with-current-buffer (efrit-agent-target-buffer buffer)
     (unless (derived-mode-p 'efrit-agent-mode)
       (efrit-agent-mode))
     (unless efrit-agent--repl-session
@@ -723,18 +749,19 @@ the session's history marks (`efrit-repl-session-history-mark')."
     efrit-agent--repl-session))
 
 ;;;###autoload
-(defun efrit-submit (shown &optional api-input)
+(defun efrit-submit (shown &optional api-input buffer)
   "Start a REPL turn from Lisp: show SHOWN in the conversation, send API-INPUT.
 For packages that prepare a prompt over data they gathered (a mail
 reader over selected messages, say): SHOWN is the short line the user
 sees as their turn, API-INPUT (default SHOWN) the full text the model
-receives, with the usual editor-context block prepended.  Opens the
-agent buffer if needed.  Returns non-nil if the turn started; nil
-when the session is busy, in which case nothing was sent and nothing
-was shown -- the caller decides whether to wait (`efrit-subscribe' to
+receives, with the usual editor-context block prepended.  BUFFER is
+the agent buffer to use (default per `efrit-agent-target-buffer'),
+opened if needed.  Returns non-nil if the turn started; nil when the
+session is busy, in which case nothing was sent and nothing was
+shown -- the caller decides whether to wait (`efrit-subscribe' to
 `status') or to give up."
   (require 'efrit-agent)
-  (let ((buffer (efrit-agent--get-buffer)))
+  (let ((buffer (efrit-agent-target-buffer buffer)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'efrit-agent-mode)
         (efrit-agent-mode))
@@ -752,6 +779,9 @@ was shown -- the caller decides whether to wait (`efrit-subscribe' to
   "Callback when a REPL turn completes.
 SESSION is the REPL session, STOP-REASON indicates why the turn ended."
   (efrit-log 'debug "REPL turn complete: %s" stop-reason)
+  (when-let* ((buf (and session (efrit-repl-session-buffer session))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf (efrit-agent--finish-regenerate stop-reason))))
   ;; Update agent buffer status based on stop reason
   ;; Note: efrit-repl-loop--end-turn already sets status, but we need to
   ;; handle the callback consistently. "unknown" typically means Claude
@@ -764,7 +794,8 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
        ("paused" 'paused)
        ("interrupted" 'interrupted)
        ((or "api-error" "error") 'failed)
-       (_ 'idle))))
+       (_ 'idle))
+     (and session (efrit-repl-session-buffer session))))
   ;; Reset prompt if we were waiting -- but keep the Answer: prompt when
   ;; the turn paused on request_user_input (ef-dcn).  This callback runs
   ;; from the API response handler, whose current buffer is NOT the agent
@@ -886,7 +917,7 @@ The conversation display is cleared and a new REPL session is created."
   ;; Reset status
   (setq efrit-agent--status 'idle)
   (when (fboundp 'efrit-agent-set-status)
-    (efrit-agent-set-status 'idle))
+    (efrit-agent-set-status 'idle (current-buffer)))
   (message "Efrit: started new conversation"))
 
 ;;; Small conveniences
@@ -964,6 +995,89 @@ an earlier answer and ask about it."
   (if-let* ((id (efrit-agent-session-id)))
       (progn (kill-new id) (message "Copied session id %s" id))
     (message "Efrit: no session yet")))
+
+;;; Regenerate: ask the last question again
+;;
+;; After copilot-chat-retry (2026-09-28): the old exchange stays in
+;; the transcript until the new answer has arrived; on failure nothing
+;; is lost.  The API history is rewound to before the last user
+;; message, so the model does not see its previous answer.
+
+(defvar-local efrit-agent--regenerate nil
+  "While a regenerated turn runs: (OLD-START-MARKER OLD-END-MARKER MARK)
+of the exchange being replaced and the history mark it was rewound to.")
+
+(defun efrit-agent--last-exchange-bounds ()
+  "The (START . END) of the last user line and everything after it, or nil."
+  (let ((starts (efrit-agent--turn-starts)))
+    (when starts
+      (cons (car (last starts))
+            (if (and efrit-agent--conversation-end (marker-position efrit-agent--conversation-end))
+                (marker-position efrit-agent--conversation-end)
+              (point-max))))))
+
+(defun efrit-agent--last-user-input ()
+  "The text of the last user message in the transcript, or nil."
+  (when-let* ((b (efrit-agent--last-exchange-bounds)))
+    (get-text-property (car b) 'efrit-user-text)))
+
+(defun efrit-agent--history-mark-before-last-user (session)
+  "The API history mark just before SESSION's last HUMAN message, or nil.
+Tool results are user messages too; they do not count.  Rewinding to
+one of them would leave a tool_use without its tool_result and the API
+refuses every later request of the session (live run 2026-09-28 17:43:
+eight steps timed out after one regenerate)."
+  (let* ((messages (efrit-repl-session-api-messages session))
+         (n (length messages))
+         (i (1- n)))
+    (while (and (>= i 0)
+                (or (not (equal (efrit-repl-session--block-get (nth i messages) "role") "user"))
+                    (efrit-repl-session-tool-result-message-p (nth i messages))))
+      (cl-decf i))
+    ;; 0 is a valid mark (the first message): return a list so the
+    ;; caller can tell "none" from "before the first"
+    (and (>= i 0) (list i))))
+
+(defun efrit-agent-regenerate (&optional edit)
+  "Ask the model the last question again; replace the old answer when the new one arrives.
+With EDIT (a prefix argument), edit the question first.  The old
+exchange stays until the new turn ends well; a failed or cancelled
+turn leaves it in place.  Menu key `g'."
+  (interactive "P")
+  (when (efrit-agent--session-busy-p)
+    (user-error "A turn is running; cancel it or wait"))
+  (let* ((session (or efrit-agent--repl-session (user-error "No session in this buffer")))
+         (bounds (or (efrit-agent--last-exchange-bounds) (user-error "No turn to regenerate")))
+         (input (or (efrit-agent--last-user-input) (user-error "No user message to send again")))
+         (mark (car (or (efrit-agent--history-mark-before-last-user session)
+                        (user-error "The session history has no user message"))))
+         (text (if edit (read-string "Regenerate with: " input) input)))
+    (when (string-empty-p (string-trim text)) (user-error "Nothing to send"))
+    (efrit-repl-session-rewind session mark)
+    (efrit-agent--add-user-message text)
+    ;; The old exchange ends where the new user line begins; taken
+    ;; after the add, since the conversation-end marker moves with it
+    (let ((new-start (car (last (efrit-agent--turn-starts)))))
+      (setq efrit-agent--regenerate
+            (list (copy-marker (car bounds)) (copy-marker new-start) mark)))
+    (unless (efrit-agent--repl-send text)
+      (setq efrit-agent--regenerate nil)
+      (user-error "The session did not accept the turn"))
+    (message "Efrit: regenerating; the old answer goes when the new one has arrived")))
+
+(defun efrit-agent--finish-regenerate (stop-reason)
+  "After a regenerated turn: drop the old exchange on success, keep it otherwise."
+  (when-let* ((state efrit-agent--regenerate))
+    (setq efrit-agent--regenerate nil)
+    (pcase-let ((`(,start ,end ,_mark) state))
+      (if (and (member stop-reason '("end_turn" "session-complete" "unknown"))
+               (marker-position start) (marker-position end) (< start end))
+          (efrit-agent--with-render
+            (delete-region start end)
+            (efrit-agent--reset-undo-history)
+            (message "Efrit: regenerated; the earlier answer was replaced"))
+        (message "Efrit: the regenerated turn ended with %s; the earlier answer stays" stop-reason))
+      (set-marker start nil) (set-marker end nil))))
 
 (defun efrit-agent-restart ()
   "Start over in this buffer: a fresh REPL session, the same windows.

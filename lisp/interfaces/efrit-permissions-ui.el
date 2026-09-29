@@ -243,6 +243,21 @@ root with session grants in memory."
    (list (list :kind 'global :var 'efrit-sandbox-shell-always-ask)
          (vector "" "  shell always-ask" (format "%d patterns" (length efrit-sandbox-shell-always-ask))
                  "global" "lines asked every time (rm -rf, sudo, ...)"))
+   (list (list :kind 'global :var 'efrit-sandbox-remote-default)
+         (vector "" "  remote hosts"
+                 (format "read %s, write %s"
+                         (plist-get efrit-sandbox-remote-default :read)
+                         (plist-get efrit-sandbox-remote-default :write))
+                 "global" "TRAMP paths on hosts with no entry (c: customize)"))
+   (list (list :kind 'global :var 'efrit-sandbox-remote-hosts)
+         (vector "" "  remote host list"
+                 (if efrit-sandbox-remote-hosts
+                     (mapconcat (lambda (e) (format "%s r:%s w:%s" (car e)
+                                                    (or (plist-get (cdr e) :read) "-")
+                                                    (or (plist-get (cdr e) :write) "-")))
+                                efrit-sandbox-remote-hosts ", ")
+                   "none")
+                 "global" "per-host read/write policy: allow ask once deny"))
    (list (list :kind 'global :var 'efrit-permission-policy)
          (vector "" "  per-call prompt"
                  (if efrit-sandbox-enabled

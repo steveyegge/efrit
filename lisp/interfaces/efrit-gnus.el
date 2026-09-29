@@ -171,6 +171,25 @@
  "For each message, note in one line: the topics it covers, anything finished or decided, and anything worrying or blocked."
  "Now, over the whole selection, three sections. Trends: the recurring topics and how each moved over the period, with dates. Accomplishments: what got done or decided, by whom. Concerns: what is blocked, slipping, contested, or keeps coming back unresolved, and since when. Write it as a briefing someone who read none of these could act on; name people and dates.")
 
+(defcustom efrit-gnus-own-buffer t
+  "Non-nil gives Gnus its own agent buffer, `*efrit[gnus]*', when
+`efrit-agent-instances-mode' is on; nil shares the default buffer with
+code work.  A mail analysis and a code session then do not interleave."
+  :type 'boolean
+  :group 'efrit-gnus)
+
+(defun efrit-gnus-agent-buffer ()
+  "The agent buffer Gnus turns go to."
+  (if (and efrit-gnus-own-buffer (bound-and-true-p efrit-agent-instances-mode)
+           (fboundp 'efrit-agent-instance-create))
+      (or (get-buffer "*efrit[gnus]*")
+          (with-current-buffer (efrit-agent-instance-create nil "gnus")
+            (rename-buffer "*efrit[gnus]*" t)
+            (current-buffer)))
+    nil))
+
+(declare-function efrit-agent-instance-create "efrit-agent-instances")
+
 (defcustom efrit-gnus-default-prompt "summarize"
   "Name of the prompt offered first, when none was used yet this session."
   :type 'string)
@@ -736,7 +755,7 @@ turn started."
         (push (list rest prompt where last total) (efrit-gnus-run-queue run)))
       (cl-incf (efrit-gnus-run-batches run))
       (efrit-gnus--rewind-for-turn run)
-      (unless (efrit-submit shown api)
+      (unless (efrit-submit shown api (efrit-gnus-agent-buffer))
         (setq efrit-gnus--run nil)
         (user-error "efrit is busy with another turn; try again when it is idle"))
       t)))
@@ -773,7 +792,8 @@ The turn in flight finishes on its own."
                 (when prompt
                   (efrit-gnus--rewind-for-turn run)
                   (unless (efrit-submit "over the whole selection"
-                                        (efrit-gnus--closing-text run prompt))
+                                        (efrit-gnus--closing-text run prompt)
+                                        (efrit-gnus-agent-buffer))
                     (user-error "efrit is busy; the closing summary was not sent"))))))
         (error (efrit-gnus--stop-batches (error-message-string err))))
     (setq efrit-gnus--sending nil)))
@@ -785,13 +805,19 @@ a batch that is still rendering (two handlers racing did exactly that:
 the summary went out after batch one and the second batch found the
 session busy).  A failed turn ends the run: its answer is missing and
 the next batch would start the whole chain over."
-  (pcase (alist-get :status event)
-    ('idle
-     (when (and efrit-gnus--run (not efrit-gnus--sending))
-       ;; Not from inside the event: let the turn finish tearing down.
-       (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
-    ('failed
-     (when efrit-gnus--run
+  ;; Only this run's session: another agent session going idle is
+  ;; not our batch finishing
+  (when (and efrit-gnus--run
+             (let ((session (efrit-gnus-run-session efrit-gnus--run))
+                   (id (alist-get :session-id event)))
+               (or (null session) (null id)
+                   (equal id (efrit-repl-session-id session)))))
+    (pcase (alist-get :status event)
+      ('idle
+       (unless efrit-gnus--sending
+         ;; Not from inside the event: let the turn finish tearing down.
+         (run-at-time 0.1 nil #'efrit-gnus--send-next-batch)))
+      ('failed
        (efrit-gnus--stop-batches "the turn failed")))))
 
 (defun efrit-gnus--watch-for-idle ()
@@ -824,7 +850,7 @@ for what each turn can see."
          (n (length refs))
          (item (efrit-gnus--fill (car pair) group n query))
          (summary (and (cdr pair) (efrit-gnus--fill (cdr pair) group n query)))
-         (session (efrit-agent-repl-session))
+         (session (efrit-agent-repl-session (efrit-gnus-agent-buffer)))
          (run (efrit-gnus-run--make
                :closing summary :session session
                :mark (efrit-repl-session-history-mark session)

@@ -446,8 +446,51 @@ Deletes from input-start marker to end of buffer."
 ;;; Buffer Creation and Management
 
 (defun efrit-agent--get-buffer ()
-  "Get or create the agent buffer."
+  "Get or create the default agent buffer.
+Interactive entry points open this one.  Anything that renders on
+behalf of a session must use `efrit-agent-buffer-for' instead: with
+several sessions, each has its own buffer."
   (get-buffer-create efrit-agent-buffer-name))
+
+(declare-function efrit-repl-session-get "efrit-repl-session")
+(declare-function efrit-repl-session-buffer "efrit-repl-session")
+(defvar efrit-agent--repl-session)
+(defvar-local efrit-agent--instance nil
+  "This buffer's instance when made by efrit-agent-instances:
+a plist (:project ROOT :name NAME :number N); nil for the default buffer.")
+(declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
+
+(defun efrit-agent-buffers ()
+  "Every live agent buffer."
+  (cl-remove-if-not (lambda (b) (with-current-buffer b (derived-mode-p 'efrit-agent-mode)))
+                    (buffer-list)))
+
+(defun efrit-agent-buffer-for (session-id)
+  "The agent buffer that shows SESSION-ID, or nil.
+A REPL session names its buffer; an efrit-do session is found by the
+buffer's `efrit-agent--session-id'.  With SESSION-ID nil, the default
+buffer when it exists.  Never creates a buffer."
+  (cond
+   ((null session-id) (get-buffer efrit-agent-buffer-name))
+   ((when-let* ((session (and (fboundp 'efrit-repl-session-get)
+                              (efrit-repl-session-get session-id)))
+                (buf (efrit-repl-session-buffer session)))
+      (and (buffer-live-p buf) buf)))
+   (t (or (cl-find-if (lambda (b) (equal (buffer-local-value 'efrit-agent--session-id b) session-id))
+                      (efrit-agent-buffers))
+          ;; the efrit-do path attaches to the default buffer
+          (let ((b (get-buffer efrit-agent-buffer-name)))
+            (and b (with-current-buffer b
+                     (or (null efrit-agent--session-id) (null efrit-agent--repl-session)))
+                 b))))))
+
+(defmacro efrit-agent-with-session-buffer (session-id &rest body)
+  "Run BODY in the agent buffer of SESSION-ID when there is one."
+  (declare (indent 1))
+  `(let ((buffer (efrit-agent-buffer-for ,session-id)))
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         ,@body))))
 
 (defun efrit-agent--create-buffer (session-id command)
   "Create and initialize the agent buffer for SESSION-ID with COMMAND."
@@ -518,8 +561,14 @@ from delete-the-window to show-the-previous-buffer, and the next quit
 would leave the split behind."
   (let* ((buffer (or buffer (efrit-agent--get-buffer)))
          (existing (get-buffer-window buffer 'visible))
-         (win (or existing
-                  (display-buffer buffer efrit-agent-display-buffer-action))))
+         (win (cond
+               (existing)
+               ;; an instance buffer (efrit-agent-instances) has a
+               ;; side-window slot of its own
+               ((and (fboundp 'efrit-agent-display-in-side-window)
+                     (buffer-local-value 'efrit-agent--instance buffer))
+                (efrit-agent-display-in-side-window buffer))
+               (t (display-buffer buffer efrit-agent-display-buffer-action)))))
     (efrit-agent--dedicate-window win)
     (when (and select (window-live-p win))
       (select-window win)
@@ -578,9 +627,15 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
                       efrit-agent--spinner-frames-ascii)))
         (aref frames (mod efrit-agent--spinner-index (length frames))))))
 
-(defun efrit-agent--spinner-tick (buffer)
-  "Advance the spinner in BUFFER and refresh its header-line."
-  (when (buffer-live-p buffer)
+(defun efrit-agent--spinner-tick (buffer timer)
+  "Advance the spinner in BUFFER and refresh its header-line.
+TIMER is the timer this tick belongs to: a tick that finds its buffer
+dead or its label cleared cancels that exact timer, so no repeating
+timer outlives the buffer (the buffer-local variable that held it is
+gone with the buffer; after copilot-chat's thinking indicator,
+2026-09-28)."
+  (if (not (buffer-live-p buffer))
+      (cancel-timer timer)
     (with-current-buffer buffer
       (if efrit-agent--thinking-label
           (progn
@@ -590,9 +645,9 @@ TEXT-ONLY forces the glyph (for places that cannot show an image)."
             ;; every window: the global mode-line spinner lives in
             ;; all of them (efrit-agent-spinner-mode-line-string)
             (force-mode-line-update t))
-        ;; Stale tick after the label was cleared — stop the timer
-        (when efrit-agent--spinner-timer
-          (cancel-timer efrit-agent--spinner-timer)
+        ;; Stale tick after the label was cleared: stop this timer
+        (cancel-timer timer)
+        (when (eq efrit-agent--spinner-timer timer)
           (setq efrit-agent--spinner-timer nil))))))
 
 (defun efrit-agent--spinner-start (&optional label)
@@ -606,9 +661,12 @@ Call in the agent buffer when an API call starts."
   (setq efrit-agent--spinner-index 0)
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer))
-  (setq efrit-agent--spinner-timer
-        (run-at-time 0 efrit-agent-spinner-interval
-                     #'efrit-agent--spinner-tick (current-buffer)))
+  ;; The timer is created idle, then pointed at itself, so each tick
+  ;; can cancel the very timer that fired it
+  (let ((timer (run-at-time 0 efrit-agent-spinner-interval #'ignore))
+        (buffer (current-buffer)))
+    (timer-set-function timer #'efrit-agent--spinner-tick (list buffer timer))
+    (setq efrit-agent--spinner-timer timer))
   (force-mode-line-update))
 
 (defun efrit-agent--spinner-stop ()
@@ -671,10 +729,24 @@ Session: %s
 See `efrit-agent--attach-session'."
   (efrit-agent--attach-session (efrit-session-id session) command))
 
+(declare-function efrit-session-persist-save "efrit-session-persist")
+(declare-function efrit-repl-session-api-messages "efrit-repl-session")
+
 (defun efrit-agent--save-session-on-kill ()
-  "Save the current session when the agent buffer is killed.
-Only saves if session has content worth preserving."
-  (when efrit-agent--session-id
+  "Save the buffer's session when the agent buffer is killed.
+A REPL session (the buffer-local `efrit-agent--repl-session') is
+saved through the persist layer when it has messages; an efrit-do
+session through the transcript.  Before 2026-09-28 the REPL case was
+looked up in the efrit-do table and never found, so nothing was saved."
+  (when (and (bound-and-true-p efrit-agent--repl-session)
+             (fboundp 'efrit-repl-session-api-messages)
+             (efrit-repl-session-api-messages efrit-agent--repl-session)
+             (bound-and-true-p efrit-session-persist-auto-save))
+    (condition-case err
+        (progn (require 'efrit-session-persist)
+               (efrit-session-persist-save efrit-agent--repl-session))
+      (error (efrit-log 'warn "Failed to save REPL session on kill: %s" (error-message-string err)))))
+  (when (and efrit-agent--session-id (not (bound-and-true-p efrit-agent--repl-session)))
     (condition-case err
         (progn
           (require 'efrit-do-async-loop)

@@ -47,6 +47,8 @@
 (require 'cl-lib)
 (require 'auth-source)
 (require 'efrit-todo)
+(require 'efrit-elisp-fix)
+(require 'efrit-tool-last-error)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
 (declare-function efrit-log "efrit-log")
@@ -131,6 +133,10 @@ immediately, telling the model to use the request_user_input tool."
 
 (defvar efrit-tools--total-call-count 0
   "Count of all tool calls in current session.")
+
+(require 'efrit-events)
+;; per turn of one session, not shared across sessions
+(efrit-session-local 'efrit-tools--eval-count 'efrit-tools--total-call-count)
 
 (defun efrit-tools--reset-rate-limits ()
   "Reset the per-turn tool counters.
@@ -241,12 +247,17 @@ non-nil."
                     (if (bound-and-true-p efrit-sandbox-enabled)
                         (efrit-sandbox-eval-form sexp evaluator)
                       (funcall evaluator sexp))))
-         (result (if timeout
-                     (with-timeout (timeout
-                                    (signal 'efrit-eval-timeout
-                                            (list (format "Evaluation timed out after %d seconds" timeout))))
-                       (funcall do-eval))
-                   (funcall do-eval)))
+         ;; what the evaluation did besides return: messages written,
+         ;; buffers changed (efrit-tool-last-error)
+         (observed (efrit-eval-observe
+                    (lambda ()
+                      (if timeout
+                          (with-timeout (timeout
+                                         (signal 'efrit-eval-timeout
+                                                 (list (format "Evaluation timed out after %d seconds" timeout))))
+                            (funcall do-eval))
+                        (funcall do-eval)))))
+         (result (nth 0 observed))
          (result-string (format "%S" result)))
     ;; Truncate if result is too long
     (when (and result-string 
@@ -256,6 +267,8 @@ non-nil."
     
     (list :success t
           :result result-string
+          :messages (nth 1 observed)
+          :changed-buffers (nth 2 observed)
           :input (format "%S" sexp)
           :context (condition-case _
                       (efrit-tools-get-buffer-context)
@@ -295,6 +308,9 @@ non-nil."
 
 ;; Security validation completely removed
 
+(defvar efrit-tools--eval-fix-note nil
+  "What `efrit-elisp-fix' did to the expression being evaluated, for the result.")
+
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
 Handles parsing, evaluation, error handling, and result formatting."
@@ -316,6 +332,15 @@ Handles parsing, evaluation, error handling, and result formatting."
   ;; Increment rate limit counter
   (efrit-tools--increment-rate-limit "eval_sexp")
 
+  ;; Unbalanced parens are fixed before the read when the fix reads;
+  ;; the result says so, so the model sees what it sent was off
+  (let ((fix (and (not (condition-case nil (progn (efrit-tools--safe-read sexp-string) t) (error nil)))
+                  (efrit-elisp-fix sexp-string))))
+    (when fix
+      (efrit-log 'info "eval_sexp: %s" (cdr fix))
+      (setq efrit-tools--eval-fix-note (cdr fix)
+            sexp-string (car fix))))
+
   (let ((result-data (condition-case err
                          (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
@@ -325,11 +350,23 @@ Handles parsing, evaluation, error handling, and result formatting."
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
 
     ;; Return formatted result
-    (if (plist-get result-data :success)
-        (format "%s" (plist-get result-data :result))
-      (format "Error evaluating %s: %s"
-              (efrit-truncate-string (plist-get result-data :input) 30)
-              (plist-get result-data :error)))))
+    (prog1
+        (concat
+         (if (plist-get result-data :success)
+             (concat (format "%s" (plist-get result-data :result))
+                     ;; side effects worth knowing about
+                     (when-let* ((ms (plist-get result-data :messages)))
+                       (format "\n[messages during evaluation: %s]"
+                               (efrit-truncate-string (mapconcat #'identity ms " | ") 400)))
+                     (when-let* ((bs (plist-get result-data :changed-buffers)))
+                       (format "\n[buffers changed: %s]" (mapconcat #'identity bs ", "))))
+           (format "Error evaluating %s: %s"
+                   (efrit-truncate-string (plist-get result-data :input) 30)
+                   (plist-get result-data :error)))
+         (when efrit-tools--eval-fix-note
+           (format "\n[Your expression was unbalanced: %s. Fixed before evaluation; write balanced Lisp.]"
+                   efrit-tools--eval-fix-note)))
+      (setq efrit-tools--eval-fix-note nil))))
 
 ;;; Safe Text Manipulation Functions
 

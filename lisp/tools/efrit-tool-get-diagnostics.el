@@ -253,34 +253,44 @@ Returns a standard tool response with diagnostics data."
                      (t '(all))))
            (severity-filter (alist-get 'severity args))
            (all-sources (memq 'all sources))
-           (buffer (if path
-                       (find-buffer-visiting (expand-file-name path))
-                     (current-buffer)))
+           (project-wide (member path '("project" "*")))
+           (buffers (cond
+                     ;; every file buffer under the project root: the
+                     ;; whole picture after a refactor (claude-code-ide's
+                     ;; no-URI mode, 2026-09-28)
+                     (project-wide
+                      (let ((root (file-truename
+                                   (file-name-as-directory
+                                    (efrit-resolve-path-simple nil 'read "get_diagnostics")))))
+                        (cl-remove-if-not
+                         (lambda (b)
+                           (when-let* ((f (buffer-file-name b)))
+                             (string-prefix-p root (file-truename f))))
+                         (buffer-list))))
+                     (path
+                      (let ((b (or (find-buffer-visiting (expand-file-name path))
+                                   (let ((file-path (efrit-resolve-path-simple path 'read "get_diagnostics")))
+                                     (when (file-exists-p file-path)
+                                       (find-file-noselect file-path))))))
+                        (and b (list b))))
+                     (t (list (current-buffer)))))
            (all-diagnostics '())
            (warnings '()))
 
-      ;; If path specified but buffer not found, try to find file
-      (when (and path (not buffer))
-        (let ((file-path (efrit-resolve-path-simple path 'read "get_diagnostics")))
-          (when (file-exists-p file-path)
-            (setq buffer (find-file-noselect file-path)))))
-
-      ;; Collect diagnostics from each source
-      (when buffer
-        ;; Flymake
-        (when (or all-sources (memq 'flymake sources))
-          (let ((flymake-diags (efrit-tool-get-diagnostics--from-flymake buffer)))
-            (setq all-diagnostics (append all-diagnostics flymake-diags))))
-
-        ;; Flycheck
-        (when (or all-sources (memq 'flycheck sources))
-          (let ((flycheck-diags (efrit-tool-get-diagnostics--from-flycheck buffer)))
-            (setq all-diagnostics (append all-diagnostics flycheck-diags))))
-
-        ;; LSP
-        (when (or all-sources (memq 'lsp sources))
-          (let ((lsp-diags (efrit-tool-get-diagnostics--from-lsp buffer)))
-            (setq all-diagnostics (append all-diagnostics lsp-diags)))))
+      ;; Collect diagnostics from each source, per buffer, each entry
+      ;; naming its file (several buffers make that necessary)
+      (dolist (buffer buffers)
+        (let ((here '()))
+          (when (or all-sources (memq 'flymake sources))
+            (setq here (append here (efrit-tool-get-diagnostics--from-flymake buffer))))
+          (when (or all-sources (memq 'flycheck sources))
+            (setq here (append here (efrit-tool-get-diagnostics--from-flycheck buffer))))
+          (when (or all-sources (memq 'lsp sources))
+            (setq here (append here (efrit-tool-get-diagnostics--from-lsp buffer))))
+          (let ((file (or (buffer-file-name buffer) (buffer-name buffer))))
+            (setq all-diagnostics
+                  (append all-diagnostics
+                          (mapcar (lambda (d) (cons (cons 'file file) d)) here))))))
 
       ;; Compilation buffer (not buffer-specific)
       (when (or all-sources (memq 'compilation sources))
@@ -328,8 +338,9 @@ Returns a standard tool response with diagnostics data."
         (efrit-tool-success
          `((diagnostics . ,(vconcat all-diagnostics))
            (count . ,(length all-diagnostics))
-           (buffer . ,(when buffer (buffer-name buffer)))
-           (file . ,(when buffer (buffer-file-name buffer)))
+           (buffer . ,(and (= 1 (length buffers)) (buffer-name (car buffers))))
+           (file . ,(and (= 1 (length buffers)) (buffer-file-name (car buffers))))
+           (buffers_scanned . ,(length buffers))
            (active_systems . ,(vconcat active-systems)))
          warnings)))))
 

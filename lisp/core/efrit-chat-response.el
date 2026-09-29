@@ -62,6 +62,15 @@ Returns string or nil."
   (when (hash-table-p response)
     (gethash "stop_reason" response)))
 
+(defun efrit-response-partial-p (response)
+  "Non-nil if RESPONSE was cut short: the stream ended early or was cancelled."
+  (and (hash-table-p response)
+       (or (gethash "efrit_partial" response) (gethash "efrit_cancelled" response))))
+
+(defun efrit-response-cancelled-p (response)
+  "Non-nil if RESPONSE is what had arrived when the user cancelled."
+  (and (hash-table-p response) (gethash "efrit_cancelled" response)))
+
 (defun efrit-response-usage (response)
   "Extract usage object from API RESPONSE containing token counts.
 Returns: usage object hash-table or nil."

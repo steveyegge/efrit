@@ -105,9 +105,29 @@
       (should (memq st efrit-api-stream--active))
       (efrit-api-stream-cancel st)
       (should (test-stream--wait (lambda () done) 5))
-      (should-not resp)
-      (should (equal err "interrupted"))
+      ;; text had arrived: it is delivered, marked cancelled, no error
+      (should-not err)
+      (should (efrit-response-cancelled-p resp))
+      (should (efrit-response-partial-p resp))
+      (should (equal "started" (gethash "text" (aref (gethash "content" resp) 0))))
       (should-not (memq st efrit-api-stream--active)))))
+
+(ert-deftest test-stream-cancel-before-text-is-interrupted ()
+  "Cancelled before any text arrived: no response, error \"interrupted\"."
+  (let ((efrit-api-stream-curl-program test-stream--script)
+        (efrit-api-key "sk-test-key-1234567890abcdefghij")
+        (efrit-api-auth-scheme 'x-api-key)
+        (efrit-api-prompt-caching nil)
+        resp err done)
+    (skip-unless (executable-find "python3"))
+    (let ((st (efrit-api-stream-request
+               '(("model" . "mock") ("max_tokens" . 10)
+                 ("messages" . [(("role" . "user") ("content" . "cancel me"))]))
+               (lambda (r e) (setq resp r err e done t)))))
+      (efrit-api-stream-cancel st)
+      (should (test-stream--wait (lambda () done) 5))
+      (should-not resp)
+      (should (equal err "interrupted")))))
 
 (ert-deftest test-stream-config-file-holds-headers-not-argv ()
   "Credentials go in a 0600 config file that is removed afterwards; argv has none."

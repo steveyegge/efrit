@@ -69,6 +69,76 @@ nil disables the idle event."
 (defvar efrit-events--subscribers nil
   "Alist of (EVENT-TYPE . (FN ...)).  EVENT-TYPE `t' means all events.")
 
+(defvar efrit-current-session-id nil
+  "The session on whose behalf the current code runs, or nil.
+The loops bind it around tool dispatch and API callbacks
+\(`efrit-with-session').  `efrit-publish' stamps it on an event that
+carries no :session-id of its own (sandbox and limits notes, todo
+changes), so subscribers can route to the right agent buffer when
+several sessions run.")
+
+(defvar efrit-session-local-variables nil
+  "Variables that hold per-turn state and must be kept per session.
+Each entry is (SYMBOL . INITIAL-VALUE).  `efrit-with-session' sets
+every one of them from the session's store on entry (INITIAL-VALUE
+for a new session) and saves them back on exit, so the code that uses
+them with plain `setq' stays as it is while two sessions no longer
+share counters or standing answers.  Modules register theirs with
+`efrit-session-local'.")
+
+(defvar efrit-session--locals (make-hash-table :test 'equal)
+  "Session id -> alist (SYMBOL . VALUE) of its session-local variables.")
+
+(defun efrit-session-local (&rest symbols)
+  "Declare SYMBOLS session-local (see `efrit-session-local-variables').
+Their value at this call (normally the defvar's) is what a new
+session starts with."
+  (dolist (sym symbols)
+    (unless (assq sym efrit-session-local-variables)
+      (push (cons sym (and (boundp sym) (symbol-value sym)))
+            efrit-session-local-variables))))
+
+(defun efrit-session-local-forget (session-id)
+  "Drop SESSION-ID's stored session-local values."
+  (remhash session-id efrit-session--locals))
+
+(defun efrit-session--locals-enter (session-id)
+  "Set every session-local variable from SESSION-ID's store.
+Returns the values the variables had, to restore on exit."
+  (let ((stored (gethash session-id efrit-session--locals))
+        (saved nil))
+    (pcase-dolist (`(,sym . ,initial) efrit-session-local-variables)
+      (when (boundp sym)
+        (push (cons sym (symbol-value sym)) saved)
+        (let ((cell (assq sym stored)))
+          (set sym (if cell (cdr cell) initial)))))
+    saved))
+
+(defun efrit-session--locals-exit (session-id saved)
+  "Store the session-local variables for SESSION-ID and restore SAVED."
+  (let ((stored nil))
+    (pcase-dolist (`(,sym . ,_) efrit-session-local-variables)
+      (when (boundp sym)
+        (push (cons sym (symbol-value sym)) stored)))
+    (puthash session-id stored efrit-session--locals))
+  (dolist (cell saved) (set (car cell) (cdr cell))))
+
+(defmacro efrit-with-session (session-id &rest body)
+  "Run BODY as SESSION-ID's code.
+`efrit-current-session-id' is bound to it and the session-local
+variables hold its values (`efrit-session-local-variables').
+Re-entrant: nested with the same id it does nothing extra; nested
+with another id (one session's tools running inside another
+session's prompt) it swaps the values in and back out."
+  (declare (indent 1))
+  (let ((id (make-symbol "id")) (saved (make-symbol "saved")))
+    `(let* ((,id ,session-id)
+            (efrit-current-session-id ,id)
+            (,saved (and ,id (efrit-session--locals-enter ,id))))
+       (unwind-protect
+           (progn ,@body)
+         (when ,id (efrit-session--locals-exit ,id ,saved))))))
+
 (defun efrit-subscribe (type fn)
   "Call FN with an event alist whenever an event of TYPE is published.
 TYPE is a symbol from the vocabulary in the Commentary, or `t' for
@@ -119,6 +189,11 @@ Clocks take a reading at their start and subtract the difference.")
 (defvar efrit-user-waiting-depth 0
   "How many `efrit-with-user-waiting' forms are active.")
 
+;; Waiting is booked to the session whose prompt it was: a prompt of
+;; A must not shorten B's turn clock.  Outside any session the plain
+;; global value is used.
+(efrit-session-local 'efrit-user-waiting-seconds 'efrit-user-waiting-depth)
+
 (defmacro efrit-with-user-waiting (&rest body)
   "Run BODY, a prompt to the user, with efrit's clocks paused.
 Adds the time BODY takes to `efrit-user-waiting-seconds' and suspends
@@ -135,6 +210,42 @@ any enclosing `with-timeout'.  Nested uses count the time once."
            (cl-incf efrit-user-waiting-seconds (- (float-time) ,start)))
          (with-timeout-unsuspend ,suspended)))))
 
+;;; One modal prompt at a time
+;;
+;; The sandbox and the limits ask the user through a menu over a
+;; `recursive-edit'.  Process sentinels keep running inside it, so a
+;; second session's tool can want its own prompt while the first is
+;; still up; the two would share the menu's state, and the second
+;; cannot wait: it runs inside the first's command loop, and blocking
+;; there would stop the first prompt from being answered at all.  So
+;; the second request is not asked: `efrit-with-prompt-turn' returns
+;; DEFAULT for it (a denial) and the asking session is told.  The
+;; model gets the usual denied result and can retry.
+
+(defvar efrit-prompt--owner nil
+  "The session id (or t) whose modal prompt is up, or nil.")
+
+(defmacro efrit-with-prompt-turn (label default &rest body)
+  "Run BODY, a modal prompt, unless another session's prompt is up.
+Then BODY is skipped, DEFAULT is returned, and a `note' is published
+for the asking session saying that LABEL was refused because another
+prompt is open.  Nested prompts of the same session run at once (a
+prompt that asks another question, the details popup)."
+  (declare (indent 2))
+  (let ((me (make-symbol "me")))
+    `(let ((,me (or efrit-current-session-id t)))
+       (if (and efrit-prompt--owner (not (equal efrit-prompt--owner ,me)))
+           (progn
+             (efrit-log 'warn "prompt for %s refused: another session's prompt is open" ,label)
+             (efrit-publish 'note
+                            (list (cons :text (format "⛨ not asked: %s came while another session's prompt was open; denied, the model can retry" ,label))
+                                  (cons :face 'warning) (cons :kind 'sandbox)))
+             ,default)
+         (let ((outer efrit-prompt--owner))
+           (setq efrit-prompt--owner ,me)
+           (unwind-protect (progn ,@body)
+             (setq efrit-prompt--owner outer)))))))
+
 (defun efrit-elapsed-working (since &optional waiting-at-start)
   "Seconds since SINCE (a time value) minus time spent waiting on the user.
 WAITING-AT-START is `efrit-user-waiting-seconds' when the clock
@@ -148,7 +259,10 @@ for a clock that started before any prompt of its own."
 :type and :time are added.  Subscribers to TYPE and to `t' are called
 in registration order; errors are logged and swallowed.  Returns the
 event alist."
-  (let ((event (append `((:type . ,type) (:time . ,(current-time))) data)))
+  (let ((event (append `((:type . ,type) (:time . ,(current-time)))
+                       (if (or (assq :session-id data) (null efrit-current-session-id))
+                           data
+                         (cons (cons :session-id efrit-current-session-id) data)))))
     (efrit-log 'debug "event %s %s" type (efrit-events--brief data))
     (dolist (fn (append (cdr (assq type efrit-events--subscribers))
                         (cdr (assq t efrit-events--subscribers))))
@@ -162,23 +276,28 @@ event alist."
 
 ;;; Idle timer
 
-(defvar efrit-events--idle-timer nil)
+(defvar efrit-events--idle-timers (make-hash-table :test 'equal)
+  "Session id -> the timer that will publish its `idle' event.")
 
 (defun efrit-events--track-idle (event)
-  "Arm or cancel the idle timer based on EVENT."
-  (when (timerp efrit-events--idle-timer)
-    (cancel-timer efrit-events--idle-timer)
-    (setq efrit-events--idle-timer nil))
-  (when (and efrit-idle-delay
-             (memq (alist-get :type event) '(turn-complete permission)))
-    (setq efrit-events--idle-timer
-          (run-with-timer efrit-idle-delay nil
-                          (lambda ()
-                            (setq efrit-events--idle-timer nil)
-                            (efrit-publish
-                             'idle
-                             `((:session-id . ,(alist-get :session-id event))
-                               (:idle-event . ,(alist-get :type event)))))))))
+  "Arm or cancel the idle timer of EVENT's session based on EVENT.
+One timer per session: another session's traffic does not suppress
+this one's idle event."
+  (let ((id (alist-get :session-id event)))
+    (when-let* ((timer (gethash id efrit-events--idle-timers)))
+      (when (timerp timer) (cancel-timer timer))
+      (remhash id efrit-events--idle-timers))
+    (when (and efrit-idle-delay
+               (memq (alist-get :type event) '(turn-complete permission)))
+      (puthash id
+               (run-with-timer efrit-idle-delay nil
+                               (lambda ()
+                                 (remhash id efrit-events--idle-timers)
+                                 (efrit-publish
+                                  'idle
+                                  `((:session-id . ,id)
+                                    (:idle-event . ,(alist-get :type event))))))
+               efrit-events--idle-timers))))
 
 ;;; Convenience: notify when the agent buffer isn't visible
 

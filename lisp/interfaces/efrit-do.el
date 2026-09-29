@@ -375,12 +375,13 @@ exceeds `efrit-do-max-buffer-lines' lines."
                                "s" "")))))))))
 
 (defun efrit-do--agent-surface-visible-p ()
-  "Non-nil when the agent buffer is displayed in some window.
-The agent buffer is the single user-facing surface; when it is
-visible, other meta-buffers should not pop additional windows."
-  (when-let* ((name (bound-and-true-p efrit-agent-buffer-name))
-              (buffer (get-buffer name)))
-    (get-buffer-window buffer t)))
+  "Non-nil when an agent buffer is displayed in some window.
+The agent buffer is the user-facing surface; when one is visible,
+other meta-buffers should not pop additional windows."
+  (and (fboundp 'efrit-agent-buffers)
+       (cl-some (lambda (b) (get-buffer-window b t)) (efrit-agent-buffers))))
+
+(declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.

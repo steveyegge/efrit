@@ -33,6 +33,7 @@
 (require 'efrit-progress)
 (require 'efrit-progress-buffer)
 (require 'efrit-api)
+(declare-function efrit-agent-buffer-for "efrit-agent-core")
 (require 'efrit-do-prompt)
 (require 'efrit-do-schema)
 (require 'efrit-do-dispatch)
@@ -218,7 +219,8 @@ from the session_complete tool, rendered in the agent buffer (ef-ter)."
     ;; the success path too: it means Claude called the session_complete
     ;; tool rather than simply ending its turn.
     (efrit-agent-end-session (member stop-reason '("end_turn" "session-complete"))
-                             stop-reason error-message completion-message)
+                             stop-reason error-message completion-message
+                             (efrit-agent-buffer-for session-id))
 
     ;; Archive progress buffer
     (efrit-progress-archive-buffer session-id)

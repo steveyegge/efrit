@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'efrit-sandbox)
+(require 'efrit-buffer-watch)
 
 (declare-function efrit-log "efrit-log")
 
@@ -141,6 +142,12 @@ Returns a string describing the edit operation."
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
         (efrit-sandbox-check-buffer buffer "edit_buffer")
+        ;; The user (or another tool) may have changed the buffer since
+        ;; the model read it: positions are then stale.  Refuse the
+        ;; positional edit and say what moved, so the model re-reads.
+        (when-let* ((change (and (or replace (integerp position))
+                                 (efrit-buffer-watch-changes buffer))))
+          (error "%s" (efrit-buffer-watch-describe change buffer)))
 
         ;; Edit the buffer
         (with-current-buffer buffer
@@ -197,6 +204,8 @@ Returns the buffer contents as a string."
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
         (efrit-sandbox-check-buffer buffer "read_buffer")
+        ;; From here on, an edit by position is judged against this read
+        (efrit-buffer-watch-note-read buffer)
 
         (with-current-buffer buffer
           (let ((min (if (integerp start) start (point-min)))

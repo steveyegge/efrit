@@ -37,7 +37,7 @@ not by the hunk's own line number (which says 2)."
            (opened nil))
        (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
                  ((symbol-function 'find-file-other-window)
-                  (lambda (f) (setq opened f) (set-buffer (find-file-noselect f))))
+                  (lambda (f) (setq opened f) (switch-to-buffer (find-file-noselect f))))
                  ((symbol-function 'recenter) #'ignore))
          (efrit-diff-preview--display
           '(((file . "sample.txt") (old_content . "alpha\nbeta\ngamma\n")
@@ -68,7 +68,7 @@ not by the hunk's own line number (which says 2)."
      (let ((efrit-diff-preview--root dir))
        (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
                  ((symbol-function 'find-file-other-window)
-                  (lambda (f) (set-buffer (find-file-noselect f))))
+                  (lambda (f) (switch-to-buffer (find-file-noselect f))))
                  ((symbol-function 'recenter) #'ignore))
          (efrit-diff-preview--display
           '(((file . "sample.txt") (old_content . "alpha\nbeta\ngamma\n")

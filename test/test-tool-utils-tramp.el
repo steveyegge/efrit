@@ -139,16 +139,18 @@ No connection is opened: the path does not exist, so
       (should (string= (string-trim (buffer-string))
                        (file-truename (file-remote-p root 'localname)))))))
 
-(ert-deftest test-tramp-run-git-remote ()
-  "efrit-tool-run-git runs on the host of the project root."
+(ert-deftest test-tramp-vcs-on-remote-root ()
+  "VC sees the repository on the host of a remote project root."
   (skip-unless (executable-find "git"))
+  (require 'efrit-vcs)
   (let ((root (test-tramp--mock-dir)))
     (let ((default-directory root))
       (process-file "git" nil nil nil "init" "-q"))
     (test-tramp--with-root root
-      (let ((r (efrit-tool-run-git '("rev-parse" "--is-inside-work-tree"))))
-        (should (plist-get r :success))
-        (should (string= (string-trim (plist-get r :output)) "true"))))))
+      (should (eq 'Git (efrit-vcs-backend root)))
+      (should (file-remote-p (efrit-vcs-root root)))
+      (should (equal (directory-file-name (file-remote-p (efrit-vcs-root root) 'localname))
+                     (file-truename (file-remote-p root 'localname)))))))
 
 (ert-deftest test-tramp-make-temp-file-remote ()
   (let* ((root (test-tramp--mock-dir))

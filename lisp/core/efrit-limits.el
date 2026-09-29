@@ -374,12 +374,13 @@ when the user stops (or nothing can ask).  Never signals."
                       (not noninteractive)
                       ;; Reading time is neither tool time nor turn time
                       (efrit-with-user-waiting
-                        (condition-case err
-                            (if (efrit-limits--define-menu)
-                                (efrit-limits--ask-with-menu)
-                              (efrit-limits--ask-in-echo-area))
-                          (quit nil)
-                          (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil)))))
+                        (efrit-with-prompt-turn (format "the %s limit prompt" name) nil
+                          (condition-case err
+                              (if (efrit-limits--define-menu)
+                                  (efrit-limits--ask-with-menu)
+                                (efrit-limits--ask-in-echo-area))
+                            (quit nil)
+                            (error (efrit-log 'warn "limits prompt: %s" (error-message-string err)) nil))))))
          (unit (efrit-limits--unit name))
          (result
           (pcase answer

@@ -93,6 +93,12 @@
 (declare-function efrit-tool-buffer-info "efrit-tool-edit-buffer")
 ;; Other tools with dynamic require
 (declare-function efrit-tool-get-diagnostics "efrit-tool-diagnostics")
+(declare-function efrit-tool-xref-references "efrit-tool-navigate")
+(declare-function efrit-tool-xref-apropos "efrit-tool-navigate")
+(declare-function efrit-tool-imenu-symbols "efrit-tool-navigate")
+(declare-function efrit-tool-treesit-info "efrit-tool-navigate")
+(declare-function efrit-tool-show-location "efrit-tool-navigate")
+(declare-function efrit-tool-get-last-error "efrit-tool-last-error")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
 (declare-function efrit-tool-format-file "efrit-tool-format-file")
 (declare-function efrit-tool-beads-ready "efrit-tool-beads")
@@ -384,12 +390,16 @@ blocks inside `call-process'.  This loop checks the clock between
                                  :connection-type 'pipe)))
            (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
-      (while (process-live-p proc)
-        (accept-process-output proc 0.2)
-        (when (and (process-live-p proc)
-                   (> (float-time) deadline))
-          (delete-process proc)
-          (signal 'efrit-shell-timeout (list command))))
+      ;; C-g while waiting must kill the command, not leave it running
+      ;; against a dead buffer
+      (unwind-protect
+          (while (process-live-p proc)
+            (accept-process-output proc 0.2)
+            (when (and (process-live-p proc)
+                       (> (float-time) deadline))
+              (delete-process proc)
+              (signal 'efrit-shell-timeout (list command))))
+        (when (process-live-p proc) (delete-process proc)))
       (buffer-string))))
 
 (defun efrit-do--handle-shell-exec (input-str)
@@ -401,7 +411,11 @@ With the scope sandbox on, the command names on the line need a
 the sandbox the legacy whitelist applies.
 Returns output or security error."
   (when (bound-and-true-p efrit-sandbox-enabled)
-    (efrit-sandbox-check 'shell input-str "shell_exec" input-str))
+    (efrit-sandbox-check 'shell input-str "shell_exec" input-str)
+    ;; the user may have rewritten the line at the prompt
+    (when-let* ((edited (efrit-sandbox-take-edited-input "shell_exec")))
+      (efrit-log 'info "shell_exec: running the user's edited line instead of the model's")
+      (setq input-str edited)))
   (let ((validation (if (bound-and-true-p efrit-sandbox-enabled)
                         (cons t nil)
                       (efrit-do--validate-shell-command input-str))))
@@ -664,7 +678,8 @@ session whose tool call is executing (ef-dcn)."
           (setf (efrit-repl-session-pending-question repl-session)
                 (list question options (current-time)))
           (when (fboundp 'efrit-agent-show-question)
-            (efrit-agent-show-question question options))
+            (efrit-agent-show-question question options
+                                       (efrit-repl-session-buffer repl-session)))
           (efrit-do--waiting-for-user-marker question options))
 
          ((not session)
@@ -890,6 +905,45 @@ call it, so answer clearly instead of silently obeying."
   :fields (("symbol" . efrit-do--vector-to-list) "type" "include_source" "related")
   :fn efrit-tool-elisp-docs
   :label "Elisp Docs Result")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-references "xref_references"
+  :require efrit-tool-navigate
+  :required ("symbol")
+  :fields ("symbol" "file" "line" "column")
+  :fn efrit-tool-xref-references
+  :label "References")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-apropos "xref_apropos"
+  :require efrit-tool-navigate
+  :required ("pattern")
+  :fields ("pattern" "file")
+  :fn efrit-tool-xref-apropos
+  :label "Definitions")
+
+(efrit-define-optional-input-handler efrit-do--handle-imenu-symbols "imenu_symbols"
+  :require efrit-tool-navigate
+  :fields ("file")
+  :fn efrit-tool-imenu-symbols
+  :label "Symbols")
+
+(efrit-define-optional-input-handler efrit-do--handle-treesit-info "treesit_info"
+  :require efrit-tool-navigate
+  :fields ("file" "line" "column" "ancestors" "children" "whole_tree")
+  :fn efrit-tool-treesit-info
+  :label "Syntax")
+
+(efrit-define-simple-tool-handler efrit-do--handle-show-location "show_location"
+  :require efrit-tool-navigate
+  :required ("file")
+  :fields ("file" "start_text" "end_text" "line" "end_line")
+  :fn efrit-tool-show-location
+  :label "Shown")
+
+(efrit-define-optional-input-handler efrit-do--handle-get-last-error "get_last_error"
+  :require efrit-tool-last-error
+  :fields ("count")
+  :fn efrit-tool-get-last-error
+  :label "Last error")
 
 (efrit-define-optional-input-handler efrit-do--handle-get-diagnostics "get_diagnostics"
   :require efrit-tool-get-diagnostics
@@ -1125,8 +1179,11 @@ TOOL-INPUT is a hash table with keys:
              (auto-expand (gethash "auto_expand" tool-input))
              (importance (gethash "importance" tool-input))
              (annotations (gethash "annotations" tool-input))
-             (agent-buffer (and (boundp 'efrit-agent-buffer-name)
-                               (get-buffer efrit-agent-buffer-name))))
+             ;; the buffer of the session whose tool this is, not "the" one
+             (agent-buffer (or (and (bound-and-true-p efrit-repl-loop--tool-session)
+                                    (efrit-repl-session-buffer efrit-repl-loop--tool-session))
+                               (and (boundp 'efrit-agent-buffer-name)
+                                    (get-buffer efrit-agent-buffer-name)))))
         
         ;; Validate required parameters
         (unless tool-use-id

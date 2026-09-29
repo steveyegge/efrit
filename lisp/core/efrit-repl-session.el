@@ -359,6 +359,16 @@ Returns the number of messages dropped."
         ((listp block) (or (cdr (assoc key block))
                            (cdr (assq (intern key) block))))))
 
+(defun efrit-repl-session-tool-result-message-p (message)
+  "Non-nil when MESSAGE is a user message carrying tool_result blocks.
+The API represents tool results as `user' messages; a human's input
+is a string or text blocks."
+  (and (equal (efrit-repl-session--block-get message "role") "user")
+       (let ((content (efrit-repl-session--block-get message "content")))
+         (and (or (vectorp content) (and (listp content) content (not (stringp content))))
+              (cl-some (lambda (b) (equal (efrit-repl-session--block-get b "type") "tool_result"))
+                       (append content nil))))))
+
 (defun efrit-repl-session--content-text (content)
   "The text of a message CONTENT: a string, or the text blocks of a vector joined."
   (cond ((stringp content) content)

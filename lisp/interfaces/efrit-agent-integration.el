@@ -55,10 +55,12 @@
 ;;   todos-changed    :todos
 ;;   review-start / review-verdict / review-skipped
 
-(defmacro efrit-agent--in-agent-buffer (&rest body)
-  "Run BODY in the agent buffer when it exists; otherwise do nothing."
-  (declare (indent 0))
-  `(let ((buffer (get-buffer efrit-agent-buffer-name)))
+(defmacro efrit-agent--in-agent-buffer (event &rest body)
+  "Run BODY in the agent buffer of EVENT's session; otherwise do nothing.
+The buffer is the one of the event's :session-id (`efrit-agent-buffer-for');
+an event without a session id goes to the default buffer."
+  (declare (indent 1))
+  `(let ((buffer (efrit-agent-buffer-for (alist-get :session-id ,event))))
      (when (buffer-live-p buffer)
        (with-current-buffer buffer
          ,@body))))
@@ -82,18 +84,18 @@ Uses proper accessor functions to avoid fragility when struct changes."
             :content content
             :status agent-status))))
 
-(defun efrit-agent-sync-todos ()
-  "Sync TODOs from `efrit-do--current-todos' to the agent buffer."
+(defun efrit-agent-sync-todos (&optional session-id)
+  "Sync TODOs from `efrit-do--current-todos' to SESSION-ID's agent buffer."
   (when (and (bound-and-true-p efrit-do--current-todos)
-             (get-buffer efrit-agent-buffer-name))
+             (efrit-agent-buffer-for session-id))
     (let ((converted-todos
            (mapcar #'efrit-agent--convert-todo-item
                    efrit-do--current-todos)))
-      (efrit-agent-update-todos converted-todos))))
+      (efrit-agent-update-todos converted-todos (efrit-agent-buffer-for session-id)))))
 
-(defun efrit-agent--on-todos-changed (_event)
+(defun efrit-agent--on-todos-changed (event)
   "Subscriber: the TODO store changed."
-  (efrit-agent-sync-todos))
+  (efrit-agent-sync-todos (alist-get :session-id event)))
 
 ;;; Tool rows
 ;;
@@ -104,7 +106,7 @@ Uses proper accessor functions to avoid fragility when struct changes."
 ;; as before.
 
 (defun efrit-agent--on-tool-start (event)
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--init-pending-tools)
     (let* ((tool-name (alist-get :tool event))
            (row (efrit-agent--add-tool-call tool-name (alist-get :input event)))
@@ -115,7 +117,7 @@ Uses proper accessor functions to avoid fragility when struct changes."
                efrit-agent--pending-tools))))
 
 (defun efrit-agent--on-tool-result (event)
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--init-pending-tools)
     (let* ((key (or (alist-get :tool-id event) (alist-get :tool event)))
            (pending (gethash key efrit-agent--pending-tools)))
@@ -133,29 +135,29 @@ Uses proper accessor functions to avoid fragility when struct changes."
 ;;; Text, thinking, messages, errors, status
 
 (defun efrit-agent--on-text-delta (event)
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--add-claude-message (alist-get :text event))))
 
-(defun efrit-agent--on-text-end (_event)
-  (efrit-agent--in-agent-buffer
+(defun efrit-agent--on-text-end (event)
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--stream-end-message)))
 
 (defun efrit-agent--on-thinking-start (event)
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     ;; The spinner timer drives both the in-buffer line and the
     ;; mode-line glyph; `efrit-agent--show-thinking' only inserts
     ;; the line.  Without the timer both stand still.
     (efrit-agent--spinner-start (alist-get :label event))
     (efrit-agent--show-thinking (alist-get :label event))))
 
-(defun efrit-agent--on-thinking-stop (_event)
-  (efrit-agent--in-agent-buffer
+(defun efrit-agent--on-thinking-stop (event)
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--hide-thinking)))
 
 (defun efrit-agent--on-message (event)
   "Subscriber: a progress message (the efrit-do path).
 Claude messages are rendered inline; errors with the error face."
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (let ((message (alist-get :text event)))
       (pcase (alist-get :kind event)
         ('claude (efrit-agent--add-claude-message (or message "")))
@@ -170,26 +172,31 @@ Claude messages are rendered inline; errors with the error face."
         (_ (efrit-agent--add-claude-message (or message "")))))))
 
 (defun efrit-agent--on-error (event)
-  "Subscriber: the REPL loop failed a turn; show it in the transcript."
-  (efrit-agent--in-agent-buffer
-    (efrit-agent--add-error-message (alist-get :message event))))
+  "Subscriber: the REPL loop failed a turn; show it in the transcript.
+The publisher may name the buffer (:buffer); else the session's."
+  (let ((buffer (or (let ((b (alist-get :buffer event))) (and (buffer-live-p b) b))
+                    (efrit-agent-buffer-for (alist-get :session-id event)))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (efrit-agent--add-error-message (alist-get :message event))))))
 
 (defun efrit-agent--on-note (event)
   "Subscriber: a one-line note from the sandbox, the limits prompt, or review."
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--append-to-conversation
      (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n")
      (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))))))
 
 (defun efrit-agent--on-steered (event)
   "Subscriber: the steering text was handed to the model; say so under its line."
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (efrit-agent--append-to-conversation
      (concat (propertize "  ↳ delivered with the tool results" 'face 'shadow) "\n")
      (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
 
 (defun efrit-agent--on-status (event)
-  (efrit-agent-set-status (alist-get :status event)))
+  (efrit-agent-set-status (alist-get :status event)
+                          (efrit-agent-buffer-for (alist-get :session-id event))))
 
 ;;; Session lifecycle (the efrit-do path)
 
@@ -198,13 +205,14 @@ Claude messages are rendered inline; errors with the error face."
   (setq efrit-agent--activity-counter 0))
 
 (defun efrit-agent--on-session-end (event)
-  (efrit-agent-end-session (alist-get :success event)))
+  (efrit-agent-end-session (alist-get :success event) nil nil nil
+                           (efrit-agent-buffer-for (alist-get :session-id event))))
 
 ;;; Questions
 
 (defun efrit-agent--on-question (event)
   "Subscriber: the model asked the user something; show it and wait."
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (let* ((question (alist-get :question event))
            (options (alist-get :options event))
            (opts (when options (if (listp options) options (append options nil)))))
@@ -214,7 +222,7 @@ Claude messages are rendered inline; errors with the error face."
       (efrit-agent--add-question question opts))))
 
 (defun efrit-agent--on-question-answered (event)
-  (efrit-agent--in-agent-buffer
+  (efrit-agent--in-agent-buffer event
     (when-let* ((response (alist-get :response event)))
       (efrit-agent--add-user-message (format "%s" response)))
     (setq efrit-agent--pending-question nil)
@@ -263,11 +271,11 @@ Claude messages are rendered inline; errors with the error face."
 (declare-function efrit-agent-end-session "efrit-agent")
 (declare-function efrit-agent-set-status "efrit-agent")
 
-(defun efrit-agent-update-todos (todos)
-  "Update the TODO list display with TODOS.
+(defun efrit-agent-update-todos (todos &optional buffer)
+  "Update the TODO list display with TODOS in BUFFER (default the default agent buffer).
 TODOS should be a list of plists with :status, :content, :activeForm.
 Uses incremental inline update instead of full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (or buffer (get-buffer efrit-agent-buffer-name))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--todos todos)
@@ -291,7 +299,7 @@ Uses incremental inline update instead of full re-render."
   "Tool-row id of the review in flight, or nil.")
 
 (defun efrit-agent--on-review-start (event)
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent-buffer-for (alist-get :session-id event))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (let ((input (make-hash-table :test 'equal)))
@@ -302,7 +310,7 @@ Uses incremental inline update instead of full re-render."
                 (efrit-agent--add-tool-call "review" input)))))))
 
 (defun efrit-agent--on-review-verdict (event)
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (efrit-agent-buffer-for (alist-get :session-id event))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when efrit-agent--review-row
@@ -325,7 +333,7 @@ so, for example: not reviewed: read-only turn (fetch_url)."
 
 (defun efrit-agent--on-review-skipped (event)
   (when efrit-agent-show-review-skips
-    (efrit-agent--in-agent-buffer
+    (efrit-agent--in-agent-buffer event
       (efrit-agent--append-to-conversation
        (concat (propertize (format "  ⚖ not reviewed: %s" (alist-get :reason event))
                            'face 'efrit-agent-timestamp)

@@ -35,6 +35,7 @@
 (require 'efrit-config)
 (require 'dom)
 (declare-function efrit-sandbox-check "efrit-sandbox")
+(declare-function efrit-sandbox-abbreviate "efrit-sandbox")
 (defvar efrit-sandbox-enabled)
 
 ;;; Customization
@@ -250,7 +251,7 @@ Returns a plist with:
           ;; prompt should show both
           (efrit-sandbox-check cap resolved tool
                                (format "%s %s" (if (eq cap 'write) "write" "read")
-                                       (abbreviate-file-name resolved)))
+                                       (efrit-sandbox-abbreviate resolved)))
         (when (and efrit-project-sandbox
                    (not legacy-allow-outside)
                    (not in-project))
@@ -450,99 +451,18 @@ file is visible to a remote `efrit-tool-call-process'."
 Use this when passing a path as an argument to a remote process."
   (or (file-remote-p path 'localname) path))
 
-;;; Git Utilities (for vcs tools)
-
-(defvar efrit-tool-git-directory nil
-  "Directory the git tools operate in for the current tool call, or nil.
-A VCS tool binds this to the path it resolved (and the sandbox
-checked); `efrit-tool-run-git' and `efrit-tool-git-available-p' use it
-instead of the project root.  Before this, the `path' argument was
-checked and then ignored, so `vcs_status' on / ran in the project.")
-
-(defun efrit-tool-git-directory ()
-  "The directory git commands run in: the bound override or the project root."
-  (or efrit-tool-git-directory (efrit-tool--get-project-root)))
-
-(defun efrit-tool-git-available-p ()
-  "Non-nil if git exists on the target host and `efrit-tool-git-directory' is in a repository.
-Uses `git rev-parse', which is what the question means: the directory
-may be anywhere inside a work tree, not only its root."
-  (let ((default-directory (efrit-tool-git-directory)))
-    (and (efrit-tool-executable-find "git" default-directory)
-         (eq 0 (ignore-errors
-                 (efrit-tool-call-process "git" nil nil nil
-                                          "rev-parse" "--is-inside-work-tree"))))))
-
-(defun efrit-tool-run-git (args &optional timeout)
-  "Run git command with ARGS in `efrit-tool-git-directory' and return output.
-ARGS should be a list of command-line arguments.
-TIMEOUT defaults to 30 seconds.
-
-Returns a plist with:
-  :success - t if command succeeded (exit code 0)
-  :output - stdout as string
-  :error - stderr as string (if failed)
-  :exit-code - the exit code"
-  (let* ((timeout (or timeout 30))
-         (default-directory (efrit-tool-git-directory))
-         (output-buffer (generate-new-buffer " *efrit-git-output*"))
-         ;; Deliberately local even for a remote project: process-file
-         ;; requires the stderr file to be on the local host, and
-         ;; Tramp copies it back.
-         (stderr-file (make-temp-file "efrit-git-stderr"))
-         exit-code stdout stderr result)
-    (unwind-protect
-        (progn
-          (with-timeout (timeout
-                         (setq result (list :success nil
-                                            :output nil
-                                            :error "Git command timed out"
-                                            :exit-code -1)))
-            ;; Runs on the remote host when the project root is a
-            ;; Tramp path.
-            (setq exit-code
-                  (apply #'efrit-tool-call-process "git" nil
-                         (list output-buffer stderr-file) nil args))
-            (setq stdout (with-current-buffer output-buffer
-                          (buffer-string)))
-            (setq stderr (when (file-exists-p stderr-file)
-                          (with-temp-buffer
-                            (insert-file-contents stderr-file)
-                            (buffer-string))))
-            (setq result (list :success (= exit-code 0)
-                               :output stdout
-                               :error (unless (= exit-code 0) stderr)
-                               :exit-code exit-code)))
-          result)
-      (kill-buffer output-buffer)
-      (when (file-exists-p stderr-file)
-        (delete-file stderr-file)))))
-
 ;;; Unified diff between two strings
 
 (defun efrit-tool-unified-diff (old-content new-content file-path)
   "Return a unified diff of OLD-CONTENT -> NEW-CONTENT labelled with FILE-PATH.
-Runs the local `diff' on local temp files (the inputs are strings, so
-this is host-independent).  Returns \"\" if diff is unavailable."
-  (if (not (executable-find "diff"))
-      ""
-    (let ((old-file (make-temp-file "efrit-old-"))
-          (new-file (make-temp-file "efrit-new-"))
-          (label (file-name-nondirectory (efrit-tool-local-name file-path))))
-      (unwind-protect
-          (progn
-            (with-temp-file old-file (insert old-content))
-            (with-temp-file new-file (insert new-content))
-            (with-temp-buffer
-              ;; Force the local host even if default-directory is remote
-              (let ((default-directory temporary-file-directory))
-                (call-process "diff" nil t nil "-u"
-                              "--label" (concat "a/" label)
-                              "--label" (concat "b/" label)
-                              old-file new-file))
-              (buffer-string)))
-        (delete-file old-file)
-        (delete-file new-file)))))
+Through the `diff' library (`efrit-vcs-diff-strings'), so the user's
+`diff-command' and switches apply and it works wherever Emacs does."
+  (require 'efrit-vcs)
+  (let ((label (file-name-nondirectory (efrit-tool-local-name file-path))))
+    (condition-case nil
+        (efrit-vcs-diff-strings old-content new-content
+                                (concat "a/" label) (concat "b/" label))
+      (error ""))))
 
 ;;; Binary File Detection
 

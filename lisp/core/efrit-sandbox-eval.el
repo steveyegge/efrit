@@ -69,7 +69,7 @@
     efrit-sandbox-enabled efrit-sandbox-default-project-grants
     efrit-sandbox-always-deny efrit-sandbox-request-function
     efrit-sandbox--session-grants efrit-sandbox--project-grants
-    efrit-sandbox--once-grant efrit-sandbox-store-save efrit-sandbox-store-load
+    efrit-sandbox--turn-state efrit-sandbox-store-save efrit-sandbox-store-load
     efrit-sandbox-store--loaded efrit-sandbox-store-forget
     efrit-sandbox-eval--active efrit-sandbox-eval-form
     efrit-permission-policy efrit-permission-responder-function
@@ -156,14 +156,34 @@ Expands macros first so nothing hides behind a macro."
 (defconst efrit-sandbox-eval--read-ops
   '(insert-file-contents file-attributes directory-files
     directory-files-and-attributes file-name-all-completions
-    file-name-completion load access-file file-system-info file-acl
+    file-name-completion access-file file-system-info file-acl
     file-selinux-context)
   "Operations that reveal file *contents or listings*; need `read'.
 Existence/type probes (file-exists-p, file-directory-p, file-symlink-p,
 file-truename, file-readable-p, ...) are deliberately not gated: Emacs
 calls them on every ancestor while resolving any path, they leak
 almost nothing, and gating them makes `expand-file-name' on a path
-outside the sandbox fail before the real operation is even attempted.")
+outside the sandbox fail before the real operation is even attempted.
+
+`load' is not gated either (it was until 2026-09-27).  Loading a
+library is not the model reading the user's files: the file comes
+from `load-path', which `efrit-sandbox-eval--exempt-p' exempts anyway.
+Handling `load' ourselves was also harmful: the bare name was checked
+against `default-directory' (a remote root made that a spurious
+remote read), and a prompt raised from inside the loader wedged Emacs
+until answered, after which the .elc open failed with \"Opening stdio
+stream: Invalid argument\".")
+
+(defun efrit-sandbox-eval--exempt-p (path)
+  "Non-nil if PATH is Emacs's own: under `load-path' or `data-directory'.
+Reading those is never the user's data; a `(require ...)' or
+`find-library' must not prompt."
+  (let ((path (expand-file-name path)))
+    (or (and data-directory (string-prefix-p (file-name-as-directory data-directory) path))
+        (cl-some (lambda (dir)
+                   (and (stringp dir)
+                        (string-prefix-p (file-name-as-directory (expand-file-name dir)) path)))
+                 load-path))))
 
 (defun efrit-sandbox-eval--op-cap (op)
   "Capability OP needs, or nil for pure name manipulation
@@ -174,13 +194,20 @@ outside the sandbox fail before the real operation is even attempted.")
         (t nil)))
 
 (defun efrit-sandbox-eval--op-paths (op args)
-  "The file name arguments of OP in ARGS that need checking."
-  (pcase op
-    ((or 'rename-file 'copy-file 'add-name-to-file 'make-symbolic-link 'copy-directory)
-     (list (nth 0 args) (nth 1 args)))
-    ((or 'write-region) (list (nth 2 args)))
-    ((or 'process-file 'start-file-process 'shell-command) nil) ; capability only
-    (_ (and (stringp (car args)) (list (car args))))))
+  "The file name arguments of OP in ARGS that need checking.
+Only absolute names: a relative one is resolved by the operation
+against `default-directory', and when that is a remote root (efrit
+started from a TRAMP buffer) the check would touch the remote for a
+local file.  The operation's own access to the resolved absolute
+file comes back through this handler and is checked then."
+  (cl-remove-if-not
+   (lambda (p) (and (stringp p) (not (string-empty-p p)) (file-name-absolute-p p)))
+   (pcase op
+     ((or 'rename-file 'copy-file 'add-name-to-file 'make-symbolic-link 'copy-directory)
+      (list (nth 0 args) (nth 1 args)))
+     ((or 'write-region) (list (nth 2 args)))
+     ((or 'process-file 'start-file-process 'shell-command) nil) ; capability only
+     (_ (and (stringp (car args)) (list (car args)))))))
 
 (defun efrit-sandbox-eval--handler (op &rest args)
   "The file-name handler: check, then run the real OP."
@@ -199,12 +226,40 @@ outside the sandbox fail before the real operation is even attempted.")
           (efrit-sandbox-check 'shell t "eval_sexp" (format "%s" op)))
          (t
           (dolist (p (efrit-sandbox-eval--op-paths op args))
-            (when (and (stringp p) (not (string-empty-p p)))
+            (unless (and (eq cap 'read) (efrit-sandbox-eval--exempt-p p))
               (efrit-sandbox-check cap p "eval_sexp" (format "%s" op))))))))
-    (apply op args)))
+    ;; A remote operation was checked above as the remote name.  What
+    ;; TRAMP then does to carry it out (a local temp copy, a
+    ;; write-region into `temporary-file-directory') is the transport,
+    ;; not the model touching the user's files: run it with the guard
+    ;; off, or an allowed remote read asked for a write grant on /tmp
+    ;; (2026-09-28).
+    (if (and efrit-sandbox-eval--active
+             (cl-some (lambda (p) (and (stringp p) (file-remote-p p)))
+                      (efrit-sandbox-eval--op-paths op args)))
+        (let ((efrit-sandbox-eval--in-guard t))
+          (apply op args))
+      (apply op args))))
 
 (defconst efrit-sandbox-eval--handler-entry
   (cons "\\`.*\\'" #'efrit-sandbox-eval--handler))
+
+;; A handler that matches every name is consulted for every
+;; operation.  For the ones it does not gate it just calls the
+;; primitive with itself inhibited, which is harmless for most, but
+;; `load' is special: when a handler claims a file, the loader hands
+;; the whole load to the handler and does not open the file itself.
+;; Our pass-through then re-entered the loader with the handler still
+;; present for the .elc and it failed with "Opening stdio stream:
+;; Invalid argument" (2026-09-27, `(require 'repeat)').  The
+;; `operations' property tells Emacs which operations a handler is
+;; for, so `load' (and the pure name operations we never look at)
+;; skip it entirely.
+(put 'efrit-sandbox-eval--handler 'operations
+     (append efrit-sandbox-eval--write-ops efrit-sandbox-eval--exec-ops
+             efrit-sandbox-eval--read-ops
+             ;; buffer-visiting ops the buffer guard relies on
+             '(file-local-copy verify-visited-file-modtime set-visited-file-modtime)))
 
 ;; Process / network advice.  Installed once; only active inside a
 ;; sandboxed eval.
@@ -248,12 +303,32 @@ outside the sandbox fail before the real operation is even attempted.")
 ;; buffers are checked: fileless buffers (`with-temp-buffer', output
 ;; buffers) are the model's own scratch space and must pass freely, or
 ;; every eval that formats output would prompt.
+(defvar efrit-sandbox-eval--loading nil
+  "Non-nil during a `require' or `load' issued inside a sandboxed eval.
+What runs then is Emacs and the user's configuration (the library's
+top level, `with-eval-after-load' forms, `after-load-functions', mode
+hooks), which switch through the user's buffers freely.  A
+`(require 'repeat)' asked for a buffer grant on the user's own init
+file that way (2026-09-28).  `load-in-progress' is not enough: the
+after-load forms run once it is nil again.")
+
+(defun efrit-sandbox-eval--guard-load (orig &rest args)
+  "Around `require'/`load': mark the extent so the buffer guard stands down.
+The file-name handler still checks any file the loaded code reads or
+writes; only the buffer switches are Emacs's own."
+  (if efrit-sandbox-eval--active
+      (let ((efrit-sandbox-eval--loading t))
+        (apply orig args))
+    (apply orig args)))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
 pass; efrit's buffer check applies the target/in-project exemptions."
   (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
     (when (and buffer
+               (not load-in-progress)
+               (not efrit-sandbox-eval--loading)
                (buffer-local-value 'buffer-file-name buffer)
                (not (efrit-sandbox-buffer-allowed-p buffer)))
       (efrit-sandbox-check-buffer buffer "eval_sexp" (format "%s" op)))))
@@ -295,6 +370,9 @@ current buffer is where eval already runs."
       (advice-add fn :around #'efrit-sandbox-eval--guard-network)))
   (unless (advice-member-p #'efrit-sandbox-eval--guard-set-buffer 'set-buffer)
     (advice-add 'set-buffer :around #'efrit-sandbox-eval--guard-set-buffer))
+  (dolist (fn '(require load))
+    (unless (advice-member-p #'efrit-sandbox-eval--guard-load fn)
+      (advice-add fn :around #'efrit-sandbox-eval--guard-load)))
   (dolist (fn efrit-sandbox-eval--read-buffer-fns)
     (unless (advice-member-p #'efrit-sandbox-eval--guard-read-buffer fn)
       (advice-add fn :around #'efrit-sandbox-eval--guard-read-buffer))))
@@ -324,6 +402,10 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
   ;; The detail is the form itself: that is what the user is deciding
   ;; about.  Pretty-printed and capped so a huge form stays readable.
   (efrit-sandbox-check 'elisp t "eval_sexp" (efrit-sandbox-eval--describe-form form))
+  ;; the user may have rewritten the form at the prompt
+  (when-let* ((edited (efrit-sandbox-take-edited-input "eval_sexp")))
+    (efrit-log 'info "eval_sexp: evaluating the user's edited form instead of the model's")
+    (setq form (car (read-from-string edited))))
   (when-let* ((why (efrit-sandbox-eval-inspect form)))
     (efrit-log 'warn "sandbox: refused eval form: %s" why)
     (signal 'efrit-sandbox-denied

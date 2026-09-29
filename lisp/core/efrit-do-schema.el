@@ -334,6 +334,7 @@ The user sees a unified diff view and can:
 - Approve all changes
 - Reject all changes
 - In selective mode: Choose which changes to apply
+- Edit a change in ediff before approving. Then the result's user_edits lists {index, file, new_content}: apply THAT new_content for those changes, not your proposal.
 
 IMPORTANT: Session PAUSES until user responds.")
     ("input_schema" . (("type" . "object")
@@ -349,6 +350,50 @@ IMPORTANT: Session PAUSES until user responds.")
                                                       ("enum" . ["all_or_nothing" "selective"])
                                                       ("description" . "all_or_nothing (default): approve/reject all. selective: user picks which changes")))))
                       ("required" . ["changes"]))))
+   ;; Semantic navigation through Emacs's own machinery (efrit-tool-navigate)
+   (("name" . "xref_references")
+    ("description" . "Where a symbol is used, through the xref backend of the file's buffer (eglot, lsp-mode, etags, the elisp backend: whatever the user runs). Results are file:line: summary. Give file and line so the backend resolves the symbol in scope. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The identifier")))
+                                      ("file" . (("type" . "string") ("description" . "File whose backend answers (default: the user's buffer)")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based line to place point at first")))
+                                      ("column" . (("type" . "integer") ("description" . "0-based column")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "xref_apropos")
+    ("description" . "Definitions whose names match a pattern, through the xref backend (words for elisp and LSP, a regexp for etags). Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string")))
+                                      ("file" . (("type" . "string") ("description" . "File whose backend answers (default: the user's buffer)")))))
+                      ("required" . ["pattern"]))))
+   (("name" . "imenu_symbols")
+    ("description" . "The definitions of a file as its major mode's imenu sees them: name, kind, 1-based line. Cheap structure for any language. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string") ("description" . "Default: the user's buffer")))))
+                      ("required" . []))))
+   (("name" . "treesit_info")
+    ("description" . "The tree-sitter syntax node at a position (type, field, line range, text), its ancestors and named children; or the whole tree to depth 20 with whole_tree. Needs a *-ts-mode buffer. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based (default: point)")))
+                                      ("column" . (("type" . "integer") ("description" . "0-based")))
+                                      ("ancestors" . (("type" . "integer") ("description" . "How many parents to list (default 3)")))
+                                      ("children" . (("type" . "boolean") ("description" . "List the named children (default true)")))
+                                      ("whole_tree" . (("type" . "boolean") ("description" . "The whole tree instead")))))
+                      ("required" . []))))
+   (("name" . "show_location")
+    ("description" . "Show the user a place in a file: open it in a window (focus stays here) and highlight the range for a moment. Prefer start_text/end_text anchors (they survive line drift); line/end_line as a fallback. Use it to point at what you are talking about.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("start_text" . (("type" . "string") ("description" . "Exact text where the range starts")))
+                                      ("end_text" . (("type" . "string") ("description" . "Exact text where it ends (searched after start_text)")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based, when no start_text")))
+                                      ("end_line" . (("type" . "integer")))))
+                      ("required" . ["file"]))))
+   (("name" . "get_last_error")
+    ("description" . "The user's recent command errors in this Emacs (message, condition, command, buffer, backtrace frame summary), newest first. Use this when the user asks why something just failed, before reproducing anything. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("count" . (("type" . "integer") ("description" . "How many (default 1)")))))
+                      ("required" . []))))
    ;; Web search tool - Phase 4: External Knowledge
    (("name" . "web_search")
     ("description" . "Search the web for documentation, solutions, and examples. Use this when you need to look up information, find how to do something in Emacs, or research a problem.
@@ -688,6 +733,7 @@ Collects diagnostics from:
 EXAMPLES:
 - Current buffer: get_diagnostics
 - Specific file: get_diagnostics path=\"src/main.el\"
+- Every open file of the project: get_diagnostics path=\"project\"
 - Only errors: get_diagnostics severity=\"error\"
 - From compilation: get_diagnostics sources=[\"compilation\"]
 
@@ -695,7 +741,7 @@ Returns: Array of diagnostics with source, severity, message, line, column.
 Use after making edits to check what errors remain.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "File path to get diagnostics for (default: current buffer)")))
+                                                  ("description" . "File path to get diagnostics for (default: current buffer); \"project\" for every open file under the project root")))
                                       ("sources" . (("type" . "array")
                                                    ("items" . (("type" . "string")
                                                               ("enum" . ["flymake" "flycheck" "lsp" "compilation" "all"])))

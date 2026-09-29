@@ -76,5 +76,24 @@ efrit's own tools are refused."
     (should (equal '("a_one" "a_two") (sort (efrit-unregister-package-tools 'a) #'string<)))
     (should (equal '("b_one") (mapcar #'car efrit-tool-registry)))))
 
+(ert-deftest test-registry-tool-runs-in-the-users-buffer ()
+  "A registered tool sees the user's target buffer as current, not the
+buffer the sentinel fired in; default-directory stays the session's."
+  (let ((target (generate-new-buffer "user-file"))
+        (seen nil))
+    (unwind-protect
+        (progn
+          (efrit-register-tool "ctx_probe" :description "probe" :package 'test-registry
+                               :input-schema '(("type" . "object") ("properties" . ()))
+                               :function (lambda (_args) (setq seen (list (current-buffer) default-directory)) "ok"))
+          (with-temp-buffer
+            (let ((default-directory "/tmp/"))
+              (cl-letf (((symbol-function 'efrit-context-target-buffer) (lambda (&rest _) target)))
+                (should (equal "ok" (efrit-tool-registry-dispatch "ctx_probe" (make-hash-table)))))))
+          (should (eq target (car seen)))
+          (should (equal "/tmp/" (cadr seen))))
+      (efrit-unregister-package-tools 'test-registry)
+      (kill-buffer target))))
+
 (provide 'test-tool-registry)
 ;;; test-tool-registry.el ends here

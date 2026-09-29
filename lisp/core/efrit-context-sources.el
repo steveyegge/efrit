@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-text-window)
 (require 'subr-x)
 (require 'project)
 
@@ -54,7 +55,7 @@
   :prefix "efrit-context-")
 
 (defcustom efrit-context-sources
-  '(buffer position region diagnostic project visible-buffers)
+  '(buffer position region diagnostic project visible-buffers edit-history pins)
   "Sources of editor context prepended to each REPL turn.
 
 Each element is either a symbol naming a built-in source or a
@@ -67,6 +68,9 @@ function.  Built-ins:
   project         project root (and remote host if Tramp), git branch
   visible-buffers other buffers shown in the frame's windows
   recent-files    a few entries from `recentf-list'
+  edit-history    the target buffer's recent edit bursts as diffs
+                  (only while `efrit-edit-history-mode' is on there)
+  pins            the project's pinned references (`efrit-context-pin')
 
 A function element is called with one argument, the target buffer,
 inside `with-current-buffer', and returns a string (one or more
@@ -77,6 +81,7 @@ Set to nil to send no proactive context."
   :type '(repeat (choice (const buffer) (const position) (const region)
                          (const diagnostic) (const project)
                          (const visible-buffers) (const recent-files)
+                         (const edit-history) (const pins)
                          function))
   :group 'efrit-context)
 
@@ -138,27 +143,101 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
      (unless file
        (format "\nDirectory: %s" (abbreviate-file-name default-directory))))))
 
+(declare-function treesit-node-at "treesit")
+(declare-function treesit-node-parent "treesit")
+(declare-function treesit-node-type "treesit")
+(declare-function treesit-node-start "treesit")
+(declare-function treesit-node-end "treesit")
+(declare-function treesit-node-child-by-field-name "treesit")
+(declare-function treesit-node-children "treesit")
+(declare-function treesit-node-text "treesit")
+(declare-function treesit-parser-list "treesit")
+
+(defconst efrit-context--function-node-regexp
+  "function\\|method\\|defun\\|procedure\\|lambda\\|arrow_function\\|func_literal"
+  "Tree-sitter node types that are a function-like definition.")
+
+(defconst efrit-context--class-node-regexp
+  "class\\|struct\\|interface\\|impl_item\\|trait\\|module\\|namespace\\|enum"
+  "Tree-sitter node types that are a type-like container.")
+
+(defun efrit-context--node-header (node)
+  "The header of NODE: its text up to (not including) its body field, one line."
+  (let* ((body (treesit-node-child-by-field-name node "body"))
+         (end (if body (treesit-node-start body) (treesit-node-end node)))
+         (text (buffer-substring-no-properties (treesit-node-start node) end)))
+    (string-trim (replace-regexp-in-string "[ \t\n]+" " " text))))
+
+(defun efrit-context--enclosing (node regexp)
+  "The nearest ancestor of NODE (itself included) whose type matches REGEXP."
+  (let ((n node))
+    (while (and n (not (string-match-p regexp (treesit-node-type n))))
+      (setq n (treesit-node-parent n)))
+    n))
+
+(defun efrit-context-scope-block (&optional pos)
+  "What encloses POS (default point): class and function headers and ranges, or nil.
+From tree-sitter when the buffer has a parser: the enclosing type-like
+node and function-like node, each as its header (up to the body) and
+its line range.  Else `which-function'.  A non-blank line is resolved
+from its first non-blank character, so indentation does not pick the
+enclosing node (after ai-code-interface, 2026-09-28)."
+  (save-excursion
+    (when pos (goto-char pos))
+    (cond
+     ((and (fboundp 'treesit-parser-list) (ignore-errors (treesit-parser-list)))
+      (back-to-indentation)
+      (let* ((node (treesit-node-at (point)))
+             (fn (and node (efrit-context--enclosing node efrit-context--function-node-regexp)))
+             (cls (and node (efrit-context--enclosing (or (and fn (treesit-node-parent fn)) node)
+                                                     efrit-context--class-node-regexp)))
+             (parts nil))
+        (when cls
+          (push (format "Enclosing type: %s (lines %d-%d)"
+                        (truncate-string-to-width (efrit-context--node-header cls) 120 nil nil "…")
+                        (line-number-at-pos (treesit-node-start cls))
+                        (line-number-at-pos (treesit-node-end cls)))
+                parts))
+        (when fn
+          (push (format "Enclosing function: %s (lines %d-%d)"
+                        (truncate-string-to-width (efrit-context--node-header fn) 160 nil nil "…")
+                        (line-number-at-pos (treesit-node-start fn))
+                        (line-number-at-pos (treesit-node-end fn)))
+                parts))
+        (and parts (mapconcat #'identity (nreverse parts) "\n"))))
+     ((and (fboundp 'which-function) (ignore-errors (which-function)))
+      (format "Enclosing definition: %s" (which-function))))))
+
 (defun efrit-context--source-position (_buf)
-  (let ((defun-name (and (fboundp 'which-function)
-                         (ignore-errors (which-function)))))
-    (concat
-     (format "Point: line %d, column %d (char %d of %d)"
-             (line-number-at-pos) (current-column) (point) (buffer-size))
-     (when defun-name (format "\nEnclosing definition: %s" defun-name)))))
+  (concat
+   (format "Point: line %d, column %d (char %d of %d)"
+           (line-number-at-pos) (current-column) (point) (buffer-size))
+   (when-let* ((scope (ignore-errors (efrit-context-scope-block))))
+     (concat "\n" scope))))
 
 (defun efrit-context--source-region (_buf)
   (when (use-region-p)
     (let* ((beg (region-beginning))
            (end (region-end))
-           (text (buffer-substring-no-properties beg end))
-           (truncated (> (length text) efrit-context-region-max-chars)))
-      (format "Active region: line %d col %d to line %d col %d (%d chars)%s\n<<<REGION\n%s%s\n>>>"
+           (len (- end beg))
+           (truncated (> len efrit-context-region-max-chars))
+           ;; a long region is cut on whole lines around point, not at
+           ;; a character count from its start
+           (text (if truncated
+                     (let ((w (save-restriction
+                                (narrow-to-region beg end)
+                                (efrit-text-window :start (min (max (point) beg) end)
+                                                   :chars efrit-context-region-max-chars))))
+                       (concat (when (plist-get w :before-cut) "...\n")
+                               (plist-get w :before) (plist-get w :after)
+                               (when (plist-get w :after-cut) "\n...")))
+                   (buffer-substring-no-properties beg end))))
+      (format "Active region: line %d col %d to line %d col %d (%d chars)%s\n<<<REGION\n%s\n>>>"
               (line-number-at-pos beg) (save-excursion (goto-char beg) (current-column))
               (line-number-at-pos end) (save-excursion (goto-char end) (current-column))
-              (length text)
-              (if truncated " [truncated]" "")
-              (if truncated (substring text 0 efrit-context-region-max-chars) text)
-              (if truncated "\n..." "")))))
+              len
+              (if truncated " [truncated around point]" "")
+              text))))
 
 (defun efrit-context--source-diagnostic (_buf)
   (let ((items nil))
@@ -229,7 +308,175 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
     (diagnostic . efrit-context--source-diagnostic)
     (project . efrit-context--source-project)
     (visible-buffers . efrit-context--source-visible-buffers)
-    (recent-files . efrit-context--source-recent-files)))
+    (recent-files . efrit-context--source-recent-files)
+    (edit-history . efrit-context--source-edit-history)
+    (pins . efrit-context--source-pins)))
+
+(declare-function efrit-edit-history-text "efrit-edit-history")
+(defvar efrit-edit-history-mode)
+
+(defun efrit-context--source-edit-history (buf)
+  (when (and (featurep 'efrit-edit-history)
+             (buffer-local-value 'efrit-edit-history-mode buf))
+    (efrit-edit-history-text buf)))
+
+;;; Dismissing the file context, and the live indicator
+;;
+;; The snapshot is computed at send time, so until now the user could
+;; not see what would go along.  `efrit-context-describe' is the
+;; short label the agent buffer's header shows ("⧉ foo.el:120, 3
+;; lines").  `efrit-context-dismiss' drops the file-bound sources
+;; (buffer, position, region, diagnostic, edit-history) for the
+;; current target: they come back when the user moves to another file
+;; or selects a region (after claude-code-ide's dismissed-file
+;; semantics, 2026-09-28).
+
+(defvar efrit-context--dismissed nil
+  "The buffer whose file context the user dismissed, or nil.")
+
+(defconst efrit-context--file-bound-sources '(buffer position region diagnostic edit-history)
+  "Sources that describe the target buffer; the ones a dismiss removes.")
+
+(defun efrit-context-dismissed-p (&optional target)
+  "Non-nil while the file context of TARGET (default the target buffer) is dismissed.
+A selected region undoes the dismissal: the user pointed at something."
+  (let ((buf (or target (efrit-context-target-buffer))))
+    (and efrit-context--dismissed
+         (eq efrit-context--dismissed buf)
+         (not (with-current-buffer buf (use-region-p))))))
+
+;;;###autoload
+(defun efrit-context-dismiss ()
+  "Stop sending the current file's context with the next turns.
+Moving to another file or selecting a region turns it back on;
+`efrit-context-restore' does so at once."
+  (interactive)
+  (let ((buf (efrit-context-target-buffer)))
+    (setq efrit-context--dismissed buf)
+    (message "efrit: context of %s dismissed until you move to another file or select something"
+             (buffer-name buf))
+    (force-mode-line-update t)))
+
+(defun efrit-context-restore ()
+  "Send the current file's context again."
+  (interactive)
+  (setq efrit-context--dismissed nil)
+  (force-mode-line-update t))
+
+(defun efrit-context-active-sources (&optional target)
+  "`efrit-context-sources' minus the file-bound ones while dismissed."
+  (if (efrit-context-dismissed-p target)
+      (cl-remove-if (lambda (s) (memq s efrit-context--file-bound-sources)) efrit-context-sources)
+    efrit-context-sources))
+
+(defun efrit-context-describe (&optional target)
+  "A short label of what the next turn's context will carry, or nil.
+For example \"⧉ foo.el:120\", \"⧉ foo.el:120, 3 lines\", or
+\"⧉ foo.el (dismissed)\"."
+  (when-let* ((buf (or target (efrit-context-target-buffer))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (let* ((name (if buffer-file-name (file-name-nondirectory buffer-file-name) (buffer-name)))
+               (pins (length (efrit-context-pins)))
+               (pin-note (if (> pins 0) (format " +%d pin%s" pins (if (= pins 1) "" "s")) ""))
+               (base (cond
+                      ((efrit-context-dismissed-p buf) (format "⧉ %s (dismissed)" name))
+                      ((not (cl-intersection efrit-context--file-bound-sources efrit-context-sources)) nil)
+                      ((use-region-p)
+                       (format "⧉ %s:%d, %d lines" name (line-number-at-pos (region-beginning))
+                               (count-lines (region-beginning) (region-end))))
+                      (t (format "⧉ %s:%d" name (line-number-at-pos))))))
+          (cond (base (concat base pin-note))
+                ((> pins 0) (concat "⧉" pin-note))))))))
+
+;;; Pinned context: references sent with every turn until cleared
+;;
+;; `@mentions' are one-off and the automatic sources follow the
+;; cursor.  A pin is a `path#L10-L20' (or a whole file) the user wants
+;; the model to keep seeing: kept per project root, listed in the
+;; header, sent as the `pins' source (after ai-code-interface's
+;; curated context list, 2026-09-28).
+
+(defvar efrit-context--pins (make-hash-table :test 'equal)
+  "Project root -> list of pins, newest last.  A pin is a mention string.")
+
+(defcustom efrit-context-pin-max-chars 6000
+  "Longest text one pin contributes; more is cut with a note."
+  :type 'integer
+  :group 'efrit-context)
+
+(defun efrit-context--pin-root ()
+  (file-name-as-directory
+   (or (ignore-errors (funcall 'efrit-tool--get-project-root)) default-directory)))
+
+(defun efrit-context-pins (&optional root)
+  "The pins of ROOT (default the current project)."
+  (gethash (or root (efrit-context--pin-root)) efrit-context--pins))
+
+;;;###autoload
+(defun efrit-context-pin (start end)
+  "Pin the region's lines of this file (or the whole file without a region).
+Sent with every turn of this project until `efrit-context-unpin' or
+`efrit-context-clear-pins'."
+  (interactive (if (use-region-p) (list (region-beginning) (region-end)) (list nil nil)))
+  (unless buffer-file-name (user-error "This buffer visits no file"))
+  (let* ((root (efrit-context--pin-root))
+         (path (if (string-prefix-p root buffer-file-name)
+                   (file-relative-name buffer-file-name root)
+                 buffer-file-name))
+         (pin (if start
+                  (format "%s#L%d-L%d" path (line-number-at-pos start)
+                          (line-number-at-pos (max start (1- end))))
+                path))
+         (pins (efrit-context-pins root)))
+    (deactivate-mark)
+    (unless (member pin pins)
+      (puthash root (append pins (list pin)) efrit-context--pins))
+    (message "Pinned %s (%d pin%s for %s)" pin (length (efrit-context-pins root))
+             (if (= 1 (length (efrit-context-pins root))) "" "s") (abbreviate-file-name root))
+    (force-mode-line-update t)))
+
+(defun efrit-context-unpin (pin)
+  "Remove PIN from this project's pins."
+  (interactive (list (completing-read "Unpin: " (efrit-context-pins) nil t)))
+  (let ((root (efrit-context--pin-root)))
+    (puthash root (delete pin (efrit-context-pins root)) efrit-context--pins)
+    (force-mode-line-update t)))
+
+(defun efrit-context-clear-pins ()
+  "Forget this project's pins."
+  (interactive)
+  (remhash (efrit-context--pin-root) efrit-context--pins)
+  (message "Pins cleared")
+  (force-mode-line-update t))
+
+(declare-function efrit-agent-mention-split "efrit-agent-mentions")
+(declare-function efrit-agent-mention-range-text "efrit-agent-mentions")
+(declare-function efrit-fence-for "efrit-ui-helpers")
+
+(defun efrit-context--source-pins (_buf)
+  (when-let* ((pins (efrit-context-pins)))
+    (require 'efrit-agent-mentions)
+    (require 'efrit-ui-helpers)
+    (let ((root (efrit-context--pin-root)))
+      (concat
+       "Pinned by the user, keep these in mind for every answer:\n"
+       (mapconcat
+        (lambda (pin)
+          (pcase-let* ((`(,path ,start ,end) (efrit-agent-mention-split pin))
+                       (file (expand-file-name path root)))
+            (if (not (file-readable-p file))
+                (format "- %s (not readable)" pin)
+              (let* ((r (if start (efrit-agent-mention-range-text file start end)
+                          (cons "whole file"
+                                (with-temp-buffer (insert-file-contents file)
+                                                  (string-trim-right (buffer-string))))))
+                     (text (if (> (length (cdr r)) efrit-context-pin-max-chars)
+                               (concat (substring (cdr r) 0 efrit-context-pin-max-chars) "\n[… cut]")
+                             (cdr r))))
+                (format "- %s (%s)\n%s\n%s\n%s" pin (car r)
+                        (efrit-fence-for text) text (efrit-fence-for text))))))
+        pins "\n")))))
 
 ;;; Snapshot and rendering
 
@@ -244,7 +491,7 @@ produced output."
       (when (buffer-live-p buf)
         (let ((parts nil))
           (with-current-buffer buf
-            (dolist (src efrit-context-sources)
+            (dolist (src (efrit-context-active-sources buf))
               ;; Builtin names first: `position' is also a function
               ;; (the cl alias of `cl-position'), so functionp alone
               ;; would call it with one argument and fail.

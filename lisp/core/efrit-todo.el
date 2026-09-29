@@ -64,6 +64,10 @@
 (defvar efrit-todo--counter 0
   "Counter for generating unique TODO IDs.")
 
+;; each session has its own list; the todos-changed event is stamped
+;; with the session through `efrit-publish'
+(efrit-session-local 'efrit-todo--current-todos 'efrit-todo--counter)
+
 ;;; TODO ID Generation
 
 (defun efrit-todo--generate-id ()

@@ -410,7 +410,8 @@ carries a cache_control block, which is the caching probe."
       (if (not remote)
           (efrit-doctor--info "Project root is local; Tramp checks skipped"
                               "Open a /ssh: file and rerun to verify remote tooling.")
-        (dolist (prog '("sh" "git" "rg"))
+        ;; git is not needed: version control goes through VC
+        (dolist (prog '("sh" "rg"))
           (if (efrit-tool-executable-find prog root)
               (efrit-doctor--ok (format "%s found on %s" prog remote))
             (if (equal prog "rg")

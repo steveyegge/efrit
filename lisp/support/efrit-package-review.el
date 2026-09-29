@@ -146,23 +146,29 @@ be PKG-DIR yet; look in PKG-DIR first, with the usual names."
            (ignore-errors (package-find-news-file pkg-desc)))))
 
 (defun efrit-package-review--diff (old-dir new-dir)
-  "Unified diff from OLD-DIR to NEW-DIR as a string, or nil when git is missing.
+  "Unified diff from OLD-DIR to NEW-DIR as a string, through the `diff' library.
 Paths are shown relative to each tree, so the reviewer can name a file
-to open without the temp directory prefix."
-  (when (executable-find "git")
-    (with-temp-buffer
-      (call-process "git" nil t nil "diff" "--no-index" "--no-color"
-                    "--diff-filter=d" "--minimal" old-dir new-dir)
-      (let ((text (buffer-string)))
-        (dolist (dir (list old-dir new-dir))
-          (setq text (replace-regexp-in-string (regexp-quote (directory-file-name dir)) "" text t t)))
-        ;; --no-index takes no pathspec: drop the sections for compiled
-        ;; and binary files here, they are noise in a review
-        (mapconcat #'identity
-                   (cl-remove-if (lambda (section)
-                                   (string-match-p "\\`--git a/.*\\.\\(elc\\|eln\\|info\\|png\\|jpg\\|gif\\|gz\\) " section))
-                                 (split-string text "^diff " t))
-                   "diff ")))))
+to open without the temp directory prefix.  Compiled and binary files
+are left out: noise in a review."
+  (require 'diff)
+  (let* ((switches (list "-ruN" "--minimal"
+                         "-x" "*.elc" "-x" "*.eln" "-x" "*.info"
+                         "-x" "*.png" "-x" "*.jpg" "-x" "*.gif" "-x" "*.gz"))
+         (buf (diff-no-select (directory-file-name old-dir) (directory-file-name new-dir)
+                              switches t (generate-new-buffer " *efrit-package-diff*"))))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((deadline (+ (float-time) 60)))
+            (while (and (get-buffer-process buf) (process-live-p (get-buffer-process buf))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (let ((text (buffer-string)))
+            (dolist (dir (list old-dir new-dir))
+              (setq text (replace-regexp-in-string (regexp-quote (directory-file-name dir)) "" text t t)))
+            ;; the command line and trailer `diff-no-select' adds
+            (setq text (replace-regexp-in-string "\\`diff -[^\n]*\n" "" text))
+            (replace-regexp-in-string "\n*Diff finished[^\n]*\n?\\'" "\n" text)))
+      (kill-buffer buf))))
 
 (defun efrit-package-review--cut (text limit label)
   "TEXT cut at LIMIT characters with a note naming LABEL, or nil for nil."

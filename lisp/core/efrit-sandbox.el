@@ -59,6 +59,7 @@
 (require 'efrit-tool-utils)   ; efrit-project-root, efrit-tool--get-project-root
 (require 'efrit-settings)
 (require 'efrit-events)
+(require 'vc)
 
 (declare-function efrit-sandbox-store-save "efrit-sandbox-store")
 (declare-function efrit-sandbox-store-ensure-loaded "efrit-sandbox-store")
@@ -94,6 +95,86 @@ model-writable."
 
 (defconst efrit-sandbox-capabilities '(read write elisp shell net buffer)
   "Every capability the sandbox knows, in display order.")
+
+;;; Remote hosts
+;;
+;; A path with a TRAMP prefix is on another machine.  The local
+;; project's default grants never apply to it, even when the project
+;; root itself is remote: what the model may read or write there is
+;; decided per host by `efrit-sandbox-remote-hosts', falling back to
+;; `efrit-sandbox-remote-default'.  Every read and write the sandbox
+;; sees goes through this: the file tools (`efrit-resolve-path'), the
+;; eval file-name handler, buffers visiting remote files, and shell
+;; commands run in a remote root.
+
+(defconst efrit-sandbox-remote-policies '(allow ask once deny)
+  "What a remote host policy may say for `:read' or `:write'.
+allow: no prompt, the whole host.  ask: prompt, all scopes offered.
+once: prompt, only a one-time grant offered.  deny: refused without a
+prompt.")
+
+(defcustom efrit-sandbox-remote-hosts nil
+  "Per-host sandbox policy for remote (TRAMP) paths.
+An alist of (HOST . (:read POLICY :write POLICY)).  HOST is matched
+against the remote identity of the path (\"/ssh:user@box:\") and
+against its host part (\"box\") with `string-match-p', first match
+wins; a plain host name matches itself and its subdomains.  POLICY
+is one of `efrit-sandbox-remote-policies'; a missing key falls back
+to `efrit-sandbox-remote-default'.
+
+  ((\"build-box\" . (:read allow :write ask))
+   (\"prod-\" . (:read once :write deny))
+   (\"/sudo:\" . (:read deny :write deny)))"
+  :type '(alist :key-type (string :tag "Host or regexp")
+                :value-type (plist :key-type (choice (const :read) (const :write))
+                                   :value-type (choice (const allow) (const ask)
+                                                       (const once) (const deny))))
+  :group 'efrit-sandbox)
+
+(defcustom efrit-sandbox-remote-default '(:read ask :write once)
+  "Policy for remote hosts not in `efrit-sandbox-remote-hosts'.
+The default asks for reads (any scope) and allows writes one at a
+time only: a remote machine is somebody's box, not a scratch tree."
+  :type '(plist :key-type (choice (const :read) (const :write))
+                :value-type (choice (const allow) (const ask) (const once) (const deny)))
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox-abbreviate (path)
+  "`abbreviate-file-name' that never touches a remote host.
+On a remote name Emacs's version asks TRAMP whether the file system is
+case-insensitive, which opens the connection; the sandbox must not
+connect just to display or log a path.  A remote PATH comes back as
+written."
+  (if (and (stringp path) (file-remote-p path))
+      path
+    (abbreviate-file-name path)))
+
+(defun efrit-sandbox-remote-host (path)
+  "The host part of remote PATH (\"box\" of \"/ssh:me@box:/x\"), or nil."
+  (when (stringp path)
+    (or (file-remote-p path 'host) nil)))
+
+(defun efrit-sandbox-remote-policy (path cap)
+  "The policy symbol for CAP (`read' or `write') on remote PATH.
+nil when PATH is not remote or CAP is not a file capability."
+  (when (and (memq cap '(read write)) (stringp path) (file-remote-p path))
+    (let* ((identity (file-remote-p path))
+           (host (or (efrit-sandbox-remote-host path) ""))
+           (key (if (eq cap 'read) :read :write))
+           (entry (cl-find-if
+                   (lambda (e)
+                     (let ((pat (car e)))
+                       (or (string-match-p pat identity)
+                           (string-match-p pat host)
+                           (efrit-sandbox-host-under-p host pat))))
+                   efrit-sandbox-remote-hosts)))
+      (or (and entry (plist-get (cdr entry) key))
+          (plist-get efrit-sandbox-remote-default key)
+          'ask))))
+
+(defun efrit-sandbox-remote-p (target)
+  "Non-nil if grant TARGET names a remote file (a string with a TRAMP prefix)."
+  (and (stringp target) (file-remote-p target) t))
 
 ;;; Shell commands
 ;;
@@ -289,13 +370,54 @@ GRANTS `unset' removes the override."
 ;; request target.
 
 (cl-defstruct (efrit-sandbox-request (:constructor efrit-sandbox-request-create))
-  cap target tool detail)
+  cap target tool detail
+  ;; set by the prompt when the user edited the shell line or form
+  ;; before allowing it; the tool runs the edited text instead
+  edited)
+
+;;; Per-turn state, per session
+;;
+;; The once grant, the edited input and the standing answer (N / q)
+;; belong to one turn of one session.  With several sessions (and
+;; prompts that nest: a sentinel runs another session's tools inside
+;; this session's `recursive-edit'), a global would let session B
+;; take A's once grant or inherit A's deny-all.  They are kept per
+;; `efrit-current-session-id'; code outside any session uses the nil
+;; key (multi-session audit, 2026-09-28).
+
+(defvar efrit-sandbox--turn-state (make-hash-table :test 'equal)
+  "Session id (or nil) -> plist (:once GRANT :edited (TOOL . TEXT) :answer SYMBOL).")
+
+(defvar efrit-current-session-id)
+
+(defun efrit-sandbox--turn-get (key)
+  (plist-get (gethash (bound-and-true-p efrit-current-session-id) efrit-sandbox--turn-state) key))
+
+(defun efrit-sandbox--turn-set (key value)
+  (let ((id (bound-and-true-p efrit-current-session-id)))
+    (puthash id (plist-put (gethash id efrit-sandbox--turn-state) key value)
+             efrit-sandbox--turn-state)
+    value))
+
+(defun efrit-sandbox-take-edited-input (tool)
+  "The edited input the user supplied at TOOL's prompt just now, or nil.
+Consumed: a second call returns nil.  Callers: shell_exec runs the
+edited command line, eval_sexp reads the edited form."
+  (let ((edited (efrit-sandbox--turn-get :edited)))
+    (when (and edited (equal (car edited) tool))
+      (prog1 (cdr edited)
+        (efrit-sandbox--turn-set :edited nil)))))
+
+(defun efrit-sandbox-request-editable-p (req)
+  "Non-nil if REQ is one whose input the user can edit before allowing:
+a shell command line or an elisp form."
+  (and (memq (efrit-sandbox-request-cap req) '(shell elisp))
+       (stringp (efrit-sandbox-request-detail req))
+       (not (string-empty-p (efrit-sandbox-request-detail req)))
+       (member (efrit-sandbox-request-tool req) '("shell_exec" "eval_sexp"))))
 
 (defvar efrit-sandbox--session-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists valid for this Emacs session.")
-
-(defvar efrit-sandbox--once-grant nil
-  "A grant that applies to the very next check only.")
 
 (defvar efrit-sandbox--project-grants (make-hash-table :test 'equal)
   "Project root -> list of grant plists loaded from the project's store.")
@@ -341,7 +463,27 @@ Its visited file's canonical path when it has one, else (buffer . NAME)."
 (defun efrit-sandbox-canonical (path)
   "Canonical form of PATH for prefix comparison.
 Expanded, symlinks resolved where the path exists, directories with a
-trailing slash.  Remote identity is preserved."
+trailing slash.  Remote identity is preserved.
+
+A remote PATH is canonicalized lexically only: deciding whether to
+ask must not open a TRAMP connection (that made the sandbox itself
+connect to a host, or hang on one that is down, 2026-09-28), and the
+policy is per host anyway, so symlinks there do not change the
+answer.  The remote identity is kept as written."
+  (if (file-remote-p path)
+      (let* ((remote (file-remote-p path))
+             (local (file-remote-p path 'localname))
+             (clean (if (and local (file-name-absolute-p local))
+                        (let ((file-name-handler-alist nil))
+                          (expand-file-name local "/"))
+                      (or local "/"))))
+        (concat remote (if (and (string-suffix-p "/" (or local "")) (not (string= clean "/")))
+                           (file-name-as-directory clean)
+                         clean)))
+    (efrit-sandbox--canonical-local path)))
+
+(defun efrit-sandbox--canonical-local (path)
+  "`efrit-sandbox-canonical' for a local PATH (may touch the filesystem)."
   (let* ((expanded (expand-file-name path))
          (resolved (if (file-exists-p expanded)
                        (condition-case nil (file-truename expanded) (error expanded))
@@ -433,25 +575,35 @@ For `shell', TARGET is the command line (or t for \"any command\")."
          (target (efrit-sandbox--canonical-target cap target)))
     (cond
      ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p target)) nil)
+     ;; a remote file: the host policy first.  `allow' needs no grant,
+     ;; `deny' accepts none; `ask' and `once' fall through to the
+     ;; explicit grants below (never to the project defaults)
+     ((and (memq cap '(read write)) (efrit-sandbox-remote-p target)
+           (memq (efrit-sandbox-remote-policy target cap) '(allow deny)))
+      (eq (efrit-sandbox-remote-policy target cap) 'allow))
      ;; an always-ask shell line: only its own once-grant applies
      ((and (eq cap 'shell) (stringp target) (efrit-sandbox-shell-always-ask-match target))
-      (when (and efrit-sandbox--once-grant
-                 (efrit-sandbox--grant-covers-p efrit-sandbox--once-grant cap target))
-        (setq efrit-sandbox--once-grant nil)
-        t))
-     ;; default project grants
-     ((and (memq cap (efrit-sandbox-effective-default-grants root))
-           (or (memq cap '(elisp shell net))
-               (and (stringp target) (efrit-sandbox--under-p target root))))
+      (let ((once (efrit-sandbox--turn-get :once)))
+        (when (and once (efrit-sandbox--grant-covers-p once cap target))
+          (efrit-sandbox--turn-set :once nil)
+          t)))
+     ;; default project grants (never for a remote file, see above;
+     ;; tested first so a remote target does not read the project's
+     ;; settings on the host just to be told no)
+     ((and (or (memq cap '(elisp shell net))
+               (and (stringp target)
+                    (not (efrit-sandbox-remote-p target))
+                    (efrit-sandbox--under-p target root)))
+           (memq cap (efrit-sandbox-effective-default-grants root)))
       t)
      ;; explicit grants
      ((cl-some (lambda (g) (efrit-sandbox--grant-covers-p g cap target))
                (efrit-sandbox-grants root))
       t)
      ;; the one-shot grant
-     ((and efrit-sandbox--once-grant
-           (efrit-sandbox--grant-covers-p efrit-sandbox--once-grant cap target))
-      (setq efrit-sandbox--once-grant nil)
+     ((let ((once (efrit-sandbox--turn-get :once)))
+        (and once (efrit-sandbox--grant-covers-p once cap target)))
+      (efrit-sandbox--turn-set :once nil)
       t)
      (t nil))))
 
@@ -469,11 +621,15 @@ an explicit grant (checked by `efrit-sandbox-check-buffer')."
           (eq buffer (condition-case nil
                          (funcall efrit-sandbox-target-buffer-function)
                        (error nil))))
-     ;; a buffer visiting a file inside the project root
+     ;; a buffer visiting a file inside the project root.  A remote
+     ;; file is not "inside" for this purpose: its host policy decides
+     ;; (allow = free, anything else = a buffer grant is asked for)
      (let ((target (efrit-sandbox-buffer-target buffer)))
        (and (stringp target)
             (not (efrit-sandbox--always-denied-p target))
-            (efrit-sandbox--under-p target root)))
+            (if (efrit-sandbox-remote-p target)
+                (eq (efrit-sandbox-remote-policy target 'read) 'allow)
+              (efrit-sandbox--under-p target root))))
      ;; an explicit buffer grant covering it
      (efrit-sandbox-allowed-p 'buffer (efrit-sandbox-buffer-target buffer) root))))
 
@@ -503,6 +659,11 @@ write."
    ;; a buffer grant on a file names that file, not its directory: the
    ;; user allowed *this* out-of-project file, not everything beside it
    ((eq cap 'buffer) target)
+   ;; a remote file: its directory, no wider.  The project root does
+   ;; not stand in for it even when the root is on that host (the
+   ;; host policy governs remote files), and no git probe over TRAMP.
+   ((efrit-sandbox-remote-p target)
+    (if (directory-name-p target) target (file-name-directory target)))
    ((efrit-sandbox--under-p target root) root)
    (t (let* ((dir (if (directory-name-p target) target (file-name-directory target)))
              (home (efrit-sandbox-canonical "~")))
@@ -533,17 +694,13 @@ seen after `efrit-sandbox-forget-git-toplevels'."
      ((eq cached 'none) nil)
      (cached cached)
      (t
-      (let* ((default-directory dir)
-             (top (and (file-directory-p dir)
-                       (efrit-tool-executable-find "git" dir)
-                       (with-temp-buffer
-                         (when (eq 0 (ignore-errors
-                                       (efrit-tool-call-process "git" nil t nil
-                                                                "rev-parse" "--show-toplevel")))
-                           (let ((out (string-trim (buffer-string))))
-                             (and (not (string-empty-p out))
-                                  (efrit-sandbox-canonical
-                                   (concat (file-remote-p dir) out)))))))))
+      ;; VC finds the work tree without running git (the backend walks
+      ;; up for its marker directory); a remote DIR is never probed
+      (let* ((top (and (not (file-remote-p dir))
+                       (file-directory-p dir)
+                       (let* ((backend (ignore-errors (vc-responsible-backend dir)))
+                              (root (and backend (ignore-errors (vc-call-backend backend 'root dir)))))
+                         (and root (efrit-sandbox-canonical (expand-file-name root)))))))
         (puthash dir (or top 'none) efrit-sandbox--git-toplevel-cache)
         top)))))
 
@@ -558,7 +715,7 @@ persisted via `efrit-sandbox-store-save'."
   (let* ((root (or root (efrit-sandbox-project-root)))
          (grant (list :cap cap :target target :scope scope)))
     (pcase scope
-      ('once (setq efrit-sandbox--once-grant grant))
+      ('once (efrit-sandbox--turn-set :once grant))
       ('session (puthash root (efrit-sandbox--absorb grant (gethash root efrit-sandbox--session-grants))
                          efrit-sandbox--session-grants))
       ('project
@@ -602,29 +759,39 @@ prefixes are absorbed; shell lists, buffers and t are left alone."
   (if root
       (remhash root efrit-sandbox--session-grants)
     (clrhash efrit-sandbox--session-grants))
-  (setq efrit-sandbox--once-grant nil))
+  (efrit-sandbox--turn-set :once nil))
 
 ;;; The check
 
-(defvar efrit-sandbox--turn-answer nil
-  "A standing answer for the rest of the turn: `deny-all' or `abort', or nil.
+(defun efrit-sandbox-turn-answer ()
+  "The standing answer for the rest of this session's turn: `deny-all', `abort', or nil.
 Set by the prompt's N (deny every further request this turn) and q
-\(abort the turn); cleared by `efrit-sandbox-begin-turn'.")
+\(abort the turn); cleared by `efrit-sandbox-begin-turn'."
+  (efrit-sandbox--turn-get :answer))
 
 (defun efrit-sandbox-begin-turn ()
-  "Forget the standing answer of the previous turn.  Loops call this per turn."
-  (setq efrit-sandbox--turn-answer nil))
+  "Forget the previous turn's standing answer, once grant and edited input.
+Loops call this per turn, as the session's code.  The question mark
+\(`efrit-brief-question-turn') is per turn too: it is armed by the
+send and cleared at the next turn's start."
+  (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state))
+
+(defvar efrit-sandbox--question-turn)
+(defun efrit-sandbox-end-turn ()
+  "Drop the per-turn question mark.  Loops call this when a turn ends."
+  (when (boundp 'efrit-sandbox--question-turn)
+    (setq efrit-sandbox--question-turn nil)))
 
 (defun efrit-sandbox-deny-rest-of-turn ()
   "Answer no to this request and to every further request this turn.
 The model keeps running; each denied tool gets the usual result."
-  (setq efrit-sandbox--turn-answer 'deny-all))
+  (efrit-sandbox--turn-set :answer 'deny-all))
 
 (defun efrit-sandbox-abort-turn ()
   "Answer no and stop the turn: the tool is interrupted as C-g would.
 The loop records an interrupted tool result and ends the turn; the
 conversation stays and the next input continues it."
-  (setq efrit-sandbox--turn-answer 'abort))
+  (efrit-sandbox--turn-set :answer 'abort))
 
 (defun efrit-sandbox--ask-without-clock (req)
   "Call `efrit-sandbox-request-function' on REQ with efrit's clocks paused.
@@ -632,13 +799,27 @@ The check runs inside the tool's `with-timeout' and the turn's wall
 clock; the time the user spends reading the prompt must not count
 against either (`efrit-with-user-waiting').  Returns the chosen scope
 or nil."
-  (efrit-with-user-waiting
-    (condition-case err
-        (funcall efrit-sandbox-request-function req)
-      (quit nil)
-      (error
-       (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
-       nil))))
+  (if inhibit-quit
+      ;; No prompt can run with quits inhibited: the menu needs C-g to
+      ;; be a way out.  Deny; the model is told why.  (The prompt that
+      ;; wedged Emacs for hours on 2026-09-27 came from the eval
+      ;; handler owning `load'; that is fixed at the source, see
+      ;; efrit-sandbox-eval.)
+      (progn
+        (efrit-log 'warn "sandbox: cannot prompt for %s %s (quits inhibited); denied"
+                   (efrit-sandbox-request-cap req)
+                   (efrit-sandbox--target-label (efrit-sandbox-request-target req)))
+        (setf (efrit-sandbox-request-detail req)
+              (concat (or (efrit-sandbox-request-detail req) "")
+                      " (no prompt possible at this point; ask for the grant from top level)"))
+        nil)
+    (efrit-with-user-waiting
+      (condition-case err
+          (funcall efrit-sandbox-request-function req)
+        (quit nil)
+        (error
+         (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
+         nil)))))
 
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.
@@ -654,43 +835,83 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
            (ctarget (efrit-sandbox--canonical-target cap target)))
       (efrit-sandbox-store-ensure-loaded root)
       (cond
+       ;; the user sent this turn as a question: no writes, shell or
+       ;; eval, without a prompt (efrit-brief)
+       ((and (fboundp 'efrit-sandbox-question-turn-p) (efrit-sandbox-question-turn-p cap))
+        (efrit-log 'info "sandbox: %s refused, this turn is a question" cap)
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool
+                       :detail "the user asked a question this turn: answer it; do not change, run or evaluate anything"))))
        ((and (not (eq cap 'shell)) (efrit-sandbox--always-denied-p ctarget))
         (efrit-log 'warn "sandbox: %s on %s is always denied" cap ctarget)
         (signal 'efrit-sandbox-denied
                 (list (efrit-sandbox-request-create
                        :cap cap :target ctarget :tool tool
                        :detail (format "%s is protected and can never be granted" ctarget)))))
+       ;; a shell command in a remote root runs on that host and can
+       ;; touch anything there: the host's write policy governs it
+       ((and (eq cap 'shell) (file-remote-p root)
+             (eq (efrit-sandbox-remote-policy root 'write) 'deny))
+        (efrit-log 'warn "sandbox: shell on host %s denied by policy" (efrit-sandbox-remote-host root))
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool
+                       :detail (format "shell commands on host %s are denied by efrit-sandbox-remote-hosts (write policy)"
+                                       (efrit-sandbox-remote-host root))))))
+       ;; a remote host whose policy for this capability is deny
+       ((and (memq cap '(read write)) (efrit-sandbox-remote-p ctarget)
+             (eq (efrit-sandbox-remote-policy ctarget cap) 'deny))
+        (efrit-log 'warn "sandbox: %s on %s denied by the policy for host %s"
+                   cap ctarget (efrit-sandbox-remote-host ctarget))
+        (when (fboundp 'efrit-publish)
+          (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
+        (signal 'efrit-sandbox-denied
+                (list (efrit-sandbox-request-create
+                       :cap cap :target ctarget :tool tool
+                       :detail (format "%s access to host %s is denied by efrit-sandbox-remote-hosts"
+                                       cap (efrit-sandbox-remote-host ctarget))))))
        ((efrit-sandbox-allowed-p cap ctarget root)
         (efrit-log 'debug "sandbox: allowed %s %s (%s)" cap
-                   (if (stringp ctarget) (abbreviate-file-name ctarget) ctarget) tool)
+                   (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget) tool)
         t)
        (t
         (efrit-log 'debug "sandbox: %s %s not covered for %s; asking (%s)" cap
-                   (if (stringp ctarget) (abbreviate-file-name ctarget) ctarget)
-                   (abbreviate-file-name root) tool)
+                   (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget)
+                   (efrit-sandbox-abbreviate root) tool)
         (let* ((req (efrit-sandbox-request-create
                      :cap cap
                      :target (efrit-sandbox--suggest-target cap ctarget root)
                      :tool tool :detail detail))
                (scope (and efrit-sandbox-request-function
                            ;; a standing N from earlier this turn: no prompt
-                           (not (eq efrit-sandbox--turn-answer 'deny-all))
+                           (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))
           ;; q in the prompt: this tool is interrupted, the loop ends
           ;; the turn the way it does for C-g
-          (when (eq efrit-sandbox--turn-answer 'abort)
+          (when (eq (efrit-sandbox-turn-answer) 'abort)
             ;; one quit ends the turn; do not keep quitting into the next
-            (setq efrit-sandbox--turn-answer nil)
+            (efrit-sandbox--turn-set :answer nil)
             (efrit-log 'info "sandbox: turn aborted by the user at %s %s (%s)" cap ctarget tool)
             (when (fboundp 'efrit-publish)
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool)
                                                (:abort . t))))
             (signal 'quit nil))
           ;; an exact-line shell grant is never standing: whatever the
-          ;; prompt returned, it applies to this run only
+          ;; prompt returned, it applies to this run only.  Same for a
+          ;; remote host whose policy is `once'.
           (when (and (memq scope '(session project))
                      (efrit-sandbox-request-once-only-p req))
             (setq scope 'once))
+          ;; An edited input applies to this run only, whatever scope
+          ;; was chosen: the grant would cover the original line
+          (when (efrit-sandbox-request-edited req)
+            (efrit-sandbox--turn-set :edited (cons tool (efrit-sandbox-request-edited req)))
+            (when (memq scope '(session project)) (setq scope 'once)))
           (if (memq scope '(once session project))
               (progn
                 (efrit-sandbox-grant cap (efrit-sandbox-request-target req) scope root)
@@ -704,11 +925,26 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
               (efrit-publish 'sandbox-denied `((:cap . ,cap) (:target . ,ctarget) (:tool . ,tool))))
             (signal 'efrit-sandbox-denied (list req)))))))))
 
-(defun efrit-sandbox-request-once-only-p (req)
-  "Non-nil if REQ can only ever be granted once: an always-ask shell line."
+(defun efrit-sandbox-request-exact-line-p (req)
+  "Non-nil if REQ is an always-ask shell line (granted exactly, once,
+after the line is confirmed)."
   (let ((target (efrit-sandbox-request-target req)))
     (and (eq (efrit-sandbox-request-cap req) 'shell)
          (consp target) (eq (car target) 'command))))
+
+(defun efrit-sandbox-request-once-only-p (req)
+  "Non-nil if REQ can only ever be granted once: an always-ask shell
+line, or a remote file whose host policy is `once'."
+  (let ((target (efrit-sandbox-request-target req))
+        (cap (efrit-sandbox-request-cap req)))
+    (or (efrit-sandbox-request-exact-line-p req)
+        (and (memq cap '(read write)) (efrit-sandbox-remote-p target)
+             (eq (efrit-sandbox-remote-policy target cap) 'once))
+        ;; a shell grant in a remote root whose write policy is once
+        (and (eq cap 'shell)
+             (let ((root (efrit-sandbox-project-root)))
+               (and (file-remote-p root)
+                    (eq (efrit-sandbox-remote-policy root 'write) 'once)))))))
 
 (defun efrit-sandbox--target-label (target)
   "A short human label for a grant TARGET (path, (buffer . NAME), or a shell target)."
@@ -719,7 +955,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
         ((and (consp target) (eq (car target) 'command))
          (format "exactly: %s" (cdr target)))
         ((efrit-sandbox-host-target-p target) (cdr target))
-        ((stringp target) (abbreviate-file-name target))
+        ((stringp target) (efrit-sandbox-abbreviate target))
         ((eq target t) "any")
         (t (format "%s" target))))
 
