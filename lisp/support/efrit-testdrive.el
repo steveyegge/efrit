@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -236,6 +236,8 @@
 (declare-function efrit-agent-dashboard--entries "efrit-agent-dashboard")
 (declare-function efrit-magit-context "efrit-magit")
 (declare-function magit-diff-unstaged "magit-diff")
+(declare-function efrit-agent-input-up "efrit-agent-input")
+(declare-function efrit-agent-input-hint "efrit-agent-render")
 (declare-function efrit-agent-instance-for-project "efrit-agent-instances")
 (declare-function efrit-agent-instances-mode "efrit-agent-instances")
 (declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
@@ -1430,12 +1432,21 @@ was failing every time.)"
                                        (key-binding (kbd "RET")))))
         (efrit-testdrive--type-input "")
         (efrit-agent--maybe-enable-input-mode)
-        (efrit-testdrive--check
-         (and (eq ret-input 'efrit-agent-input-send) (eq digit-input 'self-insert-command)
-              (eq tab-plain 'completion-at-point) (eq tab-list 'efrit-agent-input-indent-item)
-              (eq ret-conv 'efrit-agent-toggle-expand))
-         (format "RET %s, 1 %s, TAB %s / on list %s, RET in conversation %s"
-                 ret-input digit-input tab-plain tab-list ret-conv)))))
+        ;; <up> from the first input line enters the transcript (history
+        ;; is M-p/M-n, and the hint says so), 2026-10-01
+        (let ((left-input (progn (efrit-testdrive--type-input "x")
+                                 (goto-char (point-max))
+                                 (efrit-agent-input-up)
+                                 (prog1 (< (point) efrit-agent--input-start)
+                                   (efrit-testdrive--type-input "")))))
+          (efrit-testdrive--check
+           (and (eq ret-input 'efrit-agent-input-send) (eq digit-input 'self-insert-command)
+                (eq tab-plain 'completion-at-point) (eq tab-list 'efrit-agent-input-indent-item)
+                (eq ret-conv 'efrit-agent-toggle-expand)
+                left-input
+                (string-match-p "history" (efrit-agent-input-hint)))
+           (format "RET %s, 1 %s, TAB %s / on list %s, RET in conversation %s; <up> leaves the input %s; hint %S"
+                   ret-input digit-input tab-plain tab-list ret-conv left-input (efrit-agent-input-hint)))))))
   (efrit-testdrive--step 7 "An unbalanced form is balanced before eval_sexp runs, and the model is told"
     (efrit-testdrive--grant 'elisp t)
     (let ((out (efrit-tools-eval-sexp "(+ 1 (* 2 3)")))
@@ -1752,7 +1763,72 @@ was failing every time.)"
       (efrit-testdrive--check
        (and (eq 'deny-all (efrit-with-session "drive-A" (efrit-sandbox-turn-answer)))
             (null (efrit-with-session "drive-B" (efrit-sandbox-turn-answer))))
-       "A deny-all, B nil"))))
+       "A deny-all, B nil")))
+  (efrit-testdrive--step 9 "Expected requests pass with a note; unusual ones ask; a repo grant holds from any root"
+    ;; The six requests of one real turn (2026-09-30 22:26, root ~/):
+    ;; write ~/work/.../claude.org, read under the Emacs install, shell
+    ;; `cd && git status && tail', write /tmp, shell `diff | head', a
+    ;; remote buffer.  Four are expected now; the write under ~/ and
+    ;; the remote buffer still ask.  Then: a grant on one file of a
+    ;; repo covers its siblings from another project root.
+    (let* ((asked nil) (notes nil)
+           (other-root (file-name-as-directory (make-temp-file "efrit-drive-root-" t)))
+           ;; a second checkout, not the drive's project (whose root the
+           ;; drive itself has granted): git-less, a .git marker is enough
+           (repo (let ((d (file-name-as-directory (make-temp-file "efrit-drive-repo-" t))))
+                   (make-directory (expand-file-name ".git" d))
+                   (make-directory (expand-file-name "src" d))
+                   (efrit-sandbox-forget-git-toplevels)
+                   (file-name-as-directory (efrit-sandbox-canonical d))))
+           (emacs-file (expand-file-name "lisp/subr.el" data-directory))
+           (tmp-file (expand-file-name "efrit-drive-scratch.el" temporary-file-directory))
+           (home-file (expand-file-name "efrit-drive-should-ask.txt" "~"))
+           (efrit-sandbox-request-function
+            (lambda (req) (push (list (efrit-sandbox-request-cap req) (efrit-sandbox-request-target req)) asked)
+              ;; grant the repo file; refuse the rest
+              (and (eq (efrit-sandbox-request-cap req) 'write)
+                   (stringp (efrit-sandbox-request-target req))
+                   (string-prefix-p repo (efrit-sandbox-request-target req))
+                   'session)))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (or (alist-get :text e) ""))
+                                   (push (alist-get :text e) notes)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (let ((efrit-project-root other-root))
+            (efrit-sandbox-reset-session efrit-testdrive--root)
+            (let* ((ok-read (ignore-errors (efrit-sandbox-check 'read emacs-file "eval_sexp")))
+                   (ok-tmp (ignore-errors (efrit-sandbox-check 'write tmp-file "eval_sexp")))
+                   (ok-git (ignore-errors (efrit-sandbox-check 'shell "cd ~/x && git status --short a.el && git diff --stat a.el | tail -1" "shell_exec")))
+                   (ok-diff (ignore-errors (efrit-sandbox-check 'shell "diff /tmp/a /tmp/b | head -80" "eval_sexp")))
+                   (expected-ok (and ok-read ok-tmp ok-git ok-diff (null asked) (= 4 (length notes))))
+                   (home-asked (progn (ignore-errors (efrit-sandbox-check 'write home-file "create_file"))
+                                      (and asked (equal (caar asked) 'write))))
+                   (remote-asked (progn (ignore-errors (efrit-sandbox-check 'read "/ssh:drive.invalid:/srv/defaults.yaml" "read_file"))
+                                        (= 2 (length asked))))
+                   ;; the repo: one prompt for greet.el, then notes.txt is covered,
+                   ;; and the grant is keyed on the repo, not on other-root
+                   (repo-first (progn (setq asked nil)
+                                      (ignore-errors (efrit-sandbox-check 'write (expand-file-name "src/a.el" repo) "edit_file"))))
+                   (repo-target (cadar asked))
+                   (repo-sibling (and repo-first (efrit-sandbox-allowed-p 'write (expand-file-name "README.md" repo) other-root)))
+                   ;; the repo's grant sits under the repo key, not under
+                   ;; the asking root (which holds the scratch grants)
+                   (keyed-on-repo (and (cl-some (lambda (g) (equal (plist-get g :target) repo))
+                                                (gethash repo efrit-sandbox--session-grants))
+                                       (not (cl-some (lambda (g) (equal (plist-get g :target) repo))
+                                                     (gethash other-root efrit-sandbox--session-grants))))))
+              (efrit-testdrive--check
+               (and expected-ok home-asked remote-asked repo-first repo-sibling keyed-on-repo
+                    (equal repo-target repo))
+               (format "expected 4/4 with %d note(s), asked %S; ~/ asked %s; remote asked %s; repo grant target %S (repo %S), sibling covered %s, keyed on repo %s; session grant keys %S"
+                       (length notes) (mapcar #'car (reverse asked)) home-asked remote-asked
+                       repo-target repo repo-sibling keyed-on-repo
+                       (let (ks) (maphash (lambda (k v) (push (cons k (mapcar (lambda (g) (plist-get g :target)) v)) ks)) efrit-sandbox--session-grants) ks)))))
+        (efrit-unsubscribe 'note listener)
+        (efrit-sandbox-reset-session repo)
+        (ignore-errors (delete-file tmp-file))
+        (delete-directory repo t)
+        (delete-directory other-root t)))))
 
 (defun efrit-testdrive--section-10 ()
   "The claude-code-ide batch: navigation tools, ediff edits, context indicator, range mentions."

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -28,6 +28,7 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-loop)
+(declare-function efrit-review-forget-session \"efrit-review\")
 (require 'efrit-tools)
 (require 'efrit-sandbox)   ; efrit-tools--reset-rate-limits
 (require 'efrit-progress)
@@ -133,7 +134,8 @@ Returns the session ID."
     (efrit-agent-start-session session-id (efrit-session-command session))
     ;; Per-session tool counters (see efrit-repl-continue)
     (efrit-tools--reset-rate-limits)
-    (efrit-sandbox-begin-turn)
+    (efrit-sandbox-begin-turn (efrit-session-command session))
+    (efrit-review-forget-session session-id)
 
     ;; Store loop state
     (puthash session-id

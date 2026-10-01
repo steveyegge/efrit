@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -98,7 +98,9 @@ CALLBACK and does the remhash)."
   continue-fn         ; Symbol: (session) re-enter the iteration loop.
   execute-tools-fn    ; Symbol: (session content) execute requested tools.
   on-api-error-fn     ; Symbol: (session error) terminal API-error path.
-  finish-fn)          ; (session reason error-message completion-message) terminal.
+  finish-fn           ; (session reason error-message completion-message) terminal.
+  set-pending-question-fn) ; (session question options meta) record a question the
+                           ; loop itself asks (review escalation), or nil.
 
 ;;; Helpers
 
@@ -336,7 +338,7 @@ response's stop_reason."
         (efrit-publish 'text-end `((:session-id . ,session-id))))
       (pcase stop-reason
         ("tool_use"
-         (if (efrit-review-applies-p content)
+         (if (efrit-review-applies-p content (funcall (efrit-loop-adapter-id-fn adapter) session))
              (efrit-loop--review-then-execute session adapter content)
            ;; Say why there is no review row, so a missing one is
            ;; never mistaken for a missed review
@@ -411,7 +413,8 @@ the turn is handed to the user instead."
      (lambda (verdict)
        (when (efrit-loop-adapter-thinking-p adapter)
          (efrit-publish 'thinking-stop `((:session-id . ,session-id))))
-       (let ((count (efrit-review-note-verdict session-id (car verdict))))
+       (let ((count (efrit-review-note-verdict session-id (car verdict)
+                                               (efrit-review-batch-signature content))))
          (pcase (car verdict)
            ('approve
             (funcall (efrit-loop-adapter-execute-tools-fn adapter) session content))
@@ -441,12 +444,52 @@ the turn is handed to the user instead."
                     (push (efrit-api-build-tool-result (nth 0 use) text t) results))))
               (funcall (efrit-loop-adapter-add-tool-results-fn adapter)
                        session (nreverse results))
-              (if (>= count efrit-review-max-rejections)
-                  (efrit-loop--finish
-                   session adapter "review-rejected"
-                   (format "The reviewer rejected %d turns in a row. Last reason: %s"
-                           count (or reason "none given")))
-                (funcall (efrit-loop-adapter-continue-fn adapter) session))))))))))
+              (cond
+               ;; The model keeps proposing what the reviewer keeps
+               ;; rejecting: it is not taking the advice.  Hand the
+               ;; disagreement to the user as a question, the way
+               ;; request_user_input does, and pause; the answer is the
+               ;; model's next input.  Ending the turn here threw away
+               ;; the work in progress (tzz, 2026-10-01: "advise the
+               ;; model, don't kill the whole job").
+               ((and (>= count efrit-review-max-rejections)
+                     (efrit-loop-adapter-handles-waiting-p adapter))
+                (efrit-loop--escalate-review session adapter content count reason))
+               ;; an adapter that cannot pause (efrit-do): the old end
+               ((>= count efrit-review-max-rejections)
+                (efrit-loop--finish
+                 session adapter "review-rejected"
+                 (format "The reviewer rejected the same proposal %d times this turn. Last reason: %s"
+                         count (or reason "none given"))))
+               (t (funcall (efrit-loop-adapter-continue-fn adapter) session)))))))))))
+
+(declare-function efrit-review-describe-batch "efrit-review")
+(declare-function efrit-review-batch-signature "efrit-review")
+
+(defun efrit-loop--escalate-review (session adapter content count reason)
+  "Ask the user about a proposal the reviewer rejected COUNT times; pause the turn.
+The question names the batch and the last REASON; the options let the
+user allow it once, tell the model to drop it, or type their own
+steer.  Delivered through the `question' path the REPL already has,
+so the agent buffer shows the menu and the next input is the answer."
+  (let* ((session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
+         (batch (efrit-review-describe-batch content))
+         (question (format "The reviewer rejected this %d times: %s\nLast reason: %s\nWhat should the model do?"
+                           count (string-trim batch) (or reason "none given")))
+         (options '("Allow it this once" "Drop it and continue the task" "Stop here")))
+    (efrit-log 'info "%s %s: review disagreement escalated to the user after %d rejections"
+               (efrit-loop-adapter-name adapter) session-id count)
+    ;; the REPL session remembers what was asked, so the answer can
+    ;; be turned into an allow (see `efrit-review-answer-escalation')
+    (when-let* ((fn (efrit-loop-adapter-set-pending-question-fn adapter)))
+      (funcall fn session question options
+               (list :kind 'review :signature (efrit-review-batch-signature content)
+                     :count count :reason reason)))
+    (efrit-publish 'question `((:session-id . ,session-id) (:question . ,question)
+                               (:options . ,options) (:kind . review)))
+    (efrit-publish 'review-escalated `((:session-id . ,session-id) (:count . ,count)
+                                       (:reason . ,reason) (:batch . ,batch)))
+    (efrit-loop--finish session adapter "waiting-for-user")))
 
 ;;; Tool Execution
 

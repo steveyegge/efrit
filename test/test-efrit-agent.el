@@ -837,8 +837,11 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
                  (point-max))))
       (should (equal line "> ")))))
 
-(ert-deftest test-efrit-agent-arrows-history-at-edges-motion-inside ()
-  "Up on the first input line recalls history; inside a multi-line input it moves up."
+(ert-deftest test-efrit-agent-arrows-move-history-on-m-p ()
+  "The arrows are movement: <up> from the first input line enters the
+transcript and the draft is untouched; M-p/M-n recall history, saving
+the draft (2026-10-01: before, <up> recalled history and the
+transcript could not be reached)."
   (require 'efrit-agent-input)
   (efrit)
   (with-current-buffer (efrit-agent--get-buffer)
@@ -847,23 +850,29 @@ C-p still crosses into the transcript, C-c C-u kills the whole input."
               (efrit-agent--global-history nil)
               (efrit-agent--history-index -1)
               (efrit-agent--history-temp nil))
+          (efrit-agent--add-claude-message "an earlier answer")
           (goto-char (point-max)) (insert "draft")
-          ;; one-line input: up = previous history, saving the draft
+          ;; up leaves the input; the draft stays
           (efrit-agent-input-up)
+          (should (< (point) efrit-agent--input-start))
+          (should (equal (efrit-agent--get-input) "draft"))
+          ;; history is on M-p / M-n
+          (goto-char (point-max))
+          (efrit-agent-input-history-prev)
           (should (equal (efrit-agent--get-input) "second cmd"))
-          (efrit-agent-input-up)
+          (efrit-agent-input-history-prev)
           (should (equal (efrit-agent--get-input) "first cmd"))
-          ;; down twice: back through history, then the draft returns
-          (efrit-agent-input-down)
-          (should (equal (efrit-agent--get-input) "second cmd"))
-          (efrit-agent-input-down)
+          (efrit-agent-input-history-next)
+          (efrit-agent-input-history-next)
           (should (equal (efrit-agent--get-input) "draft"))
           ;; multi-line input: up from the second line is line motion
           (efrit-agent--clear-input)
           (goto-char (point-max)) (insert "line one\nline two")
           (efrit-agent-input-up)
           (should (equal (efrit-agent--get-input) "line one\nline two"))
-          (should (efrit-agent--input-first-line-p)))
+          (should (efrit-agent--input-first-line-p))
+          ;; the hint names the history keys
+          (should (string-match-p "M-p/M-n history" (efrit-agent-input-hint))))
       (efrit-agent--clear-input))))
 
 (ert-deftest test-efrit-agent-ret-sends-multiline-input-and-shift-selects ()

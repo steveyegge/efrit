@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -146,12 +146,37 @@ Toggled by ? in the menu; reset for each new request.")
     (concat
      (propertize (format "Efrit: %s wants to %s" tool (efrit-sandbox-ui--scope-word req))
                  'face 'efrit-sandbox-prompt-face)
+     ;; why this one was not waved through (expected requests never
+     ;; reach the menu, see `efrit-sandbox-expected-p')
+     (propertize (format "\n  unusual: %s" (efrit-sandbox-ui--why-unusual req)) 'face 'shadow)
      (cond
       (efrit-sandbox-ui--details-shown
        (concat "\n" (efrit-sandbox-ui--indent (efrit-sandbox-ui--details-text req t))))
       ((and detail (not (string-empty-p detail)))
        (concat "\n" (efrit-sandbox-ui--detail-block detail))))
      "\n")))
+
+(defun efrit-sandbox-ui--why-unusual (req)
+  "One phrase on why REQ did not count as expected."
+  (let ((cap (efrit-sandbox-request-cap req))
+        (target (efrit-sandbox-request-target req)))
+    (cond
+     ((and (stringp target) (efrit-sandbox-remote-p target)) "a remote host")
+     ((and (stringp target) (efrit-sandbox--always-denied-p target)) "a protected path")
+     ((eq cap 'elisp) "arbitrary Emacs Lisp")
+     ((eq cap 'net) "a host your request did not name")
+     ((eq cap 'shell)
+      (cond ((and (stringp target) (efrit-sandbox-shell-always-ask-match target)) "a command that is always asked")
+            ((and (stringp target) (string-match-p "[<>`$]" target)) "redirection or substitution in the command")
+            (t "a command outside the read-only set")))
+     ((eq cap 'write)
+      (if (efrit-sandbox-repo-of target) "a write in a repository not granted this session"
+        "a write outside any repository"))
+     ((eq cap 'buffer) "a live buffer outside the project")
+     ((eq cap 'read)
+      (if (efrit-sandbox-repo-of target) "a repository not granted this session"
+        "a read outside the project and the Emacs installation"))
+     (t "not in the expected set"))))
 
 (defun efrit-sandbox-ui--indent (text)
   "TEXT with every line indented two spaces and chopped to the frame width."
@@ -183,8 +208,13 @@ each line is chopped to the frame width."
                    'face 'shadow)))))
 
 (defun efrit-sandbox-ui--project-label ()
-  (format "this project (%s, saved)"
-          (efrit-sandbox-abbreviate (directory-file-name (efrit-sandbox-project-root)))))
+  "The `p' row: names the repository the grant will be saved for.
+A path inside a repo is granted for that repo, whatever buffer asked."
+  (let* ((req efrit-sandbox-ui--request)
+         (repo (and req (memq (efrit-sandbox-request-cap req) '(read write buffer))
+                    (efrit-sandbox-repo-of (efrit-sandbox-request-target req)))))
+    (format "this project (%s, saved)"
+            (efrit-sandbox-abbreviate (directory-file-name (or repo (efrit-sandbox-project-root)))))))
 
 (defun efrit-sandbox-ui--choose (answer)
   (setq efrit-sandbox-ui--answer answer))
@@ -200,10 +230,15 @@ each line is chopped to the frame width."
        (efrit-sandbox-shell-target-p (efrit-sandbox-request-target efrit-sandbox-ui--request))))
 
 (defun efrit-sandbox-ui--once-label ()
-  (if (and efrit-sandbox-ui--request
-           (efrit-sandbox-request-exact-line-p efrit-sandbox-ui--request))
-      "once (asks you to confirm the line)"
-    "once"))
+  "The `o' row: a host or a read is granted for the rest of the turn."
+  (cond
+   ((and efrit-sandbox-ui--request
+         (efrit-sandbox-request-exact-line-p efrit-sandbox-ui--request))
+    "once (asks you to confirm the line)")
+   ((and efrit-sandbox-ui--request
+         (memq (efrit-sandbox-request-cap efrit-sandbox-ui--request) '(net read buffer)))
+    "for this turn")
+   (t "once")))
 
 (defun efrit-sandbox-ui-allow-once ()
   "Grant the open request once.

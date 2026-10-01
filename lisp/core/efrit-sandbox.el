@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -519,6 +519,37 @@ answer.  The remote identity is kept as written."
     (append (gethash root efrit-sandbox--project-grants)
             (gethash root efrit-sandbox--session-grants))))
 
+(defun efrit-sandbox-repo-of (target)
+  "The canonical VC work-tree root that contains path TARGET, or nil.
+Local paths only.  $HOME or / as a work tree (a dotfiles checkout) is
+not a repository for this purpose: a grant on it would be a grant on
+everything."
+  (when (and (stringp target) (not (efrit-sandbox-remote-p target)))
+    (let* ((dir (if (directory-name-p target) target (file-name-directory target)))
+           ;; a file the model is about to create sits in a directory
+           ;; that may not exist yet: the nearest existing ancestor
+           ;; says which checkout it will belong to
+           (dir (let ((d dir))
+                  (while (and d (not (file-directory-p d)) (not (string= d "/")))
+                    (setq d (file-name-directory (directory-file-name d))))
+                  d))
+           (top (and dir (efrit-sandbox--git-toplevel dir)))
+           (home (efrit-sandbox-canonical "~")))
+      (and top (not (string= top home)) (not (string= top "/"))
+           top))))
+
+(defun efrit-sandbox-grants-for (cap target root)
+  "The grants that may cover CAP on TARGET: ROOT's, and the target's repo's.
+A grant made \"for this project\" is keyed on the repository the file
+belongs to, so it holds from any agent buffer (tzz, 2026-10-01: one
+turn asked six times with the root at ~/).  Repos only add their own
+grants when TARGET lies inside them."
+  (let ((repo (and (memq cap '(read write buffer)) (efrit-sandbox-repo-of target))))
+    (append (efrit-sandbox-grants root)
+            (and repo (not (equal repo root))
+                 (progn (efrit-sandbox-store-ensure-loaded repo)
+                        (efrit-sandbox-grants repo))))))
+
 (defun efrit-sandbox--shell-grant-covers-p (gt line)
   "Non-nil if shell grant target GT covers the command LINE.
 An always-ask LINE is covered only by an exact (command . LINE) grant."
@@ -596,14 +627,19 @@ For `shell', TARGET is the command line (or t for \"any command\")."
                     (efrit-sandbox--under-p target root)))
            (memq cap (efrit-sandbox-effective-default-grants root)))
       t)
-     ;; explicit grants
+     ;; explicit grants: the root's and, for a file, its repository's
      ((cl-some (lambda (g) (efrit-sandbox--grant-covers-p g cap target))
-               (efrit-sandbox-grants root))
+               (efrit-sandbox-grants-for cap target root))
       t)
-     ;; the one-shot grant
+     ;; the one-shot grant.  For a host or a read it holds for the rest
+     ;; of the turn: fetching an article means the page and then its
+     ;; API, and reading a file means reading it again after an edit;
+     ;; asking for each was noise (tzz, 2026-10-01).  A write, a shell
+     ;; line or an eval stays one operation.
      ((let ((once (efrit-sandbox--turn-get :once)))
         (and once (efrit-sandbox--grant-covers-p once cap target)))
-      (efrit-sandbox--turn-set :once nil)
+      (unless (memq cap '(net read buffer))
+        (efrit-sandbox--turn-set :once nil))
       t)
      (t nil))))
 
@@ -670,16 +706,11 @@ write."
         (cond
          ;; a lone file in $HOME or /: just that file
          ((and (eq cap 'write) (or (string= dir home) (string= dir "/"))) target)
-         ;; a read inside a git work tree: the whole tree.  Reading one
-         ;; directory of a checkout is never what the user meant, and
-         ;; asking again for each subdirectory trained them to say yes
-         ;; without looking.  Never above $HOME, never for write.
-         ((eq cap 'read)
-          (let ((top (efrit-sandbox--git-toplevel dir)))
-            (if (and top (not (string= top home)) (not (string= top "/"))
-                     (efrit-sandbox--under-p top home))
-                top
-              dir)))
+         ;; inside a git work tree: the whole tree, for read and write
+         ;; alike.  One directory of a checkout is never what the user
+         ;; meant, and asking per subdirectory trained them to say yes
+         ;; without looking.  Never above $HOME.
+         ((efrit-sandbox-repo-of target))
          (t dir))))))
 
 (defvar efrit-sandbox--git-toplevel-cache (make-hash-table :test 'equal)
@@ -713,7 +744,14 @@ seen after `efrit-sandbox-forget-git-toplevels'."
 SCOPE is `once', `session' or `project'.  Project grants are also
 persisted via `efrit-sandbox-store-save'."
   (let* ((root (or root (efrit-sandbox-project-root)))
+         ;; a grant on a path inside some repository is that repo's,
+         ;; whatever buffer asked (see `efrit-sandbox-grants-for')
+         (root (or (and (memq scope '(session project))
+                        (memq cap '(read write buffer))
+                        (efrit-sandbox-repo-of target))
+                   root))
          (grant (list :cap cap :target target :scope scope)))
+    (when (eq scope 'project) (efrit-sandbox-store-ensure-loaded root))
     (pcase scope
       ('once (efrit-sandbox--turn-set :once grant))
       ('session (puthash root (efrit-sandbox--absorb grant (gethash root efrit-sandbox--session-grants))
@@ -769,12 +807,50 @@ Set by the prompt's N (deny every further request this turn) and q
 \(abort the turn); cleared by `efrit-sandbox-begin-turn'."
   (efrit-sandbox--turn-get :answer))
 
-(defun efrit-sandbox-begin-turn ()
+(defun efrit-sandbox-begin-turn (&optional user-text)
   "Forget the previous turn's standing answer, once grant and edited input.
 Loops call this per turn, as the session's code.  The question mark
 \(`efrit-brief-question-turn') is per turn too: it is armed by the
-send and cleared at the next turn's start."
-  (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state))
+send and cleared at the next turn's start.
+
+USER-TEXT is what the user sent (the API text, with any article or
+snapshot efrit prepended): the hosts and local paths it names are the
+work itself, and requests for them are expected this turn (tzz,
+2026-10-01: an article's own URL should not need a grant)."
+  (puthash (bound-and-true-p efrit-current-session-id) nil efrit-sandbox--turn-state)
+  (when (stringp user-text)
+    (efrit-sandbox--turn-set :mentioned (efrit-sandbox-mentions user-text))))
+
+(defun efrit-sandbox-mentions (text)
+  "The hosts and local paths TEXT names: (:hosts (H…) :paths (P…)).
+URLs give their host; absolute, ~/ and ./ paths give the canonical
+path.  Trailing punctuation is dropped."
+  (let ((hosts nil) (paths nil) (start 0))
+    (while (string-match "\\bhttps?://\\([^/[:space:]\"'<>()]+\\)" text start)
+      (cl-pushnew (downcase (replace-regexp-in-string ":[0-9]+\\'" "" (match-string 1 text))) hosts :test #'equal)
+      (setq start (match-end 0)))
+    (setq start 0)
+    (while (string-match "\\(?:^\\|[[:space:]\"'(=,]\\)\\(\\(?:~/\\|/\\|\\./\\)[^[:space:]\"'<>(),;]+\\)" text start)
+      (let ((p (replace-regexp-in-string "[.:]+\\'" "" (match-string 1 text))))
+        (unless (string-match-p "\\`/\\(?:ssh\\|rpc\\|scp\\|sudo\\|docker\\):" p)
+          (cl-pushnew (efrit-sandbox-canonical (expand-file-name p)) paths :test #'equal)))
+      (setq start (match-end 0)))
+    (list :hosts (nreverse hosts) :paths (nreverse paths))))
+
+(defun efrit-sandbox--mentioned-p (cap target)
+  "Non-nil when TARGET of CAP was named in this turn's user text."
+  (let ((m (efrit-sandbox--turn-get :mentioned)))
+    (and m
+         (pcase cap
+           ('net (and (efrit-sandbox-host-target-p target)
+                      (cl-some (lambda (h) (efrit-sandbox-host-under-p (cdr target) h))
+                               (plist-get m :hosts))))
+           ((or 'read 'write 'buffer)
+            (and (stringp target)
+                 (cl-some (lambda (p) (or (string= target p) (efrit-sandbox--under-p target p)
+                                          (efrit-sandbox--under-p p target)))
+                          (plist-get m :paths))))
+           (_ nil)))))
 
 (defvar efrit-sandbox--question-turn)
 (defun efrit-sandbox-end-turn ()
@@ -829,6 +905,133 @@ the variable to nil to mean \"deny without asking\": no fallback there."
            #'efrit-sandbox-ui-prompt)))
 
 (declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
+
+;;; Expected requests
+;;
+;; Most prompts are not decisions: a read under the Emacs installation,
+;; a scratch write under `temporary-file-directory', a read-only shell
+;; command, a path inside a repository the user already granted this
+;; session.  Those are *expected*: granted for the session with a
+;; transcript note, no menu.  Everything else is *unusual* and asks as
+;; before, with the menu saying why.  Expected grants are per session,
+;; never saved (tzz, 2026-10-01).
+
+(defcustom efrit-sandbox-expected-read-roots
+  (list (lambda () data-directory)
+        (lambda () (file-name-directory (directory-file-name data-directory)))
+        (lambda () (bound-and-true-p package-user-dir))
+        (lambda () (and (boundp 'user-emacs-directory) (expand-file-name "elpa" user-emacs-directory)))
+        (lambda () temporary-file-directory))
+  "Directories whose files the model may read without asking.
+Each element is a directory, or a function of no arguments returning
+one (or nil).  The Emacs installation, installed packages and the
+temporary directory by default."
+  :type '(repeat (choice directory function))
+  :group 'efrit-sandbox)
+
+(defcustom efrit-sandbox-expected-write-roots
+  (list (lambda () temporary-file-directory))
+  "Directories the model may write under without asking.
+Same shape as `efrit-sandbox-expected-read-roots'.  Scratch files
+under `temporary-file-directory' by default: a `write-region' to /tmp
+inside an eval is transport, not intent."
+  :type '(repeat (choice directory function))
+  :group 'efrit-sandbox)
+
+(defcustom efrit-sandbox-expected-shell-commands
+  '("ls" "cat" "head" "tail" "wc" "grep" "rg" "find" "fd" "diff" "sort" "uniq" "cut" "tr"
+    "echo" "date" "pwd" "which" "file" "stat" "du" "df" "cd" "true" "false" "test"
+    "git status" "git diff" "git log" "git show" "git branch" "git rev-parse" "git blame"
+    "git ls-files" "git remote" "git stash list")
+  "Shell commands (or command + first word) that run without asking.
+A line is expected when every command on it is listed, no redirection
+or substitution appears, and no `efrit-sandbox-shell-always-ask' rule
+matches.  Read-only tools by default."
+  :type '(repeat string)
+  :group 'efrit-sandbox)
+
+(defun efrit-sandbox--expected-roots (option)
+  "The directories OPTION (a list of dirs or thunks) names, canonical."
+  (delq nil (mapcar (lambda (x)
+                      (let ((d (if (functionp x) (ignore-errors (funcall x)) x)))
+                        (and (stringp d) (file-name-as-directory (efrit-sandbox-canonical d)))))
+                    option)))
+
+(defun efrit-sandbox--expected-shell-line-p (line)
+  "Non-nil when every command on shell LINE is in `efrit-sandbox-expected-shell-commands'."
+  (and (stringp line)
+       (not (efrit-sandbox-shell-always-ask-match line))
+       ;; redirections, substitutions and background jobs change what a
+       ;; read-only command can do; `&&' and `||' only sequence
+       (not (string-match-p "[<>`$]" line))
+       (not (string-match-p "\\(?:^\\|[^&]\\)&\\(?:[^&]\\|$\\)" line))
+       (let ((names (efrit-sandbox-shell-commands line)))
+         (and names
+              (cl-every
+               (lambda (name)
+                 (or (member name efrit-sandbox-expected-shell-commands)
+                     ;; "git status" style entries: command + its first word
+                     (and (string-match (concat "\\(?:^\\|[;|&]\\s-*\\)" (regexp-quote name) "\\s-+\\([a-z-]+\\)") line)
+                          (member (concat name " " (match-string 1 line))
+                                  efrit-sandbox-expected-shell-commands))))
+               names)))))
+
+(defun efrit-sandbox-expected-p (cap target root)
+  "Why CAP on TARGET is an expected request for ROOT, or nil when it is unusual.
+The reason is a short string for the transcript note."
+  (let ((target (efrit-sandbox--canonical-target cap target)))
+    (cond
+     ((and (stringp target) (efrit-sandbox--always-denied-p target)) nil)
+     ((and (stringp target) (efrit-sandbox-remote-p target)) nil)
+     ;; the user named it in this turn's input: it is the work
+     ((efrit-sandbox--mentioned-p cap target) "named in your request")
+     ;; the project's own files are the project's business, never scratch
+     ((and (memq cap '(read write)) (stringp target) (efrit-sandbox--under-p target root)) nil)
+     ((and (eq cap 'read) (stringp target)
+           (cl-some (lambda (d) (efrit-sandbox--under-p target d))
+                    (efrit-sandbox--expected-roots efrit-sandbox-expected-read-roots)))
+      "a read under the Emacs installation or the temporary directory")
+     ;; a scratch write: under the temporary directory, but not inside a
+     ;; repository that happens to live there (a checkout under /tmp is
+     ;; still a project)
+     ((and (eq cap 'write) (stringp target)
+           (not (efrit-sandbox-repo-of target))
+           (cl-some (lambda (d) (efrit-sandbox--under-p target d))
+                    (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots)))
+      "a scratch write under the temporary directory")
+     ;; a file in a repository the user already granted this session
+     ;; (any capability on it): the repo is in play
+     ((and (memq cap '(read write buffer)) (stringp target))
+      (when-let* ((repo (efrit-sandbox-repo-of target)))
+        (and (cl-some (lambda (g) (and (stringp (plist-get g :target))
+                                       (equal (plist-get g :target) repo)))
+                      (append (gethash repo efrit-sandbox--session-grants)
+                              (gethash root efrit-sandbox--session-grants)))
+             (format "inside %s, granted earlier this session" (efrit-sandbox-abbreviate repo)))))
+     ((and (eq cap 'shell) (efrit-sandbox--expected-shell-line-p target))
+      "read-only shell commands")
+     (t nil))))
+
+(defun efrit-sandbox--grant-expected (cap target root reason tool)
+  "Grant CAP on TARGET for the session as an expected request; say so.
+A scratch write is granted on the file alone: a grant on the whole
+temporary directory would also cover any checkout living under it."
+  (let ((grant-target (if (and (eq cap 'write) (stringp target)
+                               (cl-some (lambda (d) (efrit-sandbox--under-p target d))
+                                        (efrit-sandbox--expected-roots efrit-sandbox-expected-write-roots)))
+                          target
+                        (efrit-sandbox--suggest-target cap target root))))
+    (efrit-sandbox-grant cap grant-target 'session root)
+    (efrit-log 'info "sandbox: %s %s expected (%s); granted for the session (%s)"
+               cap (if (stringp target) (efrit-sandbox-abbreviate target) target) reason tool)
+    (when (fboundp 'efrit-publish)
+      (efrit-publish 'note `((:text . ,(format "⛨ %s: %s, allowed without asking (%s)"
+                                                (or tool "a tool")
+                                                (efrit-sandbox-describe-request
+                                                 (efrit-sandbox-request-create :cap cap :target grant-target))
+                                                reason))
+                             (:face . shadow) (:kind . sandbox))))
+    t))
 
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.
@@ -888,6 +1091,9 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
         (efrit-log 'debug "sandbox: allowed %s %s (%s)" cap
                    (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget) tool)
         t)
+       ;; expected: a grant for the session and a note, no menu
+       ((let ((reason (efrit-sandbox-expected-p cap ctarget root)))
+          (and reason (efrit-sandbox--grant-expected cap ctarget root reason tool))))
        (t
         (efrit-log 'debug "sandbox: %s %s not covered for %s; asking (%s)" cap
                    (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget)

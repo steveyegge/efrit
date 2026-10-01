@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -54,6 +54,7 @@ persists and accumulates conversation context.")
 ;;; Question Display
 
 (declare-function efrit-agent-question-menu "efrit-agent-input")
+(declare-function efrit-review-answer-escalation "efrit-review")
 (defvar transient--prefix)
 (defvar efrit-agent--question-menu-buffer)
 (eieio-declare-slots command)
@@ -398,8 +399,10 @@ option N, else nothing (the key falls through and types the digit)."
     (define-key map (kbd "<home>") #'efrit-agent-input-bol)
     (define-key map (kbd "C-c C-a") #'beginning-of-line)
     (define-key map (kbd "C-c C-u") #'efrit-agent-input-kill)
-    ;; History navigation: M-p/M-n always; the arrows step history at
-    ;; the edges of the input and move by line inside it, as a shell does
+    ;; History on M-p/M-n, as in comint and eshell.  The arrows are
+    ;; movement: an <up> that recalled history on the first input line
+    ;; never let the user into the transcript (tzz, 2026-10-01: "how do
+    ;; I scroll back? up/down are history").
     (define-key map (kbd "M-p") #'efrit-agent-input-history-prev)
     (define-key map (kbd "M-n") #'efrit-agent-input-history-next)
     (define-key map (kbd "<up>") #'efrit-agent-input-up)
@@ -445,7 +448,7 @@ M-RET does the other one.  S-RET and C-j insert a newline."
   (and (efrit-agent--in-input-region-p) cmd))
 
 (define-obsolete-function-alias 'efrit-agent-input-send-or-newline
-  #'efrit-agent-input-send "0.5.3"
+  #'efrit-agent-input-send "0.6.2"
   "RET is a menu-item that resolves to `efrit-agent-input-send' in the
 input and to the major mode's binding elsewhere.")
 
@@ -714,16 +717,24 @@ API-INPUT, when given, is what the model receives in place of INPUT
 
       ;; Waiting for specific input (question)
       ('waiting
-       ;; Handle question response
-       (when (efrit-repl-session-pending-question session)
-         (setf (efrit-repl-session-pending-question session) nil))
-       (setq efrit-agent--pending-question nil)
-       (efrit-agent--close-question-menu)
-       (efrit-agent--reset-input-prompt)
-       (efrit-repl-continue session input
-                            #'efrit-agent--on-turn-complete api-input)
-       (message "Efrit: response sent")
-       t)
+       ;; Handle question response.  A question the loop asked on the
+       ;; reviewer's behalf turns the answer into an allow and a plain
+       ;; instruction for the model (`efrit-review-answer-escalation').
+       (let* ((pending (efrit-repl-session-pending-question session))
+              (meta (nth 3 pending))
+              (api-input (if (eq (plist-get meta :kind) 'review)
+                             (efrit-review-answer-escalation
+                              (efrit-repl-session-id session) meta input)
+                           api-input)))
+         (when pending
+           (setf (efrit-repl-session-pending-question session) nil))
+         (setq efrit-agent--pending-question nil)
+         (efrit-agent--close-question-menu)
+         (efrit-agent--reset-input-prompt)
+         (efrit-repl-continue session input
+                              #'efrit-agent--on-turn-complete api-input)
+         (message "Efrit: response sent")
+         t))
 
       ;; Unknown state
       (_
@@ -870,25 +881,17 @@ A second press goes to the real beginning of line."
   (= (line-end-position) (point-max)))
 
 (defun efrit-agent-input-up ()
-  "Previous history entry on the first input line; otherwise the previous line.
-The shell convention: an up arrow in a one-line input recalls history,
-in a multi-line input it moves up until it reaches the top.  With
-shift held (S-<up>) it only moves, extending the selection: history
-recall would destroy the text being selected."
+  "Move up one line; from the first input line, into the transcript.
+History is on \\[efrit-agent-input-history-prev].  Until 2026-10-01
+this recalled history on the first line and the transcript could not
+be reached with the arrows."
   (interactive "^")
-  (if (and (efrit-agent--input-first-line-p)
-           (not this-command-keys-shift-translated))
-      (efrit-agent-input-history-prev)
-    (let ((line-move-visual nil)) (line-move -1 t))))
+  (let ((line-move-visual nil)) (line-move -1 t)))
 
 (defun efrit-agent-input-down ()
-  "Next history entry on the last input line; otherwise the next line.
-With shift held it only moves, like `efrit-agent-input-up'."
+  "Move down one line, stopping at the end of the input."
   (interactive "^")
-  (if (and (efrit-agent--input-last-line-p)
-           (not this-command-keys-shift-translated))
-      (efrit-agent-input-history-next)
-    (let ((line-move-visual nil)) (line-move 1 t))))
+  (let ((line-move-visual nil)) (line-move 1 t)))
 
 (defun efrit-agent-input-kill ()
   "Kill the whole current input (like `comint-kill-input'); it goes to the kill ring."

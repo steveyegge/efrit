@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, git
-;; Version: 0.5.3
+;; Version: 0.6.2
 
 ;;; Commentary:
 ;;

@@ -262,14 +262,38 @@ the customization values apply when the file says nothing."
       (delete-directory root t))))
 
 (ert-deftest test-review-rejection-counter ()
+  "Rejections are counted per proposal within a turn: the same batch
+coming back climbs, a different batch starts at one, an approval or a
+new turn clears everything (2026-10-01: an ancillary work-log edit
+rejected in two turns ended the second turn at its first tool)."
   (clrhash efrit-review--rejections)
-  (should (= 1 (efrit-review-note-verdict "s" 'reject)))
-  (should (= 2 (efrit-review-note-verdict "s" 'reject)))
-  (should (= 0 (efrit-review-note-verdict "s" 'approve)))
-  (should (= 1 (efrit-review-note-verdict "s" 'reject)))
-  (efrit-review-forget-session "s")
-  (should (= 1 (efrit-review-note-verdict "s" 'reject)))
+  (let ((log '("edit_file ~/work/log.org")) (code '("edit_file src/a.el")))
+    (should (= 1 (efrit-review-note-verdict "s" 'reject log)))
+    (should (= 2 (efrit-review-note-verdict "s" 'reject log)))
+    ;; a different proposal: not a loop
+    (should (= 1 (efrit-review-note-verdict "s" 'reject code)))
+    (should (= 0 (efrit-review-note-verdict "s" 'approve code)))
+    (should (= 1 (efrit-review-note-verdict "s" 'reject log)))
+    ;; a new turn starts clean
+    (efrit-review-forget-session "s")
+    (should (= 1 (efrit-review-note-verdict "s" 'reject log)))
+    ;; old callers without a signature still count repeats
+    (should (= 1 (efrit-review-note-verdict "t" 'reject)))
+    (should (= 2 (efrit-review-note-verdict "t" 'reject))))
   (clrhash efrit-review--rejections))
+
+(ert-deftest test-review-batch-signature-names-tools-and-files ()
+  (let* ((h1 (make-hash-table :test 'equal)) (h2 (make-hash-table :test 'equal)))
+    (puthash "path" "~/work/log.org" h1)
+    (puthash "command" "ls" h2)
+    (let ((content (vector (let ((u (make-hash-table :test 'equal)))
+                             (puthash "type" "tool_use" u) (puthash "id" "a" u)
+                             (puthash "name" "edit_file" u) (puthash "input" h1 u) u)
+                           (let ((u (make-hash-table :test 'equal)))
+                             (puthash "type" "tool_use" u) (puthash "id" "b" u)
+                             (puthash "name" "shell_exec" u) (puthash "input" h2 u) u))))
+      (should (equal '("edit_file ~/work/log.org" "shell_exec ls")
+                     (efrit-review-batch-signature content))))))
 
 ;;; Loop integration (REPL adapter, everything mocked)
 
@@ -369,31 +393,80 @@ carrying the reason, and the proposer's next response is processed."
             (should (string-match-p "user asked for a.el" (alist-get 'content r2)))
             (should (string-prefix-p efrit-review-rejected-prefix (alist-get 'content r2)))))))))
 
-(ert-deftest test-review-loop-repeated-rejection-hands-over ()
+(ert-deftest test-review-loop-repeated-rejection-asks-the-user ()
+  "The same proposal rejected `efrit-review-max-rejections' times pauses
+the turn with a question to the user (like request_user_input); the
+work in progress is kept, nothing is run, and the question carries the
+reviewer's last reason (tzz, 2026-10-01: advise the intern, do not
+fire them)."
+  (let* ((efrit-review-enabled t)
+         (efrit-review-max-rejections 2)
+         (session (efrit-repl-session-create))
+         (turn-reason nil)
+         (asked nil)
+         (listener (lambda (e) (push e asked))))
+    (efrit-subscribe 'question listener)
+    (unwind-protect
+        (test-review--with-reviewer '("{\"verdict\": \"reject\", \"reason\": \"no\"}"
+                                      "{\"verdict\": \"reject\", \"reason\": \"still no\"}")
+          (test-review--with-loop
+              (list (test-review--response
+                     (vector (test-review--tool-use "t1" "edit_file" '(("path" . "b.el"))))
+                     "tool_use")
+                    (test-review--response
+                     (vector (test-review--tool-use "t2" "edit_file" '(("path" . "b.el"))))
+                     "tool_use")
+                    (test-review--response (vector (test-review--text "unreached")) "end_turn"))
+              "ok"
+            (efrit-repl-continue session "fix a.el"
+                                 (lambda (_s reason) (setq turn-reason reason)))
+            (should (equal turn-reason "waiting-for-user"))
+            (should (null test-review--dispatched))
+            (should (eq (efrit-repl-session-status session) 'waiting))
+            (let ((q (car asked)))
+              (should (eq (alist-get :kind q) 'review))
+              (should (string-match-p "still no" (alist-get :question q)))
+              (should (member "Allow it this once" (alist-get :options q))))
+            ;; the session remembers it, with the batch signature
+            (let ((meta (nth 3 (efrit-repl-session-pending-question session))))
+              (should (eq (plist-get meta :kind) 'review))
+              (should (equal '("edit_file b.el") (plist-get meta :signature)))
+              ;; "allow" lets that batch through unreviewed, once
+              (should (string-match-p "allows the action"
+                                      (efrit-review-answer-escalation (efrit-repl-session-id session) meta "Allow it this once")))
+              (let ((content (vector (test-review--tool-use "t3" "edit_file" '(("path" . "b.el"))))))
+                (should-not (efrit-review-applies-p content (efrit-repl-session-id session)))
+                (should (efrit-review-applies-p content (efrit-repl-session-id session))))
+              (should (string-match-p "drop that action" (efrit-review-answer-escalation "s" meta "Drop it and continue the task")))
+              (should (equal "do it differently" (efrit-review-answer-escalation "s" meta "do it differently"))))))
+      (efrit-unsubscribe 'question listener))))
+
+(ert-deftest test-review-loop-different-rejections-do-not-escalate ()
+  "Two rejections of different proposals in one turn are two pieces of
+advice, not a loop: the turn goes on and the third, acceptable batch runs."
   (let ((efrit-review-enabled t)
         (efrit-review-max-rejections 2)
         (session (efrit-repl-session-create))
-        (turn-reason nil)
-        (shown nil))
-    (test-review--with-reviewer '("{\"verdict\": \"reject\", \"reason\": \"no\"}"
-                                  "{\"verdict\": \"reject\", \"reason\": \"still no\"}")
-      (cl-letf (((symbol-function 'efrit-repl-loop--display-error)
-                 (lambda (_s msg) (setq shown msg))))
-        (test-review--with-loop
-            (list (test-review--response
-                   (vector (test-review--tool-use "t1" "edit_file" '(("path" . "b.el"))))
-                   "tool_use")
-                  (test-review--response
-                   (vector (test-review--tool-use "t2" "edit_file" '(("path" . "b.el"))))
-                   "tool_use")
-                  (test-review--response (vector (test-review--text "unreached")) "end_turn"))
-            "ok"
-          (efrit-repl-continue session "fix a.el"
-                               (lambda (_s reason) (setq turn-reason reason)))
-          (should (equal turn-reason "review-rejected"))
-          (should (null test-review--dispatched))
-          (should (eq (efrit-repl-session-status session) 'idle))
-          (should (string-match-p "still no" shown)))))))
+        (turn-reason nil))
+    (test-review--with-reviewer '("{\"verdict\": \"reject\", \"reason\": \"not the log\"}"
+                                  "{\"verdict\": \"reject\", \"reason\": \"not that either\"}"
+                                  "{\"verdict\": \"approve\"}")
+      (test-review--with-loop
+          (list (test-review--response
+                 (vector (test-review--tool-use "t1" "edit_file" '(("path" . "log.org"))))
+                 "tool_use")
+                (test-review--response
+                 (vector (test-review--tool-use "t2" "edit_file" '(("path" . "notes.org"))))
+                 "tool_use")
+                (test-review--response
+                 (vector (test-review--tool-use "t3" "edit_file" '(("path" . "a.el"))))
+                 "tool_use")
+                (test-review--response (vector (test-review--text "done")) "end_turn"))
+          "ok"
+        (efrit-repl-continue session "fix a.el"
+                             (lambda (_s reason) (setq turn-reason reason)))
+        (should (equal turn-reason "end_turn"))
+        (should (equal '("edit_file") test-review--dispatched))))))
 
 (ert-deftest test-review-eval-cannot-touch-reviewer ()
   "The proposer cannot switch its own reviewer off from eval_sexp."
@@ -403,3 +476,24 @@ carrying the reason, and the proposer's next response is processed."
 
 (provide 'test-review)
 ;;; test-review.el ends here
+
+(ert-deftest test-review-message-carries-the-standing-instructions ()
+  "The reviewer sees the user's AGENTS.md/CLAUDE.md block before the
+request, so an action those files call for on every turn is not
+rejected as unasked (2026-10-01: the work-log edit)."
+  (let ((dir (file-name-as-directory (make-temp-file "efrit-review-instr-" t))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "CLAUDE.md" dir)
+            (insert "# Rules\n\nOn every request, first append a line to ~/work/log.org.\n"))
+          (let* ((efrit-project-root dir)
+                 (msg (efrit-review--user-message "review this article" nil "1. edit_file {...log.org...}")))
+            (should (string-match-p "USER'S STANDING INSTRUCTIONS:" msg))
+            (should (string-match-p "append a line to ~/work/log.org" msg))
+            (should (< (string-match "STANDING INSTRUCTIONS" msg) (string-match "USER REQUEST:" msg))))
+          ;; cut when long, and absent when there is no file
+          (let ((efrit-review-instructions-max-chars 40) (efrit-project-root dir))
+            (should (string-match-p "more chars\\]" (efrit-review--user-message "x" nil "y"))))
+          (let ((efrit-project-root (file-name-as-directory (make-temp-file "efrit-review-none-" t))))
+            (should-not (string-match-p "STANDING INSTRUCTIONS" (efrit-review--user-message "x" nil "y")))))
+      (delete-directory dir t))))

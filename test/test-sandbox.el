@@ -18,7 +18,13 @@
           (efrit-sandbox--session-grants (make-hash-table :test 'equal))
           (efrit-sandbox--project-grants (make-hash-table :test 'equal))
           (efrit-sandbox--turn-state (make-hash-table :test (quote equal)))
-          (efrit-sandbox-store--loaded (make-hash-table :test 'equal)))
+          (efrit-sandbox-store--loaded (make-hash-table :test 'equal))
+          ;; the tests' "outside" paths live under the temporary
+          ;; directory, which the expected-request rules wave through;
+          ;; the tests of those rules bind the lists back themselves
+          (efrit-sandbox-expected-read-roots nil)
+          (efrit-sandbox-expected-write-roots nil)
+          (efrit-sandbox-expected-shell-commands nil))
      (unwind-protect (progn ,@body)
        (delete-directory root t))))
 
@@ -151,9 +157,9 @@ Both are forgotten when the next turn begins."
         (delete-directory outside t)))))
 
 (ert-deftest test-sb-read-outside-in-a-git-tree-suggests-the-whole-tree ()
-  "A read inside another git checkout asks for that checkout's root once,
-not one subdirectory per request; a write still asks for the directory;
-a tree at $HOME is not widened."
+  "A read or write inside another git checkout asks for that checkout's
+root once, not one subdirectory per request; the grant is kept under
+the checkout."
   (skip-unless (executable-find "git"))
   (test-sb--in-project
     (let* ((repo (file-name-as-directory (make-temp-file "efrit-sb-repo-" t)))
@@ -166,19 +172,18 @@ a tree at $HOME is not widened."
             (let ((default-directory repo))
               (should (eq 0 (call-process "git" nil nil nil "init" "-q"))))
             (efrit-sandbox-forget-git-toplevels)
-            ;; the temp dir is under $HOME or /tmp; only widen when under home
-            (let ((under-home (efrit-sandbox--under-p (efrit-sandbox-canonical repo)
-                                                      (efrit-sandbox-canonical "~"))))
+            ;; a checkout anywhere (2026-10-01: no longer only under $HOME)
+            (let ((under-home t))
               (should (efrit-sandbox-check 'read (expand-file-name "x.el" deep) "read_file"))
               (should (equal (efrit-sandbox-request-target seen)
                              (efrit-sandbox-canonical (if under-home repo deep))))
               (when under-home
-                ;; one grant covers the whole tree now
+                ;; one grant covers the whole tree now, kept under the repo
                 (should (efrit-sandbox-allowed-p 'read (expand-file-name "docs/a.md" repo)))
-                (should (= 1 (length (efrit-sandbox-grants root))))))
-            ;; write asks for the directory only
+                (should (= 1 (length (efrit-sandbox-grants (efrit-sandbox-canonical repo)))))))
+            ;; a write asks for the whole tree too (2026-10-01)
             (efrit-sandbox-check 'write (expand-file-name "y.el" deep) "edit_file")
-            (should (equal (efrit-sandbox-request-target seen) (efrit-sandbox-canonical deep))))
+            (should (equal (efrit-sandbox-request-target seen) (efrit-sandbox-canonical repo))))
         (delete-directory repo t)))))
 
 (ert-deftest test-sb-wider-grant-absorbs-narrower-ones ()
@@ -1036,3 +1041,139 @@ made the granted read time out the instant it was allowed."
         (efrit-sandbox-ui--ask-with-menu req))
       (should-not efrit-sandbox-ui--details-shown))))
 
+
+;;; Repository-scoped grants and the expected/unusual split (2026-10-01)
+
+(defun test-sb--make-repo (name)
+  "A temp directory NAME-… with a .git marker; returns its canonical path."
+  (let ((dir (file-name-as-directory (make-temp-file name t))))
+    (make-directory (expand-file-name ".git" dir))
+    (efrit-sandbox-forget-git-toplevels)
+    (file-name-as-directory (efrit-sandbox-canonical dir))))
+
+(ert-deftest test-sb-grant-inside-a-repo-is-the-repos-from-any-root ()
+  "A session grant on a file inside a repository is keyed on that repo:
+the suggested target is the repo root, and a check from another
+project root (here $HOME-like `root') finds it.  The prompt's `p'
+would save it for the repo, not for ~/."
+  (test-sb--in-project
+    (let* ((repo (test-sb--make-repo "efrit-sb-repo-"))
+           (file (expand-file-name "lisp/a.el" repo))
+           (asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) 'session)))
+      (unwind-protect
+          (progn
+            (make-directory (file-name-directory file) t)
+            ;; the sandbox's own repo-of must see it (vc may not: no git binary here)
+            (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel)
+                       (lambda (dir) (and (string-prefix-p repo dir) repo))))
+              (should (equal repo (efrit-sandbox-repo-of file)))
+              (should (equal repo (efrit-sandbox--suggest-target 'write file root)))
+              (should (efrit-sandbox-check 'write file "edit_file"))
+              (should (equal (list repo) asked))
+              ;; stored under the repo, not under ROOT
+              (should (gethash repo efrit-sandbox--session-grants))
+              (should-not (gethash root efrit-sandbox--session-grants))
+              ;; another file in the same repo, checked from another root: no prompt
+              (let ((efrit-project-root (file-name-as-directory (make-temp-file "efrit-sb-other-" t))))
+                (should (efrit-sandbox-check 'write (expand-file-name "src/b.el" repo) "edit_file"))
+                (should (efrit-sandbox-allowed-p 'write (expand-file-name "README" repo))))
+              (should (= 1 (length asked)))))
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-expected-requests-are-granted-with-a-note-not-a-menu ()
+  "The six requests of one real turn (2026-09-30 22:26): reads under the
+Emacs installation and writes under the temporary directory, read-only
+shell lines, and files in a repo granted this session are expected and
+pass with a note; a remote buffer, an arbitrary shell line and a write
+outside any repo still ask."
+  (test-sb--in-project
+    (let* ((efrit-sandbox-expected-read-roots (eval (car (get 'efrit-sandbox-expected-read-roots 'standard-value)) t))
+           (efrit-sandbox-expected-write-roots (eval (car (get 'efrit-sandbox-expected-write-roots 'standard-value)) t))
+           (efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+           (repo (test-sb--make-repo "efrit-sb-repo2-"))
+           (tmp (file-name-as-directory (efrit-sandbox-canonical temporary-file-directory)))
+           (asked nil) (notes nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (list (efrit-sandbox-request-cap req) (efrit-sandbox-request-target req)) asked) nil))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (alist-get :text e))
+                                   (push (alist-get :text e) notes)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel)
+                     (lambda (dir) (and (string-prefix-p repo dir) repo))))
+            ;; expected
+            (should (efrit-sandbox-check 'read (expand-file-name "lisp/subr.el" data-directory) "eval_sexp"))
+            (should (efrit-sandbox-check 'write (expand-file-name "libs-buf.el" tmp) "eval_sexp"))
+            (should (efrit-sandbox-check 'shell "cd ~/x && git status --short a.el && git diff --stat a.el | tail -1" "shell_exec"))
+            (should (efrit-sandbox-check 'shell "diff /tmp/a /tmp/b | head -80" "eval_sexp"))
+            (should (null asked))
+            (should (= 4 (length notes)))
+            ;; unusual: each asks (and our function says no)
+            (should-error (efrit-sandbox-check 'shell "rm -rf /tmp/x" "shell_exec") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'shell "cat a > b" "shell_exec") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'write (expand-file-name "~/notes.txt") "create_file") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'read "/ssh:host:/srv/defaults.yaml" "read_file") :type 'efrit-sandbox-denied)
+            (should (= 4 (length asked)))
+            ;; a repo file: asks the first time; once granted, siblings are expected
+            (setq asked nil)
+            (let ((efrit-sandbox-request-function (lambda (_req) 'session)))
+              (should (efrit-sandbox-check 'write (expand-file-name "a.el" repo) "edit_file")))
+            (should (efrit-sandbox-check 'write (expand-file-name "deep/b.el" repo) "edit_file"))
+            (should (null asked))
+            ;; nothing was saved: expected grants are session-only
+            (should (cl-every #'null (hash-table-values efrit-sandbox--project-grants))))
+        (efrit-unsubscribe 'note listener)
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-expected-shell-line-rules ()
+  (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t)))
+  (should (efrit-sandbox--expected-shell-line-p "ls -la"))
+  (should (efrit-sandbox--expected-shell-line-p "git log --oneline -5 | head -3"))
+  (should-not (efrit-sandbox--expected-shell-line-p "git push origin main"))
+  (should-not (efrit-sandbox--expected-shell-line-p "ls > out.txt"))
+  (should-not (efrit-sandbox--expected-shell-line-p "echo $(whoami)"))
+  (should-not (efrit-sandbox--expected-shell-line-p "python3 x.py"))
+  (should-not (efrit-sandbox--expected-shell-line-p ""))))
+
+(ert-deftest test-sb-mentioned-targets-are-expected-this-turn ()
+  "Hosts and paths named in the user's own input are the work: fetching
+the article's URL, or its API on the same host, and reading the file
+the user pointed at, pass without a prompt for that turn; the next
+turn starts clean (2026-10-01: an article's own URL asked twice)."
+  (test-sb--in-project
+    (let* ((asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (notes (expand-file-name "notes.txt" (make-temp-file "efrit-sb-m-" t))))
+      (should (equal '(:hosts ("chaos.social" "emacsredux.com") :paths nil)
+                     (let ((m (efrit-sandbox-mentions "see https://chaos.social/@x/1 and (https://emacsredux.com:443/a/).")))
+                       (list :hosts (plist-get m :hosts) :paths (plist-get m :paths)))))
+      (efrit-sandbox-begin-turn (format "analyze https://chaos.social/@citizen428/117 and compare with %s please" notes))
+      (should (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url"))
+      (should (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url"))
+      (should (efrit-sandbox-check 'read notes "read_file"))
+      (should-error (efrit-sandbox-check 'net '(host . "example.org") "fetch_url") :type 'efrit-sandbox-denied)
+      (should (equal '((host . "example.org")) asked))
+      ;; a remote path in the text is never waved through
+      (efrit-sandbox-begin-turn "look at /ssh:host:/etc/passwd")
+      (should-not (plist-get (efrit-sandbox--turn-get :mentioned) :paths))
+      ;; a new turn without the mention asks again (the session grant from
+      ;; the expected pass is per session though, so clear it to see that)
+      (efrit-sandbox-reset-session root)
+      (efrit-sandbox-begin-turn "something else")
+      (setq asked nil)
+      (should-error (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url") :type 'efrit-sandbox-denied)
+      (should asked))))
+
+(ert-deftest test-sb-once-grant-on-a-host-or-read-lasts-the-turn ()
+  "`o' on a host or a read holds for the rest of the turn (the page, then
+its API); on a write or a shell line it is consumed by one operation."
+  (test-sb--in-project
+    (efrit-sandbox-begin-turn)
+    (efrit-sandbox-grant 'net '(host . "chaos.social") 'once)
+    (should (efrit-sandbox-allowed-p 'net '(host . "chaos.social")))
+    (should (efrit-sandbox-allowed-p 'net '(host . "api.chaos.social")))
+    (efrit-sandbox-grant 'shell '(shell "ls") 'once)
+    (should (efrit-sandbox-allowed-p 'shell "ls"))
+    (should-not (efrit-sandbox-allowed-p 'shell "ls"))))

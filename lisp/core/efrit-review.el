@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -102,10 +102,15 @@ carry an action worth judging, and a note there is noise."
                          ", ")))
      (t nil))))
 
-(defcustom efrit-review-max-rejections 2
-  "Rejections of consecutive turns after which the turn is handed to the user.
-Past this the proposer and reviewer are in a loop; the user sees the
-last rejection and decides."
+(defcustom efrit-review-max-rejections 3
+  "Rejected batches in one turn after which the turn is handed to the user.
+Counts the *same* proposal coming back: a batch is a repeat when it
+names the same tools and files as a batch already rejected this turn.
+A rejection of something else (an ancillary edit beside the main
+work) is a denial the model reads and moves on from, like a sandbox
+denial; it does not end the turn.  The count starts afresh with each
+turn (2026-10-01: two rejections in two different turns ended the
+second turn at its first tool)."
   :type 'integer
   :group 'efrit-review)
 
@@ -210,11 +215,49 @@ Both unset removes the section."
   "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project."
   (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes)))
 
-(defun efrit-review-applies-p (content)
-  "Non-nil if CONTENT (a response content vector) has a reviewable tool call."
+(defvar efrit-review--user-allowed (make-hash-table :test 'equal)
+  "Session id -> list of batch signatures the user allowed past the reviewer.
+Set when the user answers a review escalation with \"allow\"; the
+batch then runs without review, once (see `efrit-review-user-allow').")
+
+(defun efrit-review-user-allow (session-id signature)
+  "Let SIGNATURE's batch run unreviewed the next time SESSION-ID proposes it."
+  (push signature (gethash session-id efrit-review--user-allowed)))
+
+(defun efrit-review--user-allowed-p (session-id content)
+  "Non-nil (and consumed) when the user allowed CONTENT's batch for SESSION-ID."
+  (let* ((sig (efrit-review-batch-signature content))
+         (allowed (gethash session-id efrit-review--user-allowed)))
+    (when (member sig allowed)
+      (puthash session-id (cl-remove sig allowed :test #'equal :count 1) efrit-review--user-allowed)
+      t)))
+
+(defun efrit-review-answer-escalation (session-id meta answer)
+  "Turn the user's ANSWER to a review escalation into the model's next input.
+META is the plist the loop stored with the question (:signature
+:count :reason).  \"Allow\" lets the same batch run unreviewed once
+and tells the model to go ahead; \"drop\" tells it to continue the
+task without that action; \"stop\" tells it to stop and report; any
+other text is the user's own steer, passed through."
+  (let ((a (downcase (string-trim answer))))
+    (cond
+     ((string-prefix-p "allow" a)
+      (efrit-review-user-allow session-id (plist-get meta :signature))
+      "The user allows the action the reviewer rejected. Do it now, once, then continue the task.")
+     ((string-prefix-p "drop" a)
+      "The user says: drop that action and continue the task without it. Do not propose it again this turn.")
+     ((string-prefix-p "stop" a)
+      "The user says: stop here. Summarise what was done and what was not, then end the turn.")
+     (t answer))))
+
+(defun efrit-review-applies-p (content &optional session-id)
+  "Non-nil if CONTENT (a response content vector) has a reviewable tool call.
+With SESSION-ID, a batch the user allowed after an escalation passes
+without review, once."
   (and (efrit-review-enabled-p)
        (cl-some (lambda (use) (efrit-review--reviewable-p (nth 1 use)))
-                (efrit-review--tool-uses content))))
+                (efrit-review--tool-uses content))
+       (not (and session-id (efrit-review--user-allowed-p session-id content)))))
 
 ;;; What the reviewer sees
 
@@ -288,11 +331,18 @@ Tool outputs are never included: see the commentary."
 
 (defconst efrit-review--system-prompt
   "You review actions an AI coding agent proposes inside a user's Emacs, before they run.
-You see: the user's request, the agent's own words this turn, and the exact tool calls.
+You see: the user's standing instructions (their AGENTS.md / CLAUDE.md files, when any),
+the user's request, the agent's own words this turn, and the exact tool calls.
 You do not see tool outputs or earlier turns. Judge only from what is shown.
 
+The standing instructions are the user's own and apply to every turn: an action they
+call for (keeping a work log, a clock file, a notes file, a checkpoint) is asked for
+even when the request of the moment does not mention it.
+
 Reject a batch when any call:
-- does something the user did not ask for or would plausibly object to (deleting, overwriting unrelated files, changing configuration, sending data out, running commands with effects beyond the task);
+- does something the user did not ask for -- in the request or the standing instructions --
+  or would plausibly object to (deleting, overwriting unrelated files, changing configuration,
+  sending data out, running commands with effects beyond the task);
 - contradicts the agent's own stated plan;
 - is destructive with no evident reason;
 - touches secrets, credentials, or another project.
@@ -302,9 +352,34 @@ Answer with one JSON object and nothing else -- no prose before it, no code fenc
 {\"verdict\": \"approve\"} or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
   "System prompt for the reviewer.")
 
+(defvar efrit-review--last-refused-request nil
+  "The last review request the endpoint refused, for `efrit-review-probe-refusal'.")
+
+(defcustom efrit-review-instructions-max-chars 4000
+  "Longest standing-instructions block shown to the reviewer; the head is kept."
+  :type 'integer
+  :group 'efrit-review)
+
+(declare-function efrit-instructions-text "efrit-instructions")
+
+(defun efrit-review--standing-instructions ()
+  "The user's instruction files as the reviewer should see them, or nil.
+The same block the agent gets (`efrit-instructions-text'), cut to
+`efrit-review-instructions-max-chars'.  On 2026-10-01 the reviewer
+rejected an edit to the work log that tzz's CLAUDE.md requires on
+every turn, because it only saw the request of the moment."
+  (when (require 'efrit-instructions nil t)
+    (when-let* ((text (ignore-errors (efrit-instructions-text))))
+      (if (> (length text) efrit-review-instructions-max-chars)
+          (concat (substring text 0 efrit-review-instructions-max-chars)
+                  (format "\n… [%d more chars]" (- (length text) efrit-review-instructions-max-chars)))
+        text))))
+
 (defun efrit-review--user-message (intent proposer-text batch)
   "Assemble the reviewer's single user message."
   (concat
+   (when-let* ((standing (efrit-review--standing-instructions)))
+     (concat "USER'S STANDING INSTRUCTIONS:\n" standing "\n\n"))
    "USER REQUEST:\n" (or intent "(not available)")
    "\n\nAGENT SAID THIS TURN:\n" (or proposer-text "(nothing)")
    "\n\nPROPOSED TOOL CALLS:\n" batch))
@@ -447,8 +522,6 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
 ;; an `eval_sexp' batch was refused.  Guessing at the cause was wrong
 ;; every time; bisecting the message is not.
 
-(defvar efrit-review--last-refused-request nil
-  "The last review request the endpoint refused, for `efrit-review-probe-refusal'.")
 
 (defun efrit-review--probe-send (message)
   "Send MESSAGE as the reviewer's user message; return `refused', `ok' or an error string."
@@ -498,17 +571,35 @@ tiny requests.  Shows the result in a popup."
 (defvar efrit-review--rejections (make-hash-table :test 'equal)
   "Session ID -> number of consecutive rejected turns.")
 
-(defun efrit-review-note-verdict (session-id verdict)
-  "Record VERDICT for SESSION-ID; return the consecutive-rejection count.
-An approval resets the count."
-  (if (eq verdict 'reject)
-      (puthash session-id (1+ (gethash session-id efrit-review--rejections 0))
-               efrit-review--rejections)
-    (remhash session-id efrit-review--rejections)
-    0))
+(defun efrit-review-batch-signature (content)
+  "What a batch in CONTENT proposes, as a comparable key: tool names with their files.
+Two batches with the same signature are the model re-proposing the
+same thing after a rejection."
+  (sort (mapcar (lambda (use)
+                  (let* ((input (nth 2 use))
+                         (path (and (hash-table-p input)
+                                    (or (gethash "path" input) (gethash "file" input)
+                                        (gethash "command" input) (gethash "expr" input)))))
+                    (format "%s %s" (nth 1 use) (or path ""))))
+                (efrit-review--tool-uses content))
+        #'string<))
+
+(defun efrit-review-note-verdict (session-id verdict &optional signature)
+  "Record VERDICT for SESSION-ID's turn; return how many times SIGNATURE was rejected.
+An approval of anything clears the turn's record.  Without SIGNATURE
+(old callers) every rejection counts as the same proposal."
+  (let ((key (or signature '(same))))
+    (if (eq verdict 'reject)
+        (let* ((table (or (gethash session-id efrit-review--rejections)
+                          (puthash session-id (make-hash-table :test 'equal) efrit-review--rejections)))
+               (n (1+ (gethash key table 0))))
+          (puthash key n table)
+          n)
+      (remhash session-id efrit-review--rejections)
+      0)))
 
 (defun efrit-review-forget-session (session-id)
-  "Drop SESSION-ID's rejection count."
+  "Drop SESSION-ID's rejection record.  Called when a turn begins or ends."
   (remhash session-id efrit-review--rejections))
 
 ;;; What the proposer is told
@@ -516,7 +607,7 @@ An approval resets the count."
 (defun efrit-review-rejected-tool-result (reason)
   "The tool_result text for a call rejected by the reviewer for REASON.
 Like a sandbox denial, it says what happened and that the turn goes on."
-  (format "%s%s Revise the approach to address this, or explain to the user why the action is needed and stop."
+  (format "%s%s If this call was ancillary to the user's request, carry on with the request without it; otherwise revise the approach, or explain to the user why the action is needed and stop."
           efrit-review-rejected-prefix
           (or reason "the reviewer rejected this action.")))
 

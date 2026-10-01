@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -125,6 +125,9 @@ requiring an active efrit-do session (ef-dcn).")
    ;; indicator while a request is in flight.
    :thinking-p t
    :handles-waiting-p t
+   :set-pending-question-fn (lambda (session question options meta)
+                              (setf (efrit-repl-session-pending-question session)
+                                    (list question options (current-time) meta)))
    ;; Store Claude's final message so the conversation context carries
    ;; into the next turn
    :on-end-turn-fn #'efrit-repl-session-add-assistant-message
@@ -187,7 +190,9 @@ Returns the session ID."
          ;; Same for the circuit breaker's counters (30 tool calls per
          ;; *turn*, not per Emacs session)
          (efrit-do--circuit-breaker-reset)
-         (efrit-sandbox-begin-turn)
+         (efrit-sandbox-begin-turn (or api-input user-input))
+         ;; rejections count per turn, not per session
+         (efrit-review-forget-session session-id)
          (efrit-diagnostics-baseline-begin-turn)))
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)
@@ -218,6 +223,8 @@ Returns the session ID."
 ;; user message.  Text that arrives after the last tool round is not
 ;; lost: `efrit-repl-loop--flush-steering' turns it into the next input
 ;; when the turn ends.
+
+(declare-function efrit-review-forget-session "efrit-review")
 
 (defun efrit-repl-loop--session-for-event (event)
   "The working REPL session EVENT's :session-id names, or nil."

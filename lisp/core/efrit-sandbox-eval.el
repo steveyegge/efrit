@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -321,6 +321,27 @@ writes; only the buffer switches are Emacs's own."
         (apply orig args))
     (apply orig args)))
 
+(defun efrit-sandbox-eval--caller-summary ()
+  "The Lisp functions on the stack between the eval and this guard, innermost first.
+Advice and the guard's own frames are left out.  The prompt shows
+this so the user can tell the model's own `with-current-buffer' from
+one of their hooks walking the buffer list (2026-09-30: an eval that
+only turned on `repeat-mode' asked for a remote YAML buffer the model
+never named)."
+  (let ((names nil) (n 0))
+    (mapbacktrace
+     (lambda (_evald func _args _flags)
+       (when (and (symbolp func) (< n 8)
+                  (not (memq func '(efrit-sandbox-eval--caller-summary efrit-sandbox-eval--check-buffer
+                                    efrit-sandbox-eval--guard-set-buffer efrit-sandbox-eval--guard-read-buffer
+                                    mapbacktrace apply funcall set-buffer save-current-buffer
+                                    eval efrit-sandbox-eval-form)))
+                  (not (string-prefix-p "efrit-" (symbol-name func)))
+                  (not (string-match-p "\\`\\(?:ad-\\|advice-\\|#\\)" (symbol-name func))))
+         (cl-incf n)
+         (push (symbol-name func) names))))
+    (mapconcat #'identity (nreverse names) " < ")))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
@@ -331,7 +352,11 @@ pass; efrit's buffer check applies the target/in-project exemptions."
                (not efrit-sandbox-eval--loading)
                (buffer-local-value 'buffer-file-name buffer)
                (not (efrit-sandbox-buffer-allowed-p buffer)))
-      (efrit-sandbox-check-buffer buffer "eval_sexp" (format "%s" op)))))
+      (let ((callers (efrit-sandbox-eval--caller-summary)))
+        (efrit-log 'info "sandbox: %s on buffer %s from: %s" op (buffer-name buffer) callers)
+        (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                    (format "%s on %s, called from: %s" op (buffer-name buffer)
+                                            (if (string-empty-p callers) "the form itself" callers)))))))
 
 (defun efrit-sandbox-eval--guard-set-buffer (orig &rest args)
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))

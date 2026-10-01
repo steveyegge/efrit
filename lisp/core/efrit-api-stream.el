@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.5.3
+;; Version: 0.6.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -59,7 +59,7 @@
   :group 'efrit-api-stream)
 
 (define-obsolete-variable-alias 'efrit-api-stream-timeout
-  'efrit-api-stream-stall-seconds "0.5.3")
+  'efrit-api-stream-stall-seconds "0.6.2")
 
 (defcustom efrit-api-stream-stall-seconds 300
   "Seconds without any data arriving before the request is killed.
