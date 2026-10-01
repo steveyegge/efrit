@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -250,7 +250,11 @@ Called when a turn ends: a turn that answered without tools had no
 seam, so the text starts the next turn instead of vanishing."
   (when-let* ((texts (efrit-repl-session-take-steering session)))
     (dolist (text texts)
-      (efrit-repl-session-enqueue session text))
+      (efrit-repl-session-enqueue session text)
+      ;; say so: the steer line in the transcript otherwise sits there
+      ;; and a turn with the same text starts with no explanation
+      (efrit-publish 'steer-queued `((:session-id . ,(efrit-repl-session-id session))
+                                     (:text . ,text))))
     (efrit-log 'info "REPL session %s: %d steering text(s) had no seam; queued"
                (efrit-repl-session-id session) (length texts))))
 

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -368,6 +368,24 @@ Moving to another file or selecting a region turns it back on;
   (if (efrit-context-dismissed-p target)
       (cl-remove-if (lambda (s) (memq s efrit-context--file-bound-sources)) efrit-context-sources)
     efrit-context-sources))
+
+(defvar efrit-context--last-label nil
+  "The context label last shown, to redraw agent headers only when it changes.")
+
+(defun efrit-context--refresh-headers ()
+  "After each command: when the context label changed, redraw the agent headers.
+A header-line is re-evaluated only when its own window redisplays;
+moving point in the file next to it does not do that (tour
+2026-09-29: the label kept its first line number)."
+  (when (and (fboundp 'efrit-agent-buffers)
+             (not (derived-mode-p 'efrit-agent-mode)))
+    (let ((label (ignore-errors (efrit-context-describe))))
+      (unless (equal label efrit-context--last-label)
+        (setq efrit-context--last-label label)
+        (force-mode-line-update t)))))
+
+(add-hook 'post-command-hook #'efrit-context--refresh-headers)
+(declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defun efrit-context-describe (&optional target)
   "A short label of what the next turn's context will carry, or nil.

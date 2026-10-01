@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -130,11 +130,18 @@ SUCCESS-P indicates if the tool succeeded."
      ;; Bash - show exit status or output preview
      ((string-match-p "Bash\\|bash\\|shell" tool-name)
       (if success-p
-          (let ((lines (split-string result-str "\n" t)))
-            (if (> (length lines) 1)
-                (format "%d lines output" (length lines))
-              ;; one line: show it; the row chops it to the window
-              (car lines)))
+          ;; shell_exec wraps the output in [Executed: …] [Duration: …]
+          ;; [Result: …] lines; count and show only the command's own
+          ;; output (the row said "5 lines output" for `echo TWO', 2026-09-30)
+          (let* ((body (if (string-match "\\[Result: \\(\\(?:.\\|\n\\)*\\)\\]\\'" result-str)
+                           (match-string 1 result-str)
+                         result-str))
+                 (lines (split-string body "\n" t)))
+            (cond
+             ((null lines) "no output")
+             ((> (length lines) 1) (format "%d lines output" (length lines)))
+             ;; one line: show it; the row chops it to the window
+             (t (car lines))))
         "Failed"))
      ;; Fallback
      (t nil))))

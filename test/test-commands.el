@@ -79,3 +79,17 @@
 
 (provide 'test-commands)
 ;;; test-commands.el ends here
+
+(ert-deftest test-scope-fill-keeps-match-data-across-askers ()
+  "A placeholder default that searches (symbol-at-point) must not break the fill.
+Drive section 12 caught `Args out of range' from `replace-regexp-in-string'."
+  (require 'efrit-scope)
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert "(defun greet (name) name)")
+    (goto-char 9)
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (_p &optional _i _h default) (or default "shout"))))
+      (should (equal "rename greet to shout now"
+                     (efrit-scope-fill "rename {{{?old|Old|symbol-at-point}}} to {{{?new|New|}}} now"
+                                       (list (cons 'symbol-at-point (lambda () (thing-at-point 'symbol t))))))))))

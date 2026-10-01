@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;; Keywords: tools, convenience, ai
 
@@ -63,6 +63,11 @@
 
 (defun efrit-menu--desc-toggle (label var)
   (format "%s [%s]" label (if (and (boundp var) (symbol-value var)) "on" "off")))
+
+(defun efrit-menu--desc-streaming ()
+  (efrit-menu--desc-toggle "Streaming" 'efrit-api-streaming))
+(defun efrit-menu--desc-caching ()
+  (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching))
 
 (defun efrit-menu--desc-permissions ()
   (format "Sandbox [%s]"
@@ -147,10 +152,8 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
       ["Configuration"
        ("m" efrit-select-model :description efrit-menu--desc-model)
        ("M" "Select model (probe all)" (lambda () (interactive) (efrit-select-model t)))
-       ("s" efrit-menu-toggle-streaming :transient t
-        :description (lambda () (efrit-menu--desc-toggle "Streaming" 'efrit-api-streaming)))
-       ("c" efrit-menu-toggle-caching :transient t
-        :description (lambda () (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching)))
+       ("s" efrit-menu-toggle-streaming :transient t :description efrit-menu--desc-streaming)
+       ("c" efrit-menu-toggle-caching :transient t :description efrit-menu--desc-caching)
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
        ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)

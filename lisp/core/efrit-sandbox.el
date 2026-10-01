@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -799,27 +799,36 @@ The check runs inside the tool's `with-timeout' and the turn's wall
 clock; the time the user spends reading the prompt must not count
 against either (`efrit-with-user-waiting').  Returns the chosen scope
 or nil."
-  (if inhibit-quit
-      ;; No prompt can run with quits inhibited: the menu needs C-g to
-      ;; be a way out.  Deny; the model is told why.  (The prompt that
-      ;; wedged Emacs for hours on 2026-09-27 came from the eval
-      ;; handler owning `load'; that is fixed at the source, see
-      ;; efrit-sandbox-eval.)
-      (progn
-        (efrit-log 'warn "sandbox: cannot prompt for %s %s (quits inhibited); denied"
-                   (efrit-sandbox-request-cap req)
-                   (efrit-sandbox--target-label (efrit-sandbox-request-target req)))
-        (setf (efrit-sandbox-request-detail req)
-              (concat (or (efrit-sandbox-request-detail req) "")
-                      " (no prompt possible at this point; ask for the grant from top level)"))
-        nil)
+  ;; Tools run inside the API's process callback, where Emacs binds
+  ;; `inhibit-quit' to t for every sentinel and filter.  A prompt
+  ;; needs C-g as a way out, so quits are re-enabled here for its
+  ;; duration; C-g then lands in the `quit' handler as a denial.
+  ;; (From 2026-09-28 to 2026-09-30 this function refused to prompt
+  ;; at all when quits were inhibited: every live sandbox request was
+  ;; denied without a menu.  The prompt that wedged Emacs on
+  ;; 2026-09-27 came from the eval handler owning `load', fixed at the
+  ;; source in efrit-sandbox-eval, not from quits.)
+  (let ((inhibit-quit nil))
     (efrit-with-user-waiting
       (condition-case err
-          (funcall efrit-sandbox-request-function req)
+          (funcall (efrit-sandbox--request-function) req)
         (quit nil)
         (error
          (efrit-log 'warn "sandbox request function: %s" (error-message-string err))
          nil)))))
+
+(defun efrit-sandbox--request-function ()
+  "The prompt to ask with: the variable, else the UI prompt when it is loaded.
+The variable was found nil in a live Emacs on 2026-09-30 (every
+request denied silently, the tour saw no menu); until the cause is
+known, a loaded `efrit-sandbox-ui' is the answer.  Batch tests bind
+the variable to nil to mean \"deny without asking\": no fallback there."
+  (or efrit-sandbox-request-function
+      (and (not noninteractive)
+           (fboundp 'efrit-sandbox-ui-prompt)
+           #'efrit-sandbox-ui-prompt)))
+
+(declare-function efrit-sandbox-ui-prompt "efrit-sandbox-ui")
 
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.
@@ -887,7 +896,7 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                      :cap cap
                      :target (efrit-sandbox--suggest-target cap ctarget root)
                      :tool tool :detail detail))
-               (scope (and efrit-sandbox-request-function
+               (scope (and (efrit-sandbox--request-function)
                            ;; a standing N from earlier this turn: no prompt
                            (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))

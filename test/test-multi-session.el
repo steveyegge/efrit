@@ -218,3 +218,35 @@ remembers them in a frame parameter; a second toggle restores them."
 
 (provide 'test-multi-session)
 ;;; test-multi-session.el ends here
+
+(ert-deftest test-multi-session-do-path-gets-the-project-instance ()
+  "An efrit-do session renders into the project's instance under
+`efrit-agent-instances-mode' (not into a `*efrit-agent*' nobody has
+open), into the default buffer otherwise, and into the buffer already
+attached to it in either case."
+  (let* ((root (file-name-as-directory (make-temp-file "efrit-do-route-" t)))
+         (was-on (bound-and-true-p efrit-agent-instances-mode))
+         (made nil))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" root))
+          ;; instances off: the default buffer
+          (efrit-agent-instances-mode -1)
+          (let ((default-directory root))
+            (should (equal efrit-agent-buffer-name
+                           (buffer-name (efrit-agent-buffer-for-do-session "do-1")))))
+          ;; instances on: the project's instance, created on demand
+          (efrit-agent-instances-mode 1)
+          (let* ((default-directory root)
+                 (buf (efrit-agent-buffer-for-do-session "do-2")))
+            (push buf made)
+            (should (string-prefix-p "*efrit[efrit-do-route-" (buffer-name buf)))
+            (should (equal root (plist-get (buffer-local-value 'efrit-agent--instance buf) :project)))
+            ;; once attached, the same buffer answers by id from anywhere
+            (with-current-buffer buf (efrit-agent--attach-session "do-2" "list files"))
+            (with-temp-buffer
+              (should (eq buf (efrit-agent-buffer-for-do-session "do-2")))
+              (should (eq buf (efrit-agent-buffer-for "do-2"))))))
+      (dolist (b made) (when (buffer-live-p b) (let ((kill-buffer-query-functions nil)) (kill-buffer b))))
+      (unless was-on (efrit-agent-instances-mode -1))
+      (delete-directory root t))))

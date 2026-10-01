@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -240,7 +240,10 @@ written so far."
     (let ((buf (find-file-noselect file)))
       (with-current-buffer buf
         (revert-buffer t t t)
-        (goto-char (point-max)))
+        (goto-char (point-max))
+        ;; read-only with `q' to close: it is a log to read, not a
+        ;; file to edit (tour 2026-09-29: q typed a q into it)
+        (view-mode 1))
       (pop-to-buffer buf))))
 
 ;;;###autoload

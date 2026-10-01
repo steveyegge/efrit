@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -42,6 +42,7 @@
 ;;                     REPL loop stores the text and delivers it with
 ;;                     the next tool results (`efrit-repl-loop--steer')
 ;;   steered           :text -- the text was delivered to the model
+;;   steer-queued      :text -- no tool round was left; the text starts the next turn
 ;;   queued            :text :count -- an input waits for the turn to end
 ;;   turn-complete     :stop-reason :completion-message
 ;;   idle              :idle-event (the event that started the idle

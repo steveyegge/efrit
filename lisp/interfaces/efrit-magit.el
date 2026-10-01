@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc, ai
 
@@ -30,14 +30,7 @@
 (require 'efrit-brief)
 (require 'eieio)
 
-(declare-function magit-section-at "magit-section")
 (declare-function magit-region-sections "magit-section")
-(declare-function magit-section-value "magit-section")
-(declare-function magit-section-start "magit-section")
-(declare-function magit-section-end "magit-section")
-(declare-function magit-section-parent "magit-section")
-(declare-function magit-section-type "magit-section")
-(declare-function magit-section-parent-value "magit-section")
 (declare-function magit-diff-type "magit-diff")
 (declare-function magit-toplevel "magit-git")
 (declare-function magit-rev-parse "magit-git")
@@ -46,8 +39,21 @@
 (defvar magit-buffer-typearg)
 (defvar magit-buffer-diff-args)
 
+;; Magit sections are EIEIO objects without accessor functions
+;; (`magit-section-type' and friends went with the cl-defstruct in
+;; Magit 3; live drive 2026-09-30 hit the void function), so the
+;; slots are read by name; `eieio-declare-slots' keeps the compiler
+;; quiet when Magit's class is not loaded.
+(eieio-declare-slots type value parent start end children)
 (defun efrit-magit--hunk-p (section)
-  (and section (eq (magit-section-type section) 'hunk)))
+  (and section (eq (oref section type) 'hunk)))
+
+(defun efrit-magit--file-of (section)
+  "The file name of the file section that holds SECTION (or is it)."
+  (let ((s section))
+    (while (and s (not (eq (oref s type) 'file)))
+      (setq s (oref s parent)))
+    (and s (oref s value))))
 
 (defun efrit-magit--hunks ()
   "The hunks to send: the region's sibling hunks, else the hunk at point.
@@ -60,15 +66,15 @@ inside one hunk, else nil."
      ((and (use-region-p) (efrit-magit--hunk-p at))
       (cons (list at) (buffer-substring-no-properties (region-beginning) (region-end))))
      ((efrit-magit--hunk-p at) (cons (list at) nil))
-     ((and at (memq (magit-section-type at) '(file)))
+     ((and at (eq (oref at type) 'file))
       ;; a file section: all its hunks
       (cons (cl-remove-if-not #'efrit-magit--hunk-p (oref at children)) nil))
      (t (user-error "Point is not on a hunk")))))
 
 (defun efrit-magit--hunk-text (hunk)
   "HUNK's text with its file header line."
-  (let* ((file (magit-section-parent-value hunk))
-         (text (buffer-substring-no-properties (magit-section-start hunk) (magit-section-end hunk))))
+  (let* ((file (efrit-magit--file-of hunk))
+         (text (buffer-substring-no-properties (oref hunk start) (oref hunk end))))
     (format "--- a/%s\n+++ b/%s\n%s" file file text)))
 
 (defun efrit-magit-context ()
@@ -77,7 +83,7 @@ inside one hunk, else nil."
                (type (ignore-errors (magit-diff-type)))
                (historical (memq type '(committed)))
                (head (ignore-errors (magit-rev-parse "--short" "HEAD")))
-               (files (delete-dups (mapcar #'magit-section-parent-value hunks)))
+               (files (delete-dups (mapcar #'efrit-magit--file-of hunks)))
                (patch (mapconcat #'efrit-magit--hunk-text hunks "\n")))
     (list :text
           (concat

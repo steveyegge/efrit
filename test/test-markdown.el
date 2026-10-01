@@ -191,7 +191,8 @@ file or a text display shows the alt only; remote sources are fetched."
           ;; graphic display, image creation stubbed
           (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
                     ((symbol-function 'create-image)
-                     (lambda (file &rest props) (list 'image :file file :max-width (plist-get props :max-width))))
+                     (lambda (file &rest props) (list 'image :file file :max-width (plist-get props :max-width)
+                                                      :width (plist-get props :width))))
                     ((symbol-function 'url-retrieve)
                      (lambda (url &rest _) (setq fetched url) nil)))
             (with-temp-buffer
@@ -203,15 +204,19 @@ file or a text display shows the alt only; remote sources are fetched."
                 (should (= efrit-markdown-image-max-width (plist-get (cdr img) :max-width))))
               (should-not (get-text-property 10 'display))
               (should (equal "https://example.invalid/i.png" fetched))
-              ;; scaling at point, then reset
+              ;; scaling at point sets the width outright (a cap would
+              ;; never enlarge a small picture), reset caps again
               (goto-char 4)
               (efrit-markdown-image-scale-increase)
-              (should (= (round (* efrit-markdown-image-scale-step efrit-markdown-image-max-width))
-                         (plist-get (cdr (get-text-property 4 'display)) :max-width)))
+              (let ((img (cdr (get-text-property 4 'display))))
+                (should (= (round (* efrit-markdown-image-scale-step efrit-markdown-image-max-width))
+                           (plist-get img :width)))
+                (should-not (plist-get img :max-width)))
               (efrit-markdown-image-scale-decrease)
               (efrit-markdown-image-scale-reset)
-              (should (= efrit-markdown-image-max-width
-                         (plist-get (cdr (get-text-property 4 'display)) :max-width)))))
+              (let ((img (cdr (get-text-property 4 'display))))
+                (should (= efrit-markdown-image-max-width (plist-get img :max-width)))
+                (should-not (plist-get img :width)))))
           ;; data: URL lands in the cache
           (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
                     ((symbol-function 'create-image) (lambda (file &rest _) (list 'image :file file))))

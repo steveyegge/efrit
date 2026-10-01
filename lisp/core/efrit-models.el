@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -40,12 +40,12 @@
 (require 'url)
 (require 'efrit-common)
 (require 'efrit-log)
+(require 'efrit-config)                ; efrit-default-model
 
 (declare-function efrit-api-request-async "efrit-api")
 (declare-function efrit-api-build-headers "efrit-api")
 (declare-function efrit-api-describe-failure "efrit-api")
 (declare-function efrit-api-cacheable-system "efrit-api")
-(defvar efrit-default-model)
 (defvar efrit-api-prompt-caching)
 
 (defgroup efrit-models nil

@@ -23,14 +23,12 @@
 (require 'efrit-tool-inputs)
 (require 'efrit-do-handlers)
 
-;; Mock the TODO struct accessors if not available
-(unless (fboundp 'efrit-do-todo-item-create)
-  (cl-defstruct (efrit-do-todo-item (:constructor efrit-do-todo-item-create))
-    id content status priority created-at completed-at))
-
-;; Variables needed by handlers
-(defvar efrit-do--current-todos nil)
-(defvar efrit-do--todo-counter 0)
+;; The TODO struct, its efrit-do-todo-item-* aliases and the
+;; efrit-do--current-todos alias all come from efrit-todo.el, loaded
+;; by efrit-do-handlers.  A "mock" struct once defined here inside an
+;; `unless' was still expanded at load time (cl-defstruct is a macro),
+;; so it redefined the accessors as record accessors and the three
+;; todo_write tests failed for days (found 2026-09-30).
 
 ;;; ============================================================
 ;;; Tests for efrit-do--validate-elisp

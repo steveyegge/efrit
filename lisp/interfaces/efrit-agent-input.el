@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -54,6 +54,9 @@ persists and accumulates conversation context.")
 ;;; Question Display
 
 (declare-function efrit-agent-question-menu "efrit-agent-input")
+(defvar transient--prefix)
+(defvar efrit-agent--question-menu-buffer)
+(eieio-declare-slots command)
 (declare-function transient--emergency-exit "transient")
 (declare-function transient-active-prefix "transient")
 (declare-function efrit-agent--turn-starts "efrit-agent")
@@ -137,9 +140,15 @@ it is showing.  `transient-current-command' is bound only while a
 suffix runs, so `transient-active-prefix' is the check."
   (efrit-agent--cancel-question-menu-timer)
   ;; only a menu that answers into THIS buffer; another session's
-  ;; menu stays up
-  (when (and (fboundp 'transient-active-prefix)
-             (transient-active-prefix '(efrit-agent-question-menu))
+  ;; menu stays up.  `transient--prefix' is read directly, not through
+  ;; `transient-active-prefix': that one is nil while the popup is
+  ;; still delayed by `transient-show-popup' (0.5 s for tzz), so an
+  ;; answer inside that window left the menu to come up over an idle
+  ;; buffer and eat every key after (drive 2026-09-30: `1' bound to
+  ;; the menu four sections later, then a hang).
+  (when (and (boundp 'transient--prefix)
+             transient--prefix
+             (eq (oref transient--prefix command) 'efrit-agent-question-menu)
              (or (null efrit-agent--question-menu-buffer)
                  (eq efrit-agent--question-menu-buffer (current-buffer))))
     ;; `transient-quit-one' is an empty command: the exit happens in
@@ -436,7 +445,7 @@ M-RET does the other one.  S-RET and C-j insert a newline."
   (and (efrit-agent--in-input-region-p) cmd))
 
 (define-obsolete-function-alias 'efrit-agent-input-send-or-newline
-  #'efrit-agent-input-send "0.4.1"
+  #'efrit-agent-input-send "0.5.3"
   "RET is a menu-item that resolves to `efrit-agent-input-send' in the
 input and to the major mode's binding elsewhere.")
 

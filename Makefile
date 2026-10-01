@@ -260,13 +260,13 @@ lint-defun:
 
 # Testing
 #
-# test-unit runs every ERT test file under test/ in one batch Emacs.
-# Files that are live-API scripts rather than ERT suites (they call
-# kill-emacs on load) are excluded.  Tests needing a real API key or
-# a git repo with history are expected to be skipped or to fail in a
-# bare checkout; see TEST_KNOWN_FAILING for the current list.
-ERT_TEST_FILES := $(wildcard test/test-*.el)
-ERT_LOAD_ARGS  := $(foreach f,$(ERT_TEST_FILES),-l $(f))
+# test-unit runs every ERT suite under test/, one batch Emacs per
+# file (lisp/dev/efrit-run-tests.el picks the files that contain an
+# ert-deftest; live-API scripts have none).  One Emacs for all of them
+# let state leak between files (2026-09-30).  TEST_FILES limits the
+# run: make test-unit TEST_FILES="test/test-api.el test/test-vcs.el".
+# EFRIT_TEST_JOBS (default 4) suites run at once.
+TEST_FILES ?=
 
 # Autoloads.  package.el only scans lisp/ itself, so the commands that
 # live in lisp/{core,interfaces,support,tools} (efrit-doctor,
@@ -278,9 +278,7 @@ lisp/efrit-autoloads.el: $(EL_FILES) lisp/dev/efrit-gen-autoloads.el
 	@$(EMACS_BATCH) -l lisp/dev/efrit-gen-autoloads.el
 
 test-unit:
-	@echo "Running ERT unit tests ($(words $(ERT_TEST_FILES)) files)..."
-	@$(EMACS_BATCH) $(LOAD_PATH) -L test -l ert $(ERT_LOAD_ARGS) \
-	  -f ert-run-tests-batch-and-exit
+	@EFRIT_TEST_EMACS="$(EMACS)" $(EMACS_BATCH) -l lisp/dev/efrit-run-tests.el $(TEST_FILES)
 
 # Everything: byte-compile, ERT, smoke script, MCP tests.
 test: compile test-unit test-simple mcp-test

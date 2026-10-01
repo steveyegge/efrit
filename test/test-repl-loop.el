@@ -163,9 +163,11 @@ that carries the next tool results, as a text block after them; a
 `steered' event says so.  Steering that finds no tool round is queued
 when the turn ends."
   (let* ((session (efrit-repl-session-create))
-         (turn-reason nil) (steered nil)
-         (listener (lambda (e) (push (alist-get :text e) steered))))
+         (turn-reason nil) (steered nil) (queued-steers nil)
+         (listener (lambda (e) (push (alist-get :text e) steered)))
+         (queued-listener (lambda (e) (push (alist-get :text e) queued-steers))))
     (efrit-subscribe 'steered listener)
+    (efrit-subscribe 'steer-queued queued-listener)
     (unwind-protect
         (test-repl-loop--with-mocks
             (list (test-repl-loop--make-response
@@ -204,8 +206,11 @@ when the turn ends."
           (efrit-repl-session-steer session "and shorter")
           (efrit-repl-loop--end-turn session "end_turn")
           (should (equal '("and shorter") (efrit-repl-session-queue session)))
+          ;; and it is announced, so the transcript can say so under the line
+          (should (equal '("and shorter") queued-steers))
           (should-not (efrit-repl-session-steering session)))
-      (efrit-unsubscribe 'steered listener))))
+      (efrit-unsubscribe 'steered listener)
+      (efrit-unsubscribe 'steer-queued queued-listener))))
 
 (ert-deftest test-repl-loop-cancelled-request-publishes-turn-complete ()
   "A stream cancelled by the user ends the turn as interrupted AND

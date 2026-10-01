@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -64,7 +64,9 @@
 
 ;; Declare external functions from efrit-agent
 (declare-function efrit-agent--get-buffer "efrit-agent-core")
-(declare-function efrit-agent--show-buffer "efrit-agent-core")
+(declare-function efrit-agent-buffer-for-do-session "efrit-agent-core")
+(declare-function efrit-agent-display "efrit-agent-core")
+(defvar efrit-agent-auto-show)
 (declare-function efrit-agent--begin-session "efrit-agent-core")
 (declare-function efrit-agent-mode "efrit-agent")
 
@@ -181,10 +183,8 @@ the traditional progress buffer."
 (defvar efrit-do-history nil
   "History of executed commands.")
 
-;; TODO state is now managed by efrit-todo.el
-;; Keep backward-compatible variable aliases
-(defvaralias 'efrit-do--current-todos 'efrit-todo--current-todos)
-(defvaralias 'efrit-do--todo-counter 'efrit-todo--counter)
+;; TODO state is managed by efrit-todo.el, which also defines the
+;; `efrit-do--current-todos' / `efrit-do--todo-counter' aliases.
 
 (defvar efrit-do--force-complete nil
   "When t, forces session completion on next API response.")
@@ -645,12 +645,13 @@ This function can be called from:
     ;; Optionally show agent buffer UI
     (when efrit-do-use-agent-ui
       (require 'efrit-agent)
-      (let ((buffer (efrit-agent--get-buffer)))
+      (let ((buffer (efrit-agent-buffer-for-do-session (efrit-session-id session))))
         (with-current-buffer buffer
           (unless (derived-mode-p 'efrit-agent-mode)
             (efrit-agent-mode))
           (efrit-agent--begin-session session command))
-        (efrit-agent--show-buffer)))
+        (when (and efrit-agent-auto-show (not noninteractive))
+          (efrit-agent-display buffer))))
     
     (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
     session))

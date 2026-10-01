@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -33,8 +33,8 @@
 (require 'efrit-vcs)
 
 (defface efrit-inline-diff-removed
-  '((t :inherit diff-removed :extend t))
-  "A line the rewrite removes."
+  '((t :inherit diff-removed :strike-through t :extend t))
+  "A line the rewrite removes (struck through: the colour alone was not enough on macOS, tour 2026-09-29)."
   :group 'efrit)
 
 (defface efrit-inline-diff-added
@@ -122,7 +122,10 @@ take the preview down.  Text in the buffer is not changed."
           (overlay-put ov 'efrit-inline-diff t)
           (overlay-put ov 'priority 100)
           (when (> count 0)
-            (overlay-put ov 'face 'efrit-inline-diff-removed))
+            ;; the strike-through is spelled out here as well as in the
+            ;; face: a `defface' changed after first load keeps its old
+            ;; spec in a running Emacs (tour 2026-09-30 saw red, no line)
+            (overlay-put ov 'face '(efrit-inline-diff-removed (:strike-through t))))
           (when added
             ;; one string on the same overlay: order is guaranteed
             (overlay-put ov (if (> count 0) 'after-string 'before-string)

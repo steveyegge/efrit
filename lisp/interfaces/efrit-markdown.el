@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -644,16 +644,22 @@ to the cache.  nil for http(s) (fetched separately) or nothing usable."
                               (if (and ext (< (length ext) 6)) (concat "." ext) "")))
                     efrit-markdown-image-cache-directory))
 
-(defun efrit-markdown--make-image (file width)
-  "FILE as an image WIDTH pixels wide at most, or nil."
+(defun efrit-markdown--make-image (file width &optional exact)
+  "FILE as an image WIDTH pixels wide at most, or exactly WIDTH with EXACT, or nil.
+The default draw caps a big picture; a user's + / - sets the width
+outright, so a small picture grows too (tour 2026-09-30: the number
+went up, the 8-pixel square did not)."
   (ignore-errors
-    (create-image file nil nil :max-width width :ascent 'center)))
+    (if exact
+        (create-image file nil nil :width width :ascent 'center)
+      (create-image file nil nil :max-width width :ascent 'center))))
 
-(defun efrit-markdown--show-image (start end file)
-  "Put FILE's image on START..END, keeping the alt text under it."
+(defun efrit-markdown--show-image (start end file &optional exact)
+  "Put FILE's image on START..END, keeping the alt text under it.
+EXACT: the recorded width is the size, not a cap."
   (let ((width (or (get-text-property start 'efrit-markdown-image-width)
                    efrit-markdown-image-max-width)))
-    (if-let* ((image (efrit-markdown--make-image file width)))
+    (if-let* ((image (efrit-markdown--make-image file width exact)))
         (add-text-properties start end (list 'display image
                                              'efrit-markdown-image file
                                              'efrit-markdown-image-width width
@@ -875,7 +881,8 @@ markers.  Safe to call on every streamed chunk."
                   efrit-markdown-image-max-width))
          (inhibit-read-only t))
     (put-text-property start (cdr bounds) 'efrit-markdown-image-width width)
-    (efrit-markdown--show-image start (cdr bounds) file)))
+    ;; a reset (nil factor) goes back to the cap; a scale is exact
+    (efrit-markdown--show-image start (cdr bounds) file (and factor t))))
 
 (defun efrit-markdown--scale-images (factor)
   "Scale the image at point, else every image, by FACTOR (nil: reset)."

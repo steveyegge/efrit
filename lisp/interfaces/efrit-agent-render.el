@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -476,7 +476,7 @@ who rebinds them sees their own keys."
                               (cl-find-if (lambda (d) (not (string-match-p "<" d))) descs)
                               (car descs))))
                   (or k fallback)))))
-    (format "%s sends · %s newline · %s steers · C-c ? menu"
+    (format "%s sends · %s newline · %s steers · C-c ? buffer menu · C-c C-m efrit menu"
             (funcall key 'efrit-agent-input-send "RET")
             (funcall key 'efrit-agent-input-newline "S-RET")
             (funcall key 'efrit-agent-input-send-override "M-RET"))))

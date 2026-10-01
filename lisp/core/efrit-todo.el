@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -58,6 +58,11 @@
 
 ;;; TODO State
 
+;; The old names, used by efrit-do-handlers, live here with the
+;; variables (declared before their referents, as the compiler asks).
+(defvaralias 'efrit-do--current-todos 'efrit-todo--current-todos)
+(defvaralias 'efrit-do--todo-counter 'efrit-todo--counter)
+
 (defvar efrit-todo--current-todos nil
   "Current TODO list for the active command session.")
 
@@ -67,6 +72,7 @@
 ;; each session has its own list; the todos-changed event is stamped
 ;; with the session through `efrit-publish'
 (efrit-session-local 'efrit-todo--current-todos 'efrit-todo--counter)
+
 
 ;;; TODO ID Generation
 

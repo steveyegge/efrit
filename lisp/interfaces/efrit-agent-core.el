@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -478,11 +478,30 @@ buffer when it exists.  Never creates a buffer."
       (and (buffer-live-p buf) buf)))
    (t (or (cl-find-if (lambda (b) (equal (buffer-local-value 'efrit-agent--session-id b) session-id))
                       (efrit-agent-buffers))
-          ;; the efrit-do path attaches to the default buffer
-          (let ((b (get-buffer efrit-agent-buffer-name)))
-            (and b (with-current-buffer b
-                     (or (null efrit-agent--session-id) (null efrit-agent--repl-session)))
-                 b))))))
+          ;; an efrit-do session not yet attached anywhere: the default
+          ;; buffer, unless instances are on (then it gets its own, see
+          ;; `efrit-agent-buffer-for-do-session')
+          (and (not (bound-and-true-p efrit-agent-instances-mode))
+               (let ((b (get-buffer efrit-agent-buffer-name)))
+                 (and b (with-current-buffer b
+                          (or (null efrit-agent--session-id) (null efrit-agent--repl-session)))
+                      b)))))))
+
+(declare-function efrit-agent-instance-for-project "efrit-agent-instances")
+
+(defun efrit-agent-buffer-for-do-session (session-id &optional root)
+  "The agent buffer an efrit-do SESSION-ID renders into, created when needed.
+The buffer already attached to SESSION-ID when there is one; else,
+with `efrit-agent-instances-mode', the instance of ROOT's project
+\(default the current project) so `efrit-do' output lands beside the
+project's REPL buffer instead of in a `*efrit-agent*' nobody has
+open (multi-session gap, closed 2026-09-30); else the default buffer."
+  (or (cl-find-if (lambda (b) (equal (buffer-local-value 'efrit-agent--session-id b) session-id))
+                  (efrit-agent-buffers))
+      (if (bound-and-true-p efrit-agent-instances-mode)
+          (progn (require 'efrit-agent-instances)
+                 (efrit-agent-instance-for-project root t))
+        (efrit-agent--get-buffer))))
 
 (defmacro efrit-agent-with-session-buffer (session-id &rest body)
   "Run BODY in the agent buffer of SESSION-ID when there is one."

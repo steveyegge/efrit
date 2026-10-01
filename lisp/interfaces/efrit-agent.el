@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -1439,7 +1439,7 @@ and sets status to working.  Prior sessions' conversation text is
 preserved (ef-ts3): when the buffer is already attached to
 SESSION-ID (e.g. by `efrit-agent--begin-session' on the efrit-do
 path), the layout it set up is left untouched."
-  (let ((buffer (efrit-agent--get-buffer)))
+  (let ((buffer (efrit-agent-buffer-for-do-session session-id)))
     (with-current-buffer buffer
       ;; Initialize mode if not already done
       (unless (derived-mode-p 'efrit-agent-mode)

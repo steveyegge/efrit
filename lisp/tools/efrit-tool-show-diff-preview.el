@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, diff
-;; Version: 0.4.1
+;; Version: 0.5.3
 
 ;;; Commentary:
 ;;
@@ -88,9 +88,19 @@ Returns the diff as a string."
       (ignore-errors (delete-file old-temp))
       (ignore-errors (delete-file new-temp)))))
 
+(defun efrit-diff-preview--display-name (file)
+  "FILE relative to the preview's root when it is inside it.
+The a/ b/ diff headers read better with `notes.txt' than with the
+absolute path a tool passed."
+  (let ((root (efrit-diff-preview--root)))
+    (if (and (stringp file) (file-name-absolute-p file) root
+             (string-prefix-p (file-name-as-directory root) file))
+        (file-relative-name file root)
+      file)))
+
 (defun efrit-diff-preview--format-change (change index)
   "Format a single CHANGE for display at INDEX."
-  (let* ((file (alist-get 'file change))
+  (let* ((file (efrit-diff-preview--display-name (alist-get 'file change)))
          (old-content (alist-get 'old_content change))
          (new-content (alist-get 'new_content change))
          (change-type (cond
@@ -135,6 +145,9 @@ Returns the diff as a string."
 
 (defvar efrit-diff-preview-mode-map
   (let ((map (make-sparse-keymap)))
+    ;; a stray key must not type into the preview (tour 2026-09-29:
+    ;; `dd' landed in the buffer)
+    (suppress-keymap map)
     (define-key map (kbd "a") #'efrit-diff-preview-approve)
     (define-key map (kbd "y") #'efrit-diff-preview-approve)
     (define-key map (kbd "r") #'efrit-diff-preview-reject)
@@ -404,9 +417,14 @@ not its own proposal."
          (config (current-window-configuration)))
     (setq efrit-diff-preview--ediff-b b
           efrit-diff-preview--ediff-index index)
-    ;; ediff cannot split a side window: take them down for its run
+    ;; ediff arranges windows itself and cannot split a side window or
+    ;; a small pop-up: give it the frame.  The window configuration is
+    ;; restored when ediff quits.
     (dolist (w (window-list))
       (when (window-parameter w 'window-side) (ignore-errors (delete-window w))))
+    (let ((main (or (get-largest-window nil nil t) (selected-window))))
+      (select-window main)
+      (ignore-errors (delete-other-windows)))
     (add-hook 'ediff-quit-hook #'efrit-diff-preview--ediff-quit)
     (let ((ediff-window-setup-function 'ediff-setup-windows-plain))
       (ediff-buffers a b
@@ -556,26 +574,41 @@ Returns a standard tool response with:
               ;; In selective mode, start with all selected
               (number-sequence 0 (1- (length changes)))))
 
-      ;; Display the diff
-      (efrit-diff-preview--display changes description apply-mode-sym)
+      ;; The preview is a modal prompt: one at a time, like the sandbox
+      ;; menu.  A second session's preview while one is up would nest
+      ;; two wait loops (2026-09-29: a hard lockup, C-g did nothing,
+      ;; when a drive prompt and the preview waited on each other).
+      (efrit-with-prompt-turn "the diff preview" nil
+        ;; Display the diff
+        (efrit-diff-preview--display changes description apply-mode-sym)
 
-      ;; Wait for the user's decision; the time does not count against
-      ;; the turn or the tool
-      (let ((start-time (float-time))
-            (timeout efrit-diff-preview-timeout-seconds))
-        (efrit-with-user-waiting
-          (while (and efrit-diff-preview--waiting
-                      (or (not timeout) (< (- (float-time) start-time) timeout)))
-            (sit-for 0.1)
-            (redisplay)))
-
-        ;; Handle timeout
-        (when efrit-diff-preview--waiting
-          (setq efrit-diff-preview--result
-                `((approved . :json-false)
-                  (selected_changes . [])
-                  (reason . "timeout")))
-          (setq efrit-diff-preview--waiting nil)))
+        ;; Wait for the user's decision; the time does not count
+        ;; against the turn or the tool.  C-g while waiting is a
+        ;; rejection, not a stuck loop: `sit-for' inside a tool call
+        ;; can swallow the quit, so the flag is checked by hand.
+        (let ((start-time (float-time))
+              (timeout efrit-diff-preview-timeout-seconds))
+          (efrit-with-user-waiting
+            (while (and efrit-diff-preview--waiting
+                        (not quit-flag)
+                        (or (not timeout) (< (- (float-time) start-time) timeout)))
+              (with-local-quit (sit-for 0.1))
+              (redisplay)))
+          (when (and efrit-diff-preview--waiting quit-flag)
+            (setq quit-flag nil)
+            (efrit-diff-preview-reject))
+          ;; Handle timeout
+          (when efrit-diff-preview--waiting
+            (setq efrit-diff-preview--result
+                  `((approved . :json-false)
+                    (selected_changes . [])
+                    (reason . "timeout")))
+            (setq efrit-diff-preview--waiting nil))))
+      ;; refused by the prompt gate (another prompt was up): a rejection
+      (unless efrit-diff-preview--result
+        (setq efrit-diff-preview--result
+              `((approved . :json-false) (selected_changes . [])
+                (reason . "another prompt was open; not shown"))))
 
       ;; Clean up and return result
       (when-let* ((buffer (get-buffer efrit-diff-preview-buffer-name)))

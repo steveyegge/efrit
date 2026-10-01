@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -85,9 +85,13 @@
 
 ;;; Transcript notes
 
-(defun efrit-sandbox-ui--note (text face)
-  "Publish a one-line TEXT in FACE as a transcript note."
-  (efrit-publish 'note `((:text . ,(concat "⛨ " text)) (:face . ,face) (:kind . sandbox))))
+(defun efrit-sandbox-ui--note (text face &optional req)
+  "Publish a one-line TEXT in FACE as a transcript note.
+With REQ, the note carries the request as its `:replaces' key: a
+later note with the same key replaces the earlier line in the
+transcript (the renderer decides), so one request is one line."
+  (efrit-publish 'note `((:text . ,(concat "⛨ " text)) (:face . ,face) (:kind . sandbox)
+                         ,@(and req `((:replaces . ,req))))))
 
 ;;; The prompt
 
@@ -254,7 +258,14 @@ escape that leaves the tool hanging)."
         (progn (message "Edit cancelled: request refused")
                (efrit-sandbox-ui--choose nil))
       (setf (efrit-sandbox-request-edited req) (string-trim-right edited))
-      (efrit-sandbox-ui--choose 'once))))
+      (efrit-sandbox-ui--choose 'once))
+    ;; The editor ran in its own recursive edit, one level above the
+    ;; menu's.  Transient's post-exit hook fired during the first
+    ;; editor command, at the wrong depth, and did nothing; nobody is
+    ;; left to release the menu's wait (tour 2026-09-30: C-c C-c, then
+    ;; the tool hung).  Release it here; the depth guard makes this a
+    ;; no-op in the echo-area path and when the hook already did it.
+    (efrit-sandbox-ui--exit-recursive-edit)))
 
 (defun efrit-sandbox-ui--exit-recursive-edit ()
   "Leave the recursive edit that waits on the menu, if we are in it."
@@ -368,21 +379,25 @@ Returns once/session/project or nil.  Closing the menu any other way
   "Ask the user about REQ; return `once', `session', `project', or nil."
   (let* ((tool (or (efrit-sandbox-request-tool req) "a tool"))
          (what (efrit-sandbox-ui--scope-word req)))
-    (efrit-sandbox-ui--note (format "%s asks to %s" tool what) 'efrit-sandbox-prompt-face)
+    ;; One line in the transcript per request: "asks to …" while the
+    ;; menu is up, rewritten with the outcome when it closes.  Two
+    ;; lines (ask, then grant) repeated the scope text (2026-09-30).
+    (efrit-sandbox-ui--note (format "%s asks to %s" tool what) 'efrit-sandbox-prompt-face req)
     (let ((answer (efrit-with-prompt-turn (format "%s's sandbox request" tool) nil
                     (if (efrit-sandbox-ui-use-menu-p)
                         (efrit-sandbox-ui--ask-with-menu req)
                       (efrit-sandbox-ui--ask-in-echo-area req)))))
       (efrit-sandbox-ui--note
        (pcase answer
-         ('once (format "granted once: %s" what))
-         ('session (format "granted for this session: %s" what))
-         ('project (format "granted for this project (saved): %s" what))
+         ('once (format "%s: granted once, %s" tool what))
+         ('session (format "%s: granted for this session, %s" tool what))
+         ('project (format "%s: granted for this project (saved), %s" tool what))
          (_ (pcase (efrit-sandbox-turn-answer)
-              ('abort (format "denied, turn aborted: %s" what))
-              ('deny-all (format "denied, and everything else this turn: %s" what))
-              (_ (format "denied: %s" what)))))
-       (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face))
+              ('abort (format "%s: denied, turn aborted (%s)" tool what))
+              ('deny-all (format "%s: denied, and everything else this turn (%s)" tool what))
+              (_ (format "%s: denied (%s)" tool what)))))
+       (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face)
+       req)
       answer)))
 
 (defconst efrit-sandbox-ui--details-buffer "*efrit-sandbox-request*"

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -308,15 +308,28 @@ Agent buffers holding an old object get the new one.  See
       (message "efrit: upgraded %d REPL session struct(s) to the new definition"
                (length swapped)))))
 
+(defun efrit-reload--clear-prompt-owner ()
+  "Drop a prompt owner left by a prompt that never returned.
+`M-x efrit-reload' runs from the command loop, so no efrit prompt is
+open; a non-nil owner is a leftover (a hang the user escaped from with
+C-g or a kill) and would make every later prompt refuse."
+  (when (and (boundp 'efrit-prompt--owner) (symbol-value 'efrit-prompt--owner))
+    (message "efrit-reload: cleared a stale prompt owner (%s)" (symbol-value 'efrit-prompt--owner))
+    (set 'efrit-prompt--owner nil)))
+
 (defun efrit-reload--report (loaded failed reset modes-on start &optional gone)
   "Revert visiting buffers, then message and log the reload summary.
 LOADED is the library count, FAILED an alist of (FEATURE . ERROR),
 RESET the options whose changed default was adopted, MODES-ON the
 global minor modes turned back on, START the `float-time' the reload
 began, GONE the features whose file no longer exists.  Returns LOADED."
+  (efrit-reload--clear-prompt-owner)
   (let* ((reverted (efrit-reload--revert-visiting-buffers))
-         (summary (format "efrit: reloaded %d librar%s in %.1fs%s%s%s%s%s"
-                          loaded (if (= loaded 1) "y" "ies")
+         ;; the version after the reload: `efrit-config' was among the
+         ;; libraries, so this is the number the new code carries
+         (version (if (boundp 'efrit-version) (symbol-value 'efrit-version) "?"))
+         (summary (format "efrit %s: reloaded %d librar%s in %.1fs%s%s%s%s%s"
+                          version loaded (if (= loaded 1) "y" "ies")
                           (- (float-time) start)
                           (if (> reverted 0) (format ", reverted %d buffer%s" reverted (if (= reverted 1) "" "s")) "")
                           (if reset (format ", new default for %s" (mapconcat #'symbol-name reset ", ")) "")

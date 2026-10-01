@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -110,11 +110,8 @@
 (declare-function efrit-context-snapshot "efrit-context-sources")
 (declare-function efrit-context-target-buffer "efrit-context-sources")
 
-;; TODO struct accessors and state now come from efrit-todo.el
-;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
-;; Declare the aliased variables to silence byte-compiler warnings
-(defvar efrit-do--current-todos)
-(defvar efrit-do--todo-counter)
+;; TODO struct accessors, state and the efrit-do--* aliases come from
+;; efrit-todo.el (required above).
 
 ;;; Customization
 

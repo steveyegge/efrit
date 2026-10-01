@@ -513,17 +513,17 @@ consumed by the asking tool only."
       (should-not (efrit-sandbox-request-editable-p
                    (efrit-sandbox-request-create :cap 'read :target "/x" :tool "read_file" :detail "read /x"))))))
 
-(ert-deftest test-sb-no-prompt-with-quits-inhibited ()
-  "A request that would need a prompt while `inhibit-quit' is set is
-denied without calling the prompt function."
+(ert-deftest test-sb-prompt-runs-with-quits-inhibited ()
+  "A request raised while `inhibit-quit' is set (every tool call: the
+API callback is a process sentinel) still prompts, with quits enabled
+inside the prompt.  2026-09-28..30 it was denied silently instead."
   (test-sb--in-project
-    (let* ((asked 0)
-           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) 'session)))
+    (let* ((seen nil)
+           (efrit-sandbox-request-function
+            (lambda (_req) (push inhibit-quit seen) 'session)))
       (let ((inhibit-quit t))
-        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied))
-      (should (= 0 asked))
-      (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
-      (should (= 1 asked)))))
+        (should (efrit-sandbox-check 'write (expand-file-name "a" root))))
+      (should (equal '(nil) seen)))))
 
 (ert-deftest test-sb-remote-host-policy ()
   "Remote files never get the local project's default grants; the

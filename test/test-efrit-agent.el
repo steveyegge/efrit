@@ -1201,3 +1201,35 @@ Batch Emacs may refuse to split a tiny frame; skip then."
 (provide 'test-efrit-agent)
 
 ;;; test-efrit-agent.el ends here
+
+(ert-deftest test-agent-note-replaces-earlier-note-with-same-key ()
+  "A note carrying `:replaces' rewrites the earlier note with that key in place;
+notes without a key, or with another key, are appended (sandbox ask +
+outcome were two lines, 2026-09-30)."
+  (with-temp-buffer
+    (efrit-agent-mode)
+    (efrit-agent--init-regions) (efrit-agent--setup-regions)
+    (let* ((req (list 'req 1))
+           (session (efrit-repl-session-create default-directory))
+           (id (efrit-repl-session-id session)))
+      (setq efrit-agent--repl-session session)
+      (setf (efrit-repl-session-buffer session) (current-buffer))
+      (efrit-agent--on-note `((:session-id . ,id) (:text . "⛨ shell_exec asks to run echo") (:kind . sandbox) (:replaces . ,req)))
+      (efrit-agent--on-note `((:session-id . ,id) (:text . "⛨ other line") (:kind . sandbox)))
+      (efrit-agent--on-note `((:session-id . ,id) (:text . "⛨ shell_exec: granted once, run echo") (:kind . sandbox) (:replaces . ,req)))
+      (let ((text (buffer-substring-no-properties (point-min) efrit-agent--conversation-end)))
+        (should-not (string-match-p "asks to run" text))
+        (should (string-match-p "granted once, run echo" text))
+        (should (string-match-p "other line" text))
+        (should (< (string-match "granted once" text) (string-match "other line" text)))))))
+
+(ert-deftest test-agent-shell-summary-counts-only-the-command-output ()
+  "The row summary for shell_exec ignores the [Executed]/[Duration]/[Result] wrapper."
+  (require 'efrit-agent-tools)
+  (should (equal "TWO" (efrit-agent--smart-result-summary
+                        "shell_exec" "\n[Executed: echo TWO]\n[Duration: 0.01s]\n[Result: TWO\n]" t)))
+  (should (equal "2 lines output" (efrit-agent--smart-result-summary
+                                   "shell_exec" "\n[Executed: ls]\n[Duration: 0.01s]\n[Result: a\nb\n]" t)))
+  (should (equal "no output" (efrit-agent--smart-result-summary
+                              "shell_exec" "\n[Executed: true]\n[Duration: 0.01s]\n[Result: ]" t)))
+  (should (equal "3 lines output" (efrit-agent--smart-result-summary "bash" "a\nb\nc" t))))

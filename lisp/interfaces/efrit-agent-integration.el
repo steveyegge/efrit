@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -181,17 +181,47 @@ The publisher may name the buffer (:buffer); else the session's."
         (efrit-agent--add-error-message (alist-get :message event))))))
 
 (defun efrit-agent--on-note (event)
-  "Subscriber: a one-line note from the sandbox, the limits prompt, or review."
+  "Subscriber: a one-line note from the sandbox, the limits prompt, or review.
+A note with a `:replaces' key rewrites the last note that carried the
+same key (the sandbox's \"asks to …\" line becomes the outcome line)."
   (efrit-agent--in-agent-buffer event
-    (efrit-agent--append-to-conversation
-     (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n")
-     (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))))))
+    (let* ((key (alist-get :replaces event))
+           (line (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n"))
+           (props (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
+                        'efrit-note-key key))
+           (old (and key (efrit-agent--find-note key))))
+      (if old
+          (efrit-agent--with-render
+            (let ((inhibit-read-only t))
+              (save-excursion
+                (goto-char (car old))
+                (delete-region (car old) (cdr old))
+                (insert (apply #'propertize line props)))))
+        (efrit-agent--append-to-conversation line props)))))
+
+(defun efrit-agent--find-note (key)
+  "Bounds (START . END) of the last note line whose `efrit-note-key' is KEY, or nil."
+  (let ((pos (and efrit-agent--conversation-end (marker-position efrit-agent--conversation-end)))
+        (found nil))
+    (while (and pos (not found)
+                (setq pos (previous-single-property-change pos 'efrit-note-key)))
+      (let ((v (get-text-property pos 'efrit-note-key)))
+        (when (eq v key)
+          (setq found (cons pos (or (next-single-property-change pos 'efrit-note-key) pos))))))
+    found))
 
 (defun efrit-agent--on-steered (event)
   "Subscriber: the steering text was handed to the model; say so under its line."
   (efrit-agent--in-agent-buffer event
     (efrit-agent--append-to-conversation
      (concat (propertize "  ↳ delivered with the tool results" 'face 'shadow) "\n")
+     (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
+
+(defun efrit-agent--on-steer-queued (event)
+  "Subscriber: the turn ended before a tool round could take the steer; it runs next."
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--append-to-conversation
+     (concat (propertize "  ↳ the turn ended first; sent as the next turn" 'face 'shadow) "\n")
      (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
 
 (defun efrit-agent--on-status (event)
@@ -245,6 +275,7 @@ The publisher may name the buffer (:buffer); else the session's."
     (status . efrit-agent--on-status)
     (note . efrit-agent--on-note)
     (steered . efrit-agent--on-steered)
+    (steer-queued . efrit-agent--on-steer-queued)
     (session-start . efrit-agent--on-session-start)
     (session-end . efrit-agent--on-session-end)
     (question . efrit-agent--on-question)

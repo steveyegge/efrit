@@ -16,8 +16,10 @@ one of our own commands is dropped; a block function drops it too."
                                     :block-functions (list (lambda () blocked)))))
     (dotimes (i 5) (efrit-throttle-request th i))
     (should-not runs)
-    ;; the pending timer is one; let it fire
-    (sit-for 0.2)
+    ;; the pending timer is one; let it fire (a fixed sit-for flaked
+    ;; under sweep load 2026-09-30, so wait for the run itself)
+    (let ((deadline (+ (float-time) 3)))
+      (while (and (not runs) (< (float-time) deadline)) (sit-for 0.05)))
     (should (equal '((4)) runs))
     (should (= 1 (efrit-throttle-runs th)))
     (let ((this-command 'efrit-test-own-accept))

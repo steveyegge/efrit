@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, convenience
 
@@ -116,14 +116,18 @@ parameters, 2026-09-28)."
               (key (intern name)))
          (if (equal kind "?")
              (or (cdr (assoc name asked))
-                 (let ((v (efrit-scope--ask-placeholder name (match-string 3 m) (match-string 4 m) values)))
+                 ;; the asker and the value functions (symbol-at-point,
+                 ;; blame) run their own searches: keep the match data
+                 ;; that `replace-regexp-in-string' needs afterwards
+                 (let* ((prompt (match-string 3 m)) (default (match-string 4 m))
+                        (v (save-match-data (efrit-scope--ask-placeholder name prompt default values))))
                    (push (cons name v) asked)
                    v))
            (let ((cell (assq key values)))
              (if (null cell)
                  m
                (let ((v (cdr cell)))
-                 (format "%s" (cond ((functionp v) (funcall v))
+                 (format "%s" (cond ((functionp v) (save-match-data (funcall v)))
                                     ((and (symbolp v) (boundp v)) (symbol-value v))
                                     (t (or v ""))))))))))
      template t t)))

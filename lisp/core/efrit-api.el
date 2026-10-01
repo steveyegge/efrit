@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.5.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -27,9 +27,10 @@
 (require 'cl-lib)
 (require 'efrit-common)
 (require 'efrit-log)
-(declare-function efrit-response-usage "efrit-chat-response")
-(declare-function efrit-response-error "efrit-chat-response")
-(declare-function efrit-response-stop-reason "efrit-chat-response")
+;; the response accessors are used at runtime here (the log line, the
+;; error check); a declare-function alone left them void when
+;; efrit-api loaded first (test-api alone, 2026-09-30)
+(require 'efrit-chat-response)
 (declare-function efrit-error-message "efrit-chat-response")
 
 (declare-function efrit-log "efrit-log")
