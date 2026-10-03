@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -136,6 +136,7 @@ Returns the session ID."
     (efrit-tools--reset-rate-limits)
     (efrit-sandbox-begin-turn (efrit-session-command session))
     (efrit-review-forget-session session-id)
+    (efrit-loop-stall-reset session-id)
 
     ;; Store loop state
     (puthash session-id

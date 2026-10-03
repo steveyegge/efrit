@@ -11,7 +11,7 @@
 ;;
 ;; The circuit breaker has three levels of protection:
 ;; 1. Session limit - max total tool calls per session (default: 30)
-;; 2. Same tool limit - max consecutive calls to same tool (default: 15, warning at 10)
+;; 2. Same tool limit - max consecutive calls to same tool (default: 100, warning at 60; blocks that tool only)
 ;; 3. Identical call limit - max calls with same tool AND same input (default: 3)
 
 ;;; Code:
@@ -144,7 +144,14 @@
            (check-result (efrit-do--circuit-breaker-check-limits "eval_sexp" input)))
       (should (not (car check-result))) ; Not allowed
       (should (string-match-p "Same tool" (cdr check-result)))
-      (should efrit-do--circuit-breaker-tripped))))
+      ;; the tool is paused, the turn is not over
+      (should (not efrit-do--circuit-breaker-tripped))
+      (should (equal "eval_sexp" (car efrit-do--tripped-tool)))
+      (should (car (efrit-do--circuit-breaker-check-limits "search_content")))
+      (should (string-match-p "paused" (cdr (efrit-do--circuit-breaker-check-limits "eval_sexp" input))))
+      ;; another tool ran: eval_sexp may try again
+      (efrit-do--circuit-breaker-record-call "search_content")
+      (should (car (efrit-do--circuit-breaker-check-limits "eval_sexp" input))))))
 
 (ert-deftest test-circuit-breaker-identical-call-limit ()
   "Test that identical calls (same tool + same input) trip the breaker quickly."
@@ -164,7 +171,40 @@
       (should (not (car check-result))) ; Not allowed
       (should (string-match-p "Identical tool call" (cdr check-result)))
       (should (string-match-p "infinite loop" (cdr check-result)))
-      (should efrit-do--circuit-breaker-tripped))))
+      (should (not efrit-do--circuit-breaker-tripped))
+      (should (equal "eval_sexp" (car efrit-do--tripped-tool))))))
+
+(ert-deftest test-circuit-breaker-fan-out-is-not-a-loop ()
+  "Fifteen fetches of fifteen URLs pass; the sixteenth of ONE URL over
+the per-target budget is refused, and only that call (2026-10-02 log)."
+  (efrit-do--circuit-breaker-reset)
+  (let ((efrit-do-circuit-breaker-enabled t)
+        (efrit-do-max-tool-calls-per-session 1000)
+        (efrit-do-max-identical-tool-calls 1000)
+        (efrit-do-max-calls-per-target 4))
+    (dotimes (i 20)
+      (let ((input (make-hash-table :test 'equal)))
+        (puthash "url" (format "https://example.invalid/%d" i) input)
+        (should (car (efrit-do--circuit-breaker-check-limits "fetch_url" input)))
+        (efrit-do--circuit-breaker-record-call "fetch_url" input)))
+    ;; the same article four times with different lengths: allowed
+    ;; four times, refused the fifth, and other targets still pass
+    (dotimes (i 4)
+      (let ((input (make-hash-table :test 'equal)))
+        (puthash "url" "https://example.invalid/again" input)
+        (puthash "max_length" (* 1000 (1+ i)) input)
+        (should (car (efrit-do--circuit-breaker-check-limits "fetch_url" input)))
+        (efrit-do--circuit-breaker-record-call "fetch_url" input)))
+    (let ((input (make-hash-table :test 'equal)))
+      (puthash "url" "https://example.invalid/again" input)
+      (let ((r (efrit-do--circuit-breaker-check-limits "fetch_url" input)))
+        (should (not (car r)))
+        (should (string-match-p "4 times on https://example.invalid/again" (cdr r)))))
+    (let ((input (make-hash-table :test 'equal)))
+      (puthash "url" "https://example.invalid/other" input)
+      (should (car (efrit-do--circuit-breaker-check-limits "fetch_url" input))))
+    (should (not efrit-do--circuit-breaker-tripped))
+    (should (not efrit-do--tripped-tool))))
 
 (ert-deftest test-circuit-breaker-disabled ()
   "Test that circuit breaker can be disabled."

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -43,6 +43,8 @@
 ;;                     the next tool results (`efrit-repl-loop--steer')
 ;;   steered           :text -- the text was delivered to the model
 ;;   steer-queued      :text -- no tool round was left; the text starts the next turn
+;;   prompt-open       :label -- a modal prompt is about to wait for the user
+;;   prompt-answered-unattended :label :answer :why -- unattended mode answered it
 ;;   queued            :text :count -- an input waits for the turn to end
 ;;   turn-complete     :stop-reason :completion-message
 ;;   idle              :idle-event (the event that started the idle
@@ -226,26 +228,50 @@ any enclosing `with-timeout'.  Nested uses count the time once."
 (defvar efrit-prompt--owner nil
   "The session id (or t) whose modal prompt is up, or nil.")
 
+(defvar efrit-prompt-policy-function nil
+  "When non-nil, a function (LABEL DEFAULT) that may answer a prompt unattended.
+Called before a modal prompt opens.  It returns a cons (ANSWER . WHY)
+to use ANSWER without asking (the note says WHY), or nil to let the
+prompt open.  `efrit-unattended-mode' installs one; see
+`efrit-unattended-answer'.")
+
 (defmacro efrit-with-prompt-turn (label default &rest body)
   "Run BODY, a modal prompt, unless another session's prompt is up.
 Then BODY is skipped, DEFAULT is returned, and a `note' is published
 for the asking session saying that LABEL was refused because another
 prompt is open.  Nested prompts of the same session run at once (a
-prompt that asks another question, the details popup)."
+prompt that asks another question, the details popup).
+
+Before BODY opens, `efrit-prompt-policy-function' may answer in the
+user's stead (unattended mode); otherwise a `prompt-open' event is
+published so a desktop notification can say that efrit is waiting
+\(tzz, 2026-10-01: walking away must not mean a menu waits for hours)."
   (declare (indent 2))
-  (let ((me (make-symbol "me")))
+  (let ((me (make-symbol "me")) (policy (make-symbol "policy")))
     `(let ((,me (or efrit-current-session-id t)))
-       (if (and efrit-prompt--owner (not (equal efrit-prompt--owner ,me)))
-           (progn
-             (efrit-log 'warn "prompt for %s refused: another session's prompt is open" ,label)
-             (efrit-publish 'note
-                            (list (cons :text (format "⛨ not asked: %s came while another session's prompt was open; denied, the model can retry" ,label))
-                                  (cons :face 'warning) (cons :kind 'sandbox)))
-             ,default)
+      (catch 'efrit-prompt-answered
+       (cond
+        ((and efrit-prompt--owner (not (equal efrit-prompt--owner ,me)))
+         (efrit-log 'warn "prompt for %s refused: another session's prompt is open" ,label)
+         (efrit-publish 'note
+                        (list (cons :text (format "⛨ not asked: %s came while another session's prompt was open; denied, the model can retry" ,label))
+                              (cons :face 'warning) (cons :kind 'sandbox)))
+         ,default)
+        ((let ((,policy (and efrit-prompt-policy-function
+                             (ignore-errors (funcall efrit-prompt-policy-function ,label ,default)))))
+           ;; a cons (ANSWER . WHY) answers; the cond clause's value is
+           ;; the answer itself, so a nil answer still counts as answered
+           (when ,policy
+             (efrit-log 'info "prompt for %s answered unattended: %S (%s)" ,label (car ,policy) (cdr ,policy))
+             (efrit-publish 'prompt-answered-unattended
+                            (list (cons :label ,label) (cons :answer (car ,policy)) (cons :why (cdr ,policy))))
+             (throw 'efrit-prompt-answered (car ,policy)))))
+        (t
+         (efrit-publish 'prompt-open (list (cons :label ,label)))
          (let ((outer efrit-prompt--owner))
            (setq efrit-prompt--owner ,me)
            (unwind-protect (progn ,@body)
-             (setq efrit-prompt--owner outer)))))))
+             (setq efrit-prompt--owner outer)))))))))
 
 (defun efrit-elapsed-working (since &optional waiting-at-start)
   "Seconds since SINCE (a time value) minus time spent waiting on the user.

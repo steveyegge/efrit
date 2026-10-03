@@ -145,6 +145,38 @@
           ;; the once-raise is gone after the turn
           (should (= 2 (efrit-limits-effective 'max-iterations 2))))))))
 
+(ert-deftest test-limits-timeout-asks-like-the-iteration-cap ()
+  "The wall clock is a limit like the others: at the cap the menu asks,
+a once-raise adds its step and the turn goes on; declined, the turn
+ends with session-timeout.  Default 1800 s (2026-10-01)."
+  (should (= 1800 (default-value 'efrit-session-timeout)))
+  (test-limits--in-project
+    (let ((efrit-session-timeout 10) (efrit-limits-ask t) (noninteractive nil)
+          (session (efrit-repl-session-create)) (reason nil) (asked nil))
+      (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil))
+                ((symbol-function 'efrit-limits--ask-in-echo-area)
+                 (lambda () (push (efrit-limits--name) asked) 'once))
+                ;; every turn looks 20 s old
+                ((symbol-function 'efrit-elapsed-working) (lambda (&rest _) 20)))
+        (test-limits--with-loop
+            (list (test-limits--response (vector (test-limits--tool-use "a")) "tool_use")
+                  (test-limits--response (vector (test-limits--text "done")) "end_turn"))
+          (efrit-repl-continue session "go" (lambda (_s r) (setq reason r)))
+          (should (equal reason "end_turn"))
+          (should (equal '(session-timeout) (delete-dups asked)))
+          ;; the raise was 10 + 1800 for this turn only
+          (should (= 10 (efrit-limits-effective 'session-timeout 10)))))
+      ;; declined: the old ending
+      (let ((session (efrit-repl-session-create)) (reason nil))
+        (cl-letf (((symbol-function 'efrit-limits--define-menu) (lambda () nil))
+                  ((symbol-function 'efrit-limits--ask-in-echo-area) (lambda () nil))
+                  ((symbol-function 'efrit-elapsed-working) (lambda (&rest _) 20)))
+          (test-limits--with-loop
+              (list (test-limits--response (vector (test-limits--tool-use "a")) "tool_use")
+                    (test-limits--response (vector (test-limits--text "unreached")) "end_turn"))
+            (efrit-repl-continue session "go" (lambda (_s r) (setq reason r)))
+            (should (equal reason "session-timeout"))))))))
+
 (ert-deftest test-limits-eval-cannot-raise-cap ()
   (require 'efrit-sandbox-eval)
   (should (efrit-sandbox-eval-inspect '(efrit-limits-set 'max-iterations 9999 'session)))
@@ -190,3 +222,31 @@
 
 (provide 'test-limits)
 ;;; test-limits.el ends here
+
+(ert-deftest test-loop-stall-is-no-progress-not-wall-clock ()
+  "Rounds that bring a tool call or new text are progress; the same text
+repeated with no tool call `efrit-loop-stall-rounds' times ends the
+turn as stalled.  A long turn that keeps working is never stalled."
+  (test-limits--in-project
+    (let ((efrit-loop-stall-rounds 3) (efrit-limits-ask nil)
+          (efrit-repl-loop-max-iterations 50)
+          (session (efrit-repl-session-create)) (reason nil))
+      ;; the bookkeeping itself
+      (efrit-loop-stall-reset "x")
+      (should (= 0 (efrit-loop--note-progress "x" (vector (test-limits--text "thinking")))))
+      (should (= 1 (efrit-loop--note-progress "x" (vector (test-limits--text "thinking")))))
+      (should (= 0 (efrit-loop--note-progress "x" (vector (test-limits--tool-use "a")))))
+      (should (= 0 (efrit-loop--note-progress "x" (vector (test-limits--text "something new")))))
+      (efrit-loop-stall-reset "x")
+      ;; a turn: three identical no-tool rounds in a row stall it.  The
+      ;; harness's responses stop at end_turn normally; here each round
+      ;; ends with tool_use-less content the loop re-asks about
+      (test-limits--with-loop
+          (list (test-limits--response (vector (test-limits--tool-use "a")) "tool_use")
+                (test-limits--response (vector (test-limits--text "hmm")) "tool_use")
+                (test-limits--response (vector (test-limits--text "hmm")) "tool_use")
+                (test-limits--response (vector (test-limits--text "hmm")) "tool_use")
+                (test-limits--response (vector (test-limits--text "hmm")) "tool_use")
+                (test-limits--response (vector (test-limits--text "unreached")) "end_turn"))
+        (efrit-repl-continue session "go" (lambda (_s r) (setq reason r)))
+        (should (equal reason "stalled"))))))

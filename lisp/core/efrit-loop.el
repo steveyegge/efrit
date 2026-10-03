@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -143,7 +143,8 @@ the next API request."
       (let* ((loop-state (gethash session-id
                                   (efrit-loop-adapter-state-hash adapter)))
              (iteration-count (or (nth 2 loop-state) 0))
-             (timeout (funcall (efrit-loop-adapter-timeout-fn adapter)))
+             (timeout (efrit-limits-effective
+                       'session-timeout (funcall (efrit-loop-adapter-timeout-fn adapter))))
              (elapsed (funcall (efrit-loop-adapter-elapsed-fn adapter) session))
              (max-iterations (efrit-limits-effective
                               'max-iterations
@@ -155,6 +156,12 @@ the next API request."
           (when-let* ((raised (efrit-limits-ask-to-raise 'max-iterations max-iterations)))
             (efrit-log 'info "%s %s: iteration limit raised to %d" name session-id raised)
             (setq max-iterations raised)))
+        ;; The wall clock asks the same way (2026-10-01: a hard stop at
+        ;; 300 s ended turns that were making progress)
+        (when (and timeout (> timeout 0) elapsed (>= elapsed timeout))
+          (when-let* ((raised (efrit-limits-ask-to-raise 'session-timeout timeout)))
+            (efrit-log 'info "%s %s: time limit raised to %d s" name session-id raised)
+            (setq timeout raised)))
         (cond
          ;; Wall-clock timeout (ef-5o5).  Checked between iterations,
          ;; so an in-flight API call still completes before the stop.
@@ -299,6 +306,52 @@ continue as if it had finished."
                   (setq marked t)))
     out))
 
+;;; Stall detection
+;;
+;; A turn that keeps calling the model and getting the same thing back
+;; is stuck; a turn that keeps running tools and producing new text is
+;; working, however long it takes.  Progress, not wall-clock time, is
+;; the signal (tzz, 2026-10-01).  A round counts as progress when it
+;; carries a tool call or text the turn has not produced before.
+
+(defcustom efrit-loop-stall-rounds 4
+  "API rounds in a row without a tool call or new text before the turn is stalled.
+0 disables.  Identical tool calls are the circuit breaker's business."
+  :type 'integer
+  :group 'efrit)
+
+(defvar efrit-loop--stall (make-hash-table :test 'equal)
+  "Session id -> (ROUNDS-WITHOUT-PROGRESS . SEEN-TEXTS) for the current turn.")
+
+(defun efrit-loop-stall-reset (session-id)
+  "Forget SESSION-ID's stall record (a turn begins or ends)."
+  (remhash session-id efrit-loop--stall))
+
+(defun efrit-loop--note-progress (session-id content)
+  "Record what CONTENT brought for SESSION-ID; return rounds without progress."
+  (let* ((rec (or (gethash session-id efrit-loop--stall)
+                  (puthash session-id (cons 0 nil) efrit-loop--stall)))
+         (tool nil) (new-text nil))
+    (dotimes (i (length content))
+      (let ((item (aref content i)))
+        (when (hash-table-p item)
+          (pcase (gethash "type" item)
+            ("tool_use" (setq tool t))
+            ("text" (let ((text (string-trim (or (gethash "text" item) ""))))
+                      (when (and (not (string-empty-p text))
+                                 (not (member text (cdr rec))))
+                        (setq new-text t)
+                        (push text (cdr rec)))))))))
+    (if (or tool new-text)
+        (setcar rec 0)
+      (setcar rec (1+ (car rec))))
+    (car rec)))
+
+(defun efrit-loop--stalled-p (session-id content)
+  "Non-nil when CONTENT makes `efrit-loop-stall-rounds' rounds without progress."
+  (and (> efrit-loop-stall-rounds 0)
+       (>= (efrit-loop--note-progress session-id content) efrit-loop-stall-rounds)))
+
 (defun efrit-loop-handle-response (session adapter response)
   "Handle API RESPONSE for SESSION using ADAPTER.
 Streams text content to the agent buffer, then dispatches on the
@@ -337,6 +390,15 @@ response's stop_reason."
                                              (:text . ,(gethash "text" item))))))))
         (efrit-publish 'text-end `((:session-id . ,session-id))))
       (pcase stop-reason
+        ;; no tool call and nothing new said, several rounds running:
+        ;; the model is going round in circles; stop and say so
+        ((guard (and content (efrit-loop--stalled-p session-id content)))
+         (efrit-log 'warn "%s %s: no progress in %d rounds; stalled"
+                    (efrit-loop-adapter-name adapter) session-id efrit-loop-stall-rounds)
+         (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
+         (efrit-loop--finish session adapter "stalled"
+                             (format "No progress in %d API rounds (no tool call, no new text); the turn was stopped. Say how to proceed."
+                                     efrit-loop-stall-rounds)))
         ("tool_use"
          (if (efrit-review-applies-p content (funcall (efrit-loop-adapter-id-fn adapter) session))
              (efrit-loop--review-then-execute session adapter content)
@@ -452,6 +514,16 @@ the turn is handed to the user instead."
                ;; model's next input.  Ending the turn here threw away
                ;; the work in progress (tzz, 2026-10-01: "advise the
                ;; model, don't kill the whole job").
+               ;; away: drop it and go on, as the user would answer
+               ((and (>= count efrit-review-max-rejections)
+                     (bound-and-true-p efrit-unattended-mode))
+                (efrit-log 'info "%s %s: review disagreement after %d rejections; unattended, dropping it"
+                           name session-id count)
+                (efrit-publish 'prompt-answered-unattended
+                               `((:label . "the review escalation") (:answer . "drop")
+                                 (:why . ,(format "unattended: the reviewer rejected the same proposal %d times; dropped, the task goes on" count))))
+                (efrit-review-forget-session session-id)
+                (funcall (efrit-loop-adapter-continue-fn adapter) session))
                ((and (>= count efrit-review-max-rejections)
                      (efrit-loop-adapter-handles-waiting-p adapter))
                 (efrit-loop--escalate-review session adapter content count reason))
@@ -465,6 +537,7 @@ the turn is handed to the user instead."
 
 (declare-function efrit-review-describe-batch "efrit-review")
 (declare-function efrit-review-batch-signature "efrit-review")
+(defvar efrit-unattended-mode)
 
 (defun efrit-loop--escalate-review (session adapter content count reason)
   "Ask the user about a proposal the reviewer rejected COUNT times; pause the turn.

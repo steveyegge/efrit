@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -118,8 +118,12 @@ Returns a string (possibly empty) ready to splice into the prompt."
    "- BATCH MULTIPLE TOOL CALLS when they are independent (e.g., reading several files)\n"
    "- Use eval_sexp for Emacs operations; shell_exec only when the user asked for the shell\n"
    "  or no Emacs facility exists (check with emacs_apropos first)\n"
-   "- eval_sexp evaluates INSIDE the running Emacs you are working in. Never start another\n"
-   "  Emacs (no `emacs --batch`, no call-process/shell-command to emacs): evaluate directly\n"
+   "- eval_sexp evaluates INSIDE the running Emacs you are working in. Prefer it: to test\n"
+   "  Lisp, eval it here (a temp buffer, ert if loaded). A second Emacs (`emacs --batch`)\n"
+   "  is for what the live one cannot do: a clean-start test, byte-compiling a tree. When\n"
+   "  you do start one, say why in your message first; the reviewer requires the reason.\n"
+   "- If code you test needs a definition this Emacs lacks (a macro, a library), do NOT stub\n"
+   "  it with a defmacro/defalias of your own: ask the user how they want it provided\n"
    "- Keep responses minimal - focus on execution\n"
    "- Each API continuation has a cost - be efficient by combining independent operations\n\n"
 

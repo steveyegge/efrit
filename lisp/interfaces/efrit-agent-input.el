@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -448,7 +448,7 @@ M-RET does the other one.  S-RET and C-j insert a newline."
   (and (efrit-agent--in-input-region-p) cmd))
 
 (define-obsolete-function-alias 'efrit-agent-input-send-or-newline
-  #'efrit-agent-input-send "0.6.2"
+  #'efrit-agent-input-send "0.8.5"
   "RET is a menu-item that resolves to `efrit-agent-input-send' in the
 input and to the major mode's binding elsewhere.")
 

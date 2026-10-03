@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;; Keywords: tools, convenience, ai
 
@@ -61,6 +61,10 @@
             "function")
           (if (boundp 'efrit-api-auth-scheme) efrit-api-auth-scheme "?")))
 
+(defvar efrit-unattended-mode)
+(defvar efrit-notify-enabled)
+(declare-function efrit-unattended-mode "efrit-unattended")
+
 (defun efrit-menu--desc-toggle (label var)
   (format "%s [%s]" label (if (and (boundp var) (symbol-value var)) "on" "off")))
 
@@ -90,7 +94,7 @@
 (defconst efrit-menu-saved-settings
   '(efrit-default-model efrit-api-streaming efrit-api-prompt-caching efrit-sandbox-enabled
     efrit-review-enabled efrit-agent-header-style efrit-agent-verbosity efrit-agent-display-mode
-    efrit-log-level)
+    efrit-log-level efrit-notify-enabled)
   "The settings the menu's toggles change, saved together by `efrit-menu-save-settings'.")
 
 (defun efrit-menu-save-settings ()
@@ -118,6 +122,24 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
   (require 'efrit-api)
   (setq efrit-api-prompt-caching (not efrit-api-prompt-caching))
   (message "efrit prompt caching %s" (if efrit-api-prompt-caching "on" "off")))
+
+(defun efrit-menu--desc-unattended ()
+  (efrit-menu--desc-toggle "Unattended (answer prompts by policy)" 'efrit-unattended-mode))
+(defun efrit-menu--desc-notify ()
+  (efrit-menu--desc-toggle "Desktop notifications" 'efrit-notify-enabled))
+
+(defun efrit-menu-toggle-unattended ()
+  "Toggle `efrit-unattended-mode'."
+  (interactive)
+  (require 'efrit-unattended)
+  (efrit-unattended-mode 'toggle))
+
+(defun efrit-menu-toggle-notify ()
+  "Toggle `efrit-notify-enabled'."
+  (interactive)
+  (require 'efrit-notify)
+  (setq efrit-notify-enabled (not efrit-notify-enabled))
+  (message "efrit desktop notifications %s" (if efrit-notify-enabled "on" "off")))
 
 (defun efrit-menu-toggle-sandbox ()
   "Toggle `efrit-sandbox-enabled'."
@@ -155,6 +177,8 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
        ("s" efrit-menu-toggle-streaming :transient t :description efrit-menu--desc-streaming)
        ("c" efrit-menu-toggle-caching :transient t :description efrit-menu--desc-caching)
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
+       ("A" efrit-menu-toggle-unattended :transient t :description efrit-menu--desc-unattended)
+       ("Y" efrit-menu-toggle-notify :transient t :description efrit-menu--desc-notify)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
        ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)
        ("g" "Document source check: Google Drive" efrit-documents-gdrive-check)

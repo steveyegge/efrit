@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -1032,6 +1032,18 @@ temporary directory would also cover any checkout living under it."
                                                 reason))
                              (:face . shadow) (:kind . sandbox))))
     t))
+
+(defun efrit-sandbox-shell-starts-emacs-p (line)
+  "Non-nil when shell LINE runs an emacs binary (not emacsclient).
+A second Emacs is sometimes the right tool (a clean-Emacs test, a
+byte-compile of a tree) and often the wrong one (testing code that
+could run here, with the user's libraries stubbed).  The sandbox
+does not decide; the reviewer sees the line flagged and the agent's
+reason for it (tzz, 2026-10-01: \"not an absolute rule, a strong
+recommendation, and the model should have to justify it\")."
+  (and (stringp line)
+       (cl-some (lambda (name) (string-match-p "\\`\\(?:.*/\\)?emacs\\(?:-[0-9.]+\\)?\\'" name))
+                (efrit-sandbox-shell-commands line))))
 
 (defun efrit-sandbox-check (cap target &optional tool detail)
   "Ensure CAP on TARGET is allowed, asking to widen the scope if not.

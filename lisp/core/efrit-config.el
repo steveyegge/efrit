@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, config
 ;; URL: https://github.com/stevey/efrit
@@ -18,7 +18,7 @@
 
 ;;; Version Management
 
-(defconst efrit-version "0.6.2"
+(defconst efrit-version "0.8.5"
   "Version number of Efrit.
 This is the canonical version used throughout the project.
 Update this when releasing new versions.")
@@ -157,9 +157,13 @@ Most tasks complete within 20 turns; complex exploration may need more."
   :type 'integer
   :group 'efrit)
 
-(defcustom efrit-session-timeout 300
-  "Maximum seconds for a session before timeout.
-Default is 5 minutes (300 seconds)."
+(defcustom efrit-session-timeout 1800
+  "Working seconds a turn may take before efrit asks whether to go on.
+Time spent waiting on the user does not count.  At the limit the
+limits menu offers once / session / project raises, like the
+iteration cap; an answer of stop ends the turn.  Was 300 and a hard
+stop until 2026-10-01 (tzz: \"I can't be staring at efrit every 5
+minutes\").  0 disables."
   :type 'integer
   :group 'efrit)
 

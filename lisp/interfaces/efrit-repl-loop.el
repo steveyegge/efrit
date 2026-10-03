@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -193,6 +193,7 @@ Returns the session ID."
          (efrit-sandbox-begin-turn (or api-input user-input))
          ;; rejections count per turn, not per session
          (efrit-review-forget-session session-id)
+         (efrit-loop-stall-reset session-id)
          (efrit-diagnostics-baseline-begin-turn)))
       (efrit-repl-session-begin-turn session)
       (efrit-publish 'turn-start `((:session-id . ,session-id)

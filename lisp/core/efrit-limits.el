@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -191,6 +191,7 @@ A VALUE of nil at `session' or `project' scope removes that override."
   (pcase name
     ('max-iterations "API calls")
     ('max-tool-calls "tool calls")
+    ('session-timeout "working seconds")
     (_ (symbol-name name))))
 
 (defun efrit-limits--variable (name)
@@ -198,6 +199,7 @@ A VALUE of nil at `session' or `project' scope removes that override."
   (pcase name
     ('max-iterations 'efrit-repl-loop-max-iterations)
     ('max-tool-calls 'efrit-do-max-tool-calls-per-session)
+    ('session-timeout 'efrit-session-timeout)
     (_ nil)))
 
 (defun efrit-limits--why (name)
@@ -205,7 +207,14 @@ A VALUE of nil at `session' or `project' scope removes that override."
   (pcase name
     ('max-iterations "It stops a turn that keeps calling the model without finishing.")
     ('max-tool-calls "It stops a turn that keeps running tools without finishing.")
+    ('session-timeout "It stops a turn that has run for a long time without finishing (time waiting on you does not count).")
     (_ "It stops a runaway turn.")))
+
+(defun efrit-limits--default-step (name)
+  "How much a \"continue once\" raises limit NAME by."
+  (pcase name
+    ('session-timeout 1800)
+    (_ efrit-limits-continue-step)))
 
 (defun efrit-limits--num (n)
   (propertize (format "%d" n) 'face 'efrit-limits-number))
@@ -215,9 +224,13 @@ A VALUE of nil at `session' or `project' scope removes that override."
 (defun efrit-limits--name () (plist-get efrit-limits--context :name))
 
 (defun efrit-limits--raised ()
-  "The new limit a session/project raise sets: current plus the step, rounded up to 50."
-  (let ((n (+ (efrit-limits--current) (efrit-limits--step))))
-    (* 50 (ceiling n 50.0))))
+  "The new limit a session/project raise sets: current plus the step, rounded up to the step."
+  (let ((n (+ (efrit-limits--current) (efrit-limits--step)))
+        (unit (if (eq (efrit-limits--name) 'session-timeout) (efrit-limits--step) 50)))
+    (* unit (ceiling n (float unit)))))
+
+(defvar efrit-limits--details-shown nil
+  "Non-nil while the menu shows the limits table; toggled by ?.")
 
 (defun efrit-limits--menu-description ()
   "Heading: what happened, why the limit exists, where it is set."
@@ -240,8 +253,6 @@ A VALUE of nil at `session' or `project' scope removes that override."
                           (split-string (efrit-limits--details-text) "\n") "\n")))
      "\n")))
 
-(defvar efrit-limits--details-shown nil
-  "Non-nil while the menu shows the limits table; toggled by ?.")
 
 (defun efrit-limits--label-continue ()
   (format "continue for %s more %s, then ask again"
@@ -369,7 +380,7 @@ Applies the chosen raise and returns the new effective limit, or nil
 when the user stops (or nothing can ask).  Never signals."
   (let* ((root (or root (efrit-limits-project-root)))
          (efrit-limits--context (list :name name :current current
-                                      :step efrit-limits-continue-step :root root))
+                                      :step (efrit-limits--default-step name) :root root))
          (answer (and efrit-limits-ask
                       (not noninteractive)
                       ;; Reading time is neither tool time nor turn time

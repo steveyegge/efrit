@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, convenience
 
@@ -85,7 +85,16 @@
                            (if (and buffer (buffer-live-p buffer))
                                (format " in %s" (buffer-name buffer)) ""))))))))
 
+(defun efrit-notify--on-prompt-open (event)
+  "A prompt is about to wait for the user: say so on the desktop.
+Unlike the turn-end notice this ignores `efrit-notify-min-seconds'
+and the watched-buffer check: the wait is the point."
+  (when efrit-notify-enabled
+    (funcall efrit-notify-function "efrit is waiting for you"
+             (format "%s" (alist-get :label event)))))
+
 (efrit-subscribe 'turn-complete #'efrit-notify--on-turn-complete)
+(efrit-subscribe 'prompt-open #'efrit-notify--on-prompt-open)
 
 (provide 'efrit-notify)
 

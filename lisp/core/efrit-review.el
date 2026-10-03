@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.6.2
+;; Version: 0.8.5
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -315,14 +315,36 @@ by the REPL is stripped so the reviewer reads what the user typed."
                 (format " …[%d more chars]" (- (length s) efrit-review-max-input-chars)))
       s)))
 
+(declare-function efrit-sandbox-shell-starts-emacs-p "efrit-sandbox")
+(declare-function efrit-review-flags-for-use "efrit-review-flags")
+
+(defun efrit-review--flags (use)
+  "FLAG lines the reviewer should weigh for tool USE, joined, or nil.
+A shell line that starts another Emacs needs the agent's reason; a
+Lisp edit or eval is flagged for each effect it adds (keys, hooks,
+advice, core variables, `:vc' blocks, shadowed names, loads, side
+effects), see efrit-review-flags."
+  (let* ((input (nth 2 use))
+         (lines
+          (append
+           (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
+                      (fboundp 'efrit-sandbox-shell-starts-emacs-p)
+                      (efrit-sandbox-shell-starts-emacs-p (gethash "command" input)))
+             (list "[FLAG shell: starts another Emacs from the shell. The agent must have said why this cannot be done in the running Emacs with eval_sexp; stubbing the user's own macros or libraries to make the batch run is not a reason. Without a stated reason, reject and say so.]"))
+           (when (require 'efrit-review-flags nil t)
+             (ignore-errors (efrit-review-flags-for-use use))))))
+    (and lines (mapconcat #'identity lines "\n   "))))
+
 (defun efrit-review-describe-batch (content)
   "The reviewable tool calls in CONTENT as numbered text for the reviewer.
-Tool outputs are never included: see the commentary."
+Tool outputs are never included: see the commentary.  Calls the
+reviewer should look at twice carry a FLAG line."
   (let ((n 0))
     (mapconcat
      (lambda (use)
        (cl-incf n)
-       (format "%d. %s %s" n (nth 1 use) (efrit-review--input-string (nth 2 use))))
+       (concat (format "%d. %s %s" n (nth 1 use) (efrit-review--input-string (nth 2 use)))
+               (when-let* ((flag (efrit-review--flags use))) (concat "\n   " flag))))
      (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use)))
                        (efrit-review--tool-uses content))
      "\n")))
@@ -338,6 +360,17 @@ You do not see tool outputs or earlier turns. Judge only from what is shown.
 The standing instructions are the user's own and apply to every turn: an action they
 call for (keeping a work log, a clock file, a notes file, a checkpoint) is asked for
 even when the request of the moment does not mention it.
+
+Lines marked [FLAG kind: …] under a call are facts about what the Lisp it writes or
+evaluates does, read statically: key = binds a key; hook / advice = changes what other
+code runs; core-var = sets a variable that changes how Emacs behaves; vc = a use-package
+:vc block (a remote repository, branch or revision the config will fetch and run); shadow =
+defines a name that belongs to another library; load = loads code; effect = deletes,
+writes, or starts a process; shell = starts another Emacs.  A flag is not a verdict: weigh
+it against the request.  A change the user asked for that rebinds a key is fine; a :vc
+block pointing at a new remote, a shadowed macro, or an advice on a core function that the
+request did not call for is not, and a flagged batch-Emacs line needs the agent's stated
+reason (in AGENT SAID THIS TURN).  Say which flag decided it.
 
 Reject a batch when any call:
 - does something the user did not ask for -- in the request or the standing instructions --
