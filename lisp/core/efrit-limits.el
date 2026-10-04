@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -183,8 +183,18 @@ A VALUE of nil at `session' or `project' scope removes that override."
   (setq efrit-limits--answer answer))
 
 (defun efrit-limits--exit-recursive-edit ()
+  "Leave the wait once a key answered; a menu that merely closed comes back.
+Same rule as the sandbox prompt: nothing but the user decides."
   (when (and efrit-limits--depth (= (recursion-depth) efrit-limits--depth))
-    (exit-recursive-edit)))
+    (if (eq efrit-limits--answer 'pending)
+        (run-at-time 0.2 nil
+                     (lambda ()
+                       (when (and (eq efrit-limits--answer 'pending)
+                                  efrit-limits--depth
+                                  (= (recursion-depth) efrit-limits--depth))
+                         (efrit-log 'info "limits: prompt closed without an answer; reopening")
+                         (ignore-errors (call-interactively #'efrit-limits-menu)))))
+      (exit-recursive-edit))))
 
 (defun efrit-limits--unit (name)
   "What limit NAME counts, for the prompt."

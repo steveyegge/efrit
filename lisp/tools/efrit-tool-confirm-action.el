@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.8.5
+;; Version: 0.9.2
 
 ;;; Commentary:
 ;;
@@ -76,7 +76,7 @@ Plist with :action, :details, :severity, :options, :timeout, :start-time, :reque
                         (plist-get entry :choice)
                         (or (plist-get entry :response_time_seconds) 0)
                         (plist-get entry :action)))
-        (append-to-file (point-min) (point-max) file)))))
+        (write-region (point-min) (point-max) file t 'quiet)))))
 
 (defun efrit-confirm--log (action severity confirmed choice response-time &optional reason)
   "Log a confirmation event to audit trail.

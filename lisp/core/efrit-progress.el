@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -182,7 +182,7 @@ DATA is an alist of event-specific data."
       (condition-case err
           (with-temp-buffer
             (insert json-string "\n")
-            (append-to-file (point-min) (point-max) efrit-progress--current-file))
+            (write-region (point-min) (point-max) efrit-progress--current-file t 'quiet))
         (error
          (efrit-log 'warn "Failed to emit progress event: %s"
                    (error-message-string err)))))))

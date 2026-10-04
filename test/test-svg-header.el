@@ -186,7 +186,8 @@ header blank on startup until the model changed (first RET)."
 
 (ert-deftest test-spinner-svg-frames-rotate-and-blend ()
   (require 'efrit-agent-spinner)
-  (let* ((a (with-temp-buffer (svg-print (efrit-agent-spinner--svg 16 "#88c0d0" 0 "#2e3440")) (buffer-string)))
+  (let* ((efrit-agent-spinner-shape 'ring)   ; the arc geometry under test
+         (a (with-temp-buffer (svg-print (efrit-agent-spinner--svg 16 "#88c0d0" 0 "#2e3440")) (buffer-string)))
          (b (with-temp-buffer (svg-print (efrit-agent-spinner--svg 16 "#88c0d0" 3 "#2e3440")) (buffer-string))))
     ;; two arcs and a reference ring, different geometry per index
     (should (= 2 (cl-count ?A a)))

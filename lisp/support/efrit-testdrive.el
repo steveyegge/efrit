@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -138,6 +138,11 @@
 (declare-function efrit-repl-session-interrupt-requested "efrit-repl-session")
 (declare-function efrit-repl-loop-active-p "efrit-repl-loop")
 (declare-function efrit-sandbox--turn-get "efrit-sandbox")
+(defvar efrit-data-directory)
+(defvar efrit-review-auto-grant-threshold)
+(defvar efrit-grant-history--table)
+(declare-function efrit-grant-history-record "efrit-grant-history")
+(declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
 (declare-function efrit-api-stream-session-id "efrit-api-stream")
 (defvar efrit-api-stream--active)
 (declare-function efrit-repl-session-steering "efrit-repl-session")
@@ -264,6 +269,7 @@
 (defvar efrit-transcript-enabled)
 (defvar magit-save-repository-buffers)
 (defvar transient--prefix)
+(declare-function transient-quit-all "transient")
 (declare-function transient--emergency-exit "transient")
 (eieio-declare-slots command)
 (declare-function dired-noselect "dired")
@@ -1987,7 +1993,76 @@ was failing every time.)"
          (format "edit flags: %s | eval flags: %s | notes.txt flags: %s"
                  (let ((f (flag-lines edit))) (if (string-empty-p f) "none" f))
                  (let ((f (flag-lines shadow))) (if (string-empty-p f) "none" f))
-                 (let ((f (flag-lines plain))) (if (string-empty-p f) "none" f))))))))
+                 (let ((f (flag-lines plain))) (if (string-empty-p f) "none" f)))))))
+  (efrit-testdrive--step-9-reviewer-grant))
+
+(defun efrit-testdrive--step-9-reviewer-grant ()
+  "Section 9: the reviewer's vouching stands in for the user's key."
+  (efrit-testdrive--step 9 "The reviewer vouches: a read granted three times before runs without a prompt; a first-time write still asks"
+    ;; tzz 2026-10-03: "If it's over 95% likely then just approve it.
+    ;; This can be derived from past interactions and from some basic
+    ;; rules."  History is a throwaway file; the project is a second
+    ;; repo so no real grant of his is consulted.
+    (require 'efrit-review-confidence)
+    (let* ((efrit-data-directory (file-name-as-directory (make-temp-file "efrit-drive-rc-data-" t)))
+           (repo (let ((d (file-name-as-directory (make-temp-file "efrit-drive-rc-repo-" t))))
+                   (make-directory (expand-file-name ".git" d))
+                   (make-directory (expand-file-name "src" d))
+                   (efrit-sandbox-forget-git-toplevels)
+                   (file-name-as-directory (efrit-sandbox-canonical d))))
+           (file (expand-file-name "src/a.el" repo))
+           ;; the write goes to a second checkout: a file in the repo the
+           ;; read was just granted in is "in play" and expected
+           (other (let ((d (file-name-as-directory (make-temp-file "efrit-drive-rc-other-" t))))
+                    (make-directory (expand-file-name ".git" d))
+                    (efrit-sandbox-forget-git-toplevels)
+                    (file-name-as-directory (efrit-sandbox-canonical d))))
+           (efrit-grant-history--table nil)
+           (efrit-review-auto-grant-threshold 0.95)
+           (efrit-sandbox-expected-read-roots nil)
+           (efrit-sandbox-expected-write-roots nil)
+           (asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-cap req) asked) nil))
+           (notes nil)
+           (listener (lambda (e) (push (or (alist-get :text e) "") notes))))
+      (with-temp-file file (insert ";; a\n"))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (progn
+            (efrit-sandbox-reset-session repo)
+            (dotimes (_ 3) (efrit-grant-history-record 'read file 'session))
+            (efrit-sandbox-begin-turn "summarize the main source file")
+            (let* ((use (list "d1" "read_file" (let ((h (make-hash-table :test 'equal))) (puthash "path" file h) h)))
+                   (batch (let ((u (make-hash-table :test 'equal)))
+                            (puthash "type" "tool_use" u) (puthash "id" "d1" u)
+                            (puthash "name" "read_file" u) (puthash "input" (nth 2 use) u)
+                            (efrit-review-describe-batch (vector u))))
+                   (shown (and (string-match-p "SANDBOX would ask: read" batch)
+                               (string-match-p "history-strong" batch)))
+                   (read-ok (progn (efrit-review-confidence-remember-grant use 0.97 'session)
+                                   (condition-case nil (efrit-sandbox-check 'read file "read_file")
+                                     (efrit-sandbox-denied nil))))
+                   (write-use (list "d2" "create_file" (let ((h (make-hash-table :test 'equal)))
+                                                         (puthash "path" (expand-file-name "new.el" other) h)
+                                                         (puthash "content" ";; new" h) h)))
+                   (write-blocked (progn (efrit-review-confidence-remember-grant write-use 0.99 'session)
+                                         (null (efrit-sandbox--turn-get :reviewer-grants))))
+                   (write-asked (progn (condition-case nil
+                                           (efrit-sandbox-check 'write (expand-file-name "new.el" other) "create_file")
+                                         (efrit-sandbox-denied nil))
+                                       (memq 'write asked))))
+              (efrit-testdrive--check
+               (and shown read-ok (null (memq 'read asked)) write-blocked write-asked
+                    (cl-some (lambda (n) (string-match-p "allowed by the reviewer (0.97" n)) notes))
+               (format "reviewer saw SANDBOX line %s; read ran without a prompt %s (asked %S); write vouch refused by the rules %s and the user was asked %s; notes %S"
+                       (and shown t) (and read-ok t) asked (and write-blocked t) (and write-asked t)
+                       (mapcar (lambda (n) (truncate-string-to-width n 70 nil nil "…")) (reverse notes))))))
+        (efrit-unsubscribe 'note listener)
+        (efrit-sandbox-reset-session repo)
+        (efrit-sandbox-reset-session other)
+        (ignore-errors (delete-directory repo t))
+        (ignore-errors (delete-directory other t))
+        (ignore-errors (delete-directory efrit-data-directory t))))))
 
 (defun efrit-testdrive--section-10 ()
   "The claude-code-ide batch: navigation tools, ediff edits, context indicator, range mentions."
@@ -2386,6 +2461,37 @@ was failing every time.)"
 
 (defun efrit-testdrive--tour-sandbox ()
   (efrit-testdrive--out "\n## Sandbox prompt")
+  (efrit-testdrive--step 'tour "A prompt that closes by itself comes back; only your key answers it"
+    ;; tzz 2026-10-03: "I don't want timeouts to decide if something
+    ;; should be granted by me."  The menu is closed from a timer two
+    ;; seconds after it opens, as a stray event would; the tool must
+    ;; still be waiting, with the menu shown again.
+    (efrit-testdrive--after-confirm
+        "Next: a sandbox prompt opens, and two seconds later the drive closes it from a timer (as a stray event would).  It must reappear by itself.  When it does, answer n.  Ready?"
+      (efrit-testdrive--clear-events)
+      (let* ((closed-at nil)
+             (file (progn (efrit-testdrive--outside-file)
+                          (expand-file-name "closed-by-timer.txt" efrit-testdrive--outside-dir)))
+             (efrit-sandbox-expected-read-roots nil))
+        (with-temp-file file (insert "x\n"))
+        (run-at-time 2 nil (lambda ()
+                             (when (and (boundp 'transient--prefix) transient--prefix
+                                        (eq (oref transient--prefix command) 'efrit-sandbox-ask))
+                               (setq closed-at (float-time))
+                               (transient-quit-all))))
+        (unwind-protect
+            (let ((answer (condition-case nil
+                              (progn (efrit-sandbox-check 'read file "read_file") 'allowed)
+                            (efrit-sandbox-denied 'denied))))
+              (efrit-testdrive--check
+               (and closed-at (eq answer 'denied)
+                    (> (- (float-time) closed-at) 0.5)
+                    (efrit-testdrive--log-lines-matching "closed without an answer; reopening"))
+               (format "menu closed by the timer %s; answer %s; waited %.1fs after the close (an instant denial means the close was taken as your answer); log: %s"
+                       (if closed-at "yes" "no (menu not up at 2 s?)") answer
+                       (if closed-at (- (float-time) closed-at) 0)
+                       (or (efrit-testdrive--log-lines-matching "reopening\\|refused with C-g") "nothing about reopening"))))
+          (ignore-errors (delete-file file))))))
   (efrit-testdrive--step 'tour "A read outside the project asks, and NO is respected"
     (efrit-testdrive--after-confirm
         (format "Next turn asks the model to read %s, a file the drive made outside the project.  A sandbox prompt will appear: answer n (no).  Ready?"

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -49,6 +49,8 @@
 (require 'efrit-sandbox)
 (require 'efrit-review)
 (require 'efrit-limits)
+(declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
+(defvar efrit-review--last-vouch)
 (require 'efrit-events)
 (require 'efrit-result-struct)
 
@@ -479,6 +481,15 @@ the turn is handed to the user instead."
                                                (efrit-review-batch-signature content))))
          (pcase (car verdict)
            ('approve
+            ;; the reviewer may have vouched for requests the sandbox
+            ;; would otherwise ask the user about (0.9.2)
+            (when-let* ((vouch (and (boundp 'efrit-review--last-vouch) efrit-review--last-vouch)))
+              (setq efrit-review--last-vouch nil)
+              (when (require 'efrit-review-confidence nil t)
+                (dotimes (i (length content))
+                  (when-let* ((use (efrit-content-item-as-tool-use (aref content i))))
+                    (efrit-review-confidence-remember-grant
+                     use (plist-get vouch :confidence) (plist-get vouch :grant))))))
             (funcall (efrit-loop-adapter-execute-tools-fn adapter) session content))
            ('reject
             (let ((reason (cdr verdict))

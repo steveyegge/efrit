@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -125,7 +125,7 @@ NEVER call synchronous user-input functions (read-string, y-or-n-p, yes-or-no-p,
   ("description" . "The Elisp expression to evaluate")))))
   ("required" . ["expr"]))))
    (("name" . "shell_exec")
-   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools.
+   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user).
 
 EXAMPLES:
 - File system info: \"ls -la ~/Documents\"

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, images
-;; Version: 0.8.5
+;; Version: 0.9.2
 
 ;;; Commentary:
 ;;

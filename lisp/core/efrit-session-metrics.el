@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -265,7 +265,10 @@
                            (upcase (symbol-name level))
                            message)))
     (make-directory logs-dir t)
-    (append-to-file log-entry nil log-file)))
+    ;; `append-to-file' echoes "Added to FILE" on every line, which is
+    ;; noise in the echo area (tzz 2026-10-04); `write-region' with
+    ;; VISIT `quiet' appends silently
+    (write-region log-entry nil log-file t 'quiet)))
 
 (defun efrit-session-ensure-active ()
   "Ensure there's an active metrics session, creating one if needed."

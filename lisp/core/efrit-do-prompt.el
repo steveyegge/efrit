@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -226,6 +226,10 @@ Returns a string (possibly empty) ready to splice into the prompt."
    "  2. A few lines of Lisp composed from Emacs primitives.\n"
    "  3. shell_exec, only when the user asked for a shell/external tool, or when no\n"
    "     Emacs facility exists (say so when you fall back).\n"
+   "Searching or listing files is never a shell job: `cd DIR && rg PATTERN FILES' is\n"
+   "search_content path=DIR pattern=PATTERN file_pattern=GLOB; `ls DIR' is project_files\n"
+   "or file_info; `cat FILE' is read_file.  Those run under the project's grant without\n"
+   "a prompt; the shell line asks the user every time (2026-10-03).\n"
    "You do not have to know the name: emacs_apropos query=\"<words for the job>\" finds\n"
    "what exists in THIS Emacs, then elisp_docs symbol=\"<name>\" tells you how to call it.\n"
    "Two tool calls are cheaper than a wrong shell command.\n\n"

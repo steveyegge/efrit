@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -303,10 +303,37 @@ escape that leaves the tool hanging)."
     (efrit-sandbox-ui--exit-recursive-edit)))
 
 (defun efrit-sandbox-ui--exit-recursive-edit ()
-  "Leave the recursive edit that waits on the menu, if we are in it."
+  "Leave the recursive edit that waits on the menu, if we are in it.
+Only once an answer was chosen.  The menu can close for reasons that
+are not an answer: another transient opened over it, an error in a
+timer made transient bail out, a focus change, a stray key.  Any of
+those used to count as \"no\" (2026-10-03: a read request was
+\"declined\" after 44 s with nobody at the keyboard).  tzz: \"I don't
+want timeouts to decide if something should be granted by me.\"  So
+when the menu goes away unanswered, it comes back, and the tool keeps
+waiting until a key is pressed."
   (when (and efrit-sandbox-ui--depth
              (= (recursion-depth) efrit-sandbox-ui--depth))
-    (exit-recursive-edit)))
+    (if (eq efrit-sandbox-ui--answer 'pending)
+        (efrit-sandbox-ui--reopen-menu)
+      (exit-recursive-edit))))
+
+(defun efrit-sandbox-ui--reopen-menu ()
+  "Put the request menu back after it closed without an answer."
+  (when efrit-sandbox-ui--request
+    (efrit-log 'info "sandbox: prompt for %s closed without an answer; reopening"
+               (efrit-sandbox-describe-request efrit-sandbox-ui--request))
+    (run-at-time 0.2 nil
+                 (lambda ()
+                   (when (and efrit-sandbox-ui--request
+                              (eq efrit-sandbox-ui--answer 'pending)
+                              efrit-sandbox-ui--depth
+                              (= (recursion-depth) efrit-sandbox-ui--depth))
+                     (condition-case err
+                         (call-interactively #'efrit-sandbox-ask)
+                       (error (efrit-log 'warn "sandbox: could not reopen the prompt: %s"
+                                         (error-message-string err))
+                              (efrit-sandbox-ui--reopen-menu))))))))
 
 (defun efrit-sandbox-ui--define-menu ()
   "Define `efrit-sandbox-ask' if transient is available.  Return non-nil on success."
@@ -349,8 +376,10 @@ escape that leaves the tool hanging)."
 
 (defun efrit-sandbox-ui--ask-with-menu (req)
   "Open the transient menu for REQ and wait for an answer.
-Returns once/session/project or nil.  Closing the menu any other way
-\(C-g, q, another command) is a denial."
+Returns once/session/project or nil.  Only a key in the menu answers:
+n, N and q refuse; C-g in the menu refuses too (it quits the
+recursive edit).  The menu closing by itself is not an answer and it
+reopens; the user can walk away and find the question still there."
   (setq efrit-sandbox-ui--request req
         efrit-sandbox-ui--answer 'pending
         efrit-sandbox-ui--details-shown nil)
@@ -363,7 +392,7 @@ Returns once/session/project or nil.  Closing the menu any other way
           (run-at-time 0 nil (lambda () (call-interactively #'efrit-sandbox-ask)))
           (condition-case nil
               (recursive-edit)
-            (quit nil)))
+            (quit (efrit-log 'info "sandbox: prompt refused with C-g") nil)))
       (remove-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
       (efrit-sandbox-ui--hide-details)
       (setq efrit-sandbox-ui--request nil)))

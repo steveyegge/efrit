@@ -19,6 +19,9 @@
 (require 'efrit-do)
 
 (defvar efrit-project-root)
+;; these tests are about the review text itself; the sandbox lines of
+;; 0.9.0 are covered by test-review-confidence.el
+(setq efrit-review-auto-grant-threshold nil)
 
 ;;; Helpers (content blocks as the API delivers them: hash tables)
 
@@ -497,3 +500,20 @@ rejected as unasked (2026-10-01: the work-log edit)."
           (let ((efrit-project-root (file-name-as-directory (make-temp-file "efrit-review-none-" t))))
             (should-not (string-match-p "STANDING INSTRUCTIONS" (efrit-review--user-message "x" nil "y")))))
       (delete-directory dir t))))
+
+(ert-deftest test-review-flags-a-shell-line-that-is-a-search ()
+  "A shell line made only of rg/ls/cat and text filters is flagged: the agent
+has search_content & co. for that, and they do not ask the user.  A build
+line is not flagged."
+  (require 'efrit-sandbox)
+  (should (efrit-review--shell-is-a-search-p
+           "cd ~/x && ls *.el 2>/dev/null; echo ---; rg -n -o -e 'a|b' *.el | awk -F: '{print $3}' | sort | uniq -c"))
+  (should (efrit-review--shell-is-a-search-p "cat README.md | head -40"))
+  (should-not (efrit-review--shell-is-a-search-p "make test"))
+  (should-not (efrit-review--shell-is-a-search-p "rg foo | xargs sed -i s/a/b/"))
+  (should-not (efrit-review--shell-is-a-search-p "echo hi"))
+  (let* ((input (make-hash-table :test 'equal)) (use (make-hash-table :test 'equal)))
+    (puthash "command" "cd ~/x && rg -n foo *.el | sort" input)
+    (puthash "type" "tool_use" use) (puthash "id" "t1" use)
+    (puthash "name" "shell_exec" use) (puthash "input" input use)
+    (should (string-match-p "FLAG shell: this line only searches" (efrit-review-describe-batch (vector use))))))

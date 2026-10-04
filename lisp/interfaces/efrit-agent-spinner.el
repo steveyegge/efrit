@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -71,6 +71,12 @@ SVG renderer; librsvg would honour `stroke-opacity', others do not."
     (apply #'format "#%02x%02x%02x"
            (cl-mapcar (lambda (x y) (round (* 255 (+ (* alpha x) (* (- 1 alpha) y))))) c b))))
 
+(defcustom efrit-agent-spinner-shape 'e
+  "What the spinner draws: a lowercase e with a highlight running along its
+edge, or the ring it replaced (tzz, 2026-10-03)."
+  :type '(choice (const :tag "lowercase e" e) (const :tag "ring" ring))
+  :group 'efrit-agent-spinner)
+
 (defun efrit-agent-spinner--arc (svg cx cy r start sweep stroke width)
   "Draw on SVG an arc of radius R around CX,CY from angle START over SWEEP degrees."
   (let* ((a0 (* float-pi (/ start 180.0)))
@@ -83,25 +89,96 @@ SVG renderer; librsvg would honour `stroke-opacity', others do not."
               :fill "none" :stroke stroke :stroke-width width
               :stroke-linecap "round")))
 
-(defun efrit-agent-spinner--svg (size color index &optional bg)
-  "The spinner frame INDEX as an SVG DOM, SIZE pixels square, in COLOR over BG."
+;;;; The e
+
+;; A single-stroke lowercase e, as a pen would draw it: from the right
+;; end of the crossbar, left along the bar, then counter-clockwise
+;; around the bowl (up over the top, down the left side, under the
+;; bottom) to the tail at the lower right.  Sampled as a polyline so a
+;; highlight can be placed by arc length and the frame is one <path>
+;; per segment, nothing clever that librsvg might not have.
+
+(defun efrit-agent-spinner--e-points (size)
+  "Points (X . Y) along the e's stroke, in drawing order, for a SIZE box."
+  (let* ((c (/ size 2.0))
+         (r (* size 0.36))                ; bowl radius
+         (bar-y c)                        ; the crossbar sits on the centre line
+         (pts nil)
+         (n 24))
+    ;; crossbar, right to left: from the bowl's right edge to its left edge
+    (dotimes (i (1+ n))
+      (let ((x (- (+ c r) (* i (/ (* 2 r) (float n))))))
+        (push (cons x bar-y) pts)))
+    ;; the bowl, from the left end of the bar (angle 180°, measured with
+    ;; y down so angles run clockwise on screen) over the top (270°),
+    ;; the right (360°), the bottom (90°) to the tail at ~150°
+    (let* ((start 180.0) (end (+ 180 360 -45)) (steps (* 3 n)))
+      (dotimes (i (1+ steps))
+        (let* ((a (* float-pi (/ (+ start (* i (/ (- end start) (float steps)))) 180.0))))
+          (push (cons (+ c (* r (cos a))) (+ c (* r (sin a)))) pts))))
+    (nreverse pts)))
+
+(defun efrit-agent-spinner--polyline (svg pts stroke width)
+  "Draw PTS on SVG as one path in STROKE of WIDTH."
+  (when (cdr pts)
+    (svg-node svg 'path
+              :d (concat (format "M %.2f %.2f" (caar pts) (cdar pts))
+                         (mapconcat (lambda (p) (format " L %.2f %.2f" (car p) (cdr p))) (cdr pts) ""))
+              :fill "none" :stroke stroke :stroke-width width
+              :stroke-linecap "round" :stroke-linejoin "round")))
+
+(defun efrit-agent-spinner--e-svg (size color index bg)
+  "Frame INDEX of the e spinner: the letter faint, a highlight running along it."
   (let* ((svg (svg-create size size))
-         (bg (or bg (efrit-agent-spinner--hex 'default :background)))
-         (c (/ size 2.0))
-         (w (max 1.2 (/ size 10.0)))
-         (r (- c w 1))
-         (angle (* index (/ 360.0 efrit-agent-spinner-steps))))
-    ;; Faint full ring so the eye has a fixed reference, then a
-    ;; three-quarter arc whose head is solid: reads as motion without
-    ;; flicker.
-    (svg-circle svg c c r :fill "none" :stroke-width w
-                :stroke (efrit-agent-spinner--blend color bg 0.15))
-    (efrit-agent-spinner--arc svg c c r angle 200 (efrit-agent-spinner--blend color bg 0.4) w)
-    (efrit-agent-spinner--arc svg c c r (+ angle 200) 70 color w)
+         (w (max 1.2 (/ size 12.0)))
+         (pts (efrit-agent-spinner--e-points size))
+         (len (length pts))
+         ;; the highlight: a head of ~a quarter of the stroke, a tail of
+         ;; the same again at half strength, advancing one step per tick
+         ;; around the whole letter and wrapping at the tail
+         (head-len (max 3 (/ len 3)))
+         (pos (floor (* len (/ index (float efrit-agent-spinner-steps)))))
+         (take (lambda (from count)
+                 (let (out)
+                   (dotimes (i count)
+                     (push (nth (mod (+ from i) len) pts) out))
+                   (nreverse out)))))
+    (efrit-agent-spinner--polyline svg pts (efrit-agent-spinner--blend color bg 0.18) w)
+    ;; the e is not a closed curve: a highlight that wraps from the tail
+    ;; to the bar's right end would draw a chord across the counter, so
+    ;; split at the wrap point
+    (let* ((tail-start (- pos head-len))
+           (seg (lambda (from count stroke)
+                  (let ((from (mod from len)) (count count))
+                    (while (> count 0)
+                      (let ((run (min count (- len from))))
+                        (efrit-agent-spinner--polyline svg (funcall take from run) stroke w)
+                        (setq from 0 count (- count run))))))))
+      (funcall seg tail-start head-len (efrit-agent-spinner--blend color bg 0.45))
+      (funcall seg pos head-len color))
     svg))
 
+(defun efrit-agent-spinner--svg (size color index &optional bg)
+  "The spinner frame INDEX as an SVG DOM, SIZE pixels square, in COLOR over BG."
+  (let ((bg (or bg (efrit-agent-spinner--hex 'default :background))))
+    (if (eq efrit-agent-spinner-shape 'e)
+        (efrit-agent-spinner--e-svg size color index bg)
+      (let* ((svg (svg-create size size))
+             (c (/ size 2.0))
+             (w (max 1.2 (/ size 10.0)))
+             (r (- c w 1))
+             (angle (* index (/ 360.0 efrit-agent-spinner-steps))))
+        ;; Faint full ring so the eye has a fixed reference, then a
+        ;; three-quarter arc whose head is solid: reads as motion without
+        ;; flicker.
+        (svg-circle svg c c r :fill "none" :stroke-width w
+                    :stroke (efrit-agent-spinner--blend color bg 0.15))
+        (efrit-agent-spinner--arc svg c c r angle 200 (efrit-agent-spinner--blend color bg 0.4) w)
+        (efrit-agent-spinner--arc svg c c r (+ angle 200) 70 color w)
+        svg))))
+
 (defvar efrit-agent-spinner--cache (make-hash-table :test #'equal)
-  "(size color index) -> propertized one-character string with the image.")
+  "(size color bg index shape) -> propertized one-character string with the image.")
 
 (defun efrit-agent-spinner-frame (&optional index size)
   "A string displaying spinner frame INDEX (default the shared counter).
@@ -112,7 +189,7 @@ is unavailable so callers can fall back to text frames."
            (size (or size (- (frame-char-height) 2)))
            (color (efrit-agent-spinner--hex 'efrit-agent-spinner))
            (bg (efrit-agent-spinner--hex 'default :background))
-           (key (list size color bg index)))
+           (key (list size color bg index efrit-agent-spinner-shape)))
       (or (gethash key efrit-agent-spinner--cache)
           (puthash key
                    (propertize " "

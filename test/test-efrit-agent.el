@@ -369,6 +369,30 @@ cancels it, so no menu appears over an answered question."
 
 ;;; Spinner
 
+(ert-deftest test-efrit-agent-e-spinner-frames-are-distinct-and-open ()
+  "The e spinner (tzz 2026-10-03): every frame is a different SVG, each
+holds the faint letter plus a highlight, and no highlight segment draws
+a chord across the counter (the stroke is not a closed curve, so a
+segment never spans the wrap point)."
+  (require 'efrit-agent-spinner)
+  (require 'svg)
+  (let* ((efrit-agent-spinner-shape 'e)
+         (efrit-agent-spinner-steps 12)
+         (frames (mapcar (lambda (i)
+                           (with-temp-buffer
+                             (svg-print (efrit-agent-spinner--svg 40 "#ff0000" i "#000000"))
+                             (buffer-string)))
+                         (number-sequence 0 11))))
+    (should (= 12 (length (delete-dups (copy-sequence frames)))))
+    (dolist (f frames)
+      ;; letter + tail + head, possibly split at the wrap: 3 to 5 paths
+      (should (<= 3 (1- (length (split-string f "<path"))) 5)))
+    ;; the ring is still there for those who want it
+    (let ((efrit-agent-spinner-shape 'ring))
+      (should (string-match-p "<circle" (with-temp-buffer
+                                           (svg-print (efrit-agent-spinner--svg 40 "#ff0000" 0 "#000000"))
+                                           (buffer-string)))))))
+
 (ert-deftest test-efrit-agent-thinking-start-runs-spinner ()
   "A thinking-start event starts the spinner timer: the label is set and a
 repeating timer exists, so the in-buffer line and the mode-line glyph

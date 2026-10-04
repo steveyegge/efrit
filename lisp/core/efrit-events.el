@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -31,6 +31,7 @@
 ;; Event vocabulary (all carry :session-id and :time):
 ;;
 ;;   turn-start        :input
+;;   sandbox-reviewer-grant :cap :target :confidence   (the reviewer vouched; no prompt)
 ;;   api-request       :iteration
 ;;   api-response      :usage (hash: input_tokens output_tokens
 ;;                             cache_read_input_tokens
@@ -219,11 +220,11 @@ any enclosing `with-timeout'.  Nested uses count the time once."
 ;; `recursive-edit'.  Process sentinels keep running inside it, so a
 ;; second session's tool can want its own prompt while the first is
 ;; still up; the two would share the menu's state, and the second
-;; cannot wait: it runs inside the first's command loop, and blocking
-;; there would stop the first prompt from being answered at all.  So
-;; the second request is not asked: `efrit-with-prompt-turn' returns
-;; DEFAULT for it (a denial) and the asking session is told.  The
-;; model gets the usual denied result and can retry.
+;; runs inside the first's command loop.  It waits there with
+;; `sit-for', which still reads the first menu's keys, so the first
+;; prompt can be answered; then the second opens.  Until 2026-10-03
+;; the second was refused with DEFAULT instead; tzz: a prompt is
+;; answered by the user or not at all.
 
 (defvar efrit-prompt--owner nil
   "The session id (or t) whose modal prompt is up, or nil.")
@@ -235,12 +236,33 @@ to use ANSWER without asking (the note says WHY), or nil to let the
 prompt open.  `efrit-unattended-mode' installs one; see
 `efrit-unattended-answer'.")
 
+(defcustom efrit-prompt-queue-poll-seconds 0.5
+  "How often a session whose prompt must wait for another's checks again."
+  :type 'number
+  :group 'efrit-events)
+
+(defun efrit-prompt--wait-for-turn (me label)
+  "Block until no other session's prompt is open; ME is this session's id.
+Called from a tool, so the wait is user-waiting time, and C-g here
+quits the waiting tool as it would at the prompt itself."
+  (let ((said nil))
+    (while (and efrit-prompt--owner (not (equal efrit-prompt--owner me)))
+      (unless said
+        (setq said t)
+        (efrit-log 'info "prompt for %s waits: another session's prompt is open" label)
+        (efrit-publish 'note
+                       (list (cons :text (format "⛨ %s waits for the other session's prompt to be answered" label))
+                             (cons :face 'shadow) (cons :kind 'sandbox))))
+      (efrit-with-user-waiting
+        (sit-for efrit-prompt-queue-poll-seconds)))))
+
 (defmacro efrit-with-prompt-turn (label default &rest body)
-  "Run BODY, a modal prompt, unless another session's prompt is up.
-Then BODY is skipped, DEFAULT is returned, and a `note' is published
-for the asking session saying that LABEL was refused because another
-prompt is open.  Nested prompts of the same session run at once (a
-prompt that asks another question, the details popup).
+  "Run BODY, a modal prompt, one session at a time.
+While another session's prompt is up, this one waits its turn (it is
+not refused: a prompt is answered by the user or not at all; tzz,
+2026-10-03).  Nested prompts of the same session run at once (a
+prompt that asks another question, the details popup).  DEFAULT is
+returned only when BODY itself returns it.
 
 Before BODY opens, `efrit-prompt-policy-function' may answer in the
 user's stead (unattended mode); otherwise a `prompt-open' event is
@@ -250,13 +272,8 @@ published so a desktop notification can say that efrit is waiting
   (let ((me (make-symbol "me")) (policy (make-symbol "policy")))
     `(let ((,me (or efrit-current-session-id t)))
       (catch 'efrit-prompt-answered
+       (efrit-prompt--wait-for-turn ,me ,label)
        (cond
-        ((and efrit-prompt--owner (not (equal efrit-prompt--owner ,me)))
-         (efrit-log 'warn "prompt for %s refused: another session's prompt is open" ,label)
-         (efrit-publish 'note
-                        (list (cons :text (format "⛨ not asked: %s came while another session's prompt was open; denied, the model can retry" ,label))
-                              (cons :face 'warning) (cons :kind 'sandbox)))
-         ,default)
         ((let ((,policy (and efrit-prompt-policy-function
                              (ignore-errors (funcall efrit-prompt-policy-function ,label ,default)))))
            ;; a cons (ANSWER . WHY) answers; the cond clause's value is

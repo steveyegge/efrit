@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.8.5
+;; Version: 0.9.2
 
 ;;; Commentary:
 ;;
@@ -640,7 +640,7 @@ Removes or truncates sensitive data."
                       (plist-get entry :result)
                       (plist-get entry :inputs)
                       (or (plist-get entry :duration) "N/A")))
-      (append-to-file (point-min) (point-max) file))))
+      (write-region (point-min) (point-max) file t 'quiet))))
 
 (defun efrit-tool-get-audit-log (&optional limit)
   "Get recent audit log entries.

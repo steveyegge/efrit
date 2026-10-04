@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, diff
-;; Version: 0.8.5
+;; Version: 0.9.2
 
 ;;; Commentary:
 ;;
@@ -33,12 +33,6 @@
   :type 'string
   :group 'efrit-tool-utils)
 
-(defcustom efrit-diff-preview-timeout-seconds nil
-  "Seconds the diff preview waits for a decision before it counts as rejected.
-nil (the default) waits as long as the user takes: reviewing a diff
-for ten minutes is not a rejection (2026-09-27)."
-  :type '(choice (const :tag "Wait for the user" nil) integer)
-  :group 'efrit-tool-utils)
 
 ;;; Internal variables
 
@@ -586,24 +580,22 @@ Returns a standard tool response with:
         ;; against the turn or the tool.  C-g while waiting is a
         ;; rejection, not a stuck loop: `sit-for' inside a tool call
         ;; can swallow the quit, so the flag is checked by hand.
-        (let ((start-time (float-time))
-              (timeout efrit-diff-preview-timeout-seconds))
-          (efrit-with-user-waiting
-            (while (and efrit-diff-preview--waiting
-                        (not quit-flag)
-                        (or (not timeout) (< (- (float-time) start-time) timeout)))
-              (with-local-quit (sit-for 0.1))
-              (redisplay)))
-          (when (and efrit-diff-preview--waiting quit-flag)
-            (setq quit-flag nil)
-            (efrit-diff-preview-reject))
-          ;; Handle timeout
-          (when efrit-diff-preview--waiting
-            (setq efrit-diff-preview--result
-                  `((approved . :json-false)
-                    (selected_changes . [])
-                    (reason . "timeout")))
-            (setq efrit-diff-preview--waiting nil))))
+        ;; No timeout: nothing but the user answers a prompt (tzz,
+        ;; 2026-10-03: "I should be able to walk away from efrit any
+        ;; time").  The buffer closing under us is not an answer
+        ;; either: it is shown again.
+        (efrit-with-user-waiting
+          (while (and efrit-diff-preview--waiting (not quit-flag))
+            ;; the ediff path hides the window on purpose; only a
+            ;; killed buffer means the question vanished
+            (unless (get-buffer efrit-diff-preview-buffer-name)
+              (efrit-log 'info "diff preview: buffer killed without a decision; showing it again")
+              (efrit-diff-preview--display changes description apply-mode-sym))
+            (with-local-quit (sit-for 0.1))
+            (redisplay)))
+        (when (and efrit-diff-preview--waiting quit-flag)
+          (setq quit-flag nil)
+          (efrit-diff-preview-reject)))
       ;; refused by the prompt gate (another prompt was up): a rejection
       (unless efrit-diff-preview--result
         (setq efrit-diff-preview--result

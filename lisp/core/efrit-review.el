@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -51,6 +51,9 @@
 (require 'efrit-permissions)   ; efrit-permission-tool-class
 (require 'efrit-events)
 (require 'efrit-settings)
+(require 'efrit-sandbox)
+(require 'efrit-grant-history)
+(require 'efrit-review-confidence)
 
 (defvar efrit-default-model)
 
@@ -211,9 +214,14 @@ Both unset removes the section."
     (efrit-settings-put root efrit-review-settings-section
                         (and (> (hash-table-count h) 0) h))))
 
-(defun efrit-review--reviewable-p (tool-name)
-  "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project."
-  (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes)))
+(defun efrit-review--reviewable-p (tool-name &optional use)
+  "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project.
+With USE, the (ID NAME INPUT) triple, a call of any class whose sandbox
+request would stop to ask the user is reviewable too: the reviewer is
+the one who can vouch for it (0.9.2; a read is not reviewed otherwise)."
+  (or (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes))
+      (and use efrit-review-auto-grant-threshold
+           (ignore-errors (efrit-review-confidence-would-ask-p use)))))
 
 (defvar efrit-review--user-allowed (make-hash-table :test 'equal)
   "Session id -> list of batch signatures the user allowed past the reviewer.
@@ -255,7 +263,7 @@ other text is the user's own steer, passed through."
 With SESSION-ID, a batch the user allowed after an escalation passes
 without review, once."
   (and (efrit-review-enabled-p)
-       (cl-some (lambda (use) (efrit-review--reviewable-p (nth 1 use)))
+       (cl-some (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
                 (efrit-review--tool-uses content))
        (not (and session-id (efrit-review--user-allowed-p session-id content)))))
 
@@ -317,6 +325,25 @@ by the REPL is stripped so the reviewer reads what the user typed."
 
 (declare-function efrit-sandbox-shell-starts-emacs-p "efrit-sandbox")
 (declare-function efrit-review-flags-for-use "efrit-review-flags")
+(declare-function efrit-review-confidence-describe "efrit-review-confidence")
+(declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
+(declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+
+(defconst efrit-review--search-shell-commands
+  '("rg" "grep" "egrep" "fgrep" "ag" "find" "fd" "ls" "cat" "head" "tail" "wc" "sort" "uniq"
+    "cut" "awk" "tr" "cd" "echo" "column" "nl")
+  "Commands a shell line is made of when it is a search or a listing an Emacs tool does.")
+
+(defun efrit-review--shell-is-a-search-p (line)
+  "Non-nil when shell LINE runs only search/list/read commands (rg, find, ls, cat…).
+Such a line is `search_content' / `project_files' / `read_file' in disguise
+\(2026-10-03: `cd ~/x && rg PAT *.el | awk … | sort | uniq -c' asked the
+user for a grant that search_content would not have needed)."
+  (when (and (stringp line) (fboundp 'efrit-sandbox-shell-commands))
+    (let ((names (ignore-errors (efrit-sandbox-shell-commands line))))
+      (and names
+           (cl-some (lambda (n) (member n '("rg" "grep" "egrep" "fgrep" "ag" "find" "fd" "ls" "cat"))) names)
+           (cl-every (lambda (n) (member n efrit-review--search-shell-commands)) names)))))
 
 (defun efrit-review--flags (use)
   "FLAG lines the reviewer should weigh for tool USE, joined, or nil.
@@ -327,6 +354,9 @@ effects), see efrit-review-flags."
   (let* ((input (nth 2 use))
          (lines
           (append
+           (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
+                      (efrit-review--shell-is-a-search-p (gethash "command" input)))
+             (list "[FLAG shell: this line only searches, lists or reads files (rg/grep/find/ls/cat). The agent has search_content, project_files, file_info and read_file for that; they run without asking the user, the shell line asks. Reject and name the tool to use instead, unless the user asked for the shell.]"))
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (fboundp 'efrit-sandbox-shell-starts-emacs-p)
                       (efrit-sandbox-shell-starts-emacs-p (gethash "command" input)))
@@ -344,8 +374,10 @@ reviewer should look at twice carry a FLAG line."
      (lambda (use)
        (cl-incf n)
        (concat (format "%d. %s %s" n (nth 1 use) (efrit-review--input-string (nth 2 use)))
-               (when-let* ((flag (efrit-review--flags use))) (concat "\n   " flag))))
-     (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use)))
+               (when-let* ((flag (efrit-review--flags use))) (concat "\n   " flag))
+               (when-let* ((lines (ignore-errors (efrit-review-confidence-describe use))))
+                 (concat "\n   " (mapconcat #'identity lines "\n   ")))))
+     (cl-remove-if-not (lambda (use) (efrit-review--reviewable-p (nth 1 use) use))
                        (efrit-review--tool-uses content))
      "\n")))
 
@@ -381,8 +413,20 @@ Reject a batch when any call:
 - touches secrets, credentials, or another project.
 Approve otherwise. Ordinary imperfection is not a reason to reject; the user reviews results.
 
+A line [SANDBOX would ask: CAP TARGET | computed confidence S | facts] under a call means the
+user's sandbox has no grant for it and would stop to ask them.  The facts are what efrit
+knows: how often the user granted or denied this pattern before, whether the request names
+the target, whether the shell line is read-only, whether the path is in a repository they
+granted before.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
+the user would say yes, and \"grant\": \"once\" or \"session\".  C may not exceed S; S already
+counts the facts, you only lower it when the request itself gives reason (an odd target for
+the task, a command whose output the task does not need).  At or above the user's threshold
+your vouching replaces their keypress for this turn, so vouch only when you would bet on it.
+A call with no SANDBOX line needs no confidence.
+
 Answer with one JSON object and nothing else -- no prose before it, no code fence:
-{\"verdict\": \"approve\"} or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
+{\"verdict\": \"approve\"}, {\"verdict\": \"approve\", \"confidence\": 0.97, \"grant\": \"session\"},
+or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
   "System prompt for the reviewer.")
 
 (defvar efrit-review--last-refused-request nil
@@ -425,6 +469,10 @@ every turn, because it only saw the request of the moment."
     ("messages" . [(("role" . "user")
                     ("content" . ,(efrit-review--user-message intent proposer-text batch)))])))
 
+(defvar efrit-review--last-vouch nil
+  "(:confidence C :grant SCOPE) from the last parsed approve, or nil.
+Set by `efrit-review-parse-verdict'; read by the loop right after.")
+
 (defun efrit-review-parse-verdict (text)
   "Parse the reviewer's TEXT into (VERDICT . REASON), or nil if malformed.
 VERDICT is a symbol from `efrit-review-verdicts'.  Tolerates prose
@@ -452,8 +500,14 @@ around the object by taking the first {...} span."
                 (let* ((parsed (json-parse-string (substring text start end) :object-type 'alist))
                        (verdict (alist-get 'verdict parsed))
                        (reason (alist-get 'reason parsed))
+                       (confidence (alist-get 'confidence parsed))
+                       (grant (alist-get 'grant parsed))
                        (sym (and (stringp verdict) (intern (downcase verdict)))))
                   (when (memq sym efrit-review-verdicts)
+                    (setq efrit-review--last-vouch
+                          (and (eq sym 'approve) (numberp confidence)
+                               (list :confidence (float confidence)
+                                     :grant (and (stringp grant) (intern (downcase grant))))))
                     (setq obj (cons sym (and (stringp reason) reason)))))
               (error nil)))
           (setq start (and (not obj) (string-search "{" text (1+ start))))))

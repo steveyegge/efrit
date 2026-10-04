@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;; Keywords: tools, convenience, ai
 
@@ -94,7 +94,7 @@
 (defconst efrit-menu-saved-settings
   '(efrit-default-model efrit-api-streaming efrit-api-prompt-caching efrit-sandbox-enabled
     efrit-review-enabled efrit-agent-header-style efrit-agent-verbosity efrit-agent-display-mode
-    efrit-log-level efrit-notify-enabled)
+    efrit-log-level efrit-notify-enabled efrit-review-auto-grant-threshold)
   "The settings the menu's toggles change, saved together by `efrit-menu-save-settings'.")
 
 (defun efrit-menu-save-settings ()
@@ -133,6 +133,29 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
   (interactive)
   (require 'efrit-unattended)
   (efrit-unattended-mode 'toggle))
+
+(defvar efrit-review-auto-grant-threshold)
+(defun efrit-menu--desc-auto-grant ()
+  (require 'efrit-review-confidence)
+  (format "Reviewer may grant for you (%s)"
+          (if efrit-review-auto-grant-threshold
+              (format "at confidence ≥ %.2f" efrit-review-auto-grant-threshold)
+            "off")))
+
+(defun efrit-menu-cycle-auto-grant ()
+  "Cycle `efrit-review-auto-grant-threshold': 0.95 → 0.90 → 0.99 → off → 0.95 (menu W: when the reviewer may vouch)."
+  (interactive)
+  (require 'efrit-review-confidence)
+  (setq efrit-review-auto-grant-threshold
+        (let ((v efrit-review-auto-grant-threshold))
+          (cond ((null v) 0.95)
+                ((< (abs (- v 0.95)) 0.001) 0.90)
+                ((< (abs (- v 0.90)) 0.001) 0.99)
+                (t nil))))
+  (message "efrit: the reviewer %s"
+           (if efrit-review-auto-grant-threshold
+               (format "may stand in for you at confidence ≥ %.2f" efrit-review-auto-grant-threshold)
+             "never grants for you")))
 
 (defun efrit-menu-toggle-notify ()
   "Toggle `efrit-notify-enabled'."
@@ -179,6 +202,7 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
        ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
        ("A" efrit-menu-toggle-unattended :transient t :description efrit-menu--desc-unattended)
        ("Y" efrit-menu-toggle-notify :transient t :description efrit-menu--desc-notify)
+       ("W" efrit-menu-cycle-auto-grant :transient t :description efrit-menu--desc-auto-grant)
        ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
        ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)
        ("g" "Document source check: Google Drive" efrit-documents-gdrive-check)

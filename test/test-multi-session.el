@@ -143,10 +143,12 @@ current when the sentinel fired."
     ;; outside any session: its own slot
     (should-not (efrit-sandbox-turn-answer))))
 
-(ert-deftest test-ms-second-sessions-prompt-is-refused-not-nested ()
-  "While A's prompt is up, B's prompt is not shown: it gets the default
-and B gets a note.  A's own nested prompt still runs."
+(ert-deftest test-ms-second-sessions-prompt-waits-its-turn ()
+  "While A's prompt is up, B's prompt waits (with a note) and opens once A's
+closes; it is never answered for the user.  A's own nested prompt runs at once.
+tzz 2026-10-03: nothing but the user decides a prompt."
   (let* ((efrit-prompt--owner nil) (efrit-current-session-id nil) (notes nil) (ran nil)
+         (efrit-prompt-queue-poll-seconds 0.01)
          (sub (lambda (e) (push (cons (alist-get :session-id e) (alist-get :text e)) notes))))
     (efrit-subscribe 'note sub)
     (unwind-protect
@@ -154,12 +156,14 @@ and B gets a note.  A's own nested prompt still runs."
           (efrit-with-prompt-turn "a" 'denied
             (should (eq 'inner (efrit-with-session "A"
                                  (efrit-with-prompt-turn "a2" 'denied 'inner))))
-            (should (eq 'denied (efrit-with-session "B"
-                                  (efrit-with-prompt-turn "b" 'denied (setq ran t) 'asked))))
-            (should-not ran)))
+            ;; A's prompt is answered 50 ms from now; B must wait for it
+            (run-at-time 0.05 nil (lambda () (setq efrit-prompt--owner nil)))
+            (should (eq 'asked (efrit-with-session "B"
+                                 (efrit-with-prompt-turn "b" 'denied (setq ran t) 'asked))))
+            (should ran)))
       (efrit-unsubscribe 'note sub))
     (should (equal "B" (caar notes)))
-    (should (string-match-p "not asked" (cdar notes)))
+    (should (string-match-p "waits for the other session" (cdar notes)))
     (should-not efrit-prompt--owner)))
 
 (require 'efrit-agent-instances)

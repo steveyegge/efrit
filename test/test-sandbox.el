@@ -1177,3 +1177,11 @@ its API); on a write or a shell line it is consumed by one operation."
     (efrit-sandbox-grant 'shell '(shell "ls") 'once)
     (should (efrit-sandbox-allowed-p 'shell "ls"))
     (should-not (efrit-sandbox-allowed-p 'shell "ls"))))
+
+(ert-deftest test-sandbox-awk-and-stderr-to-devnull-are-read-only ()
+  "`awk' is a text filter and `2>/dev/null' is not a redirection that
+matters: the 2026-10-03 line that asked for seven commands is expected."
+  (should (efrit-sandbox--expected-shell-line-p
+           "cd ~/x && ls a*.el 2>/dev/null; echo ---; rg -n -o -e 'a|b' a*.el | sort -t: -k3 | awk -F: '{print $3}' | sort | uniq -c | sort -rn"))
+  (should-not (efrit-sandbox--expected-shell-line-p "ls > out.txt"))
+  (should-not (efrit-sandbox--expected-shell-line-p "cat $(ls)")))

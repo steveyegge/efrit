@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.8.5
+;; Version: 0.9.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -713,6 +713,9 @@ write."
          ((efrit-sandbox-repo-of target))
          (t dir))))))
 
+(declare-function efrit-review-confidence-take-grant "efrit-review-confidence")
+(declare-function efrit-grant-history-record "efrit-grant-history")
+
 (defvar efrit-sandbox--git-toplevel-cache (make-hash-table :test 'equal)
   "Directory -> its git top-level (or `none'), for `efrit-sandbox--git-toplevel'.")
 
@@ -940,6 +943,7 @@ inside an eval is transport, not intent."
 
 (defcustom efrit-sandbox-expected-shell-commands
   '("ls" "cat" "head" "tail" "wc" "grep" "rg" "find" "fd" "diff" "sort" "uniq" "cut" "tr"
+    "awk" "column" "nl" "tac" "rev" "basename" "dirname" "realpath" "readlink" "env" "printf"
     "echo" "date" "pwd" "which" "file" "stat" "du" "df" "cd" "true" "false" "test"
     "git status" "git diff" "git log" "git show" "git branch" "git rev-parse" "git blame"
     "git ls-files" "git remote" "git stash list")
@@ -962,8 +966,15 @@ matches.  Read-only tools by default."
   (and (stringp line)
        (not (efrit-sandbox-shell-always-ask-match line))
        ;; redirections, substitutions and background jobs change what a
-       ;; read-only command can do; `&&' and `||' only sequence
-       (not (string-match-p "[<>`$]" line))
+       ;; read-only command can do; `&&' and `||' only sequence.  Sending
+       ;; stderr to /dev/null changes nothing (2026-10-03: `ls ... 2>/dev/null'
+       ;; asked for a grant over seven read-only commands)
+       ;; Inside single quotes nothing expands: an awk program's `$3' is
+       ;; text, not a substitution
+       (not (string-match-p "[<>`$]"
+                            (replace-regexp-in-string
+                             "'[^']*'" ""
+                             (replace-regexp-in-string "2>/dev/null" "" line t t) t t)))
        (not (string-match-p "\\(?:^\\|[^&]\\)&\\(?:[^&]\\|$\\)" line))
        (let ((names (efrit-sandbox-shell-commands line)))
          (and names
@@ -1106,6 +1117,26 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
        ;; expected: a grant for the session and a note, no menu
        ((let ((reason (efrit-sandbox-expected-p cap ctarget root)))
           (and reason (efrit-sandbox--grant-expected cap ctarget root reason tool))))
+       ;; the reviewer vouched for this request at or above the user's
+       ;; threshold (efrit-review-confidence): its word stands for the
+       ;; user's `s' or `o', and the transcript says so
+       ((when-let* ((vouch (and (fboundp 'efrit-review-confidence-take-grant)
+                                (efrit-review-confidence-take-grant cap ctarget))))
+          (let ((scope (plist-get vouch :scope)))
+            (efrit-sandbox-grant cap (efrit-sandbox--suggest-target cap ctarget root) scope root)
+            (efrit-log 'info "sandbox: %s %s granted by the reviewer (%.2f: %s) for the %s (%s)"
+                       cap (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget)
+                       (plist-get vouch :confidence) (plist-get vouch :why) scope tool)
+            (when (fboundp 'efrit-publish)
+              (efrit-publish 'note `((:text . ,(format "⛨ %s: %s, allowed by the reviewer (%.2f: %s)"
+                                                        (or tool "a tool")
+                                                        (efrit-sandbox-describe-request
+                                                         (efrit-sandbox-request-create :cap cap :target ctarget))
+                                                        (plist-get vouch :confidence) (plist-get vouch :why)))
+                                     (:face . shadow) (:kind . sandbox)))
+              (efrit-publish 'sandbox-reviewer-grant `((:cap . ,cap) (:target . ,ctarget)
+                                                        (:confidence . ,(plist-get vouch :confidence)))))
+            (efrit-sandbox-allowed-p cap ctarget root))))
        (t
         (efrit-log 'debug "sandbox: %s %s not covered for %s; asking (%s)" cap
                    (if (stringp ctarget) (efrit-sandbox-abbreviate ctarget) ctarget)
@@ -1118,6 +1149,10 @@ With `efrit-sandbox-enabled' nil this is a no-op that returns t."
                            ;; a standing N from earlier this turn: no prompt
                            (not (eq (efrit-sandbox-turn-answer) 'deny-all))
                            (efrit-sandbox--ask-without-clock req))))
+          ;; what the user answered feeds the reviewer's confidence next time
+          (when (and (fboundp 'efrit-grant-history-record)
+                     (not (eq (efrit-sandbox-turn-answer) 'abort)))
+            (ignore-errors (efrit-grant-history-record cap ctarget scope)))
           ;; q in the prompt: this tool is interrupted, the loop ends
           ;; the turn the way it does for C-g
           (when (eq (efrit-sandbox-turn-answer) 'abort)
