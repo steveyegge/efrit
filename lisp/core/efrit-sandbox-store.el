@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -137,8 +137,18 @@ deserializes to (shell NAME...).  Command names cannot contain spaces.")
 Bypasses the sandbox deliberately: this is efrit persisting its own
 state on the user's explicit instruction, never a tool acting."
   (let* ((file (efrit-sandbox-store-file root))
-         (grants (gethash root efrit-sandbox--project-grants))
-         (json (json-encode
+         (grants (gethash root efrit-sandbox--project-grants)))
+    (if (and (null grants) (not (file-exists-p file)))
+        ;; nothing to say and no file yet: do not create one that holds
+        ;; only a version (tzz, 2026-10-07).  An existing file is
+        ;; rewritten (possibly to no grants) and never removed by efrit.
+        (progn (efrit-log 'debug "sandbox: no project grants for %s; %s not created" root (file-name-nondirectory file))
+               nil)
+      (efrit-sandbox-store--write file grants))))
+
+(defun efrit-sandbox-store--write (file grants)
+  "Write GRANTS to FILE as JSON (mode 0600)."
+  (let* ((json (json-encode
                 `((version . ,efrit-sandbox-store--version)
                   (grants . ,(vconcat
                               (mapcar (lambda (g)

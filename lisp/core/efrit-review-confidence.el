@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -11,7 +11,7 @@
 
 ;; Two gates stand before a tool call: the reviewer (is this sensible
 ;; for the task?) and the sandbox (is this path, host or command
-;; granted?).  Until 0.9.2 the second gate always asked the user when
+;; granted?).  Until 0.10.3 the second gate always asked the user when
 ;; nothing covered the request, even after the reviewer had approved
 ;; and even when the user had granted the same thing in session after
 ;; session.  tzz, 2026-10-03: "Give the reviewer a certainty threshold

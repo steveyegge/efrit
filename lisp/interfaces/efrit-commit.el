@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc, ai
 

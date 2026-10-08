@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.9.2
+;; Version: 0.10.3
 
 ;;; Commentary:
 ;;
@@ -29,6 +29,8 @@
 ;;; Code:
 
 (require 'project)
+(declare-function vc-responsible-backend "vc")
+(declare-function vc-call-backend "vc")
 (require 'json)
 (require 'cl-lib)
 (require 'url-parse)
@@ -116,6 +118,17 @@ Returns the expanded absolute path."
     ;; Try project.el detection
     ((when-let* ((proj (project-current)))
        (project-root proj)))
+    ;; A directory inside a checkout that project.el does not claim
+    ;; (its own markers missing, a subdirectory opened without the
+    ;; repo): the checkout is still the project.  Without this an
+    ;; agent buffer in ~/autodist/files/ saved its grants to
+    ;; files/.efrit/ while the same checkout's other grants lived in
+    ;; autodist/.efrit/ (2026-10-07).
+    ((let ((top (and (not (file-remote-p default-directory))
+                     (ignore-errors (vc-call-backend (vc-responsible-backend default-directory) 'root default-directory)))))
+       (and top (not (string= (expand-file-name top) (expand-file-name "~/")))
+            (not (string= (expand-file-name top) "/"))
+            top)))
     ;; Fallback to default-directory
     (t default-directory))))
 

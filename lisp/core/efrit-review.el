@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -209,8 +209,12 @@ review outcome rather than a tool failure.")
 Both unset removes the section."
   (let ((root (or root (efrit-settings-project-root)))
         (h (make-hash-table :test 'equal)))
-    (unless (eq enabled 'unset) (puthash "enabled" (if enabled t :false) h))
-    (when classes (puthash "classes" (mapcar #'symbol-name classes) h))
+    ;; a value equal to the global option is no override: leave it out,
+    ;; so a file that would only restate the defaults is not written
+    (unless (or (eq enabled 'unset) (eq (and enabled t) (and efrit-review-enabled t)))
+      (puthash "enabled" (if enabled t :false) h))
+    (when (and classes (cl-set-exclusive-or classes efrit-review-classes))
+      (puthash "classes" (mapcar #'symbol-name classes) h))
     (efrit-settings-put root efrit-review-settings-section
                         (and (> (hash-table-count h) 0) h))))
 
@@ -218,7 +222,7 @@ Both unset removes the section."
   "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project.
 With USE, the (ID NAME INPUT) triple, a call of any class whose sandbox
 request would stop to ask the user is reviewable too: the reviewer is
-the one who can vouch for it (0.9.2; a read is not reviewed otherwise)."
+the one who can vouch for it (0.10.3; a read is not reviewed otherwise)."
   (or (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes))
       (and use efrit-review-auto-grant-threshold
            (ignore-errors (efrit-review-confidence-would-ask-p use)))))

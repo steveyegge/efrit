@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -120,6 +120,8 @@ the user where the session type supports it."
   ;; A "continue once" raise of a limit lasts for this turn only.
   ;; This session's project only: another session's raise stands.
   (efrit-limits-reset-once (efrit-limits-project-root))
+  (when (fboundp 'efrit-reconnect-reset)
+    (efrit-reconnect-reset (funcall (efrit-loop-adapter-id-fn adapter) session)))
   (efrit-publish 'turn-complete
                  `((:session-id . ,(funcall (efrit-loop-adapter-id-fn adapter) session))
                    (:stop-reason . ,reason)
@@ -216,18 +218,36 @@ the next API request."
          (efrit-loop--finish session adapter "elisp-error" msg))))))
 
 (defun efrit-loop--call-api (session adapter messages)
-  "Call ADAPTER's api-call function for SESSION with MESSAGES."
+  "Call ADAPTER's api-call function for SESSION with MESSAGES.
+A failure in transit is handed to efrit-reconnect, which retries the
+same request after a pause and asks the user when its budget is spent;
+the turn's work stays in the session.  Other errors end the turn."
   (funcall (efrit-loop-adapter-api-call-fn adapter)
      session
      messages
      (lambda (response error)
        (if error
-           (funcall (efrit-loop-adapter-on-api-error-fn adapter) session error)
+           (let ((session-id (funcall (efrit-loop-adapter-id-fn adapter) session)))
+             (unless (and (require 'efrit-reconnect nil t)
+                          (efrit-reconnect-handle-failure
+                           session-id error
+                           ;; retry: the same messages, under the session's bindings
+                           (lambda ()
+                             (when (efrit-loop--session-active-p session adapter)
+                               (efrit-loop--run-as-session
+                                session adapter
+                                (lambda () (efrit-loop--send-request session adapter)))))
+                           ;; ask: pause the turn on the connectivity question
+                           (lambda () (efrit-loop--ask-about-connection session adapter error))))
+               (efrit-reconnect-reset session-id)
+               (funcall (efrit-loop-adapter-on-api-error-fn adapter) session error)))
          ;; An uncaught elisp error here would silently kill the loop
          ;; (see 098182c): catch it and fail the turn visibly.  Label
          ;; it as a client-side bug, not an API failure -- relabeling
          ;; these as API errors sent debugging down the wrong path
          ;; (ef-jz6).
+         (when (fboundp 'efrit-reconnect-reset)
+           (efrit-reconnect-reset (funcall (efrit-loop-adapter-id-fn adapter) session)))
          (condition-case err
              (efrit-loop-handle-response session adapter response)
            (error
@@ -238,6 +258,59 @@ the next API request."
                          (funcall (efrit-loop-adapter-id-fn adapter) session)
                          msg)
               (efrit-loop--finish session adapter "elisp-error" msg))))))))
+
+(defvar efrit-loop--mark-waiting-function nil
+  "Function (SESSION) that puts SESSION in the waiting state without ending its loop.
+Set by the REPL adapter; nil for adapters that cannot pause.")
+
+(declare-function efrit-reconnect-handle-failure "efrit-reconnect")
+(declare-function efrit-reconnect-reset "efrit-reconnect")
+(declare-function efrit-reconnect--short "efrit-reconnect")
+(declare-function efrit-reconnect-answer "efrit-reconnect")
+(defvar efrit-reconnect-question-options)
+
+(defun efrit-loop--session-active-p (session adapter)
+  "Non-nil while SESSION's loop entry still exists (the turn was not ended)."
+  (gethash (funcall (efrit-loop-adapter-id-fn adapter) session)
+           (efrit-loop-adapter-state-hash adapter)))
+
+(defun efrit-loop--run-as-session (session adapter thunk)
+  "Run THUNK as SESSION's code when ADAPTER wraps dispatch, else plainly."
+  (if-let* ((wrap (efrit-loop-adapter-wrap-dispatch-fn adapter)))
+      (funcall wrap session thunk)
+    (funcall thunk)))
+
+(defun efrit-loop--ask-about-connection (session adapter error)
+  "Pause SESSION's turn on the keep-waiting / retry / abort question.
+Through the `question' path, so the agent buffer shows the menu and
+the answer is routed by `efrit-reconnect-answer'; nothing but the
+user's key (or unattended mode) answers it."
+  (let* ((session-id (funcall (efrit-loop-adapter-id-fn adapter) session))
+         (question (format "The connection to the model keeps failing (%s).\nThe turn's work so far is kept. What now?"
+                           (efrit-reconnect--short error)))
+         (options efrit-reconnect-question-options))
+    (cond
+     ;; away: keep waiting, as the user would answer; the turn resumes alone
+     ((bound-and-true-p efrit-unattended-mode)
+      (efrit-publish 'prompt-answered-unattended
+                     `((:label . "the connection question") (:answer . "wait")
+                       (:why . "unattended: waiting for the connection; the turn resumes when it is back")))
+      (efrit-reconnect-answer session-id "Keep waiting"))
+     ((and (efrit-loop-adapter-handles-waiting-p adapter) efrit-loop--mark-waiting-function)
+      (when-let* ((fn (efrit-loop-adapter-set-pending-question-fn adapter)))
+        (funcall fn session question options (list :kind 'reconnect :error error)))
+      (efrit-publish 'question `((:session-id . ,session-id) (:question . ,question)
+                                 (:options . ,options) (:kind . reconnect)))
+      ;; the loop entry stays: the retry thunk re-enters this turn
+      (efrit-publish 'turn-complete `((:session-id . ,session-id) (:stop-reason . "waiting-for-user")))
+      (efrit-publish 'status `((:session-id . ,session-id) (:status . waiting)))
+      (funcall efrit-loop--mark-waiting-function session))
+     ;; an adapter that cannot pause (efrit-do): end as before
+     (t (efrit-reconnect-reset session-id)
+        (efrit-loop--finish session adapter "api-error"
+                            (format "the connection to the model failed repeatedly: %s" error))))))
+
+
 
 (defun efrit-loop-api-call (session-id messages callback adapter)
   "Make the canonical async Claude API call for SESSION-ID with MESSAGES.
@@ -482,7 +555,7 @@ the turn is handed to the user instead."
          (pcase (car verdict)
            ('approve
             ;; the reviewer may have vouched for requests the sandbox
-            ;; would otherwise ask the user about (0.9.2)
+            ;; would otherwise ask the user about (0.10.3)
             (when-let* ((vouch (and (boundp 'efrit-review--last-vouch) efrit-review--last-vouch)))
               (setq efrit-review--last-vouch nil)
               (when (require 'efrit-review-confidence nil t)

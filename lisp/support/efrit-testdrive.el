@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -46,6 +46,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-loop)   ; struct accessors are setf-able in the drive
 (require 'subr-x)
 (require 'efrit-log)
 (require 'efrit-events)
@@ -138,6 +139,11 @@
 (declare-function efrit-repl-session-interrupt-requested "efrit-repl-session")
 (declare-function efrit-repl-loop-active-p "efrit-repl-loop")
 (declare-function efrit-sandbox--turn-get "efrit-sandbox")
+(defvar efrit-reconnect-probe-function)
+(defvar efrit-reconnect-wait-poll-seconds)
+(defvar efrit-reconnect-max-retries)
+(defvar efrit-reconnect-backoff-seconds)
+(declare-function efrit-reconnect-reset "efrit-reconnect")
 (defvar efrit-data-directory)
 (defvar efrit-review-auto-grant-threshold)
 (defvar efrit-grant-history--table)
@@ -1082,6 +1088,77 @@ was failing every time.)"
            ((not sent-mark) (cons 'FAIL (format "the waiting mark was not turned into a sent one; user lines: %S"
                                                 (efrit-testdrive--user-lines))))
            (t 'PASS))))))
+  (efrit-testdrive--step 3 "A request that fails in transit is retried and the turn finishes; past the budget it asks, and `keep waiting' resumes alone"
+    ;; tzz 2026-10-05, after a stalled request threw away fourteen fetched
+    ;; articles: "check periodically if the connection is back up, or
+    ;; ask the user if they want to abort the work".  No network here:
+    ;; the loop's api-call-fn is replaced by one that fails in transit.
+    (require 'efrit-reconnect)
+    (require 'efrit-agent-input)
+    (let* ((calls 0) (fail-first 2) (up t)
+           (efrit-reconnect-backoff-seconds '(0.1))
+           (efrit-reconnect-max-retries 5)
+           (efrit-reconnect-wait-poll-seconds 0.2)
+           (efrit-reconnect-probe-function (lambda (cb) (funcall cb up)))
+           (notes nil)
+           (listener (lambda (e) (when (eq (alist-get :kind e) 'reconnect) (push (alist-get :text e) notes))))
+           (fake (lambda (_session _messages callback)
+                   (cl-incf calls)
+                   (if (<= calls fail-first)
+                       (run-at-time 0 nil callback nil
+                                    "the model's next turn failed.\nNo response within 300s (the connection stalled; the transfer was dropped)")
+                     (run-at-time 0 nil callback
+                                  (let ((r (make-hash-table :test 'equal)) (c (make-hash-table :test 'equal)))
+                                    (puthash "type" "text" c) (puthash "text" "HOTEL" c)
+                                    (puthash "content" (vector c) r) (puthash "stop_reason" "end_turn" r)
+                                    (puthash "role" "assistant" r) r)
+                                  nil)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (catch 'drive-step
+          (cl-letf (((efrit-loop-adapter-api-call-fn efrit-repl-loop--adapter) fake))
+            ;; part 1: two stalls, then the answer; one turn, all of it kept
+            ;; (a harness that fakes the send itself never reaches the
+            ;; adapter: then there is nothing to drive here)
+            (let* ((ev (efrit-testdrive--turn "Reply with exactly the word HOTEL."))
+                   (first-ok (and ev (member (efrit-testdrive--stop-reason ev) '("end_turn" "session-complete"))
+                                  (= calls 3) (string-match-p "HOTEL" (efrit-testdrive--reply-text))
+                                  (cl-count-if (lambda (n) (string-match-p "retry" n)) notes))))
+              (when (and ev (= calls 0))
+                (throw 'drive-step (cons 'SKIP "the send is faked below the loop here; the ERT suite covers this path")))
+              ;; part 2: the budget runs out, the question appears, and
+              ;; the keep-waiting answer resumes the turn when the probe
+              ;; says the endpoint is back
+              (setq calls 0 fail-first 100 notes nil up nil)
+              (let ((efrit-reconnect-max-retries 1)
+                    (efrit-reconnect-backoff-seconds '(0.05)))
+                (efrit-testdrive--submit "Reply with exactly the word INDIA.")
+                (let* ((asked (efrit-testdrive--wait-for
+                               (lambda () (cl-find-if (lambda (e) (eq (alist-get :kind e) 'reconnect))
+                                                      (efrit-testdrive--events-of 'question)))
+                               20 "the connection question"))
+                       (buf (efrit-testdrive--agent-buffer))
+                       (status-while-asked (efrit-repl-session-status (efrit-testdrive--session))))
+                  (when asked
+                    ;; the user answers through the agent buffer, as the menu would
+                    (with-current-buffer buf
+                      (efrit-agent--repl-send "Keep waiting and resume when it is back"))
+                    (efrit-testdrive--wait-for (lambda () (cl-some (lambda (n) (string-match-p "still no answer" n)) notes)) 5)
+                    (setq fail-first 0 up t)
+                    (efrit-testdrive--wait-for #'efrit-testdrive--turn-ended-p 20 "the resumed turn"))
+                  (let ((ev2 (efrit-testdrive--turn-ended-p)))
+                    (efrit-testdrive--check
+                     (and first-ok asked (eq status-while-asked 'waiting)
+                          ev2 (member (alist-get :stop-reason ev2) '("end_turn" "session-complete"))
+                          (string-match-p "INDIA" (efrit-testdrive--reply-text)))
+                     (format "part 1: %s (api calls %s); part 2: asked %s, status while asked %s, resumed and ended %S, reply has INDIA %s; notes %S"
+                             (and first-ok t) calls (and asked t) status-while-asked
+                             (and ev2 (alist-get :stop-reason ev2))
+                             (and (string-match-p "INDIA" (efrit-testdrive--reply-text)) t)
+                             (mapcar (lambda (n) (truncate-string-to-width n 60 nil nil "…")) (reverse notes))))))))))
+        (efrit-unsubscribe 'note listener)
+        (efrit-reconnect-reset (efrit-repl-session-id (efrit-testdrive--session)))
+        (with-current-buffer (efrit-testdrive--agent-buffer) (ignore-errors (efrit-agent-cancel))))))
   (efrit-testdrive--step 3 "A steer reaches the running turn with its next tool results"
     (if (not (efrit-testdrive--start-slow-turn))
         (cons 'FAIL (efrit-testdrive--slow-turn-failure))

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -386,6 +386,8 @@ the prompt inlined, as `efrit-api-request-sync' does."
          (funcall callback response)))
      error-callback)))
 
+(defvar efrit-prompt--owner)
+
 (defcustom efrit-api-async-timeout 300
   "Seconds an asynchronous request may take before it is abandoned.
 `url-retrieve' has no timeout of its own: a stalled connection (a
@@ -476,7 +478,20 @@ disables the limit."
                                                    (format "No response within %ds (the connection stalled; the transfer was dropped)"
                                                            efrit-api-async-timeout)
                                                    describe-args)))
-                                   (efrit-log 'warn "api ← timed out after %.0fs: %s" (- (float-time) started) msg)
+                                   (let ((late (- (- (float-time) started) efrit-api-async-timeout)))
+                                     (efrit-log 'warn "api ← timed out after %.0fs: %s" (- (float-time) started) msg)
+                                     ;; 2026-10-04 20:02: the 300 s watchdog fired at 904 s.
+                                     ;; Timers run only when the command loop or a
+                                     ;; `sit-for' reaches them; a long sentinel, a
+                                     ;; modal prompt under `inhibit-quit', or a GC
+                                     ;; pause holds them back.  Say how late, and what
+                                     ;; was on the stack when the timer finally ran.
+                                     (when (> late 30)
+                                       (efrit-log 'warn "api: the %ds watchdog ran %.0fs late (last command %s, %s)"
+                                                  efrit-api-async-timeout late last-command
+                                                  (if (bound-and-true-p efrit-prompt--owner)
+                                                      (format "a prompt is open for %s" efrit-prompt--owner)
+                                                    "no prompt open"))))
                                    (when error-callback (funcall error-callback msg))))))))
         transfer)
     (error

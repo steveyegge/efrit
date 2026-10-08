@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -346,12 +346,17 @@ An invalid list in the file counts as unset."
 
 (defun efrit-sandbox-set-project-default-grants (grants &optional root)
   "Write GRANTS (a list of capabilities, possibly empty) as ROOT's default grants.
-GRANTS `unset' removes the override."
-  (efrit-settings-put (or root (efrit-sandbox-project-root)) efrit-sandbox-settings-section
-                      (unless (eq grants 'unset)
-                        (let ((h (make-hash-table :test 'equal)))
-                          (puthash "default-grants" (mapcar #'symbol-name grants) h)
-                          h))))
+GRANTS `unset' removes the override.  So does a value equal to
+`efrit-sandbox-default-project-grants': a settings.json that restates
+the default is noise in the user's repository (tzz, 2026-10-07)."
+  (let ((same-as-default
+         (and (listp grants)
+              (null (cl-set-exclusive-or grants efrit-sandbox-default-project-grants)))))
+    (efrit-settings-put (or root (efrit-sandbox-project-root)) efrit-sandbox-settings-section
+                        (unless (or (eq grants 'unset) same-as-default)
+                          (let ((h (make-hash-table :test 'equal)))
+                            (puthash "default-grants" (mapcar #'symbol-name grants) h)
+                            h)))))
 
 ;;; Errors
 
@@ -544,7 +549,9 @@ A grant made \"for this project\" is keyed on the repository the file
 belongs to, so it holds from any agent buffer (tzz, 2026-10-01: one
 turn asked six times with the root at ~/).  Repos only add their own
 grants when TARGET lies inside them."
-  (let ((repo (and (memq cap '(read write buffer)) (efrit-sandbox-repo-of target))))
+  (let ((repo (or (and (memq cap '(read write buffer)) (efrit-sandbox-repo-of target))
+                  ;; shell / net / elisp: the checkout the asking root sits in
+                  (efrit-sandbox-repo-of (file-name-as-directory root)))))
     (append (efrit-sandbox-grants root)
             (and repo (not (equal repo root))
                  (progn (efrit-sandbox-store-ensure-loaded repo)
@@ -748,10 +755,15 @@ SCOPE is `once', `session' or `project'.  Project grants are also
 persisted via `efrit-sandbox-store-save'."
   (let* ((root (or root (efrit-sandbox-project-root)))
          ;; a grant on a path inside some repository is that repo's,
-         ;; whatever buffer asked (see `efrit-sandbox-grants-for')
+         ;; whatever buffer asked (see `efrit-sandbox-grants-for');
+         ;; and a saved shell/net/elisp grant made from a subdirectory
+         ;; of a checkout belongs to the checkout, not the subdirectory
+         ;; (2026-10-07: files/.efrit/sandbox.json next to .efrit/)
          (root (or (and (memq scope '(session project))
                         (memq cap '(read write buffer))
                         (efrit-sandbox-repo-of target))
+                   (and (eq scope 'project)
+                        (efrit-sandbox-repo-of (file-name-as-directory root)))
                    root))
          (grant (list :cap cap :target target :scope scope)))
     (when (eq scope 'project) (efrit-sandbox-store-ensure-loaded root))

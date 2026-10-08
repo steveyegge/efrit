@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -32,6 +32,8 @@
 ;;
 ;;   turn-start        :input
 ;;   sandbox-reviewer-grant :cap :target :confidence   (the reviewer vouched; no prompt)
+;;   reconnect-failure :attempt :error     (a request failed in transit; a retry is scheduled)
+;;   reconnect-retry   :attempt            (the endpoint answers; the same request goes again)
 ;;   api-request       :iteration
 ;;   api-response      :usage (hash: input_tokens output_tokens
 ;;                             cache_read_input_tokens

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -61,6 +61,7 @@ persists and accumulates conversation context.")
 (declare-function transient--emergency-exit "transient")
 (declare-function transient-active-prefix "transient")
 (declare-function efrit-agent--turn-starts "efrit-agent")
+(declare-function efrit-repl-loop-resume-after-reconnect-answer "efrit-repl-loop")
 
 (defvar-local efrit-agent--question-menu-timer nil
   "The timer that will open this buffer's question menu, or nil.
@@ -448,7 +449,7 @@ M-RET does the other one.  S-RET and C-j insert a newline."
   (and (efrit-agent--in-input-region-p) cmd))
 
 (define-obsolete-function-alias 'efrit-agent-input-send-or-newline
-  #'efrit-agent-input-send "0.9.2"
+  #'efrit-agent-input-send "0.10.3"
   "RET is a menu-item that resolves to `efrit-agent-input-send' in the
 input and to the major mode's binding elsewhere.")
 
@@ -731,10 +732,17 @@ API-INPUT, when given, is what the model receives in place of INPUT
          (setq efrit-agent--pending-question nil)
          (efrit-agent--close-question-menu)
          (efrit-agent--reset-input-prompt)
-         (efrit-repl-continue session input
-                              #'efrit-agent--on-turn-complete api-input)
-         (message "Efrit: response sent")
-         t))
+         (if (eq (plist-get meta :kind) 'reconnect)
+             ;; the connectivity question: the paused turn resumes
+             ;; (or ends); the answer is not a message to the model
+             (let ((outcome (efrit-repl-loop-resume-after-reconnect-answer session input)))
+               (efrit-agent--add-user-message input)
+               (message "Efrit: %s" (if (eq outcome 'aborted) "turn aborted" "resuming the turn"))
+               t)
+           (efrit-repl-continue session input
+                                #'efrit-agent--on-turn-complete api-input)
+           (message "Efrit: response sent")
+           t)))
 
       ;; Unknown state
       (_

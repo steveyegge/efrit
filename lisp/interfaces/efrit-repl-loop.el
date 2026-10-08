@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -241,7 +241,37 @@ Returns the session ID."
     (efrit-log 'info "REPL session %s: steering text pending (%d chars)"
                (efrit-repl-session-id session) (length text))))
 
+(defvar efrit-loop--mark-waiting-function)
+(declare-function efrit-reconnect-answer "efrit-reconnect")
 (efrit-subscribe 'steer #'efrit-repl-loop--on-steer)
+
+(defun efrit-repl-loop--mark-waiting (session)
+  "SESSION waits on the connectivity question; its loop entry stays so
+the retry re-enters the same turn (efrit-reconnect, 0.10.3)."
+  (efrit-repl-session-set-status session 'waiting)
+  (efrit-publish 'thinking-stop `((:session-id . ,(efrit-repl-session-id session)))))
+
+(setq efrit-loop--mark-waiting-function #'efrit-repl-loop--mark-waiting)
+
+(defun efrit-repl-loop-resume-after-reconnect-answer (session answer)
+  "Act on ANSWER to the connectivity question; non-nil when the turn resumes here.
+`wait' and `retry' continue the paused turn (status back to working);
+`abort' ends it as interrupted and returns nil so the caller treats
+the input as a fresh turn only if it was not one of the options."
+  (require 'efrit-reconnect)
+  (let ((outcome (efrit-reconnect-answer (efrit-repl-session-id session) answer)))
+    (pcase outcome
+      ((or 'wait 'retry)
+       (efrit-repl-session-set-status session 'working)
+       (efrit-publish 'status `((:session-id . ,(efrit-repl-session-id session)) (:status . working)))
+       (efrit-publish 'thinking-start `((:session-id . ,(efrit-repl-session-id session))
+                                        (:label . (if (eq outcome 'wait) "waiting for the connection..." "retrying..."))))
+       t)
+      (_
+       (efrit-publish 'turn-complete `((:session-id . ,(efrit-repl-session-id session))
+                                       (:stop-reason . "interrupted")))
+       (efrit-repl-loop--end-turn session "interrupted")
+       'aborted))))
 
 (defun efrit-repl-loop--deliver-steering (session)
   "Fold SESSION's pending steering into the message the model reads next.

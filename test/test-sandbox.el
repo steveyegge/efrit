@@ -720,6 +720,31 @@ nothing on another host."
     ;; the advice is inert outside a sandboxed eval
     (should (equal "ok\n" (shell-command-to-string "echo ok")))))
 
+(ert-deftest test-sb-eval-native-compiler-is-not-the-model ()
+  "A batch Emacs started from under `comp-trampoline-compile' (Emacs compiling
+a trampoline for an advised primitive) runs without a shell grant; the same
+process started by the form itself still asks (2026-10-05: a buffer_create
+turn asked tzz whether eval_sexp may run Emacs)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let ((emacs (expand-file-name invocation-name invocation-directory)))
+      ;; the model's own call: denied
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      ;; the same call from a comp frame: housekeeping, allowed
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr)
+                   (let ((p (make-process :name "x" :command (list emacs "--batch" "--eval" "(kill-emacs 0)"))))
+                     (while (process-live-p p) (accept-process-output p 0.1))
+                     (process-exit-status p)))))
+        (should (= 0 (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string)))))
+      ;; a comp frame does not launder a different program
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr) (call-process "true"))))
+        (should-error (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string))
+                      :type 'efrit-sandbox-denied)))))
+
 (ert-deftest test-sb-eval-network-needs-net ()
   (test-sb--in-project
     (efrit-sandbox-grant 'elisp t 'session)
@@ -1185,3 +1210,61 @@ matters: the 2026-10-03 line that asked for seven commands is expected."
            "cd ~/x && ls a*.el 2>/dev/null; echo ---; rg -n -o -e 'a|b' a*.el | sort -t: -k3 | awk -F: '{print $3}' | sort | uniq -c | sort -rn"))
   (should-not (efrit-sandbox--expected-shell-line-p "ls > out.txt"))
   (should-not (efrit-sandbox--expected-shell-line-p "cat $(ls)")))
+
+(ert-deftest test-sb-subdirectory-of-a-checkout-saves-and-reads-the-checkout-grants ()
+  "An agent buffer whose root is a subdirectory of a repo saves its project
+grants in the repo's .efrit/, and finds the repo's grants (2026-10-07:
+autodist/.efrit and autodist/files/.efrit side by side)."
+  (test-sb--in-project
+    (let* ((repo (let ((d (file-name-as-directory (make-temp-file "efrit-sb-repo-" t))))
+                   (make-directory (expand-file-name ".git" d))
+                   (make-directory (expand-file-name "files" d))
+                   (efrit-sandbox-forget-git-toplevels)
+                   (file-name-as-directory (efrit-sandbox-canonical d))))
+           (sub (file-name-as-directory (expand-file-name "files" repo))))
+      (unwind-protect
+          (progn
+            ;; a saved shell grant made from the subdirectory lands in the repo's file
+            (let ((efrit-project-root sub))
+              (efrit-sandbox-grant 'shell '(shell "rg" "sort") 'project sub)
+              (should (file-exists-p (expand-file-name ".efrit/sandbox.json" repo)))
+              (should-not (file-exists-p (expand-file-name ".efrit/sandbox.json" sub)))
+              ;; and is found from the subdirectory root
+              (should (efrit-sandbox-allowed-p 'shell "rg foo | sort" sub)))
+            ;; the repo's own read grant covers a file asked from the subdirectory
+            (efrit-sandbox-grant 'read repo 'project repo)
+            (should (efrit-sandbox-allowed-p 'read (expand-file-name "files/x.conf" repo) sub)))
+        (efrit-sandbox-reset-session repo)
+        (efrit-sandbox-reset-session sub)
+        (ignore-errors (delete-directory repo t))))))
+
+(ert-deftest test-sb-default-grants-equal-to-the-option-write-nothing ()
+  "Setting a project's default grants to the global value removes the
+section (and the file when nothing else is in it); a real deviation is
+written; unset removes it again."
+  (test-sb--in-project
+    (let* ((efrit-data-directory (expand-file-name "data" root))
+           (efrit-settings--cache (make-hash-table :test 'equal))
+           (efrit-sandbox-default-project-grants '(read))
+           (file (efrit-settings-file root)))
+      (efrit-sandbox-set-project-default-grants '(read) root)
+      (should-not (file-exists-p file))
+      (efrit-sandbox-set-project-default-grants '(read write) root)
+      (should (file-exists-p file))
+      (should (equal '(read write) (efrit-sandbox-effective-default-grants root)))
+      (efrit-sandbox-set-project-default-grants '(read) root)
+      (should-not (file-exists-p file))
+      (should (equal '(read) (efrit-sandbox-effective-default-grants root))))))
+
+(ert-deftest test-sb-store-does-not-create-a-grantless-file ()
+  "Saving a project with no project grants creates no sandbox.json; once a
+file exists it is rewritten, even to no grants, and never removed."
+  (test-sb--in-project
+    (let ((file (efrit-sandbox-store-file root)))
+      (efrit-sandbox-store-save root)
+      (should-not (file-exists-p file))
+      (efrit-sandbox-grant 'shell '(shell "ls") 'project root)
+      (should (file-exists-p file))
+      (efrit-sandbox-revoke 'shell '(shell "ls") root)
+      (should (file-exists-p file))
+      (should (string-match-p "\"grants\":\\[\\]" (with-temp-buffer (insert-file-contents file) (buffer-string)))))))

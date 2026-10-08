@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.9.2
+;; Version: 0.10.3
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -185,6 +185,35 @@ Reading those is never the user's data; a `(require ...)' or
                         (string-prefix-p (file-name-as-directory (expand-file-name dir)) path)))
                  load-path))))
 
+(defconst efrit-sandbox-eval--native-comp-frames
+  '(comp-trampoline-compile comp--trampoline-compile comp-run-async-workers
+    comp--run-async-workers native-compile-async native--compile-async
+    comp--native-compile native-compile comp-subr-trampoline-install
+    comp--subr-trampoline-install comp-trampoline-search)
+  "Functions on the stack when Emacs's native compiler is doing its own work.")
+
+(defun efrit-sandbox-eval--native-comp-p (&optional command)
+  "Non-nil when the current operation is Emacs's native compiler, not the model.
+Calling any not-yet-compiled primitive-advised function makes Emacs
+write a trampoline under `temporary-file-directory' and start a child
+Emacs in batch mode to compile it (2026-10-05: a buffer_create turn
+asked tzz whether eval_sexp may \"run Emacs\").  That is Emacs
+housekeeping: the stack holds a comp frame, and COMMAND, when given,
+is this very Emacs in batch mode."
+  (let ((comp-frame nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (memq func efrit-sandbox-eval--native-comp-frames)
+                      (setq comp-frame func))))
+    (and comp-frame
+         (or (null command)
+             (and (listp command) (stringp (car command))
+                  (member "--batch" command)
+                  (or (string-suffix-p "/Emacs" (car command))
+                      (string-match-p "/emacs\\(?:-[0-9.]+\\)?\\'" (car command))
+                      (equal (file-truename (car command))
+                             (file-truename (expand-file-name invocation-name invocation-directory))))))
+         comp-frame)))
+
 (defun efrit-sandbox-eval--op-cap (op)
   "Capability OP needs, or nil for pure name manipulation
 \(expand-file-name, file-name-directory, abbreviate-file-name, ...)."
@@ -224,6 +253,8 @@ file comes back through this handler and is checked then."
           ;; the command line is not recoverable from the handler
           ;; arguments in general; ask for the blanket grant
           (efrit-sandbox-check 'shell t "eval_sexp" (format "%s" op)))
+         ;; the native compiler writing its trampoline / eln: housekeeping
+         ((efrit-sandbox-eval--native-comp-p) nil)
          (t
           (dolist (p (efrit-sandbox-eval--op-paths op args))
             (unless (and (eq cap 'read) (efrit-sandbox-eval--exempt-p p))
@@ -277,10 +308,12 @@ file comes back through this handler and is checked then."
         ;; The detail names the primitive, so the prompt reads
         ;; "eval_sexp: call-process emacs ..." and not as if efrit
         ;; itself wanted to run something.
-        (efrit-sandbox-check 'shell line "eval_sexp"
-                             (format "subprocess via %s: %s"
-                                     (or (and (symbolp orig) orig) "make-process")
-                                     (if (stringp line) line "process"))))))
+        (if-let* ((frame (efrit-sandbox-eval--native-comp-p command)))
+            (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed" frame)
+          (efrit-sandbox-check 'shell line "eval_sexp"
+                               (format "subprocess via %s: %s"
+                                       (or (and (symbolp orig) orig) "make-process")
+                                       (if (stringp line) line "process")))))))
   ;; A nested advised call (call-process under shell-command-to-string)
   ;; runs with the guard suppressed: the outer check already passed.
   (let ((efrit-sandbox-eval--in-guard t))
