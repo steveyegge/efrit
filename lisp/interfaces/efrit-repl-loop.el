@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -247,7 +247,7 @@ Returns the session ID."
 
 (defun efrit-repl-loop--mark-waiting (session)
   "SESSION waits on the connectivity question; its loop entry stays so
-the retry re-enters the same turn (efrit-reconnect, 0.10.3)."
+the retry re-enters the same turn (efrit-reconnect, 0.11.1)."
   (efrit-repl-session-set-status session 'waiting)
   (efrit-publish 'thinking-stop `((:session-id . ,(efrit-repl-session-id session)))))
 

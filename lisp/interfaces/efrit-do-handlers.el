@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -97,6 +97,7 @@
 (declare-function efrit-tool-xref-apropos "efrit-tool-navigate")
 (declare-function efrit-tool-imenu-symbols "efrit-tool-navigate")
 (declare-function efrit-tool-treesit-info "efrit-tool-navigate")
+(declare-function efrit-tool-surrounding-context "efrit-tool-navigate")
 (declare-function efrit-tool-show-location "efrit-tool-navigate")
 (declare-function efrit-tool-get-last-error "efrit-tool-last-error")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
@@ -928,6 +929,12 @@ call it, so answer clearly instead of silently obeying."
   :fields ("file" "line" "column" "ancestors" "children" "whole_tree")
   :fn efrit-tool-treesit-info
   :label "Syntax")
+
+(efrit-define-optional-input-handler efrit-do--handle-surrounding-context "surrounding_context"
+  :require efrit-tool-navigate
+  :fields ("file" "line" "depth")
+  :fn efrit-tool-surrounding-context
+  :label "Context")
 
 (efrit-define-simple-tool-handler efrit-do--handle-show-location "show_location"
   :require efrit-tool-navigate

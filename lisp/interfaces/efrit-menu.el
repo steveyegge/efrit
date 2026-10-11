@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;; Keywords: tools, convenience, ai
 
@@ -39,6 +39,7 @@
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-review-package "efrit-package-review")
 (declare-function efrit-review-all-packages "efrit-package-review-ui")
+(declare-function efrit-code-review "efrit-code-review-ui")
 (declare-function efrit-testdrive "efrit-testdrive")
 (declare-function efrit-testdrive-tour "efrit-testdrive")
 (declare-function efrit-log-toggle-debug "efrit-log")
@@ -211,6 +212,7 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
        ("j" "Document source check: Jira" efrit-documents-jira-check)
        ("P" "Review an installed package" efrit-review-package)
        ("V" "Review all installed packages" efrit-review-all-packages)
+       ("O" "Code review of the staged changes (C-u: unpushed, branch)" efrit-code-review)
        ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
        ("S" "Save these settings (customize-save-variable)" efrit-menu-save-settings)
        ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -222,7 +222,7 @@ Both unset removes the section."
   "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project.
 With USE, the (ID NAME INPUT) triple, a call of any class whose sandbox
 request would stop to ask the user is reviewable too: the reviewer is
-the one who can vouch for it (0.10.3; a read is not reviewed otherwise)."
+the one who can vouch for it (0.11.1; a read is not reviewed otherwise)."
   (or (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes))
       (and use efrit-review-auto-grant-threshold
            (ignore-errors (efrit-review-confidence-would-ask-p use)))))

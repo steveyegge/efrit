@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -380,6 +380,13 @@ IMPORTANT: Session PAUSES until user responds.")
                                       ("children" . (("type" . "boolean") ("description" . "List the named children (default true)")))
                                       ("whole_tree" . (("type" . "boolean") ("description" . "The whole tree instead")))))
                       ("required" . []))))
+   (("name" . "surrounding_context")
+    ("description" . "The definition(s) enclosing a line of a file, whole, from tree-sitter: the function at depth 1, its class or module too at depth 2. Cheaper than read_file for what is around a place. Needs a grammar for the file's language. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based")))
+                                      ("depth" . (("type" . "integer") ("description" . "How many enclosing definitions (default 1, at most 3)")))))
+                      ("required" . ["file" "line"]))))
    (("name" . "show_location")
     ("description" . "Show the user a place in a file: open it in a window (focus stays here) and highlight the range for a moment. Prefer start_text/end_text anchors (they survive line drift); line/end_line as a fallback. Use it to point at what you are talking about.")
     ("input_schema" . (("type" . "object")

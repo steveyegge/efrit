@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -279,6 +279,7 @@ Returns a string (possibly empty) ready to splice into the prompt."
    "   - xref_references symbol=\"name\" file=\"x.el\" for every use, through the user's\n"
    "     eglot/lsp/etags backend; xref_apropos pattern=\"words\" to find definitions\n"
    "   - treesit_info file=\"x.py\" line=N for the syntax node at a place (ts modes)\n"
+   "   - surrounding_context file=\"x.py\" line=N for the whole enclosing function (depth=2: and its class)\n"
    "   - search_content pattern=\"defun\" glob=\"*.el\" for text search\n"
    "   - read_file to examine specific files; show_location to point the user at a place\n"
    "4. Make changes informed by what you found\n"

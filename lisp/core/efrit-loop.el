@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -555,7 +555,7 @@ the turn is handed to the user instead."
          (pcase (car verdict)
            ('approve
             ;; the reviewer may have vouched for requests the sandbox
-            ;; would otherwise ask the user about (0.10.3)
+            ;; would otherwise ask the user about (0.11.1)
             (when-let* ((vouch (and (boundp 'efrit-review--last-vouch) efrit-review--last-vouch)))
               (setq efrit-review--last-vouch nil)
               (when (require 'efrit-review-confidence nil t)

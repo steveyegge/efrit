@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -11,7 +11,7 @@
 
 ;; Two gates stand before a tool call: the reviewer (is this sensible
 ;; for the task?) and the sandbox (is this path, host or command
-;; granted?).  Until 0.10.3 the second gate always asked the user when
+;; granted?).  Until 0.11.1 the second gate always asked the user when
 ;; nothing covered the request, even after the reviewer had approved
 ;; and even when the user had granted the same thing in session after
 ;; session.  tzz, 2026-10-03: "Give the reviewer a certainty threshold
@@ -110,7 +110,7 @@ its target or the history is strong AND the line is named."
     ("project_files" read "path") ("edit_file" write "path") ("create_file" write "path")
     ("format_file" write "path") ("undo_edit" write "path") ("show_location" read "file")
     ("imenu_symbols" read "file") ("xref_references" read "file") ("xref_apropos" read "file")
-    ("treesit_info" read "file") ("get_diagnostics" read "path") ("vcs_diff" read "path")
+    ("treesit_info" read "file") ("surrounding_context" read "file") ("get_diagnostics" read "path") ("vcs_diff" read "path")
     ("vcs_log" read "path") ("vcs_blame" read "path") ("vcs_status" read "path"))
   "(TOOL CAP INPUT-KEY) for tools whose sandbox request is a path.")
 

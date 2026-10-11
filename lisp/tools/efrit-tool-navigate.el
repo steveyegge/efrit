@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -20,6 +20,7 @@
 ;;   xref_apropos     definitions matching a pattern
 ;;   imenu_symbols    the structure of a file, flattened
 ;;   treesit_info     the syntax node at a position, ancestors, children
+;;   surrounding_context  the definitions enclosing a line, whole
 ;;   show_location    open a file for the user at a text anchor
 ;;
 ;; Lines are 1-based, columns 0-based, as everywhere in efrit's tools.
@@ -254,6 +255,87 @@ whole tree to depth 20 instead."
                  (node . ,(efrit-tool-navigate--node-alist node t))
                  (ancestors . ,(vconcat ancestors))
                  (children . ,(vconcat children)))))))))))
+
+;;;; surrounding_context
+
+(defconst efrit-tool-navigate--definition-node-regexp
+  (concat "function\\|method\\|defun\\|procedure\\|lambda\\|arrow_function\\|func_literal"
+          "\\|class\\|struct\\|interface\\|impl_item\\|trait\\|module\\|namespace\\|enum"
+          "\\|special_form\\|list_lit")
+  "Tree-sitter node types that are a definition worth returning whole.")
+
+(declare-function treesit-parser-create "treesit")
+(declare-function treesit-language-available-p "treesit")
+(declare-function treesit-language-at "treesit")
+
+(defun efrit-tool-navigate--language-for (file)
+  "The tree-sitter language a buffer visiting FILE would use, or nil.
+From `auto-mode-alist': the mode's name minus `-ts-mode'."
+  (when-let* ((mode (assoc-default file auto-mode-alist #'string-match-p)))
+    (let ((name (symbol-name mode)))
+      (cond
+       ((string-match "\\`\\(.+\\)-ts-mode\\'" name) (intern (match-string 1 name)))
+       ;; the plain mode: a ts mode of the same stem may be installed
+       ((string-match "\\`\\(.+\\)-mode\\'" name)
+        (let ((stem (match-string 1 name)))
+          (pcase stem
+            ("emacs-lisp" 'elisp)
+            ("lisp-interaction" 'elisp)
+            ("sh" 'bash)
+            ("js" 'javascript)
+            (_ (intern stem)))))))))
+
+(defun efrit-tool-navigate--enclosing-definitions (node depth)
+  "Up to DEPTH definition nodes enclosing NODE (itself included), innermost first."
+  (let ((out nil) (n node))
+    (while (and n (< (length out) depth))
+      (when (and (treesit-node-parent n)
+                 (string-match-p efrit-tool-navigate--definition-node-regexp (treesit-node-type n)))
+        (push n out))
+      (setq n (treesit-node-parent n)))
+    (nreverse out)))
+
+(defun efrit-tool-surrounding-context (args)
+  "The definitions enclosing a line of a file, whole, from tree-sitter.
+ARGS: file (required: names the language and, without `text', the
+content), text (optional: the file's content at another revision, so
+a reviewer sees the staged copy rather than the work tree), line
+\(1-based, required), depth (default 1, at most 3: function, then its
+class or module).  Result: definitions, a list of (start_line end_line
+type text), innermost first; empty when nothing encloses the line."
+  (efrit-tool-execute surrounding_context args
+    (unless (and (fboundp 'treesit-available-p) (treesit-available-p))
+      (signal 'user-error (list "this Emacs has no tree-sitter")))
+    (let* ((file (alist-get 'file args))
+           (text (alist-get 'text args))
+           (line (alist-get 'line args))
+           (depth (min 3 (max 1 (or (alist-get 'depth args) 1))))
+           (lang (and (stringp file) (efrit-tool-navigate--language-for file))))
+      (unless (and (stringp file) (not (string-empty-p file)))
+        (signal 'user-error (list "file is required")))
+      (unless (integerp line) (signal 'user-error (list "line is required")))
+      (unless (and lang (treesit-language-available-p lang))
+        (signal 'user-error (list (format "no tree-sitter grammar for %s (%s)" (file-name-nondirectory file)
+                                          (or lang "unknown language")))))
+      (with-temp-buffer
+        (if (stringp text)
+            (insert text)
+          (insert-file-contents (efrit-resolve-path-simple file 'read "surrounding_context")))
+        (treesit-parser-create lang)
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (back-to-indentation)
+        (let* ((node (treesit-node-at (point)))
+               (defs (and node (efrit-tool-navigate--enclosing-definitions node depth))))
+          (efrit-tool-success
+           `((file . ,file)
+             (line . ,line)
+             (definitions . ,(vconcat (mapcar (lambda (d)
+                                                `((start_line . ,(line-number-at-pos (treesit-node-start d)))
+                                                  (end_line . ,(line-number-at-pos (treesit-node-end d)))
+                                                  (type . ,(treesit-node-type d))
+                                                  (text . ,(treesit-node-text d t))))
+                                              defs))))))))))
 
 ;;;; show_location
 

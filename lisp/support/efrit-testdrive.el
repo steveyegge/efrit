@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -193,6 +193,7 @@
 (declare-function efrit-repl-session-api-messages "efrit-repl-session")
 (declare-function vc-git-register "vc-git")
 (declare-function vc-git-command "vc-git")
+(defvar efrit-code-review-ui--result)
 (defvar efrit-rewrite--start-marker)
 (defvar efrit-rewrite--end-marker)
 (defvar efrit-presets)
@@ -2475,7 +2476,62 @@ was failing every time.)"
               (kill-buffer buf)
               (when (> (- (float-time) t-kill) 2)
                 (efrit-testdrive--out (format "    note: killing the magit buffer took %.0fs" (- (float-time) t-kill)))))
-            (with-temp-file file (insert "The secret word is PELICAN.\n"))))))))
+            (with-temp-file file (insert "The secret word is PELICAN.\n")))))))
+  (efrit-testdrive--step 12 "Code review: the staged bug comes back as a finding with a patch efrit made"
+    ;; A real review request on the drive's own repository: greet.el
+    ;; gets an obvious bug staged, the reviewer must find it.  The
+    ;; patch is efrit's (made from old_lines/new_lines), so a
+    ;; suggestion with :patch proves the gates; applying it proves the
+    ;; apply path.  Everything is restored afterwards.
+    (if (not (efrit-vcs-git-p efrit-testdrive--root))
+        (cons 'SKIP "the project is not a Git tree")
+      (require 'efrit-code-review)
+      (require 'vc-git)
+      (let* ((file (efrit-testdrive--file "greet.el"))
+             (original (efrit-testdrive--file-text "greet.el"))
+             (buggy (string-replace "(format \"Hello, %s!\" name)" "(format \"Hello, %s!\")" original))
+             (efrit-data-directory (file-name-as-directory (make-temp-file "efrit-drive-cr-" t)))
+             (default-directory efrit-testdrive--root))
+        (when-let* ((b (get-file-buffer file)))
+          (with-current-buffer b (set-buffer-modified-p nil))
+          (kill-buffer b))
+        (unwind-protect
+            (progn
+              (with-temp-file file (insert buggy))
+              (vc-git-command nil 0 nil "add" "--" "greet.el")
+              (let* ((scope (efrit-code-review-scope 'staged efrit-testdrive--root))
+                     (t0 (float-time))
+                     (result (efrit-code-review-run-sync scope))
+                     (secs (- (float-time) t0))
+                     (findings (plist-get result :findings))
+                     (suggestion (seq-find (lambda (f) (and (eq (plist-get f :type) 'suggestion) (plist-get f :patch)))
+                                           findings))
+                     (any (seq-find (lambda (f) (memq (plist-get f :type) '(suggestion comment))) findings)))
+                (cond
+                 ((not (eq (plist-get result :status) 'ok))
+                  (cons 'FAIL (format "review failed after %.0fs: %s" secs (plist-get result :message))))
+                 ((null any)
+                  (cons 'FAIL (format "%d finding(s) after %d rounds, none about the missing argument: %S"
+                                      (length findings) (plist-get result :rounds)
+                                      (mapcar (lambda (f) (list (plist-get f :type) (plist-get f :file) (plist-get f :title))) findings))))
+                 ((null suggestion)
+                  ;; a comment is a legitimate answer; note that no patch came
+                  (cons 'PASS (format "%d finding(s) in %d rounds, %.0fs; comment only: %S"
+                                      (length findings) (plist-get result :rounds) secs (plist-get any :title))))
+                 (t
+                  (efrit-code-review-finding-transition suggestion 'queued)
+                  (efrit-code-review-apply-queued scope findings)
+                  (let ((text (efrit-testdrive--file-text "greet.el")))
+                    (efrit-testdrive--check
+                     (and (eq (plist-get suggestion :state) 'applied)
+                          (string-match-p "(format \"Hello, %s!\" name)" text))
+                     (format "%d finding(s) in %d rounds, %.0fs; applied %S -> state %s%s"
+                             (length findings) (plist-get result :rounds) secs (plist-get suggestion :title)
+                             (plist-get suggestion :state)
+                             (if (plist-get suggestion :error) (format " (%s)" (plist-get suggestion :error)) ""))))))))
+          (ignore-errors (vc-git-command nil 0 nil "reset" "-q" "--" "greet.el"))
+          (with-temp-file file (insert original))
+          (ignore-errors (delete-directory efrit-data-directory t)))))))
 
 (defconst efrit-testdrive--sections
   '((0 "Setup" efrit-testdrive--section-0)
@@ -2490,7 +2546,7 @@ was failing every time.)"
     (9 "Several sessions: instances, parallel turns, per-session sandbox state" efrit-testdrive--section-9)
     (10 "Navigation and context: xref/imenu tools, ediff edits, context indicator, range mentions" efrit-testdrive--section-10)
     (11 "Briefs, pins, next steps, last error, diagnostics baseline" efrit-testdrive--section-11)
-    (12 "User commands: send-dwim, investigate-exception, :shell, refactor, grill-me, dashboard, magit hunks" efrit-testdrive--section-12))
+    (12 "User commands: send-dwim, investigate-exception, :shell, refactor, grill-me, dashboard, magit hunks, code review" efrit-testdrive--section-12))
   "The automatic drive's sections.")
 
 ;;;; The tour: what needs eyes
@@ -2839,6 +2895,48 @@ was failing every time.)"
   (efrit-testdrive--step 'tour "The menu heading is live and S saves the toggles"
     (efrit-testdrive--ask "Two menus.  (1) C-c ? in the agent buffer: is its heading line `*efrit-agent*: idle · <model> · review on · context …'?  q.  (2) C-c C-m: find the `s streaming' row in the transient menu itself; press s.  Does that row's own text change from `off' to `on' while the menu stays open (not the agent header)?  Press s again, then q.  (S would save all toggles with customize-save-variable; do not press it.)")))
 
+(defun efrit-testdrive--tour-code-review ()
+  (efrit-testdrive--out "\n## Code review")
+  (efrit-testdrive--step 'tour "The review buffer: badges, patch, m/A, RET"
+    ;; No model turn: a canned result in the drive's repository, so
+    ;; you can see the buffer and press the keys.
+    (require 'efrit-code-review-ui)
+    (if (not (efrit-vcs-git-p efrit-testdrive--root))
+        (cons 'SKIP "the project is not a Git tree")
+      (require 'vc-git)
+      (let* ((file (efrit-testdrive--file "notes.txt"))
+             (original (efrit-testdrive--file-text "notes.txt"))
+             (default-directory efrit-testdrive--root))
+        (when-let* ((b (get-file-buffer file)))
+          (with-current-buffer b (set-buffer-modified-p nil))
+          (kill-buffer b))
+        (unwind-protect
+            (progn
+              (with-temp-file file (insert "The secret word is PELICAN.\nThe secert word is twice.\n"))
+              (vc-git-command nil 0 nil "add" "--" "notes.txt")
+              (let* ((scope (efrit-code-review-scope 'staged efrit-testdrive--root))
+                     (findings (efrit-code-review-gate
+                                scope
+                                (list (efrit-code-review-finding 'suggestion "notes.txt" :title "Typo: secert"
+                                                                 :description "The second line misspells secret."
+                                                                 :old-lines "The secert word is twice." :new-lines "The secret word is twice.")
+                                      (efrit-code-review-finding 'comment "notes.txt" :lines "1" :title "Two secret words"
+                                                                 :description "Two lines claim the secret word; decide which one is it.")
+                                      (efrit-code-review-finding 'lgtm "README.md"))))
+                     (buf (efrit-code-review-ui--buffer)))
+                (with-current-buffer buf
+                  (setq efrit-code-review-ui--result
+                        (list :status 'ok :scope scope :findings findings :model "the tour" :at "now" :rounds 0))
+                  (efrit-code-review-ui--render))
+                (pop-to-buffer buf)
+                (redisplay)
+                (prog1
+                    (efrit-testdrive--ask
+                     "*efrit-code-review*: a SUGGESTION block with a coloured patch, a COMMENT, an LGTM.  Press m on the suggestion (it says queued, point moves on), p back, A: the message says applied 1 of 1 and the block is struck through.  RET on the comment opens notes.txt at line 1.  q closes.  Did it look right?")
+                  (when (buffer-live-p buf) (kill-buffer buf)))))
+          (ignore-errors (vc-git-command nil 0 nil "reset" "-q" "--" "notes.txt"))
+          (with-temp-file file (insert original)))))))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
@@ -2850,7 +2948,8 @@ was failing every time.)"
     ("Edit before allow, candidates, notifications" efrit-testdrive--tour-copilot)
     ("Inline rewrite preview" efrit-testdrive--tour-inline-diff)
     ("Several agent buffers" efrit-testdrive--tour-instances)
-    ("Navigation and context" efrit-testdrive--tour-navigation))
+    ("Navigation and context" efrit-testdrive--tour-navigation)
+    ("Code review" efrit-testdrive--tour-code-review))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

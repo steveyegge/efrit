@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
@@ -204,7 +204,7 @@ Shows version, installation status, and basic connectivity."
   (interactive)
   (require 'efrit-config)
   (require 'efrit-common)
-  (let* ((version "0.10.3")
+  (let* ((version "0.11.1")
          (api-key (condition-case nil
                       (efrit-common-get-api-key)
                     (error nil)))
@@ -270,6 +270,9 @@ Executes all ERT tests and displays results in a buffer."
 ;;;###autoload
 (autoload 'efrit-review-all-packages "efrit-package-review-ui"
   "Review every installed package with efrit; collect the verdicts in one buffer." t)
+;;;###autoload
+(autoload 'efrit-code-review "efrit-code-review-ui"
+  "Review the staged changes (prefix: unpushed, branch); findings as patches." t)
 ;;;###autoload
 (autoload 'efrit-testdrive "efrit-testdrive"
   "Walk through efrit's live test plan interactively." t)

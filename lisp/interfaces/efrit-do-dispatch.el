@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.10.3
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -138,6 +138,7 @@
     ("xref_apropos"       . (efrit-do--handle-xref-apropos . :tool-input))
     ("imenu_symbols"      . (efrit-do--handle-imenu-symbols . :tool-input))
     ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
+    ("surrounding_context" . (efrit-do--handle-surrounding-context . :tool-input))
     ("show_location"      . (efrit-do--handle-show-location . :tool-input))
     ("get_last_error"     . (efrit-do--handle-get-last-error . :tool-input))
     ("read_image"         . (efrit-do--handle-read-image . :tool-input))
