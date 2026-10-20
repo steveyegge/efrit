@@ -87,6 +87,32 @@
               (should-not (string-match-p "session_complete\\|SESSION-COMPLETE\\|Result:" text)))))
       (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
 
+(ert-deftest test-agent-session-complete-message-shows-after-narration-and-tools ()
+  "Prose, then a tool row, then session_complete: the prose was
+narration, so the final message is shown.  Prose directly before
+session_complete is the answer, so the message is not repeated."
+  (let ((efrit-agent-buffer-name "*efrit-agent-test-sc*"))
+    (unwind-protect
+        (progn
+          (efrit-agent-open)
+          (with-current-buffer efrit-agent-buffer-name
+            (efrit-agent-stream-content "Now apply it live.")
+            (efrit-agent-stream-end)
+            (let ((id (efrit-agent-show-tool-start "eval_sexp" nil)))
+              (efrit-agent-show-tool-result id "42" t 0.0))
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: Done, kill-ring-max is 30.]" t 0.0))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "^Done, kill-ring-max is 30\\.$" text)))
+            ;; the answer streamed right before the signal is not repeated
+            (efrit-agent-stream-content "The answer is 7.")
+            (efrit-agent-stream-end)
+            (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+              (efrit-agent-show-tool-result id "[SESSION-COMPLETE: The answer is 7.]" t 0.0))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (= 1 (with-temp-buffer (insert text) (count-matches "The answer is 7" (point-min) (point-max))))))))
+      (when (get-buffer efrit-agent-buffer-name) (kill-buffer efrit-agent-buffer-name)))))
+
 (ert-deftest test-agent-tool-row-is-one-line-with-readable-input ()
   (let ((efrit-agent-buffer-name "*efrit-agent-test3*") (efrit-agent-display-mode 'verbose))
     (unwind-protect

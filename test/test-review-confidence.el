@@ -192,6 +192,43 @@ reviewer claims more than the computed ceiling allows, the prompt is called."
         (efrit-review-confidence-remember-grant use 0.98 'project)
         (should (eq 'session (plist-get (car (efrit-sandbox--turn-get :reviewer-grants)) :scope)))))))
 
+(ert-deftest test-rc-shell-facts-know-granted-named-and-new-commands ()
+  "A tmux line, with tmux granted this session and the request about
+tmux.conf, carries granted-commands and task-commands and no new-commands;
+the reviewer's SANDBOX line names tmux, not \"outside the read-only set\".
+A line that adds python3 carries new-commands and scores lower."
+  (test-rc--isolated
+    (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t)))
+      (efrit-sandbox-begin-turn "review ~/.tmux.conf: are my tmux bindings sane?")
+      (efrit-sandbox-grant 'shell '(shell "tmux") 'session root)
+      ;; the grant covers the line with grep added: no SANDBOX line at all
+      (should-not (efrit-review-confidence-describe
+                   (test-rc--use "shell_exec" "command" "tmux -L t list-keys | grep bind")))
+      ;; a fresh session: tmux named in the request, nothing granted
+      (clrhash efrit-sandbox--session-grants)
+      (let* ((line "cd /tmp && tmux -L t list-keys | grep -c bind")
+             (facts (efrit-review-confidence-facts 'shell line)))
+        (should (assq 'task-commands facts))
+        (should-not (assq 'granted-commands facts))
+        (should-not (assq 'new-commands facts))
+        (should (string-match-p "tmux" (cdr (assq 'task-commands facts))))
+        (should (< 0.3 (efrit-review-confidence-score facts) 0.95))
+        (let ((lines (efrit-review-confidence-describe (test-rc--use "shell_exec" "command" line))))
+          (should (string-match-p "task-commands: tmux named in the user's request" (car lines)))))
+      ;; python3 is new: named by nobody, granted never
+      (let ((facts (efrit-review-confidence-facts 'shell "tmux ls; python3 x.py")))
+        (should (assq 'new-commands facts))
+        (should (string-match-p "python3" (cdr (assq 'new-commands facts))))
+        (should-not (assq 'task-commands facts))
+        (should (< (efrit-review-confidence-score facts)
+                   (efrit-review-confidence-score (efrit-review-confidence-facts 'shell "tmux ls")))))
+      ;; granted earlier, plus a strong history on the same pattern: over the line
+      (efrit-sandbox-grant 'shell '(shell "tmux") 'session root)
+      (dotimes (_ 3) (efrit-grant-history-record 'shell "tmux ls | grep x" 'session))
+      (let ((facts (efrit-review-confidence-facts 'shell "tmux -L t ls; python3 x.py")))
+        (should (assq 'granted-commands facts))
+        (should (assq 'new-commands facts))))))
+
 (ert-deftest test-rc-parse-verdict-keeps-the-vouch ()
   "Confidence and grant ride along with the approve; a reject carries none."
   (should (equal '(approve) (efrit-review-parse-verdict "{\"verdict\": \"approve\", \"confidence\": 0.97, \"grant\": \"session\"}")))

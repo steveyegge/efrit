@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -124,14 +124,32 @@ NEVER call synchronous user-input functions (read-string, y-or-n-p, yes-or-no-p,
   ("properties" . (("expr" . (("type" . "string")
   ("description" . "The Elisp expression to evaluate")))))
   ("required" . ["expr"]))))
-   (("name" . "shell_exec")
-   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user).
+   (("name" . "run_program")
+    ("description" . "Run ONE external program with an argument array, no shell. Prefer this over shell_exec for any single command: the user is asked about the program name alone, so a grant on it covers every later call, and there is no quoting, redirection or substitution to get wrong. Output (stdout and stderr) and the exit code come back; do the filtering, counting and looping yourself or in eval_sexp. Use stdin to feed input instead of `echo X | prog'. Give a longer timeout for slow programs.
 
 EXAMPLES:
-- File system info: \"ls -la ~/Documents\"
-- Process management: \"ps aux | grep emacs\"
-- System commands: \"git status\" or \"make build\"
-- External tools: \"curl -s https://api.example.com\"
+- {\"program\": \"tmux\", \"args\": [\"-L\", \"t\", \"list-keys\", \"-T\", \"prefix\"]}
+- {\"program\": \"git\", \"args\": [\"status\", \"--short\"]}
+- {\"program\": \"python3\", \"args\": [\"-\"], \"stdin\": \"print(2+2)\"}
+
+NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt). NOT for Emacs operations: use eval_sexp.")
+    ("input_schema" . (("type" . "object")
+                       ("properties" . (("program" . (("type" . "string")
+                                                      ("description" . "Executable name (looked up in PATH) or path")))
+                                       ("args" . (("type" . "array")
+                                                  ("items" . (("type" . "string")))
+                                                  ("description" . "Arguments, one array element each, unquoted")))
+                                       ("stdin" . (("type" . "string")
+                                                   ("description" . "Text written to the program's standard input")))
+                                       ("timeout" . (("type" . "integer")
+                                                     ("description" . "Seconds before the program is killed (default 10, max 120)")))))
+                       ("required" . ["program"]))))
+   (("name" . "shell_exec")
+   ("description" . "Execute a shell command line and return the result. ONLY when the user asked for the shell, or the line needs the shell itself (a pipeline between two programs the model cannot replace, a glob the program must receive expanded). For one program, use run_program: it asks the user less. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user). Avoid redirection, substitution, loops and `eval': each makes the line one the user must read and approve by hand.
+
+EXAMPLES:
+- Pipelines between programs: \"ps aux | grep emacs\"
+- Build systems that want a shell: \"make build\"
 
 DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
      ("input_schema" . (("type" . "object")
@@ -500,18 +518,39 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("offset" . (("type" . "number")
                                                    ("description" . "Pagination offset (default: 0)")))))
                       ("required" . ["pattern"]))))
+   (("name" . "load_project_file")
+    ("description" . "Load one Emacs Lisp source file of THIS project into the running Emacs (the source, never a stale .elc). Use it after editing a .el file so the new definitions are live, and before run_ert for a test file. This is the in-process route: eval_sexp refuses `load', and a separate `emacs --batch' is refused too. Returns the features provided.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "A .el file under the project root")))))
+                      ("required" . ["path"]))))
+   (("name" . "run_ert")
+    ("description" . "Run ERT tests in the running Emacs and return counts plus the failing tests' messages. selector is a regexp on test names (default: every loaded test) or a list of names. Load the test file first with load_project_file. Prefer this over any emacs --batch: it runs here, now, with the user's libraries.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("selector" . (("type" . "string") ("description" . "Regexp on test names, or \"t\" for all")))))
+                      ("required" . []))))
+   (("name" . "project_outline")
+    ("description" . "Every top-level definition in the project's source files, by file, with line numbers (imenu). A few thousand tokens for a typical project; cached, so repeating it is free. Call it FIRST when a task spans files you have not read: it answers 'where is X' in one call, then read the two or three files whole. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "Directory (default: the project root)")))
+                                      ("pattern" . (("type" . "string") ("description" . "Glob to keep only some files, e.g. *.el or lisp/interfaces/*")))
+                                      ("max_files" . (("type" . "integer") ("description" . "Default 400")))))
+                      ("required" . []))))
    (("name" . "read_file")
-    ("description" . "Read a file and return its contents with metadata. Supports line ranges for large files.
+    ("description" . "Read files and return their contents with metadata. READ WHOLE FILES, SEVERAL AT ONCE: pass paths=[...] for every file the task touches in ONE call; the result holds them all under a token budget (default 40k), and a file that does not fit comes back as its outline (definitions with line numbers) so you read a range of it next. Do not read a file in 60-line windows: nine range reads of one file cost nine round trips where one whole read costs one.
 
 EXAMPLES:
-- Full file: read_file path=\"lisp/efrit.el\"
-- Line range: read_file path=\"init.el\" start_line=100 end_line=150
-- With encoding: read_file path=\"data.txt\" encoding=\"latin-1\"
+- The files of a feature, whole: read_file paths=[\"lisp/a.el\", \"lisp/b.el\", \"test/test-a.el\"]
+- One file, whole: read_file path=\"lisp/efrit.el\"
+- A range of a big file (after its outline): read_file path=\"init.el\" start_line=100 end_line=150
 
-Returns: File content, encoding, size, line counts. Binary files return metadata only.")
+Returns: per file, content, size, line count; or the outline when over budget. Binary files return metadata only.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "File path to read (required)")))
+                                                  ("description" . "One file to read (or use paths)")))
+                                      ("paths" . (("type" . "array") ("items" . (("type" . "string")))
+                                                  ("description" . "Several files, whole, in one result")))
+                                      ("budget" . (("type" . "integer")
+                                                   ("description" . "Token budget for a paths read (default 40000)")))
                                       ("start_line" . (("type" . "number")
                                                        ("description" . "Start line (1-indexed, optional)")))
                                       ("end_line" . (("type" . "number")
@@ -520,7 +559,7 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                                      ("description" . "Encoding override (optional)")))
                                       ("max_size" . (("type" . "number")
                                                      ("description" . "Max bytes to read (default: 100000)")))))
-                      ("required" . ["path"]))))
+                      ("required" . []))))
    (("name" . "undo_edit")
      ("description" . "Undo the most recent edit to a specific file. Complementary to checkpoint/restore (which work at session level).
 

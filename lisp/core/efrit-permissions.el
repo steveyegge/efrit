@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -70,7 +70,8 @@
 
 (defcustom efrit-permission-tool-classes
   '(;; exec: arbitrary code or commands
-    ("eval_sexp" . exec) ("shell_exec" . exec)
+    ("eval_sexp" . exec) ("shell_exec" . exec) ("run_program" . exec)
+    ("load_project_file" . exec) ("run_ert" . exec)
     ;; write: files and buffers
     ("edit_file" . write) ("create_file" . write) ("format_file" . write)
     ("undo_edit" . write) ("restore_checkpoint" . write)
@@ -210,6 +211,8 @@ Set `efrit-sandbox-enabled' to nil to get the per-call prompt back."
        ("eval_sexp" (or (funcall g "expr") (funcall g "expression")
                         (funcall g "code") (format "%S" input)))
        ("shell_exec" (format "$ %s" (or (funcall g "command") input)))
+       ("run_program" (format "run %s %s" (funcall g "program")
+                              (mapconcat #'shell-quote-argument (append (funcall g "args") nil) " ")))
        ("edit_file"
         (format "%s\n--- old_str\n%s\n+++ new_str\n%s"
                 (funcall g "path") (funcall g "old_str") (funcall g "new_str")))

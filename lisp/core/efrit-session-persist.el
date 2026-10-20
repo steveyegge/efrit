@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -100,6 +100,12 @@
    (cons "project" (or (efrit-repl-session-project-root session) ""))
    (cons "title" (or (efrit-repl-session-title session) ""))
    (cons "status" (symbol-name (efrit-repl-session-status session)))
+   (cons "meta" (let ((meta (efrit-repl-session-meta session)) (out nil))
+                  (while meta
+                    (when (cadr meta)
+                      (push (cons (substring (symbol-name (car meta)) 1) (cadr meta)) out))
+                    (setq meta (cddr meta)))
+                  (or (nreverse out) (make-hash-table :test 'equal))))
    
    ;; Conversation history (human-readable)
    (cons "conversation"
@@ -144,6 +150,12 @@
          (project (cdr (assoc "project" data)))
          (title (cdr (assoc "title" data)))
          (status (intern (cdr (assoc "status" data))))
+         (meta (let ((obj (cdr (assoc "meta" data))) (out nil))
+                 (when (consp obj)
+                   (dolist (pair obj)
+                     (when (and (consp pair) (stringp (cdr pair)) (not (string-empty-p (cdr pair))))
+                       (setq out (append out (list (intern (concat ":" (format "%s" (car pair)))) (cdr pair)))))))
+                 out))
          (conversation-data (cdr (assoc "conversation" data)))
          (api-messages-data (cdr (assoc "api_messages" data)))
          
@@ -177,7 +189,8 @@
                    :title title
                    :status status
                    :conversation conversation
-                   :api-messages api-messages)))
+                   :api-messages api-messages
+                   :meta meta)))
     
     session))
 

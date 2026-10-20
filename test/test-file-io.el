@@ -38,6 +38,34 @@
       (should (= (plist-get r :count) 1))
       (should (equal (efrit-file-read-string path) "X B X\n")))))
 
+(ert-deftest test-fio-edit-file-respects-the-users-backup-settings ()
+  "edit_file leaves no FILE~ behind by default; when backups are asked for
+they go where `backup-directory-alist' says, and `make-backup-files' nil
+means none (2026-10-19: FILE~ beside every edited file)."
+  (test-fio--with-file "one\ntwo\n"
+    (let ((edit (lambda ()
+                  (efrit-tool-edit-file `((path . ,path) (old_str . "one") (new_str . "ONE"))))))
+      ;; default: no backup, whatever the user's settings
+      (let ((efrit-tool-edit-file-backup nil) (make-backup-files t))
+        (funcall edit)
+        (should-not (file-exists-p (concat path "~"))))
+      ;; asked for, with backups off in Emacs: still none
+      (let ((efrit-tool-edit-file-backup t) (make-backup-files nil))
+        (efrit-tool-edit-file `((path . ,path) (old_str . "ONE") (new_str . "one")))
+        (should-not (file-exists-p (concat path "~"))))
+      ;; asked for, with a backup directory configured: the copy goes there
+      (let* ((dir (file-name-as-directory (make-temp-file "efrit-bak-" t)))
+             (efrit-tool-edit-file-backup t)
+             (make-backup-files t)
+             (backup-directory-alist `(("." . ,dir)))
+             (backup-by-copying t))
+        (unwind-protect
+            (progn
+              (funcall edit)
+              (should-not (file-exists-p (concat path "~")))
+              (should (directory-files dir nil "~\\'")))
+          (delete-directory dir t))))))
+
 (ert-deftest test-fio-replace-in-buffer-one-undo-group-and-saves ()
   (test-fio--with-file "foo\nbar\nfoo\n"
     (let ((buf (find-file-noselect path)))

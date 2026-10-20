@@ -477,6 +477,16 @@ advice, not a loop: the turn goes on and the third, acceptable batch runs."
   (should (efrit-sandbox-eval-inspect '(setq efrit-review-enabled nil)))
   (should (efrit-sandbox-eval-inspect '(efrit-review-forget-session "x"))))
 
+(ert-deftest test-review-parse-emacs-testing-vouch ()
+  "The reviewer's emacs/emacs_reason keys land in the vouch."
+  (let ((efrit-review--last-vouch nil))
+    (should (equal '(approve) (efrit-review-parse-verdict
+                               "{\"verdict\":\"approve\",\"confidence\":0.98,\"emacs\":\"testing\",\"emacs_reason\":\"ERT in emacs -Q\"}")))
+    (should (equal "ERT in emacs -Q" (plist-get efrit-review--last-vouch :emacs)))
+    (should (= 0.98 (plist-get efrit-review--last-vouch :confidence)))
+    (efrit-review-parse-verdict "{\"verdict\":\"approve\",\"confidence\":0.9}")
+    (should-not (plist-get efrit-review--last-vouch :emacs))))
+
 (provide 'test-review)
 ;;; test-review.el ends here
 

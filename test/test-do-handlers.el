@@ -191,6 +191,51 @@ legacy whitelist blocks rm."
         (should (string-match-p "truncated" result))))))
 
 ;;; ============================================================
+;;; Tests for efrit-do--handle-run-program
+;;; ============================================================
+
+(defun test-run-program--input (&rest kv)
+  (let ((h (make-hash-table :test 'equal)))
+    (while kv (puthash (pop kv) (pop kv) h))
+    h))
+
+(ert-deftest test-handle-run-program-argv-stdin-exit-and-grant ()
+  "run_program runs one program with an argv (no shell: `$x' stays
+literal), feeds stdin, reports the exit code; the sandbox is asked about
+the program name alone, so a grant on it covers the next call; a missing
+program is an error result, not a signal."
+  (skip-unless (executable-find "sh"))
+  (let ((efrit-sandbox-request-function (lambda (_req) 'session))
+        (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--turn-state (make-hash-table :test 'equal))
+        (efrit-sandbox-shell-refuse-emacs-equivalents nil)
+        (asked nil))
+    (progn
+      (let ((efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) 'session)))
+        (let ((result (efrit-do--handle-run-program
+                       (test-run-program--input "program" "sh" "args" ["-c" "cat; echo \"$1\"; exit 3" "x" "$HOME"]
+                                                "stdin" "from-stdin\n"))))
+          (should (string-match-p "\\[Exit: 3\\]" result))
+          (should (string-match-p "from-stdin" result))
+          ;; the argv literal `$HOME' reached sh as the text, printed unexpanded
+          (should (string-match-p "\n\\$HOME\n" result))
+          (should (equal '((shell "sh")) asked)))
+        ;; second call: the grant covers sh, no new prompt
+        (setq asked nil)
+        (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" ["-c" "true"]))
+        (should (null asked))))
+    (should (string-match-p "requires 'program'" (efrit-do--handle-run-program (test-run-program--input "args" ["x"]))))
+    (should (string-match-p "array of strings" (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" [1]))))
+    (should (string-match-p "not found" (efrit-do--handle-run-program
+                                         (test-run-program--input "program" "efrit-no-such-program-xyz"))))
+    ;; refused without a prompt when the sandbox denies
+    (let ((efrit-sandbox-request-function nil))
+      (clrhash efrit-sandbox--session-grants)
+      (should-error (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" ["-c" "true"]))
+                    :type 'efrit-sandbox-denied))))
+
+;;; ============================================================
 ;;; Tests for efrit-do--handle-todo-write
 ;;; ============================================================
 

@@ -73,5 +73,34 @@ the system prompt explains the kinds."
     (should (string-match-p "\\[FLAG vc: use-package evil :vc" batch))
     (should (string-match-p "vc = a use-package" efrit-review--system-prompt))))
 
+(ert-deftest test-review-flags-eval-shelling-out-to-what-emacs-does ()
+  "An eval that runs `shell-command-to-string \"git …\"' is flagged with the
+facility the sandbox will name when it refuses (2026-10-19: approved
+without a flag); a real program only gets the plain effect flag."
+  (require 'efrit-sandbox)
+  (let* ((flags (lambda (expr)
+                  (let ((input (make-hash-table :test 'equal)))
+                    (puthash "expr" expr input)
+                    (efrit-review-flags-for-use (list "t1" "eval_sexp" input))))))
+    (let ((git (funcall flags "(shell-command-to-string \"git status --short x.el\")")))
+      (should (cl-some (lambda (f) (string-match-p "\\[FLAG shell: Emacs does this natively: git -> vcs_status" f)) git)))
+    (let ((tmux (funcall flags "(call-process \"tmux\" nil nil nil \"ls\")")))
+      (should (cl-some (lambda (f) (string-match-p "\\[FLAG effect: call-process" f)) tmux))
+      (should-not (cl-some (lambda (f) (string-match-p "Emacs does this natively" f)) tmux)))))
+
+(ert-deftest test-review-flags-eval-reading-files-by-hand ()
+  "An eval that does insert-file-contents + re-search-forward on a literal
+path is flagged `tool' with read_file / search_content named; a form that
+computes nothing file-like gets no such flag."
+  (let* ((flags (lambda (expr)
+                  (let ((input (make-hash-table :test 'equal)))
+                    (puthash "expr" expr input)
+                    (efrit-review-flags-for-use (list "t1" "eval_sexp" input))))))
+    (let ((f (funcall flags "(with-temp-buffer (insert-file-contents (expand-file-name \"~/x/a.el\")) (goto-char (point-min)) (re-search-forward \"foo\" nil t))")))
+      (should (cl-some (lambda (x) (string-match-p "\\[FLAG tool: insert-file-contents by hand: efrit has read_file" x)) f))
+      (should (cl-some (lambda (x) (string-match-p "re-search-forward by hand: efrit has search_content" x)) f)))
+    (should-not (cl-some (lambda (x) (string-match-p "FLAG tool" x))
+                         (funcall flags "(progn (global-completion-preview-mode -1) (list major-mode))")))))
+
 (provide 'test-review-flags)
 ;;; test-review-flags.el ends here

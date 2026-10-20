@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -43,6 +43,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(declare-function efrit-log "efrit-log" (level fmt &rest args))
 
 (defconst efrit-reload--feature-prefix "efrit"
   "Features whose names start with this are reloaded.")
@@ -324,6 +325,8 @@ RESET the options whose changed default was adopted, MODES-ON the
 global minor modes turned back on, START the `float-time' the reload
 began, GONE the features whose file no longer exists.  Returns LOADED."
   (efrit-reload--clear-prompt-owner)
+  ;; cached images were drawn by the old code: tab line, mode lines
+  (when (fboundp 'efrit-pill-flush) (efrit-pill-flush))
   (let* ((reverted (efrit-reload--revert-visiting-buffers))
          ;; the version after the reload: `efrit-config' was among the
          ;; libraries, so this is the number the new code carries

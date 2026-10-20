@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -68,6 +68,30 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
                  (const :tag "Normal" normal)
                  (const :tag "Verbose" verbose))
   :group 'efrit-agent)
+
+(defcustom efrit-agent-max-line-length 1000
+  "Longest line, in characters, rendered from a tool input or result.
+Longer lines are cut and end in a dim marker with the number of
+characters dropped; `w' on the row still copies the full output.
+A single line above `long-line-threshold' (50000) makes Emacs switch
+the whole agent buffer to long-line display shortcuts, which clip the
+left edge of every row; a 213069-character fetch_url result did that
+on 2026-10-19.  Lines in the low thousands only wrap into unreadable
+blocks.  Raise this if you read minified or JSON results in place."
+  :type 'natnum
+  :group 'efrit-agent)
+
+(defun efrit-agent--clip-line (line)
+  "LINE cut to `efrit-agent-max-line-length' characters, or LINE unchanged.
+The cut line ends in a dim marker with the number of characters dropped.
+Text properties of LINE are kept; callers apply their face first."
+  (let ((max efrit-agent-max-line-length))
+    (if (<= (length line) max)
+        line
+      (concat (substring line 0 max)
+              (propertize (format " … +%d chars" (- (length line) max))
+                          'face 'shadow
+                          'help-echo "Line cut at `efrit-agent-max-line-length'; `w' copies the full output")))))
 
 (defcustom efrit-agent-display-style 'unicode
   "Display style for the agent buffer.
@@ -364,6 +388,7 @@ input region as one insertion (see the commentary above)."
              (buffer-undo-list t)
              (inhibit-modification-hooks nil))
          (save-excursion ,@body))
+     (efrit-agent--uncover-tail)
      (efrit-agent--reset-undo-history)))
 
 (defun efrit-agent--reset-undo-history ()
@@ -376,6 +401,18 @@ A no-op when undo is disabled in the buffer."
                    (< efrit-agent--input-start (point-max)))
               (list (cons (marker-position efrit-agent--input-start) (point-max)))
             nil))))
+
+(defun efrit-agent--uncover-tail ()
+  "Make sure nothing from the conversation end onward is `invisible'.
+The separator, the prompt and the input are never folded text; a fold
+property that reached them hid the bottom of the buffer until the next
+send rewrote the prompt (2026-10-16).  Cheap, called after renders."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
+    (let ((inhibit-read-only t) (buffer-undo-list t))
+      (efrit-log 'warn "agent: invisible text reached the prompt region; uncovered")
+      (remove-list-of-text-properties efrit-agent--conversation-end (point-max) '(invisible)))))
 
 (defun efrit-agent--seal-rendered (start end)
   "Mark START..END as rendered output: read-only, in the output field,
@@ -461,8 +498,14 @@ a plist (:project ROOT :name NAME :number N); nil for the default buffer.")
 (declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
 
 (defun efrit-agent-buffers ()
-  "Every live agent buffer."
-  (cl-remove-if-not (lambda (b) (with-current-buffer b (derived-mode-p 'efrit-agent-mode)))
+  "Every live agent buffer.
+Reads each buffer's `major-mode' without switching into it: this runs
+from the header line, the mode line, the tab line and the ring
+heartbeat, and a `set-buffer' per buffer goes through the sandbox's
+`set-buffer' advice once any eval has run.  Measured 2026-10-20: 34 ms
+per call over 67 buffers with the switch, under 1 ms without."
+  (cl-remove-if-not (lambda (b) (provided-mode-derived-p (buffer-local-value 'major-mode b)
+                                                         'efrit-agent-mode))
                     (buffer-list)))
 
 (defun efrit-agent-buffer-for (session-id)
@@ -661,8 +704,8 @@ gone with the buffer; after copilot-chat's thinking indicator,
             (setq efrit-agent--spinner-index (1+ efrit-agent--spinner-index))
             (when (fboundp 'efrit-agent--refresh-thinking-line)
               (efrit-agent--refresh-thinking-line))
-            ;; every window: the global mode-line spinner lives in
-            ;; all of them (efrit-agent-spinner-mode-line-string)
+            ;; every window: the agent buffer's mode-name e animates
+            ;; wherever that buffer is shown (efrit-agent-ring-mode-line-string)
             (force-mode-line-update t))
         ;; Stale tick after the label was cleared: stop this timer
         (cancel-timer timer)
@@ -672,9 +715,8 @@ gone with the buffer; after copilot-chat's thinking indicator,
 (defun efrit-agent--spinner-start (&optional label)
   "Show LABEL with an animated spinner in the header-line.
 Call in the agent buffer when an API call starts."
-  ;; Load the SVG spinner (and its mode-line construct) even where
-  ;; it will fall back to text, so the mode line shows activity
-  ;; from the first request onward.
+  ;; Load the SVG spinner even where it will fall back to text, so
+  ;; the mode-name e animates from the first request onward.
   (require 'efrit-agent-spinner nil t)
   (setq efrit-agent--thinking-label (or label "thinking..."))
   (setq efrit-agent--spinner-index 0)
@@ -694,7 +736,8 @@ Call in the agent buffer when an API call starts."
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer)
     (setq efrit-agent--spinner-timer nil))
-  ;; all windows: the global mode-line spinner must disappear too
+  ;; all windows: every window showing this buffer must redraw the
+  ;; mode-name e at rest
   (force-mode-line-update t))
 
 (defun efrit-agent--attach-session (session-id command)

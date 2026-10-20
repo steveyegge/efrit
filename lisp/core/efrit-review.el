@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -222,7 +222,7 @@ Both unset removes the section."
   "Non-nil if a call to TOOL-NAME is in a reviewed class for the current project.
 With USE, the (ID NAME INPUT) triple, a call of any class whose sandbox
 request would stop to ask the user is reviewable too: the reviewer is
-the one who can vouch for it (0.11.1; a read is not reviewed otherwise)."
+the one who can vouch for it (0.12.12; a read is not reviewed otherwise)."
   (or (memq (efrit-permission-tool-class tool-name) (efrit-review-effective-classes))
       (and use efrit-review-auto-grant-threshold
            (ignore-errors (efrit-review-confidence-would-ask-p use)))))
@@ -332,6 +332,8 @@ by the REPL is stripped so the reviewer reads what the user typed."
 (declare-function efrit-review-confidence-describe "efrit-review-confidence")
 (declare-function efrit-review-confidence-remember-grant "efrit-review-confidence")
 (declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-emacs-equivalents "efrit-sandbox")
+(declare-function efrit-sandbox-shell-emacs-does-it-p "efrit-sandbox")
 
 (defconst efrit-review--search-shell-commands
   '("rg" "grep" "egrep" "fgrep" "ag" "find" "fd" "ls" "cat" "head" "tail" "wc" "sort" "uniq"
@@ -361,10 +363,27 @@ effects), see efrit-review-flags."
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (efrit-review--shell-is-a-search-p (gethash "command" input)))
              (list "[FLAG shell: this line only searches, lists or reads files (rg/grep/find/ls/cat). The agent has search_content, project_files, file_info and read_file for that; they run without asking the user, the shell line asks. Reject and name the tool to use instead, unless the user asked for the shell.]"))
+           (when (and (member (nth 1 use) '("shell_exec" "run_program")) (hash-table-p input)
+                      (fboundp 'efrit-sandbox-shell-emacs-equivalents))
+             (let* ((line (if (equal (nth 1 use) "run_program")
+                              (mapconcat #'shell-quote-argument
+                                         (cons (gethash "program" input "")
+                                               (append (gethash "args" input) nil))
+                                         " ")
+                            (gethash "command" input)))
+                    (pairs (and (stringp line) (ignore-errors (efrit-sandbox-shell-emacs-equivalents line))))
+                    (all (and pairs (ignore-errors (efrit-sandbox-shell-emacs-does-it-p line)))))
+               (when (and pairs (not (efrit-review--shell-is-a-search-p line)))
+                 (list (format "[FLAG shell: Emacs does %s natively: %s. %s]"
+                               (if all "this whole line" "part of this line")
+                               (mapconcat (lambda (p) (format "%s -> %s" (car p) (cdr p))) pairs ", ")
+                               (if all
+                                   "The sandbox will refuse the line without asking the user; reject now and name the facilities, so the agent does not waste the call."
+                                 "The other program is the reason for the shell; approve on its merits, but tell the agent in your reason to drop the Emacs-replaceable parts next time."))))))
            (when (and (equal (nth 1 use) "shell_exec") (hash-table-p input)
                       (fboundp 'efrit-sandbox-shell-starts-emacs-p)
                       (efrit-sandbox-shell-starts-emacs-p (gethash "command" input)))
-             (list "[FLAG shell: starts another Emacs from the shell. The agent must have said why this cannot be done in the running Emacs with eval_sexp; stubbing the user's own macros or libraries to make the batch run is not a reason. Without a stated reason, reject and say so.]"))
+             (list "[FLAG shell: starts another Emacs from the shell. Loading a project file and running ERT are done in THIS Emacs with load_project_file and run_ert; byte-compiling is (byte-compile-file …) in eval_sexp. A separate Emacs is for one thing only: a test that must run in a clean emacs -Q with the user's configuration absent. The agent must have said so in AGENT SAID THIS TURN in these words: \"This needs a separate Emacs because …\". Stubbing the user's own macros or libraries to make a batch run work is not a reason. Without that sentence, reject and tell the agent to use load_project_file + run_ert, or to write that sentence if a clean Emacs is truly needed.]"))
            (when (require 'efrit-review-flags nil t)
              (ignore-errors (efrit-review-flags-for-use use))))))
     (and lines (mapconcat #'identity lines "\n   "))))
@@ -402,7 +421,11 @@ evaluates does, read statically: key = binds a key; hook / advice = changes what
 code runs; core-var = sets a variable that changes how Emacs behaves; vc = a use-package
 :vc block (a remote repository, branch or revision the config will fetch and run); shadow =
 defines a name that belongs to another library; load = loads code; effect = deletes,
-writes, or starts a process; shell = starts another Emacs.  A flag is not a verdict: weigh
+writes, or starts a process; shell = starts another Emacs or runs a shell line Emacs does
+natively; tool = the Lisp reads, searches or writes a file by hand where an efrit tool
+\(read_file, search_content, edit_file, project_files, vcs_*) does the same under the project's
+grant, with line numbers and truncation, and is reviewed as a read.  For a `tool' flag on an eval
+whose purpose is that read or search, reject and name the tool.  A flag is not a verdict: weigh
 it against the request.  A change the user asked for that rebinds a key is fine; a :vc
 block pointing at a new remote, a shadowed macro, or an advice on a core function that the
 request did not call for is not, and a flagged batch-Emacs line needs the agent's stated
@@ -421,15 +444,32 @@ A line [SANDBOX would ask: CAP TARGET | computed confidence S | facts] under a c
 user's sandbox has no grant for it and would stop to ask them.  The facts are what efrit
 knows: how often the user granted or denied this pattern before, whether the request names
 the target, whether the shell line is read-only, whether the path is in a repository they
-granted before.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
+granted before; for a shell line, which commands the user already granted this session,
+which their request names (a request about tmux.conf makes tmux expected), and which are
+new.  Read the facts against the task: a command the task is about is not suspicious because
+it is outside the read-only set.  A path may carry \"(pattern …)\": its generated parts (dates,
+ids) shown as placeholders, so ~/work/<date>/claude.org is one thing across days; judge the
+pattern.  The fact `instructed' means the user's own instruction files name that pattern: the
+user asked for the write before the session began.  You may vouch for the user: add \"confidence\": C (0..1), how sure you are
 the user would say yes, and \"grant\": \"once\" or \"session\".  C may not exceed S; S already
 counts the facts, you only lower it when the request itself gives reason (an odd target for
 the task, a command whose output the task does not need).  At or above the user's threshold
 your vouching replaces their keypress for this turn, so vouch only when you would bet on it.
 A call with no SANDBOX line needs no confidence.
 
-Answer with one JSON object and nothing else -- no prose before it, no code fence:
+Starting another Emacs (a [FLAG shell: starts another Emacs] line, or an eval_sexp whose form
+runs emacs --batch) is refused by efrit without asking the user: everything the agent needs is
+in the running Emacs: load_project_file, run_ert and (byte-compile-file …) in eval_sexp cover
+loading, testing and compiling.  The one exception: a test that must run in a clean emacs -Q
+with the user's configuration absent, and the agent wrote \"This needs a separate Emacs
+because …\" in its text.  When you are confident of that, add \"emacs\": \"testing\" and
+\"emacs_reason\": \"<why, one sentence>\" beside your confidence; at or above the user's threshold
+efrit then asks the user instead of refusing.  Never add it for a task the running Emacs can do.
+
+Answer with one JSON object and nothing else -- no prose before it, no code fence.  Write the
+object FIRST; a reply that runs out of room before the object counts as no verdict:
 {\"verdict\": \"approve\"}, {\"verdict\": \"approve\", \"confidence\": 0.97, \"grant\": \"session\"},
+{\"verdict\": \"approve\", \"confidence\": 0.98, \"emacs\": \"testing\", \"emacs_reason\": \"ERT run of the package in a clean emacs -Q, as the user asked\"},
 or {\"verdict\": \"reject\", \"reason\": \"<one or two sentences, addressed to the agent, saying what to change>\"}"
   "System prompt for the reviewer.")
 
@@ -468,14 +508,19 @@ every turn, because it only saw the request of the moment."
 (defun efrit-review--request-data (intent proposer-text batch)
   "The API request for one review.  No tools: the reviewer only answers."
   `(("model" . ,(or efrit-review-model efrit-default-model))
-    ("max_tokens" . 1024)
+    ;; 1024 was hit twice on 2026-10-20 with no text at all (the model
+    ;; thinks before it answers); an empty reply was a "malformed
+    ;; verdict" rejection that counted toward the escalation
+    ("max_tokens" . 4096)
     ("system" . ,(efrit-api-cacheable-system efrit-review--system-prompt))
     ("messages" . [(("role" . "user")
                     ("content" . ,(efrit-review--user-message intent proposer-text batch)))])))
 
 (defvar efrit-review--last-vouch nil
-  "(:confidence C :grant SCOPE) from the last parsed approve, or nil.
-Set by `efrit-review-parse-verdict'; read by the loop right after.")
+  "(:confidence C :grant SCOPE :emacs REASON-OR-NIL) from the last parsed approve, or nil.
+Set by `efrit-review-parse-verdict'; read by the loop right after.
+:emacs is the reviewer's reason when it judged that starting another
+Emacs is for testing with no in-process alternative.")
 
 (defun efrit-review-parse-verdict (text)
   "Parse the reviewer's TEXT into (VERDICT . REASON), or nil if malformed.
@@ -506,12 +551,16 @@ around the object by taking the first {...} span."
                        (reason (alist-get 'reason parsed))
                        (confidence (alist-get 'confidence parsed))
                        (grant (alist-get 'grant parsed))
+                       (emacs (alist-get 'emacs parsed))
+                       (emacs-reason (alist-get 'emacs_reason parsed))
                        (sym (and (stringp verdict) (intern (downcase verdict)))))
                   (when (memq sym efrit-review-verdicts)
                     (setq efrit-review--last-vouch
                           (and (eq sym 'approve) (numberp confidence)
                                (list :confidence (float confidence)
-                                     :grant (and (stringp grant) (intern (downcase grant))))))
+                                     :grant (and (stringp grant) (intern (downcase grant)))
+                                     :emacs (and (equal emacs "testing")
+                                                 (if (stringp emacs-reason) emacs-reason "testing")))))
                     (setq obj (cons sym (and (stringp reason) reason)))))
               (error nil)))
           (setq start (and (not obj) (string-search "{" text (1+ start))))))
@@ -597,9 +646,14 @@ request).  CALLBACK is called with (VERDICT . REASON), VERDICT being
                                      (truncate-string-to-width text 400 nil nil "…"))
                           (or (efrit-review-parse-verdict text)
                               (progn
-                                (efrit-log 'warn "review %s: not a verdict: %s" session-id
+                                (efrit-log 'warn "review %s: not a verdict (stop %s, %d chars): %s" session-id
+                                           (efrit-response-stop-reason response) (length text)
                                            (truncate-string-to-width text 400 nil nil "…"))
-                                (efrit-review--failure-verdict "malformed verdict" classes))))))))
+                                (efrit-review--failure-verdict
+                                 (if (equal (efrit-response-stop-reason response) "max_tokens")
+                                     "the reviewer ran out of tokens before answering"
+                                   "malformed verdict")
+                                 classes))))))))
          (lambda (error-msg)
            (funcall finish (efrit-review--failure-verdict error-msg classes)))))
       (error

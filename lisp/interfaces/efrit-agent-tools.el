@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -209,19 +209,23 @@ Returns nil if no annotations or unknown kind."
   (efrit-do-completion-message (format "%s" (or result ""))))
 
 (defun efrit-agent--turn-has-streamed-text-p ()
-  "Non-nil if the assistant streamed prose in this turn, before point.
-Walks back over tool rows and blank lines to the start of the turn (the
-user's message); any `claude-message' on the way means the answer is
-already on screen."
+  "Non-nil if the prose right before point is the turn's answer.
+Walks back over blank lines and notes only: a `claude-message' there
+means the model wrote its answer and then called session_complete, so
+the message would repeat it.  A tool row in between means the prose
+was narration (\"Now apply it live…\") and the final message is the
+only answer on screen (2026-10-20: a turn ended in a bare rule, and
+the user: \"no clear indication the work was finished\")."
   (save-excursion
     (let ((found nil) (done nil))
       (while (and (not found) (not done) (> (point) (point-min)))
         (let ((type (get-text-property (1- (point)) 'efrit-type)))
           (cond
            ((eq type 'claude-message) (setq found t))
-           ((eq type 'user-message) (setq done t))
-           (t (goto-char (or (previous-single-property-change (point) 'efrit-type)
-                             (point-min)))))))
+           ((memq type '(nil steer-note review-note error-message thinking-indicator))
+            (goto-char (or (previous-single-property-change (point) 'efrit-type)
+                           (point-min))))
+           (t (setq done t)))))
       found)))
 
 (defun efrit-agent--render-tool-call (tv)
@@ -496,9 +500,19 @@ Returns (START . END) or nil if not found."
             (goto-char (or (next-single-property-change (point) 'efrit-id)
                            (point-max))))))
       (when start
-        ;; Find where this tool's properties end
+        ;; Find where this tool's properties end.  Never past the
+        ;; conversation end: a re-render deletes START..END, and a row
+        ;; whose end fell through to `point-max' would take the
+        ;; separator, the prompt and the user's typed input with it
+        ;; (2026-10-16: the bottom of an agent buffer vanished until
+        ;; the next send redrew the prompt)
         (setq end (or (next-single-property-change start 'efrit-id)
                       (point-max)))
+        (when (and efrit-agent--conversation-end
+                   (marker-position efrit-agent--conversation-end)
+                   (> end efrit-agent--conversation-end)
+                   (< start efrit-agent--conversation-end))
+          (setq end (marker-position efrit-agent--conversation-end)))
         (cons start end)))))
 
 (defun efrit-agent--compute-auto-expand (success-p result user-override)
@@ -728,14 +742,17 @@ shown bare since that IS the call."
    (t (pp-to-string input))))
 
 (defun efrit-agent--format-indented-lines (text indent max-lines)
-  "Format TEXT with INDENT prefix, limiting to MAX-LINES."
+  "Format TEXT with INDENT prefix, limiting to MAX-LINES.
+Each line is cut at `efrit-agent-max-line-length'."
   (let* ((lines (split-string text "\n" t))
          (truncated (> (length lines) max-lines))
          (display-lines (seq-take lines max-lines))
          (result ""))
     (dolist (line display-lines)
       (setq result (concat result indent "  "
-                           (propertize line 'face 'efrit-agent-session-id) "\n")))
+                           (efrit-agent--clip-line
+                            (propertize line 'face 'efrit-agent-session-id))
+                           "\n")))
     (when truncated
       (setq result (concat result indent "  "
                            (propertize (format "... (%d more lines)"
@@ -862,8 +879,7 @@ Returns the absolute or relative path, or nil if not a file header."
   "Format a single diff LINE with appropriate face and INDENT prefix.
 Returns the formatted line string with text properties.
 File header lines are clickable to open the file."
-  (let* ((line-content (concat indent "  " line "\n"))
-         (filepath (efrit-agent--extract-diff-filepath line))
+  (let* ((filepath (efrit-agent--extract-diff-filepath line))
          (face (cond
                 ;; File headers
                 ((string-match-p "^diff --git\\|^---\\|^\\+\\+\\+" line)
@@ -880,7 +896,9 @@ File header lines are clickable to open the file."
                 ;; Context lines (including empty lines and lines starting with space)
                 (t
                  'efrit-agent-diff-context)))
-         (result (propertize line-content 'face face)))
+         (result (concat (propertize (concat indent "  ") 'face face)
+                         (efrit-agent--clip-line (propertize line 'face face))
+                         (propertize "\n" 'face face))))
     ;; Make file headers clickable
     (when filepath
       (let ((map (make-sparse-keymap))

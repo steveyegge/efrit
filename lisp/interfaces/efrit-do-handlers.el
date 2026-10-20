@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -70,6 +70,10 @@
 (declare-function efrit-tool-project-files "efrit-tool-project-files")
 (declare-function efrit-tool-search-content "efrit-tool-search-content")
 (declare-function efrit-tool-read-file "efrit-tool-read-file")
+(declare-function efrit-tool-read-files "efrit-tool-outline")
+(declare-function efrit-tool-project-outline "efrit-tool-outline")
+(declare-function efrit-tool-load-project-file "efrit-tool-lisp-dev")
+(declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
 (declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
@@ -134,7 +138,13 @@ Prevents runaway searches from overwhelming the system."
   :group 'efrit-do)
 
 (defcustom efrit-do-shell-timeout 10
-  "Seconds to allow a shell_exec command before it is killed."
+  "Seconds to allow a shell_exec or run_program command before it is killed.
+run_program may ask for more, up to `efrit-do-run-program-max-timeout'."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-run-program-max-timeout 120
+  "Longest timeout the model may request for one run_program call, in seconds."
   :type 'integer
   :group 'efrit-do)
 
@@ -366,8 +376,9 @@ Validates syntax before execution and returns the result or error."
 
 (define-error 'efrit-shell-timeout "Shell command timeout")
 
-(defun efrit-do--shell-exec-to-string (command timeout)
-  "Run COMMAND via the shell and return its output as a string.
+(defun efrit-do--run-argv (argv timeout &optional stdin)
+  "Run ARGV (a list of strings, no shell) and return (OUTPUT . EXIT-CODE).
+STDIN, when a string, is written to the process and its input closed.
 Kill the process and signal `efrit-shell-timeout' if it runs longer
 than TIMEOUT seconds.  `shell-command-to-string' wrapped in
 `with-timeout' cannot time out at all: timers never fire while Emacs
@@ -375,30 +386,35 @@ blocks inside `call-process'.  This loop checks the clock between
 `accept-process-output' calls instead."
   (with-temp-buffer
     ;; Run in the project root, on its host: for a Tramp root
-    ;; `start-file-process' spawns the shell remotely (efrit-tramp).
+    ;; `start-file-process' spawns the program remotely (efrit-tramp).
     (let* ((default-directory (efrit-tool--get-project-root))
            (proc (if (file-remote-p default-directory)
-                     (start-file-process "efrit-shell-exec" (current-buffer)
-                                         shell-file-name shell-command-switch
-                                         command)
-                   (make-process :name "efrit-shell-exec"
+                     (apply #'start-file-process "efrit-run" (current-buffer) argv)
+                   (make-process :name "efrit-run"
                                  :buffer (current-buffer)
-                                 :command (list shell-file-name
-                                                shell-command-switch command)
+                                 :command argv
                                  :connection-type 'pipe)))
            (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
       ;; C-g while waiting must kill the command, not leave it running
       ;; against a dead buffer
       (unwind-protect
-          (while (process-live-p proc)
-            (accept-process-output proc 0.2)
-            (when (and (process-live-p proc)
-                       (> (float-time) deadline))
-              (delete-process proc)
-              (signal 'efrit-shell-timeout (list command))))
+          (progn
+            (when (stringp stdin)
+              (process-send-string proc stdin)
+              (process-send-eof proc))
+            (while (process-live-p proc)
+              (accept-process-output proc 0.2)
+              (when (and (process-live-p proc)
+                         (> (float-time) deadline))
+                (delete-process proc)
+                (signal 'efrit-shell-timeout (list (mapconcat #'identity argv " "))))))
         (when (process-live-p proc) (delete-process proc)))
-      (buffer-string))))
+      (cons (buffer-string) (process-exit-status proc)))))
+
+(defun efrit-do--shell-exec-to-string (command timeout)
+  "Run COMMAND via the shell and return its output as a string."
+  (car (efrit-do--run-argv (list shell-file-name shell-command-switch command) timeout)))
 
 (defun efrit-do--handle-shell-exec (input-str)
   "Handle shell_exec tool to execute a shell command.
@@ -440,6 +456,51 @@ Returns output or security error."
       ;; Command failed validation
       (format "\n[SECURITY: Shell command blocked - %s]\n[Command: %s]"
               (cdr validation) input-str))))
+
+(defun efrit-do--handle-run-program (tool-input)
+  "Handle run_program: one program with an argument vector, no shell.
+The sandbox sees the program name alone, so a grant on `tmux' covers
+every tmux call and nothing else; there is no redirection,
+substitution or loop for the user to read.  STDIN, when given, is fed
+to the program, which replaces `echo X | prog'.  The result carries
+the exit code (2026-10-16: a tmux.conf review asked the user eight
+times for lines of `tmux ... 2>&1 | grep ...; sleep; for v in ...')."
+  (or (efrit-do--validate-hash-table tool-input "run_program")
+      (let* ((program (gethash "program" tool-input))
+             (args (efrit-do--vector-to-list (gethash "args" tool-input)))
+             (stdin (gethash "stdin" tool-input))
+             (timeout (let ((v (gethash "timeout" tool-input)))
+                        (if (and (numberp v) (> v 0)) (min v efrit-do-run-program-max-timeout)
+                          efrit-do-shell-timeout)))
+             (argv (cons program args))
+             (line (and (stringp program) (listp args) (cl-every #'stringp args)
+                        (mapconcat #'shell-quote-argument argv " "))))
+        (cond
+         ((or (not (stringp program)) (string-empty-p program))
+          "\n[Error: run_program requires 'program', the executable name or path]")
+         ((not (and (listp args) (cl-every #'stringp args)))
+          "\n[Error: run_program 'args' must be an array of strings]")
+         ((not (or (null stdin) (stringp stdin)))
+          "\n[Error: run_program 'stdin' must be a string]")
+         (t
+          (when (bound-and-true-p efrit-sandbox-enabled)
+            (efrit-sandbox-check 'shell line "run_program" line))
+          (condition-case err
+              (let* ((start (current-time))
+                     (run (efrit-do--run-argv argv timeout stdin))
+                     (duration (float-time (time-subtract (current-time) start))))
+                (format "\n[Ran: %s]%s\n[Exit: %d]\n[Duration: %.2fs]\n[Output: %s]"
+                        line
+                        (let ((remote (file-remote-p (efrit-tool--get-project-root))))
+                          (if remote (format "\n[On host: %s]" remote) ""))
+                        (cdr run) duration
+                        (efrit-truncate-output (car run) efrit-do-shell-output-max 'tail)))
+            (efrit-sandbox-denied (signal (car err) (cdr err)))
+            (efrit-shell-timeout
+             (format "\n[Program killed after exceeding the %d second timeout: %s]" timeout line))
+            (file-missing
+             (format "\n[Error: program not found: %s]" program))
+            (error (format "\n[Error running %s: %s]" line (error-message-string err)))))))))
 
 (defun efrit-do--handle-todo-write (tool-input)
   "Handle todo_write tool - replaces entire TODO list.
@@ -801,12 +862,45 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-search-content
   :label "Search Content Result")
 
-(efrit-define-simple-tool-handler efrit-do--handle-read-file "read_file"
+(efrit-define-simple-tool-handler efrit-do--handle-read-file-1 "read_file"
   :require efrit-tool-read-file
   :required ("path")
   :fields ("path" "start_line" "end_line" "encoding" "max_size")
   :fn efrit-tool-read-file
   :label "Read File Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-read-files "read_file"
+  :require efrit-tool-outline
+  :fields ("paths" "budget")
+  :fn efrit-tool-read-files
+  :label "Read Files Result")
+
+(defun efrit-do--handle-read-file (tool-input)
+  "read_file: one path with an optional range, or several paths whole (efrit-tool-outline)."
+  (if (and (hash-table-p tool-input)
+           (let ((paths (gethash "paths" tool-input)))
+             (and paths (> (length paths) 0))))
+      (efrit-do--handle-read-files tool-input)
+    (efrit-do--handle-read-file-1 tool-input)))
+
+(efrit-define-simple-tool-handler efrit-do--handle-load-project-file "load_project_file"
+  :require efrit-tool-lisp-dev
+  :required ("path")
+  :fields ("path")
+  :fn efrit-tool-load-project-file
+  :label "Load Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-run-ert "run_ert"
+  :require efrit-tool-lisp-dev
+  :fields ("selector")
+  :fn efrit-tool-run-ert
+  :label "ERT Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-project-outline "project_outline"
+  :require efrit-tool-outline
+  :fields ("path" "pattern" "max_files")
+  :fn efrit-tool-project-outline
+  :label "Project Outline")
 
 (efrit-define-simple-tool-handler efrit-do--handle-undo-edit "undo_edit"
   :require efrit-tool-undo-edit

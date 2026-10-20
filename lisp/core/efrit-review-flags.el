@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai, lisp
 
@@ -30,6 +30,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(declare-function efrit-sandbox-shell-emacs-equivalents "efrit-sandbox")
+(defvar efrit-sandbox-shell-emacs-equivalents)
 
 (defgroup efrit-review-flags nil
   "Static analysis of proposed Lisp changes for the reviewer."
@@ -50,10 +52,30 @@
 (defconst efrit-review-flags--definers '(defun defmacro defalias defsubst cl-defun cl-defmacro define-advice))
 (defconst efrit-review-flags--load-fns '(load load-file require autoload))
 (defconst efrit-review-flags--danger-fns
-  '(delete-file delete-directory kill-emacs save-buffers-kill-emacs shell-command
+  '(delete-file delete-directory kill-emacs save-buffers-kill-emacs shell-command shell-command-to-string process-lines process-file
     call-process start-process make-process async-shell-command url-retrieve
     set-file-modes rename-file copy-file write-region)
   "Calls whose presence in config or an eval is worth a second look.")
+
+(defconst efrit-review-flags--tool-equivalents
+  '((insert-file-contents . "read_file")
+    (insert-file-contents-literally . "read_file")
+    (find-file-noselect . "read_file, or edit_file to change it")
+    (find-file . "read_file, or edit_file to change it")
+    (write-region . "create_file / edit_file")
+    (directory-files . "project_files")
+    (directory-files-recursively . "project_files")
+    (file-expand-wildcards . "glob_files")
+    (re-search-forward . "search_content (over files) or surrounding_context")
+    (search-forward . "search_content")
+    (vc-diff . "vcs_diff") (vc-root-diff . "vcs_diff") (vc-print-log . "vcs_log")
+    (vc-annotate . "vcs_blame") (vc-dir . "vcs_status"))
+  "Functions an eval reaches for that an efrit tool already provides.
+A `with-temp-buffer' + `insert-file-contents' + `re-search-forward'
+is `read_file' or `search_content' done by hand: no tool result shape,
+no line numbers, no truncation, and reviewed as arbitrary Lisp instead
+of as a read (2026-10-19: four such evals in one turn, where read_file
+and search_content would have been two calls).")
 
 (defconst efrit-review-flags--core-vars
   '(load-path exec-path process-environment auth-sources custom-file user-emacs-directory
@@ -130,8 +152,32 @@ OWN-PREFIXES are symbol prefixes that count as the file's own (a
                      (setq args (if (memq head '(customize-set-variable set-default)) nil (cddr args))))))
                 ((memq head efrit-review-flags--load-fns)
                  (push (cons 'load (format "%s %s" head (efrit-review-flags--name (cadr f)))) out))
+                ((and (assq head efrit-review-flags--tool-equivalents)
+                      ;; only when the file is a literal: a computed path
+                      ;; inside a larger program is the program's business
+                      (or (not (memq head '(insert-file-contents insert-file-contents-literally
+                                            find-file-noselect find-file write-region)))
+                          (stringp (cadr f))
+                          (and (consp (cadr f)) (memq (car (cadr f)) '(expand-file-name concat format)))))
+                 (push (cons 'tool (format "%s by hand: efrit has %s for this" head
+                                           (cdr (assq head efrit-review-flags--tool-equivalents))))
+                       out))
                 ((memq head efrit-review-flags--danger-fns)
-                 (push (cons 'effect (format "%s %s" head (truncate-string-to-width (format "%S" (cdr f)) 60 nil nil "…"))) out))
+                 (push (cons 'effect (format "%s %s" head (truncate-string-to-width (format "%S" (cdr f)) 60 nil nil "…"))) out)
+                 ;; a shell string Emacs does natively: the sandbox will
+                 ;; refuse it; say so, with the facility (2026-10-19: an
+                 ;; eval of four shell-command-to-string "git …" was approved)
+                 (when-let* ((line (cl-find-if #'stringp (cdr f)))
+                             (pairs (and (fboundp 'efrit-sandbox-shell-emacs-equivalents)
+                                         (memq head '(shell-command shell-command-to-string call-process
+                                                      process-lines start-process make-process async-shell-command))
+                                         (let ((efrit-sandbox-shell-emacs-equivalents
+                                                (cons '("git" . "vcs_status, vcs_diff, vcs_log, vcs_blame")
+                                                      efrit-sandbox-shell-emacs-equivalents)))
+                                           (ignore-errors (efrit-sandbox-shell-emacs-equivalents line))))))
+                   (push (cons 'shell (format "Emacs does this natively: %s. The sandbox refuses it without asking; reject and name the facility"
+                                              (mapconcat (lambda (p) (format "%s -> %s" (car p) (cdr p))) pairs ", ")))
+                         out)))
                 ((eq head 'use-package)
                  (let ((name (cadr f)) (plist (cddr f)))
                    (let ((vc (plist-get plist :vc)))
@@ -191,6 +237,14 @@ evals by the effects of the form; shell lines by what they start."
                                                    (efrit-review-flags--own-prefixes path)))))
             ("eval_sexp"
              (efrit-review-flags--text-effects (or (funcall get "expr") "") nil))
+            ;; loading a file runs its top level: judged like an eval
+            ;; of its contents, with its own prefix as its own
+            ("load_project_file"
+             (let ((path (funcall get "path")))
+               (when (and (stringp path) (file-readable-p (expand-file-name path)))
+                 (efrit-review-flags--text-effects
+                  (with-temp-buffer (insert-file-contents (expand-file-name path)) (buffer-string))
+                  (efrit-review-flags--own-prefixes path)))))
             (_ nil))))
     (let ((lines (mapcar (lambda (e) (format "[FLAG %s: %s]" (car e) (cdr e))) (delete-dups effects))))
       (if (> (length lines) efrit-review-flags-max)

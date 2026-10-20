@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, lisp
 
@@ -84,8 +84,9 @@ already balanced (or too broken to fix mechanically)."
           (when notes
             ;; only offer a fix that reads
             (condition-case nil
-                (progn (read-from-string fixed)
-                       (cons fixed (mapconcat #'identity notes ", ")))
+                (let ((parsed (read-from-string fixed)))
+                  (and (consp parsed)
+                       (cons fixed (mapconcat #'identity notes ", "))))
               (error nil))))
       (error nil))))
 

@@ -74,7 +74,7 @@ flagged and must find the agent's reason.  `emacsclient' is not flagged."
                 (puthash "name" "shell_exec" u) (puthash "input" input u) u))
          (batch (efrit-review-describe-batch (vector use))))
     (should (string-match-p "\\[FLAG shell: starts another Emacs" batch))
-    (should (string-match-p "must have said why" batch))
+    (should (string-match-p "This needs a separate Emacs because" batch))
     (should (string-match-p "FLAG" efrit-review--system-prompt)))
   ;; the sandbox itself lets it through on an ordinary shell grant
   (let ((efrit-sandbox-enabled t) (efrit-project-root temporary-file-directory)

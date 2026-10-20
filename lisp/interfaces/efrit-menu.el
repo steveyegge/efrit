@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1") (transient "0.4"))
 ;; Keywords: tools, convenience, ai
 
@@ -35,11 +35,22 @@
 (defvar efrit-agent--status)
 (declare-function efrit-usage-indicator "efrit-usage")
 (declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function url-host "url-parse" (cl-x) t)
+(declare-function url-generic-parse-url "url-parse" (url))
 (declare-function efrit-doctor--redact-url "efrit-doctor")
 (declare-function efrit-permissions "efrit-permissions-ui")
 (declare-function efrit-review-package "efrit-package-review")
 (declare-function efrit-review-all-packages "efrit-package-review-ui")
 (declare-function efrit-code-review "efrit-code-review-ui")
+(declare-function efrit-agent-next-attention "efrit-agent-ring")
+(declare-function efrit-agent-previous-attention "efrit-agent-ring")
+(declare-function efrit-agent-focus "efrit-agent-dashboard")
+(declare-function efrit-agent-dashboard "efrit-agent-dashboard")
+(declare-function efrit-agent-diagnose "efrit-agent-diagnose")
+(declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-new-instance "efrit-agent-instances")
+(declare-function efrit-agent-toggle-unread "efrit-agent-ring")
+(declare-function efrit-agent-tab-line-mode "efrit-agent-tab-line")
 (declare-function efrit-testdrive "efrit-testdrive")
 (declare-function efrit-testdrive-tour "efrit-testdrive")
 (declare-function efrit-log-toggle-debug "efrit-log")
@@ -95,7 +106,7 @@
 (defconst efrit-menu-saved-settings
   '(efrit-default-model efrit-api-streaming efrit-api-prompt-caching efrit-sandbox-enabled
     efrit-review-enabled efrit-agent-header-style efrit-agent-verbosity efrit-agent-display-mode
-    efrit-log-level efrit-notify-enabled efrit-review-auto-grant-threshold)
+    efrit-log-level efrit-notify-enabled efrit-review-auto-grant-threshold efrit-agent-tab-line-mode)
   "The settings the menu's toggles change, saved together by `efrit-menu-save-settings'.")
 
 (defun efrit-menu-save-settings ()
@@ -194,7 +205,17 @@ stick (claude-code-ide's Save suffix, 2026-09-28)."
        ("Q" "Show / drop queued inputs" efrit-agent-queue-show)
        ("y" "Copy last answer" efrit-agent-copy-last-output)
        ("i" "Copy session id" efrit-agent-copy-session-id)
-       ("N" "Restart in place (fresh session, same windows)" efrit-agent-restart)]
+       ("N" "Restart in place (fresh session, same windows)" efrit-agent-restart)
+       ("]" "Next agent that needs you (prompt first, then unread)" efrit-agent-next-attention :transient t)
+       ("[" "Previous agent that needs you" efrit-agent-previous-attention :transient t)
+       ("z" "Focus one agent (again: restore windows)" efrit-agent-focus)
+       ("a" "Agents dashboard (folders, state, worktrees)" efrit-agent-dashboard)
+       ("I" "Diagnose this session" efrit-agent-diagnose)
+       ("J" "New agent for a directory (no repository needed)" efrit-agent-new-instance)
+       ("f" "New agent in a fresh Git worktree" efrit-agent-new-worktree-instance)
+       ("U" "Mark this agent unread / read" efrit-agent-toggle-unread :transient t)
+       ("B" efrit-agent-tab-line-mode :transient t
+        :description (lambda () (format "Agents in the tab line [%s]" (if (bound-and-true-p efrit-agent-tab-line-mode) "on" "off"))))]
       ["Configuration"
        ("m" efrit-select-model :description efrit-menu--desc-model)
        ("M" "Select model (probe all)" (lambda () (interactive) (efrit-select-model t)))

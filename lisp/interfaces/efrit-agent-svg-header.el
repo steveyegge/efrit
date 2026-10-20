@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.35
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -141,20 +141,6 @@ fraction of the char height when the font object has no size."
                     px)
                   (* 0.8 (frame-char-height)))))
     (max 8 (round (* size efrit-agent-header-text-scale)))))
-
-(defun efrit-agent-svg--content-width (svg)
-  "Rightmost pixel any text run in SVG reaches (absolute x plus its width)."
-  (let ((w 0))
-    (dolist (node (dom-by-tag svg 'text))
-      ;; a text node with a direct string child (the icon glyph)
-      (when (stringp (car (dom-children node)))
-        (setq w (max w (+ (string-to-number (format "%s" (dom-attr node 'x)))
-                          (string-pixel-width (car (dom-children node)))))))
-      (dolist (child (dom-children node))
-        (when (and (consp child) (eq (dom-tag child) 'tspan))
-          (setq w (max w (+ (string-to-number (format "%s" (or (dom-attr child 'x) 0)))
-                            (string-to-number (format "%s" (or (dom-attr child 'textLength) 0)))))))))
-    w))
 
 (defun efrit-agent-svg--window-width ()
   "Widest window showing this buffer, else the frame, in pixels."
@@ -366,12 +352,13 @@ square centred on the letters beside it (baseline minus ~0.35em)."
                         (,(alist-get :context model) . efrit-agent-header-directory)
                         (,(alist-get :session model) . font-lock-comment-face))))
     (efrit-agent-svg--place-spinners svg fs)
-    ;; Shrink the canvas to what was drawn: every pixel is re-blitted on
-    ;; each spinner tick.  Overshoot is transparent, undershoot clips.
-    (dom-set-attribute svg 'width
-                       (min (dom-attr svg 'width)
-                            (max (+ icon-x icon 16)
-                                 (+ (efrit-agent-svg--content-width svg) 16))))
+    ;; The canvas is the window's width: the border runs to the edge
+    ;; and text wider than Emacs's measurement (the rasteriser's own
+    ;; metrics for ➤, ·, <return>) has room.  It used to shrink to the
+    ;; measured content plus 16 px to save re-blitting on spinner
+    ;; ticks; on a 2000-px window that ended the border at 1260 px and
+    ;; cut the key hint at "efrit mer" (2026-10-20: "taking up only
+    ;; some of the window, making it look clipped").
     svg))
 
 (defun efrit-agent-svg--render (model)
@@ -393,20 +380,46 @@ whole header at twice the body text.  (The spinner already did this.)"
 (defvar efrit-agent-svg--last-error nil
   "The last error the header value function caught, for `efrit-doctor'.")
 
+(defcustom efrit-agent-header-extra-functions nil
+  "Functions whose strings are shown after efrit's own header.
+Each is called with no arguments in the agent buffer and returns a
+propertized string (images welcome) or nil.  For other packages'
+indicators the user wants in sight while agents run -- nngmail's G and
+its unread/starred pills, for instance -- without efrit knowing them.
+Errors in a function are logged and skipped, never shown."
+  :type 'hook
+  :group 'efrit-agent-header)
+
+(defun efrit-agent-svg--extras ()
+  "The concatenated results of `efrit-agent-header-extra-functions', or nil."
+  (let (parts)
+    (dolist (fn efrit-agent-header-extra-functions)
+      (condition-case err
+          (when-let* ((s (funcall fn)))
+            (when (and (stringp s) (not (string-empty-p s)))
+              (push s parts)))
+        (error (efrit-log 'warn "header extra %s: %s" fn (error-message-string err)))))
+    (and parts (string-join (nreverse parts) " "))))
+
 (defun efrit-agent-svg-header ()
   "Return the header-line string per `efrit-agent-header-style'.
 Never signals: an error inside a `header-line-format' :eval makes
 redisplay blank the header and set the format to nil for the buffer,
 which showed up as no logo until the next open.  Errors are logged
-and the plain text header is returned instead."
-  (condition-case err
-      (efrit-agent-svg--header-1)
-    (error
-     (setq efrit-agent-svg--last-error (error-message-string err))
-     (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
-     (condition-case nil
-         (efrit-agent--format-header-line)
-       (error " efrit")))))
+and the plain text header is returned instead.  Other packages'
+indicators (`efrit-agent-header-extra-functions') follow efrit's own."
+  (let ((own (condition-case err
+                 (efrit-agent-svg--header-1)
+               (error
+                (setq efrit-agent-svg--last-error (error-message-string err))
+                (efrit-log 'warn "header: %s" efrit-agent-svg--last-error)
+                (condition-case nil
+                    (efrit-agent--format-header-line)
+                  (error " efrit")))))
+        (extras (and efrit-agent-header-extra-functions (efrit-agent-svg--extras))))
+    (cond ((and own extras) (concat own "  " extras))
+          (extras (concat " " extras))
+          (t own))))
 
 (defun efrit-agent-svg--header-1 ()
   "The header string; may signal (see `efrit-agent-svg-header')."

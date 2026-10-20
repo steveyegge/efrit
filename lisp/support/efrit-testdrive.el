@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -194,6 +194,21 @@
 (declare-function vc-git-register "vc-git")
 (declare-function vc-git-command "vc-git")
 (defvar efrit-code-review-ui--result)
+(defvar efrit-agent--unread)
+(defvar efrit-agent--waiting)
+(defvar efrit-agent-read-delay)
+(defvar efrit-agent-dashboard-buffer)
+(declare-function efrit-agent-ring-attention-queue "efrit-agent-ring")
+(declare-function efrit-agent-ring-check-dwell "efrit-agent-ring")
+(declare-function efrit-agent-ring-summary "efrit-agent-ring")
+(declare-function efrit-agent-ring--stop-heartbeat "efrit-agent-ring")
+(declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-diagnose-collect "efrit-agent-diagnose")
+(declare-function efrit-agent-set-folder "efrit-agent-dashboard")
+(declare-function efrit-agent-dashboard "efrit-agent-dashboard")
+(declare-function efrit-repl-session-meta-get "efrit-repl-session")
+(declare-function efrit-session-persist-save "efrit-session-persist")
+(declare-function efrit-resume-session "efrit-agent")
 (defvar efrit-rewrite--start-marker)
 (defvar efrit-rewrite--end-marker)
 (defvar efrit-presets)
@@ -233,6 +248,17 @@
 (declare-function efrit-brief "efrit-brief")
 (declare-function efrit-repl-session-begin-turn "efrit-repl-session")
 (declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function efrit-agent-tab-line-mode "efrit-agent-tab-line")
+(declare-function efrit-code-review-ui--buffer "efrit-code-review-ui")
+(declare-function efrit-agent--repl-send "efrit-agent-input")
+(declare-function efrit-code-review-scope "efrit-code-review")
+(declare-function efrit-code-review-finding "efrit-code-review")
+(declare-function efrit-code-review-finding-transition "efrit-code-review")
+(declare-function efrit-code-review-gate "efrit-code-review")
+(declare-function efrit-code-review-apply-queued "efrit-code-review")
+(declare-function efrit-code-review-run-sync "efrit-code-review")
+(declare-function efrit-code-review-ui--render "efrit-code-review-ui")
+(defvar efrit-code-review-ui--result)
 (declare-function efrit-brief-question-turn "efrit-brief")
 (declare-function efrit-prompt-context-command "efrit-brief")
 (declare-function efrit-context-pin "efrit-context-sources")
@@ -2140,7 +2166,82 @@ was failing every time.)"
         (efrit-sandbox-reset-session other)
         (ignore-errors (delete-directory repo t))
         (ignore-errors (delete-directory other t))
-        (ignore-errors (delete-directory efrit-data-directory t))))))
+        (ignore-errors (delete-directory efrit-data-directory t)))))
+  (efrit-testdrive--step 9 "Attention: a reply in a buffer you are not looking at is unread; a prompt marks waiting; ] goes there"
+    ;; Two throwaway agent buffers; events as the loop publishes them.
+    ;; Nothing is sent.  The dwell clock is driven with explicit times.
+    (require 'efrit-agent-ring)
+    (let* ((efrit-agent-auto-show nil)
+           (efrit-agent-read-delay 5)
+           (a (efrit-agent-instance-create efrit-testdrive--root "ring-a"))
+           (b (efrit-agent-instance-create efrit-testdrive--root "ring-b"))
+           (id-a (efrit-repl-session-id (buffer-local-value 'efrit-agent--repl-session a)))
+           (id-b (efrit-repl-session-id (buffer-local-value 'efrit-agent--repl-session b)))
+           (notes nil))
+      (unwind-protect
+          (progn
+            (efrit-publish 'turn-complete (list (cons :session-id id-a) (cons :stop-reason "end_turn")))
+            (efrit-publish 'prompt-open (list (cons :label "drive prompt") (cons :session-id id-b)))
+            (push (format "unread a=%s waiting b=%S" (buffer-local-value 'efrit-agent--unread a)
+                          (buffer-local-value 'efrit-agent--waiting b))
+                  notes)
+            (let ((queue (efrit-agent-ring-attention-queue)))
+              (push (format "queue: %s" (mapcar #'buffer-name (seq-filter (lambda (x) (memq x (list a b))) queue))) notes)
+              (let ((order-ok (equal (list b a) (seq-filter (lambda (x) (memq x (list a b))) queue))))
+                (efrit-publish 'prompt-closed (list (cons :label "drive prompt") (cons :session-id id-b)))
+                ;; look at a for five seconds (simulated) and it reads itself
+                (cl-letf (((symbol-function 'frame-focus-state) (lambda (&rest _) t))
+                          ((symbol-function 'window-end) (lambda (&rest _) (with-current-buffer a (point-max)))))
+                  (save-window-excursion
+                    (set-window-buffer (selected-window) a)
+                    (dotimes (i 7) (efrit-agent-ring-check-dwell (+ 1000.0 i)))))
+                (push (format "after dwell unread a=%s summary=%S" (buffer-local-value 'efrit-agent--unread a)
+                              (and (efrit-agent-ring-summary) (substring-no-properties (efrit-agent-ring-summary))))
+                      notes)
+                (efrit-testdrive--check
+                 (and order-ok
+                      (not (buffer-local-value 'efrit-agent--waiting b))
+                      (not (buffer-local-value 'efrit-agent--unread a)))
+                 (string-join (reverse notes) "; ")))))
+        (efrit-agent-ring--stop-heartbeat)
+        (dolist (x (list a b))
+          (when (buffer-live-p x) (let ((kill-buffer-query-functions nil)) (kill-buffer x)))))))
+  (efrit-testdrive--step 9 "A worktree instance: fresh branch and directory, recorded in the session, refused on resume once gone"
+    (if (not (efrit-vcs-git-p efrit-testdrive--root))
+        (cons 'SKIP "the project is not a Git tree")
+      (require 'efrit-agent-instances)
+      (require 'efrit-session-persist)
+      (let* ((efrit-agent-auto-show nil)
+             (efrit-data-directory (file-name-as-directory (make-temp-file "efrit-drive-wt-data-" t)))
+             (dest (concat (directory-file-name efrit-testdrive--root) "-drive-wt"))
+             (buf nil) (id nil))
+        (unwind-protect
+            (progn
+              (setq buf (efrit-agent-new-worktree-instance "drive wt" "agent/drive-wt" dest efrit-testdrive--root))
+              (let* ((session (buffer-local-value 'efrit-agent--repl-session buf))
+                     (wt (efrit-repl-session-meta-get session :worktree))
+                     (branch (efrit-repl-session-meta-get session :branch))
+                     (rows (progn (require 'efrit-agent-diagnose) (efrit-agent-diagnose-collect buf)))
+                     (branch-row (assoc "Branch" rows)))
+                (setq id (efrit-repl-session-id session))
+                (efrit-session-persist-save session)
+                (let ((kill-buffer-query-functions nil)) (kill-buffer buf))
+                (delete-directory dest t)
+                (let ((refused (condition-case err (progn (efrit-resume-session id) nil)
+                                 (user-error (error-message-string err)))))
+                  (efrit-testdrive--check
+                   (and (equal wt (file-name-as-directory dest)) (equal branch "agent/drive-wt")
+                        (eq 'ok (cadr branch-row)) refused)
+                   (format "worktree %s branch %s; diagnose branch row %S; resume said: %s"
+                           (and wt (abbreviate-file-name wt)) branch branch-row
+                           (truncate-string-to-width (or refused "nothing (FAIL)") 80 nil nil "…"))))))
+          (when (buffer-live-p buf) (let ((kill-buffer-query-functions nil)) (kill-buffer buf)))
+          (ignore-errors (delete-directory dest t))
+          (ignore-errors (let ((default-directory efrit-testdrive--root))
+                           (require 'vc-git)
+                           (vc-git-command nil 0 nil "worktree" "prune")
+                           (vc-git-command nil 0 nil "branch" "-D" "agent/drive-wt")))
+          (ignore-errors (delete-directory efrit-data-directory t)))))))
 
 (defun efrit-testdrive--section-10 ()
   "The claude-code-ide batch: navigation tools, ediff edits, context indicator, range mentions."
@@ -2543,7 +2644,7 @@ was failing every time.)"
     (6 "Transcript tools: quote, narrow, transcript, lists, tables, images" efrit-testdrive--section-6)
     (7 "Copilot batch: context keys, balancer, edit-before-allow, rewrite, commit, scope, regenerate, presets, code blocks" efrit-testdrive--section-7)
     (8 "Minuet batch: text windows, kept partial answers, inline diff, edit history" efrit-testdrive--section-8)
-    (9 "Several sessions: instances, parallel turns, per-session sandbox state" efrit-testdrive--section-9)
+    (9 "Several sessions: instances, parallel turns, per-session sandbox state, attention, worktrees" efrit-testdrive--section-9)
     (10 "Navigation and context: xref/imenu tools, ediff edits, context indicator, range mentions" efrit-testdrive--section-10)
     (11 "Briefs, pins, next steps, last error, diagnostics baseline" efrit-testdrive--section-11)
     (12 "User commands: send-dwim, investigate-exception, :shell, refactor, grill-me, dashboard, magit hunks, code review" efrit-testdrive--section-12))
@@ -2937,6 +3038,45 @@ was failing every time.)"
           (ignore-errors (vc-git-command nil 0 nil "reset" "-q" "--" "notes.txt"))
           (with-temp-file file (insert original)))))))
 
+(defun efrit-testdrive--tour-attention ()
+  (efrit-testdrive--out "\n## Between agents: ], dashboard, focus")
+  (efrit-testdrive--step 'tour "The dashboard groups by folder; ] jumps to the agent that needs you; z focuses"
+    ;; Three throwaway agent buffers with states set by events: one
+    ;; waiting on a prompt, one with an unread reply, one idle.
+    (require 'efrit-agent-ring)
+    (require 'efrit-agent-dashboard)
+    (let* ((efrit-agent-auto-show nil)
+           (a (efrit-agent-instance-create efrit-testdrive--root "tour-idle"))
+           (b (efrit-agent-instance-create efrit-testdrive--root "tour-waiting"))
+           (c (efrit-agent-instance-create efrit-testdrive--root "tour-unread"))
+           (id-b (efrit-repl-session-id (buffer-local-value 'efrit-agent--repl-session b)))
+           (id-c (efrit-repl-session-id (buffer-local-value 'efrit-agent--repl-session c))))
+      (unwind-protect
+          (progn
+            (efrit-agent-set-folder a "Tour/Idle")
+            (efrit-agent-set-folder b "Tour/Needs you")
+            (efrit-agent-set-folder c "Tour/Needs you")
+            (efrit-publish 'prompt-open (list (cons :label "tour prompt") (cons :session-id id-b)))
+            (efrit-publish 'turn-complete (list (cons :session-id id-c) (cons :stop-reason "end_turn")))
+            (let ((was-on (bound-and-true-p efrit-agent-tab-line-mode)))
+              (require 'efrit-agent-tab-line)
+              (efrit-agent-tab-line-mode 1)
+              (unwind-protect
+                  (save-window-excursion
+                    (efrit-agent-dashboard)
+                    (redisplay)
+                    (efrit-testdrive--ask
+                     "*efrit agents*: folder pills (Tour/Idle, Tour/Needs you), a red `?' pill and a red `waiting' pill on tour-waiting, a violet `•' on tour-unread, states as coloured pills, and the mode line counting `1 waiting 1 unread 1 idle' as pills.  Look at this window's tab line: three agent pills at its end, the waiting one red and saturated?  Press ]: does it open tour-waiting (the prompt first)?  ] again: tour-unread?  Wait five seconds looking at it: does the • leave the mode line and the tab pill turn green?  C-c u there: unread again (violet), C-c u: read?  C-c C-z: whole frame, C-c C-z again: windows back?  i on a dashboard row: a diagnosis popup with OK/INFO pills and no request sent?"))
+                (unless was-on (efrit-agent-tab-line-mode -1)))))
+        (efrit-publish 'prompt-closed (list (cons :label "tour prompt") (cons :session-id id-b)))
+        (efrit-agent-ring--stop-heartbeat)
+        (set-frame-parameter nil 'efrit-agent-focus-layout nil)
+        (when (get-buffer efrit-agent-dashboard-buffer) (kill-buffer efrit-agent-dashboard-buffer))
+        (dolist (x (list a b c))
+          (when (buffer-live-p x)
+            (dolist (w (get-buffer-window-list x nil t)) (ignore-errors (delete-window w)))
+            (let ((kill-buffer-query-functions nil)) (kill-buffer x))))))))
+
 (defconst efrit-testdrive--tour-stops
   '(("Header" efrit-testdrive--tour-header)
     ("Folding" efrit-testdrive--tour-folding)
@@ -2949,7 +3089,8 @@ was failing every time.)"
     ("Inline rewrite preview" efrit-testdrive--tour-inline-diff)
     ("Several agent buffers" efrit-testdrive--tour-instances)
     ("Navigation and context" efrit-testdrive--tour-navigation)
-    ("Code review" efrit-testdrive--tour-code-review))
+    ("Code review" efrit-testdrive--tour-code-review)
+    ("Between agents" efrit-testdrive--tour-attention))
   "The tour's stops: (TITLE FUNCTION).")
 
 ;;;; Driver

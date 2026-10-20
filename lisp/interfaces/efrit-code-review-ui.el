@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc, ai
 
@@ -30,6 +30,7 @@
 (require 'diff-mode)
 (require 'efrit-code-review)
 (require 'efrit-ui-helpers)
+(require 'efrit-pill)
 
 (declare-function efrit-markdown--fontify-string "efrit-markdown")
 (declare-function magit-toplevel "magit-git")
@@ -45,20 +46,6 @@
   "The scope line at the top." :group 'efrit-code-review-ui)
 (defface efrit-code-review-file '((t :inherit font-lock-function-name-face :weight bold))
   "A finding's file and lines." :group 'efrit-code-review-ui)
-(defface efrit-code-review-suggestion
-  '((((background dark)) :foreground "#1b1b1b" :background "#8ab4f8")
-    (t :foreground "white" :background "#3b6ea5"))
-  "Badge of a suggestion." :group 'efrit-code-review-ui)
-(defface efrit-code-review-comment
-  '((((background dark)) :foreground "#1b1b1b" :background "#e6b422")
-    (t :foreground "#1b1b1b" :background "#f0c040"))
-  "Badge of a comment." :group 'efrit-code-review-ui)
-(defface efrit-code-review-lgtm
-  '((((background dark)) :foreground "#1b1b1b" :background "#8fbc8f")
-    (t :foreground "white" :background "#2e8b57"))
-  "Badge of an all-clear." :group 'efrit-code-review-ui)
-(defface efrit-code-review-queued '((t :inherit success :weight bold))
-  "The state of a queued finding." :group 'efrit-code-review-ui)
 (defface efrit-code-review-done '((t :inherit shadow :strike-through t))
   "A finding that was applied or dismissed." :group 'efrit-code-review-ui)
 (defface efrit-code-review-invalid '((t :inherit error))
@@ -95,14 +82,11 @@
 ;;;; Rendering
 
 (defun efrit-code-review-ui--badge (type)
-  (pcase type
-    ('suggestion (propertize " SUGGESTION " 'face 'efrit-code-review-suggestion))
-    ('comment (propertize " COMMENT " 'face 'efrit-code-review-comment))
-    (_ (propertize " LGTM " 'face 'efrit-code-review-lgtm))))
+  (efrit-pill (upcase (symbol-name type)) :state type :strong t))
 
 (defun efrit-code-review-ui--state-text (f)
   (pcase (plist-get f :state)
-    ('queued (propertize "queued" 'face 'efrit-code-review-queued))
+    ('queued (efrit-pill "queued" :state 'ok))
     ('applied (if (eq (plist-get f :type) 'suggestion) (propertize "applied" 'face 'efrit-code-review-done) ""))
     ('dismissed (propertize "dismissed" 'face 'efrit-code-review-done))
     ('invalid (propertize (format "did not apply: %s" (or (plist-get f :error) "?")) 'face 'efrit-code-review-invalid))

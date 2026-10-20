@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -40,9 +40,10 @@
 (require 'efrit-log)
 
 (declare-function efrit-sandbox-repo-of "efrit-sandbox")
-(declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-grant-names "efrit-sandbox")
 (declare-function efrit-sandbox-canonical "efrit-sandbox")
 (declare-function efrit-sandbox-remote-p "efrit-sandbox")
+(declare-function efrit-sandbox-symbolic-path "efrit-sandbox-symbolic")
 
 (defgroup efrit-grant-history nil
   "Memory of the user's answers to sandbox prompts."
@@ -95,15 +96,22 @@ Returns a string, or nil for targets no pattern should ever cover
       ((efrit-sandbox-remote-p target) nil)
       (t (let* ((path (efrit-sandbox-canonical target))
                 (repo (efrit-sandbox-repo-of path))
-                (dir (or repo
-                         (if (directory-name-p path) path (file-name-directory path)))))
-           (and dir (format "%s %s" cap (file-name-as-directory dir)))))))
+                (dir (or repo (if (directory-name-p path) path (file-name-directory path)))))
+           ;; ~/work/2026-10-16/ and ~/work/2026-10-17/ are one pattern:
+           ;; generated components become placeholders
+           ;; (efrit-sandbox-symbolic, 2026-10-16)
+           (and dir (format "%s %s" cap
+                            (if (and (not repo) (require 'efrit-sandbox-symbolic nil t))
+                                (efrit-sandbox-symbolic-path (file-name-as-directory dir))
+                              (file-name-as-directory dir))))))))
     ('net
      (when (and (consp target) (eq (car target) 'host) (stringp (cdr target)))
        (format "net %s" (downcase (cdr target)))))
+    ;; the commands a grant would name, so `tmux ls' and `tmux ls | grep
+    ;; x' are one pattern (see `efrit-sandbox-shell-grant-names')
     ('shell
      (when (stringp target)
-       (let ((names (ignore-errors (efrit-sandbox-shell-commands target))))
+       (let ((names (ignore-errors (efrit-sandbox-shell-grant-names target))))
          (and names (format "shell %s" (string-join (sort (copy-sequence names) #'string<) " "))))))
     (_ nil)))
 

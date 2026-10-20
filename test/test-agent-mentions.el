@@ -13,7 +13,11 @@
   `(let* ((root (file-name-as-directory (make-temp-file "efrit-mentions-" t)))
           (efrit-project-root root)
           (default-directory root)
-          (efrit-agent-mention--files-cache nil))
+          (efrit-agent-mention--files-cache nil)
+          ;; pasted and dropped files go outside the project, into a
+          ;; throwaway data directory here
+          (efrit-agent-dropped-directory
+           (file-name-as-directory (make-temp-file "efrit-dropped-" t))))
      (unwind-protect
          (progn
            (make-directory (expand-file-name "src" root))
@@ -21,7 +25,8 @@
            (with-temp-file (expand-file-name "notes with space.txt" root) (insert "remember\n"))
            (with-temp-file (expand-file-name "big.txt" root) (insert (make-string 100 ?x)))
            ,@body)
-       (delete-directory root t))))
+       (delete-directory root t)
+       (delete-directory efrit-agent-dropped-directory t))))
 
 (ert-deftest test-mentions-parse-and-expand ()
   "Mentions are found at word boundaries (not inside emails), quoted paths
@@ -136,7 +141,8 @@ is reported, not sent; /model NAME sets the model."
 
 (ert-deftest test-mentions-drag-and-drop ()
   "A dropped file becomes a mention in the input, relative to the project;
-one from a temporary directory is copied under .efrit/dropped first;
+one from a temporary directory is copied under `efrit-agent-dropped-directory'
+\(outside the project) first;
 the handler is on `dnd-protocol-alist' of the agent buffer."
   (test-mentions--with-project
     (with-current-buffer (efrit-agent--get-buffer)
@@ -156,11 +162,70 @@ the handler is on `dnd-protocol-alist' of the agent buffer."
         (unwind-protect
             (progn
               (efrit-agent-dnd-handle (concat "file://" shot) 'copy)
-              (should (string-match-p "@\\.efrit/dropped/[0-9]+-[0-9]+-[0-9a-f]+\\.png" (efrit-agent--get-input)))
-              (should (directory-files (expand-file-name ".efrit/dropped" root) nil "\\.png\\'")))
+              (let ((input (efrit-agent--get-input)))
+                (should (string-match-p "@~?/.*efrit-dropped-.*/[0-9]+-[0-9]+-[0-9a-f]+\\.png" input))
+                ;; nothing landed in the project
+                (should-not (file-exists-p (expand-file-name ".efrit" root))))
+              (should (directory-files-recursively efrit-agent-dropped-directory "\\.png\\'")))
           (delete-directory temporary-file-directory t)))
       ;; A directory or a missing file is refused
       (should-error (efrit-agent-dnd-handle (list (concat "file://" root)) 'copy) :type 'user-error)
+      (kill-buffer))))
+
+(ert-deftest test-mentions-paste-image-from-clipboard ()
+  "A pasted image (the `yank-media' handler) is written outside the project,
+under `efrit-agent-dropped-directory', and mentioned with a preview; the handler is registered in the agent
+buffer; C-y in the input falls back to `yank' when the clipboard holds no
+image; the API block for the mention carries the bytes."
+  (skip-unless (fboundp 'yank-media-handler))
+  (test-mentions--with-project
+    (with-current-buffer (efrit-agent--get-buffer)
+      (let ((inhibit-read-only t)) (erase-buffer))
+      (efrit-agent-mode)
+      (efrit-agent--init-regions)
+      (efrit-agent--setup-regions)
+      (should (assoc "image/.*" yank-media--registered-handlers))
+      ;; no paste keys of efrit's own: `yank' is advised instead
+      (should-not (lookup-key efrit-agent-input-mode-map (kbd "C-y")))
+      (should (advice-member-p #'efrit-agent-paste--around-yank 'yank))
+      ;; a tiny real PNG (1x1), unibyte
+      (let* ((png (string-to-unibyte
+                   (base64-decode-string "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")))
+             (file (efrit-agent-paste-image 'image/png png)))
+        (should (file-exists-p file))
+        (should (string-prefix-p efrit-agent-dropped-directory file))
+        (should (string-match-p "/paste-[0-9]+-[0-9]+-[0-9a-f]+\\.png\\'" file))
+        (should-not (file-exists-p (expand-file-name ".efrit" root)))
+        (should (string-match-p "@.*paste-" (efrit-agent--get-input)))
+        ;; old files are pruned when a new one arrives
+        (let ((old (expand-file-name "paste-old.png" (file-name-directory file))))
+          (with-temp-file old (insert "x"))
+          (set-file-times old (time-subtract nil (days-to-time 30)))
+          (efrit-agent-dropped-dir)
+          (should-not (file-exists-p old))
+          (should (file-exists-p file)))
+        ;; the API block needs an image-capable Emacs (`image-supported-file-p');
+        ;; the batch build here has none, so only check it where it can work
+        (when (image-type-available-p 'png)
+          (let ((blocks (efrit-agent-mentions-content-blocks (efrit-agent--get-input))))
+            (should (= 1 (length blocks)))
+            (should (equal "image/png" (alist-get 'media_type (alist-get 'source (car blocks))))))))
+      ;; an image on the clipboard: any `yank' in the input pastes it
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () t))
+                ((symbol-function 'yank-media) (lambda (&rest _) (insert "MEDIA"))))
+        (goto-char (point-max))
+        (let ((current-prefix-arg nil)) (yank)))
+      (should (string-match-p "MEDIA" (efrit-agent--get-input)))
+      ;; none: the ordinary yank
+      (kill-new "YANKED")
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () nil)))
+        (goto-char (point-max))
+        (let ((current-prefix-arg nil)) (yank)))
+      (should (string-match-p "YANKED" (efrit-agent--get-input)))
+      ;; outside the input region yank is untouched even with an image
+      (cl-letf (((symbol-function 'efrit-agent-paste--clipboard-has-image-p) (lambda () t))
+                ((symbol-function 'yank-media) (lambda (&rest _) (error "must not"))))
+        (with-temp-buffer (kill-new "plain") (yank) (should (equal "plain" (buffer-string)))))
       (kill-buffer))))
 
 (provide 'test-agent-mentions)

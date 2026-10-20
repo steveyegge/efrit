@@ -3,18 +3,22 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
 ;;; Commentary:
 
-;; A small rotating arc drawn with `svg.el', sized to the line height,
+;; A small animated e drawn with `svg.el', sized to the line height,
 ;; that the agent buffer shows while a request is in flight.  It sits
-;; in the header line next to the status word and at the end of the
-;; in-buffer "thinking" line.  One frame per tick of the existing
-;; spinner timer; frames are cached per (size, colour, index), so a
-;; tick is a hash lookup and a redisplay, not a rasterisation.
+;; in the header line next to the status word, at the start of the
+;; in-buffer "thinking" line, and as the agent buffer's `mode-name'
+;; (`efrit-agent-ring-mode-line-string').  One frame per tick of the
+;; existing spinner timer; frames are cached per (size, colour,
+;; index), so a tick is a hash lookup and a redisplay, not a
+;; rasterisation.  There is no `global-mode-string' copy: a second
+;; spinner at the right edge of the same mode line was noise (tzz,
+;; 2026-10-20).
 ;;
 ;; Without SVG support (terminal, or Emacs built without librsvg) the
 ;; caller falls back to the braille frames in efrit-agent-core.
@@ -99,20 +103,26 @@ edge, or the ring it replaced (tzz, 2026-10-03)."
 ;; per segment, nothing clever that librsvg might not have.
 
 (defun efrit-agent-spinner--e-points (size)
-  "Points (X . Y) along the e's stroke, in drawing order, for a SIZE box."
+  "Points (X . Y) along the e's stroke, in drawing order, for a SIZE box.
+The stroke runs along the crossbar from left to right, then round the
+bowl from the bar's right end over the top, down the left and along
+the bottom, ending in the tail at lower right -- the way a lowercase e
+is written (2026-10-14: the earlier bowl ran the other way and the e
+read mirrored once it was shown at rest)."
   (let* ((c (/ size 2.0))
          (r (* size 0.36))                ; bowl radius
          (bar-y c)                        ; the crossbar sits on the centre line
          (pts nil)
          (n 24))
-    ;; crossbar, right to left: from the bowl's right edge to its left edge
+    ;; crossbar, left to right
     (dotimes (i (1+ n))
-      (let ((x (- (+ c r) (* i (/ (* 2 r) (float n))))))
+      (let ((x (+ (- c r) (* i (/ (* 2 r) (float n))))))
         (push (cons x bar-y) pts)))
-    ;; the bowl, from the left end of the bar (angle 180°, measured with
-    ;; y down so angles run clockwise on screen) over the top (270°),
-    ;; the right (360°), the bottom (90°) to the tail at ~150°
-    (let* ((start 180.0) (end (+ 180 360 -45)) (steps (* 3 n)))
+    ;; the bowl: angles with y down, so decreasing angles go over the
+    ;; top.  From the bar's right end (0) through the top (-90), the
+    ;; left (-180), the bottom (-270) to the tail at -315 (45 below the
+    ;; horizontal on the right)
+    (let* ((start 0.0) (end -315.0) (steps (* 3 n)))
       (dotimes (i (1+ steps))
         (let* ((a (* float-pi (/ (+ start (* i (/ (- end start) (float steps)))) 180.0))))
           (push (cons (+ c (* r (cos a))) (+ c (* r (sin a)))) pts))))
@@ -180,15 +190,33 @@ edge, or the ring it replaced (tzz, 2026-10-03)."
 (defvar efrit-agent-spinner--cache (make-hash-table :test #'equal)
   "(size color bg index shape) -> propertized one-character string with the image.")
 
-(defun efrit-agent-spinner-frame (&optional index size)
+(defun efrit-agent-spinner-still (&optional size color bg-face)
+  "The e drawn whole in COLOR: the logo at rest, no highlight.
+SIZE and BG-FACE as in `efrit-agent-spinner-frame'.  Nil without SVG."
+  (when (efrit-agent-spinner-available-p)
+    (let* ((size (or size (- (frame-char-height) 2)))
+           (color (or color (efrit-agent-spinner--hex 'efrit-agent-spinner)))
+           (bg (efrit-agent-spinner--hex (or bg-face 'default) :background))
+           (key (list 'still size color bg)))
+      (or (gethash key efrit-agent-spinner--cache)
+          (puthash key
+                   (let ((svg (svg-create size size)))
+                     (efrit-agent-spinner--polyline svg (efrit-agent-spinner--e-points size) color
+                                                    (max 1.2 (/ size 12.0)))
+                     (propertize " " 'display (svg-image svg :ascent 'center :scale 1) 'rear-nonsticky t))
+                   efrit-agent-spinner--cache)))))
+
+(defun efrit-agent-spinner-frame (&optional index size color bg-face)
   "A string displaying spinner frame INDEX (default the shared counter).
-SIZE defaults to the frame's character height.  Returns nil when SVG
-is unavailable so callers can fall back to text frames."
+SIZE defaults to the frame's character height; COLOR (#rrggbb) to the
+`efrit-agent-spinner' face; the faint strokes are blended towards
+BG-FACE's background (default `default'; `mode-line' for a mode line).
+Returns nil when SVG is unavailable so callers can fall back to text."
   (when (efrit-agent-spinner-available-p)
     (let* ((index (mod (or index efrit-agent--spinner-index) efrit-agent-spinner-steps))
            (size (or size (- (frame-char-height) 2)))
-           (color (efrit-agent-spinner--hex 'efrit-agent-spinner))
-           (bg (efrit-agent-spinner--hex 'default :background))
+           (color (or color (efrit-agent-spinner--hex 'efrit-agent-spinner)))
+           (bg (efrit-agent-spinner--hex (or bg-face 'default) :background))
            (key (list size color bg index efrit-agent-spinner-shape)))
       (or (gethash key efrit-agent-spinner--cache)
           (puthash key
@@ -199,77 +227,13 @@ is unavailable so callers can fall back to text frames."
                    efrit-agent-spinner--cache)))))
 
 (defun efrit-agent-spinner-reset-cache ()
-  "Drop cached frames (after a theme or font change)."
+  "Drop cached frames (after a theme or font change, or a reload)."
   (clrhash efrit-agent-spinner--cache))
 
-;;; Mode-line indicator
-;;
-;; A small construct for `global-mode-string': the spinner while any
-;; agent buffer has a request in flight, nothing otherwise.  It is
-;; visible from every window, so the user sees efrit is busy without
-;; the agent buffer on screen.  The agent buffer's own spinner timer
-;; already calls `force-mode-line-update' on each tick; this construct
-;; reads that buffer's frame index, so it animates with no timer of
-;; its own.
-
-(defvar efrit-agent-buffer-name)
-(defvar efrit-agent--thinking-label)
-(defvar efrit-agent--spinner-index)
-(defvar efrit-agent--spinner-frames-unicode)
-(defvar efrit-agent--spinner-frames-ascii)
-(defvar efrit-agent-display-style)
-
-(defcustom efrit-agent-spinner-mode-line t
-  "When non-nil, show a spinner in every mode line while efrit works."
-  :type 'boolean
-  :group 'efrit-agent-spinner)
-
-(defun efrit-agent-spinner--busy-buffer ()
-  "An agent buffer with a request in flight, or nil.
-Any of them: with several sessions the mode line shows that efrit
-works somewhere; clicking it goes to that buffer."
-  (when (fboundp 'efrit-agent-buffers)
-    (cl-find-if (lambda (buf) (buffer-local-value 'efrit-agent--thinking-label buf))
-                (efrit-agent-buffers))))
-
-(declare-function efrit-agent-buffers "efrit-agent-core")
-
-(defun efrit-agent-spinner-mode-line-string ()
-  "The mode-line text: the spinner frame while efrit works, else nil.
-SVG on a graphic display, a text frame in a terminal.  Clicking it
-shows the agent buffer."
-  (when efrit-agent-spinner-mode-line
-    (when-let* ((buf (efrit-agent-spinner--busy-buffer)))
-      (let* ((index (buffer-local-value 'efrit-agent--spinner-index buf))
-             (frame (or (efrit-agent-spinner-frame index)
-                        (let ((frames (if (eq efrit-agent-display-style 'unicode)
-                                          efrit-agent--spinner-frames-unicode
-                                        efrit-agent--spinner-frames-ascii)))
-                          (aref frames (mod index (length frames)))))))
-        (propertize (concat " " frame " ")
-                    'help-echo "efrit is working — mouse-1: show the agent buffer"
-                    'mouse-face 'mode-line-highlight
-                    'local-map (let ((m (make-sparse-keymap)))
-                                 (define-key m [mode-line mouse-1]
-                                             (lambda () (interactive) (pop-to-buffer buf)))
-                                 m))))))
-
-(defconst efrit-agent-spinner--mode-line-construct
-  '(:eval (efrit-agent-spinner-mode-line-string)))
-
-(defun efrit-agent-spinner-mode-line-install ()
-  "Add the spinner construct to `global-mode-string' once."
-  (unless (member efrit-agent-spinner--mode-line-construct global-mode-string)
-    (setq global-mode-string
-          (append (or global-mode-string '(""))
-                  (list efrit-agent-spinner--mode-line-construct)))))
-
-(defun efrit-agent-spinner-mode-line-remove ()
-  "Remove the spinner construct from `global-mode-string'."
-  (setq global-mode-string
-        (delete efrit-agent-spinner--mode-line-construct global-mode-string)))
-
-(efrit-agent-spinner-mode-line-install)
+;; A reload must not keep serving frames drawn by the old code (the
+;; keys carry size and colours, not the geometry; 2026-10-14 the
+;; mirrored e survived two reloads this way).
+(efrit-agent-spinner-reset-cache)
 
 (provide 'efrit-agent-spinner)
 

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -96,6 +96,7 @@
   '(;; Core execution tools
     ("eval_sexp"          . (efrit-do--handle-eval-sexp . :input-str))
     ("shell_exec"         . (efrit-do--handle-shell-exec . :input-str))
+    ("run_program"        . (efrit-do--handle-run-program . :tool-input))
     ;; TODO management tool
     ("todo_write" . (efrit-do--handle-todo-write . :tool-input))
     ;; Buffer and display tools
@@ -137,6 +138,9 @@
     ("xref_references"    . (efrit-do--handle-xref-references . :tool-input))
     ("xref_apropos"       . (efrit-do--handle-xref-apropos . :tool-input))
     ("imenu_symbols"      . (efrit-do--handle-imenu-symbols . :tool-input))
+    ("project_outline"    . (efrit-do--handle-project-outline . :tool-input))
+    ("load_project_file"  . (efrit-do--handle-load-project-file . :tool-input))
+    ("run_ert"            . (efrit-do--handle-run-ert . :tool-input))
     ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
     ("surrounding_context" . (efrit-do--handle-surrounding-context . :tool-input))
     ("show_location"      . (efrit-do--handle-show-location . :tool-input))

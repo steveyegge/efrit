@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -221,11 +221,29 @@ Returns a string (possibly empty) ready to splice into the prompt."
    "(Tramp) files alike, with the user's settings applied and without leaving their\n"
    "editor. A shell command sees none of that: it runs on the local machine even when\n"
    "the user's files are remote, ignores their Emacs state, and needs a separate grant.\n"
-   "Order of preference for any task:\n"
+   "THE RULE: if Emacs can do a task, do it in Emacs. Shelling out is an anti-pattern\n"
+   "here, not a shortcut. Order of preference for any task:\n"
    "  1. An existing Emacs command or function (built-in or from the user's packages).\n"
    "  2. A few lines of Lisp composed from Emacs primitives.\n"
-   "  3. shell_exec, only when the user asked for a shell/external tool, or when no\n"
-   "     Emacs facility exists (say so when you fall back).\n"
+   "  3. An external program that has no Emacs equivalent (tmux, make, a compiler):\n"
+   "     run_program with an argument array, or (process-lines PROG ARGS...) in\n"
+   "     eval_sexp, which hands you the output as a list of lines to filter in Lisp.\n"
+   "  4. shell_exec, only when the user asked for the shell itself.\n"
+   "After editing a project .el file: load_project_file to make it live, then run_ert with\n"
+   "a selector.  Both run in this Emacs.  Never start another Emacs for that.\n"
+   "A shell line made of commands Emacs does (cp, mv, rm, mkdir, date, sleep, echo,\n"
+   "cat, head, tail, wc, grep, sed, awk, cut, sort, diff, ls, find, which, test…) is\n"
+   "REFUSED by the sandbox before the user sees it, and the refusal names the Lisp to\n"
+   "use: copy-file, rename-file, delete-file, make-directory, format-time-string,\n"
+   "sleep-for, read_file, search_content, edit_file, create_file, split-string, sort,\n"
+   "executable-find, file-exists-p. Pipelines around a real program (`tmux ls | grep x`,\n"
+   "`prog 2>&1 | head`) ask the user for every shell word on the line; the same call\n"
+   "through run_program or process-lines asks about the program alone, once.\n"
+   "READING CODE: to understand a feature, call project_outline once (where things are),\n"
+   "then read_file paths=[...] with every file involved, WHOLE, in one call.  Range reads\n"
+   "(start_line/end_line) are for files the budget would not take; never for walking a\n"
+   "file in windows.  Nine 60-line reads of one file are nine round trips for one read's\n"
+   "worth of text (2026-10-20).\n"
    "Searching or listing files is never a shell job: `cd DIR && rg PATTERN FILES' is\n"
    "search_content path=DIR pattern=PATTERN file_pattern=GLOB; `ls DIR' is project_files\n"
    "or file_info; `cat FILE' is read_file.  Those run under the project's grant without\n"

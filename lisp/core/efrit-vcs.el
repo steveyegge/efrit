@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, vc
 
@@ -41,6 +41,7 @@
 (declare-function vc-git-stash-pop "vc-git")
 (declare-function vc-git-stash-delete "vc-git")
 (declare-function vc-git--run-command-string "vc-git")
+(declare-function vc-git-command "vc-git")
 (declare-function vc-git--symbolic-ref "vc-git")
 (declare-function vc-git--git-path "vc-git")
 (declare-function vc-git-log-outgoing "vc-git")
@@ -247,6 +248,54 @@ default abbreviates both) so callers can report them."
         (signal 'efrit-vcs-error
                 (list (format "version control command timed out after %ds"
                               efrit-vcs-async-timeout)))))))
+
+;;;; Worktrees (Git)
+
+(defun efrit-vcs-worktree-add (branch destination &optional dir)
+  "Make a new Git worktree at DESTINATION on new BRANCH from DIR's HEAD.
+DESTINATION must not exist and BRANCH must not: an agent gets a fresh
+checkout, never someone else's (after M-x Machina, 2026-10-14).
+Returns the worktree root as a directory name.  Signals
+`efrit-vcs-error' with the reason otherwise."
+  (pcase-let ((`(,backend . ,root) (efrit-vcs-require dir)))
+    (unless (eq backend 'Git)
+      (signal 'efrit-vcs-error (list "worktrees need Git")))
+    (require 'vc-git)
+    (let ((destination (directory-file-name (expand-file-name destination root)))
+          (default-directory root))
+      (when (file-remote-p destination)
+        (signal 'efrit-vcs-error (list "only local worktrees are supported")))
+      (when (or (file-exists-p destination) (file-symlink-p destination))
+        (signal 'efrit-vcs-error (list (format "%s exists; choose a new directory" (abbreviate-file-name destination)))))
+      (when (or (string-empty-p branch) (string-match-p "[[:space:]]" branch))
+        (signal 'efrit-vcs-error (list "the branch name must be one word")))
+      (when (vc-git--run-command-string nil "rev-parse" "--verify" "--quiet" (concat "refs/heads/" branch))
+        (signal 'efrit-vcs-error (list (format "branch %s exists; choose a new name" branch))))
+      (unless (vc-git--run-command-string nil "rev-parse" "--verify" "--quiet" "HEAD")
+        (signal 'efrit-vcs-error (list "the repository has no commit yet")))
+      (condition-case err
+          (with-temp-buffer
+            (setq default-directory root)
+            (vc-git-command (current-buffer) 0 nil "worktree" "add" "-b" branch "--" destination "HEAD"))
+        (error (signal 'efrit-vcs-error
+                       (list (format "git worktree add failed: %s" (error-message-string err))))))
+      (file-name-as-directory destination))))
+
+(defun efrit-vcs-worktree-list (&optional dir)
+  "The worktrees of DIR's repository: a list of (PATH BRANCH-OR-NIL)."
+  (pcase-let ((`(,backend . ,root) (efrit-vcs-require dir)))
+    (when (eq backend 'Git)
+      (require 'vc-git)
+      (let ((default-directory root) (out nil) (path nil) (branch nil))
+        (dolist (line (split-string (or (vc-git--run-command-string nil "worktree" "list" "--porcelain") "") "\n"))
+          (cond
+           ((string-prefix-p "worktree " line) (setq path (file-name-as-directory (substring line 9)) branch nil))
+           ((string-prefix-p "branch refs/heads/" line) (setq branch (substring line 18)))
+           ((string-empty-p line)
+            (when path (push (list path branch) out))
+            (setq path nil branch nil))))
+        (when path (push (list path branch) out))
+        (nreverse out)))))
 
 ;;;; Files
 

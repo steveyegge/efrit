@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -283,14 +283,26 @@ the model streams (copilot-chat's following-windows rule)."
                  (point-max))))
     (cl-remove-if-not
      (lambda (w)
-       (<= (count-lines (min (window-point w) end) end)
-           efrit-agent-follow-threshold))
+       ;; count at most threshold+1 lines back from the end, not the
+       ;; whole distance (a 100k transcript made this a visible pause)
+       (let ((from (min (window-point w) end)))
+         (and (>= from (save-excursion
+                         (goto-char end)
+                         (forward-line (- (1+ efrit-agent-follow-threshold)))
+                         (point)))
+              (<= (count-lines from end) efrit-agent-follow-threshold))))
      (get-buffer-window-list (current-buffer) nil t))))
 
-(defun efrit-agent--note-followers ()
+(defun efrit-agent--note-followers (&optional beg _end)
   "Record which windows are following, before text is inserted.
-Called from `before-change-functions' for this buffer."
-  (setq efrit-agent--follow-windows (efrit-agent--following-windows)))
+Called from `before-change-functions' for this buffer.  Only a change
+in the conversation counts: a keystroke in the input region is a
+change too, and counting lines over the whole transcript on every
+typed character made typing stutter (tzz, 2026-10-16)."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (or (null beg) (<= beg (marker-position efrit-agent--conversation-end))))
+    (setq efrit-agent--follow-windows (efrit-agent--following-windows))))
 
 (defun efrit-agent--scroll-to-bottom ()
   "Scroll only the windows that were already following the output.
@@ -457,14 +469,28 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
 
+(defvar efrit-agent--input-hint-cache nil
+  "(MAP . HINT): the hint last computed and the keymap it was computed from.
+The header line asks for the hint on every redisplay and the five
+`where-is-internal' lookups cost about 0.6 ms each time (profiled
+2026-10-20, 8% of a typing session).  The keymap object changes only
+on reload, when `efrit-agent-input-mode-map' is rebound.")
+
 (defun efrit-agent-input-hint ()
   "The one-line key hint for the input: how to send and how to break a line.
 Chat clients (Slack, the Claude app) use RET to send and S-RET for a
 newline; efrit does the same, and says so, because an Emacs user
 expects RET to insert a newline.  Bindings are looked up, so a user
-who rebinds them sees their own keys."
-  (let* ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map))
-         (key (lambda (cmd fallback)
+who rebinds them sees their own keys; the result is cached per keymap."
+  (let ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map)))
+    (if (and efrit-agent--input-hint-cache (eq (car efrit-agent--input-hint-cache) map))
+        (cdr efrit-agent--input-hint-cache)
+      (cdr (setq efrit-agent--input-hint-cache
+                 (cons map (efrit-agent--compute-input-hint map)))))))
+
+(defun efrit-agent--compute-input-hint (map)
+  "The input hint text from the bindings in keymap MAP (see `efrit-agent-input-hint')."
+  (let* ((key (lambda (cmd fallback)
                 ;; prefer the shifted/chorded key when several are bound:
                 ;; "S-RET" is what a chat user looks for, "C-j" is not
                 (let* ((keys (and map (where-is-internal cmd map)))

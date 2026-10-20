@@ -58,7 +58,9 @@
                    "directory-files-recursively" "Tramp"))
       (should (string-match-p (regexp-quote sym) text)))
     ;; shell is the last resort, stated as such
-    (should (string-match-p "3\\. shell_exec" text)))
+    (should (string-match-p "4\\. shell_exec" text))
+    (should (string-match-p "Shelling out is an anti-pattern" text))
+    (should (string-match-p "run_program" text)))
   (let ((examples (efrit-do--command-examples)))
     ;; the first example is recentf, not a shell command
     (should (< (string-match "recentf-list" examples)

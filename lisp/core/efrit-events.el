@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -46,7 +46,9 @@
 ;;                     the next tool results (`efrit-repl-loop--steer')
 ;;   steered           :text -- the text was delivered to the model
 ;;   steer-queued      :text -- no tool round was left; the text starts the next turn
-;;   prompt-open       :label -- a modal prompt is about to wait for the user
+;;   prompt-open       :label :session-id -- a modal prompt is about to wait for the user
+;;   prompt-closed     :label :session-id -- that prompt is answered or abandoned
+;;   attention-changed :buffer -- an agent buffer's unread/waiting mark changed
 ;;   prompt-answered-unattended :label :answer :why -- unattended mode answered it
 ;;   queued            :text :count -- an input waits for the turn to end
 ;;   turn-complete     :stop-reason :completion-message
@@ -200,6 +202,16 @@ Clocks take a reading at their start and subtract the difference.")
 ;; global value is used.
 (efrit-session-local 'efrit-user-waiting-seconds 'efrit-user-waiting-depth)
 
+(defvar efrit-tools-input-allowed nil
+  "Non-nil while efrit itself asks the user from inside an eval.
+The stubs `efrit-tools--call-with-input-blocked' installs are global:
+they replace `read-string' for everyone until the eval returns, and
+efrit's own prompts run inside the eval (the sandbox menu's `w' and
+`e', a y-or-n-p from the ediff path).  Bound to t by
+`efrit-with-user-waiting', the stubs call the real function then
+\(2026-10-16: `w' at a prompt raised by eval_sexp failed with the
+blocked-input error).")
+
 (defmacro efrit-with-user-waiting (&rest body)
   "Run BODY, a prompt to the user, with efrit's clocks paused.
 Adds the time BODY takes to `efrit-user-waiting-seconds' and suspends
@@ -207,7 +219,10 @@ any enclosing `with-timeout'.  Nested uses count the time once."
   (declare (indent 0) (debug t))
   (let ((start (make-symbol "start")) (suspended (make-symbol "suspended")))
     `(let ((,start (float-time))
-           (,suspended (with-timeout-suspend)))
+           (,suspended (with-timeout-suspend))
+           ;; a prompt of efrit's own may read from the user even while
+           ;; an eval has the model's input functions stubbed out
+           (efrit-tools-input-allowed t))
        (cl-incf efrit-user-waiting-depth)
        (unwind-protect
            (progn ,@body)
@@ -286,11 +301,12 @@ published so a desktop notification can say that efrit is waiting
                             (list (cons :label ,label) (cons :answer (car ,policy)) (cons :why (cdr ,policy))))
              (throw 'efrit-prompt-answered (car ,policy)))))
         (t
-         (efrit-publish 'prompt-open (list (cons :label ,label)))
+         (efrit-publish 'prompt-open (list (cons :label ,label) (cons :session-id efrit-current-session-id)))
          (let ((outer efrit-prompt--owner))
            (setq efrit-prompt--owner ,me)
            (unwind-protect (progn ,@body)
-             (setq efrit-prompt--owner outer)))))))))
+             (setq efrit-prompt--owner outer)
+             (efrit-publish 'prompt-closed (list (cons :label ,label) (cons :session-id efrit-current-session-id)))))))))))
 
 (defun efrit-elapsed-working (since &optional waiting-at-start)
   "Seconds since SINCE (a time value) minus time spent waiting on the user.

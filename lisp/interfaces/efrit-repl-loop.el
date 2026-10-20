@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -168,10 +168,16 @@ Returns the session ID."
         (user-error "Session is already processing a request"))
 
       ;; Add user message to session, with the editor snapshot for the API
+      ;; The snapshot describes the user's buffer, but the project is
+      ;; the session's: an agent bound to a directory must not report
+      ;; the directory of whatever window was selected (tzz, 2026-10-15:
+      ;; "a new efrit agent with a bound directory should change the
+      ;; working directory to it")
       (efrit-repl-session-add-user-message
        session user-input
        (condition-case err
-           (efrit-context-wrap-user-input (or api-input user-input))
+           (efrit-repl-loop--with-session
+            session (lambda () (efrit-context-wrap-user-input (or api-input user-input))))
          (error
           (efrit-log 'warn "REPL session %s: context snapshot failed: %s"
                      session-id (error-message-string err))
@@ -247,7 +253,7 @@ Returns the session ID."
 
 (defun efrit-repl-loop--mark-waiting (session)
   "SESSION waits on the connectivity question; its loop entry stays so
-the retry re-enters the same turn (efrit-reconnect, 0.11.1)."
+the retry re-enters the same turn (efrit-reconnect, 0.12.12)."
   (efrit-repl-session-set-status session 'waiting)
   (efrit-publish 'thinking-stop `((:session-id . ,(efrit-repl-session-id session)))))
 
@@ -310,10 +316,21 @@ buffer happened to be current; without this the sandbox, the limits,
 the settings and shell commands would take the root of that
 bystander (multi-session audit, 2026-09-28).  The current buffer is
 left alone: tools that act on \"the current buffer\" mean the user's."
-  (let* ((root (efrit-repl-session-project-root session))
-         (efrit-project-root (or root efrit-project-root))
-         (default-directory (or (and root (file-directory-p root) (file-name-as-directory root))
-                                default-directory)))
+  ;; One directory, not two: the session's root is both the project
+  ;; and the working directory for everything the turn does.  A
+  ;; session without one (old saves) adopts the agent buffer's
+  ;; `default-directory' now (tzz, 2026-10-16: "why have a separate
+  ;; project root and current working directory?")
+  (let* ((root (or (let ((r (efrit-repl-session-project-root session)))
+                     (and r (file-directory-p r) r))
+                   (let ((buf (efrit-repl-session-buffer session)))
+                     (and (buffer-live-p buf)
+                          (setf (efrit-repl-session-project-root session)
+                                (buffer-local-value 'default-directory buf))))
+                   default-directory))
+         (root (file-name-as-directory (expand-file-name root)))
+         (efrit-project-root root)
+         (default-directory root))
     (efrit-with-session (efrit-repl-session-id session)
       (funcall thunk))))
 

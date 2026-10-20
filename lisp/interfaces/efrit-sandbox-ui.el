@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -166,9 +166,14 @@ Toggled by ? in the menu; reset for each new request.")
      ((eq cap 'elisp) "arbitrary Emacs Lisp")
      ((eq cap 'net) "a host your request did not name")
      ((eq cap 'shell)
-      (cond ((and (stringp target) (efrit-sandbox-shell-always-ask-match target)) "a command that is always asked")
-            ((and (stringp target) (string-match-p "[<>`$]" target)) "redirection or substitution in the command")
-            (t "a command outside the read-only set")))
+      (let ((line (efrit-sandbox-request-detail req)))
+        (cond ((and (stringp target) (efrit-sandbox-shell-always-ask-match target)) "a command that is always asked")
+              ((and (stringp line) (not (efrit-sandbox--shell-line-plain-p line)))
+               "redirection or substitution in the command")
+              ((and (stringp line) (efrit-sandbox-shell-unusual-commands line))
+               (format "%s: not in the read-only set"
+                       (string-join (efrit-sandbox-shell-unusual-commands line) ", ")))
+              (t "a command outside the read-only set"))))
      ((eq cap 'write)
       (if (efrit-sandbox-repo-of target) "a write in a repository not granted this session"
         "a write outside any repository"))
@@ -302,6 +307,30 @@ escape that leaves the tool hanging)."
     ;; no-op in the echo-area path and when the hook already did it.
     (efrit-sandbox-ui--exit-recursive-edit)))
 
+(defun efrit-sandbox-ui-refuse-with-words ()
+  "Refuse the open request and tell the model why, in a line of your own.
+The words go into the denial the model reads (\"use Emacs for this,
+no cp\"), so it changes course instead of stopping (tzz, 2026-10-16:
+\"the permissions prompt also should have an option to tell efrit
+what it's doing wrong\").  An empty line is a plain no."
+  (interactive)
+  ;; Only the choice is recorded here.  Reading the line inside the
+  ;; suffix put a minibuffer under transient's post-command processing,
+  ;; which saw the answer still pending and reopened the menu over the
+  ;; prompt (2026-10-16).  `efrit-sandbox-ui--ask-with-menu' reads the
+  ;; words once the menu's recursive edit has ended.
+  (efrit-sandbox-ui--choose 'words))
+
+(defun efrit-sandbox-ui--read-refusal-words (req)
+  "Ask for the user's words after a `w' and store them in REQ.  Returns nil."
+  (let ((words (condition-case nil
+                   (read-string "Refuse, and tell the model: ")
+                 (quit nil))))
+    (when (and (stringp words) (not (string-empty-p (string-trim words))))
+      (setf (efrit-sandbox-request-feedback req) (string-trim words))
+      (efrit-log 'info "sandbox: refused with words: %s" (string-trim words)))
+    nil))
+
 (defun efrit-sandbox-ui--exit-recursive-edit ()
   "Leave the recursive edit that waits on the menu, if we are in it.
 Only once an answer was chosen.  The menu can close for reasons that
@@ -358,6 +387,7 @@ waiting until a key is pressed."
            ["Refuse"
             ("n" "no, the model continues without it"
              (lambda () (interactive) (efrit-sandbox-ui--choose nil)))
+            ("w" "no, and tell the model what to do instead" efrit-sandbox-ui-refuse-with-words)
             ("N" "no to this and every request for the rest of the turn"
              (lambda () (interactive) (efrit-sandbox-deny-rest-of-turn) (efrit-sandbox-ui--choose nil)))
             ("q" "abort the turn (like C-g; the conversation stays)"
@@ -396,7 +426,11 @@ reopens; the user can walk away and find the question still there."
       (remove-hook 'transient-post-exit-hook #'efrit-sandbox-ui--exit-recursive-edit)
       (efrit-sandbox-ui--hide-details)
       (setq efrit-sandbox-ui--request nil)))
-  (if (eq efrit-sandbox-ui--answer 'pending) nil efrit-sandbox-ui--answer))
+  (pcase efrit-sandbox-ui--answer
+    ('pending nil)
+    ;; `w': the menu is gone, now ask for the words
+    ('words (efrit-sandbox-ui--read-refusal-words req))
+    (answer answer)))
 
 (defun efrit-sandbox-ui--ask-in-echo-area (req)
   "Fallback prompt in the echo area when no menu can be shown."
@@ -408,11 +442,11 @@ reopens; the user can walk away and find the question still there."
                      (if exact-line
                          "[o]nce (this line is always asked)  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
                        "[o]nce (this host allows one at a time)  [n]o  [N]o to all this turn  [q]abort turn  [?]details ")
-                   (format "[o]nce  [s]ession  [p]roject %s  [n]o  [N]o to all this turn  [q]abort turn  [?]details "
+                   (format "[o]nce  [s]ession  [p]roject %s  [n]o  [w]no, with words  [N]o to all this turn  [q]abort turn  [?]details "
                            (efrit-sandbox-abbreviate (efrit-sandbox-project-root)))))
          (editable (efrit-sandbox-request-editable-p req))
          (legend (if editable (concat legend "[e]dit then run once ") legend))
-         (keys (append (if once-only '(?o ?n ?N ?q ??) '(?o ?s ?p ?n ?N ?q ??))
+         (keys (append (if once-only '(?o ?n ?w ?N ?q ??) '(?o ?s ?p ?n ?w ?N ?q ??))
                        (and editable '(?e)))))
     (unwind-protect
         (catch 'decided
@@ -429,6 +463,10 @@ reopens; the user can walk away and find the question still there."
                     (efrit-sandbox-ui-edit-then-allow)
                     (throw 'decided efrit-sandbox-ui--answer)))
               (?n (throw 'decided nil))
+              (?w (let ((words (read-string "Refuse, and tell the model: ")))
+                    (unless (string-empty-p (string-trim words))
+                      (setf (efrit-sandbox-request-feedback req) (string-trim words)))
+                    (throw 'decided nil)))
               (?N (efrit-sandbox-deny-rest-of-turn) (throw 'decided nil))
               (?q (efrit-sandbox-abort-turn) (throw 'decided nil))
               (?? (efrit-sandbox-ui--show-details req)))))
@@ -459,7 +497,10 @@ reopens; the user can walk away and find the question still there."
          (_ (pcase (efrit-sandbox-turn-answer)
               ('abort (format "%s: denied, turn aborted (%s)" tool what))
               ('deny-all (format "%s: denied, and everything else this turn (%s)" tool what))
-              (_ (format "%s: denied (%s)" tool what)))))
+              (_ (if (efrit-sandbox-request-feedback req)
+                     (format "%s: denied (%s); told the model: %s" tool what
+                             (efrit-sandbox-request-feedback req))
+                   (format "%s: denied (%s)" tool what))))))
        (if answer 'efrit-sandbox-grant-face 'efrit-sandbox-deny-face)
        req)
       answer)))

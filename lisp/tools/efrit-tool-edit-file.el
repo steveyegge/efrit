@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.11.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -29,10 +29,36 @@
 
 ;;; Customization
 
-(defcustom efrit-tool-edit-file-backup t
-  "When non-nil, create backup before editing files."
+(defcustom efrit-tool-edit-file-backup nil
+  "When non-nil, make an Emacs backup of a file before `edit_file' changes it.
+The backup follows the user's own settings (`make-backup-files',
+`backup-directory-alist', `version-control'), through
+`backup-buffer' on a buffer visiting the file.  Off by default: the
+original content is kept for `undo_edit' anyway, and a file edited
+while visited is saved by `basic-save-buffer', which applies those
+settings itself.  Until 0.12.26 this copied the file to `FILE~'
+beside it regardless of the user's configuration (tzz, 2026-10-19:
+\"efrit keeps creating file~ backups everywhere\")."
   :type 'boolean
   :group 'efrit-tool-utils)
+
+(defun efrit-tool-edit-file--backup (path)
+  "Back PATH up the way the user's Emacs would, when they ask for it.
+Does nothing when `make-backup-files' is nil: the user turned backups
+off, and efrit does not have its own opinion."
+  (when make-backup-files
+    (let ((buf (find-buffer-visiting path)))
+      (if buf
+          (with-current-buffer buf (backup-buffer))
+        ;; no live buffer: a throwaway one, so backup-directory-alist
+        ;; and friends decide where the copy goes
+        (with-temp-buffer
+          (insert-file-contents path)
+          (setq buffer-file-name path)
+          (set-buffer-modified-p t)
+          (backup-buffer)
+          (setq buffer-file-name nil)
+          (set-buffer-modified-p nil))))))
 
 (defcustom efrit-tool-edit-file-max-size 1000000
   "Maximum file size in bytes for editing (default: 1MB)."
@@ -42,7 +68,7 @@
 ;;; Diff Generation
 
 (define-obsolete-function-alias 'efrit-tool-edit-file--generate-diff
-  #'efrit-tool-unified-diff "0.11.1")
+  #'efrit-tool-unified-diff "0.12.12")
 
 ;;; Main Implementation
 
@@ -130,11 +156,8 @@ Returns a standard tool response with diff showing changes."
                     (list (format "old_str appears %d times in file. Use replace_all=true to replace all, or add more context to make it unique."
                                   match-count)))))
 
-          ;; Create backup if enabled (disk copy; a visiting buffer's
-          ;; unsaved state is what efrit-file-replace operates on)
           (when (and efrit-tool-edit-file-backup (file-exists-p path))
-            (let ((backup-path (concat path "~")))
-              (copy-file path backup-path t)))
+            (efrit-tool-edit-file--backup path))
 
           ;; Apply.  efrit-file-replace re-verifies that the content is
           ;; still ORIGINAL-CONTENT right before changing anything: the

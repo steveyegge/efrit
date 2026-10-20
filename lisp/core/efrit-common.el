@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, common
-;; Version: 0.11.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;; Common utilities shared across efrit modules to eliminate code duplication.

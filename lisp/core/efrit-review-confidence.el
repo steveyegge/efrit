@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, ai
 
@@ -11,7 +11,7 @@
 
 ;; Two gates stand before a tool call: the reviewer (is this sensible
 ;; for the task?) and the sandbox (is this path, host or command
-;; granted?).  Until 0.11.1 the second gate always asked the user when
+;; granted?).  Until 0.12.12 the second gate always asked the user when
 ;; nothing covered the request, even after the reviewer had approved
 ;; and even when the user had granted the same thing in session after
 ;; session.  tzz, 2026-10-03: "Give the reviewer a certainty threshold
@@ -50,6 +50,9 @@
 (declare-function efrit-sandbox--expected-shell-line-p "efrit-sandbox")
 (declare-function efrit-sandbox-shell-always-ask-match "efrit-sandbox")
 (declare-function efrit-sandbox-shell-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-unusual-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-granted-commands "efrit-sandbox")
+(declare-function efrit-sandbox-shell-named-commands "efrit-sandbox")
 (declare-function efrit-sandbox-remote-p "efrit-sandbox")
 (declare-function efrit-sandbox-repo-of "efrit-sandbox")
 (declare-function efrit-sandbox-abbreviate "efrit-sandbox")
@@ -60,6 +63,8 @@
 (declare-function efrit-sandbox-host-under-p "efrit-sandbox")
 (declare-function efrit-review-flags-for-use "efrit-review-flags")
 (declare-function efrit-resolve-path-simple "efrit-tool-utils")
+(declare-function efrit-sandbox-symbolic-instructed "efrit-sandbox-symbolic")
+(declare-function efrit-sandbox-symbolic-path "efrit-sandbox-symbolic")
 (declare-function efrit-publish "efrit-events")
 (defvar efrit-sandbox-enabled)
 
@@ -86,7 +91,11 @@ yeses -- all recent.  Sixty days later each is worth half."
     (history-some . 0.35)       ; net > 0, below that
     (history-mixed . 0.10)      ; granted more than denied, but denied too
     (mentioned . 0.45)          ; the request names the target
+    (instructed . 1.20)         ; the user's instruction files name the path as a template; clears the line even for a write
     (read-only-shell . 0.35)    ; every command is in the read-only set
+    (granted-commands . 0.25)   ; some grant-needing commands already have a shell grant
+    (task-commands . 0.45)      ; every grant-needing command is named in the user's request
+    (new-commands . -0.20)      ; a command neither granted, named, nor read-only
     (read-cap . 0.15)           ; a read, not a write / shell / net
     (granted-repo . 0.25)       ; inside a repository the user has granted before
     (known-host . 0.30)         ; a host fetched before
@@ -99,14 +108,18 @@ Tuned so that one strong fact is never enough: a read granted three
 times before in a repository granted before reaches the 0.95 line
 \(0.60 + 0.25 + 0.15); a read-only shell line scores 0.25 on its own,
 0.85 with a strong history, 0.95 only when the request also names
-its target or the history is strong AND the line is named."
+its target or the history is strong AND the line is named.  A shell
+line whose commands the user already granted and whose remaining
+command their request names (tmux, for a tmux.conf review) scores
+0.60 before history; a command that is none of granted, named or
+read-only pulls the line down."
   :type '(alist :key-type symbol :value-type number)
   :group 'efrit-review-confidence)
 
 ;;;; The request a tool call would make
 
 (defconst efrit-review-confidence--path-tools
-  '(("read_file" read "path") ("file_info" read "paths") ("search_content" read "path")
+  '(("read_file" read "path") ("read_file" read "paths") ("project_outline" read "path") ("file_info" read "paths") ("search_content" read "path")
     ("project_files" read "path") ("edit_file" write "path") ("create_file" write "path")
     ("format_file" write "path") ("undo_edit" write "path") ("show_location" read "file")
     ("imenu_symbols" read "file") ("xref_references" read "file") ("xref_apropos" read "file")
@@ -129,13 +142,21 @@ requests come from running it."
      ((equal name "shell_exec")
       (let ((line (funcall get "command")))
         (and (stringp line) (list (cons 'shell (string-trim line))))))
+     ((equal name "run_program")
+      (let ((program (funcall get "program")) (args (funcall get "args")))
+        (and (stringp program)
+             (list (cons 'shell (mapconcat #'shell-quote-argument
+                                           (cons program (and (or (vectorp args) (listp args)) (append args nil)))
+                                           " "))))))
      ((member name '("fetch_url" "web_search"))
       (when-let* ((host (efrit-review-confidence--url-host (or (funcall get "url") ""))))
         (list (cons 'net (cons 'host host)))))
      ((member name '("edit_buffer" "editor_state")) nil)
      ((equal name "eval_sexp") nil)
      (t
-      (when-let* ((spec (assoc name efrit-review-confidence--path-tools)))
+      (when-let* ((spec (or (and (equal name "read_file") (funcall get "paths")
+                                 '("read_file" read "paths"))
+                            (assoc name efrit-review-confidence--path-tools))))
         (let* ((cap (nth 1 spec)) (key (nth 2 spec)) (v (funcall get key))
                (paths (cond ((stringp v) (list v))
                             ((vectorp v) (append v nil))
@@ -179,7 +200,11 @@ A fact named `blocked' means no score may grant this."
       (when (> no yes)
         (fact 'blocked (format "the user's refusals outweigh their grants (%.1f against %.1f, decayed)" no yes)))
       (when (and (eq cap 'write) (stringp target)
-                 (not (efrit-review-confidence--granted-repo-p target)))
+                 (not (efrit-review-confidence--granted-repo-p target))
+                 ;; a path the user's instruction files name is asked
+                 ;; for in writing: not an unknown place
+                 (not (and (require 'efrit-sandbox-symbolic nil t)
+                           (ignore-errors (efrit-sandbox-symbolic-instructed target)))))
         (fact 'blocked "a write outside every repository the user has granted before"))
       (when (and use (equal (nth 1 use) "eval_sexp"))
         (fact 'blocked "eval_sexp requests arise while it runs"))
@@ -198,8 +223,39 @@ A fact named `blocked' means no score may grant this."
              (fact 'history-mixed (efrit-review-confidence--history-words st))))
       (when (ignore-errors (efrit-sandbox--mentioned-p cap target))
         (fact 'mentioned "named in the user's request"))
+      ;; the user's instruction files name this path as a template:
+      ;; asked for in writing (efrit-sandbox-symbolic)
+      (when (and (memq cap '(read write buffer)) (stringp target))
+        (when-let* ((hit (and (require 'efrit-sandbox-symbolic nil t)
+                              (ignore-errors (efrit-sandbox-symbolic-instructed target)))))
+          (fact 'instructed (format "%s in %s" (car hit) (abbreviate-file-name (cdr hit))))))
       (when (and (eq cap 'shell) (ignore-errors (efrit-sandbox--expected-shell-line-p target)))
         (fact 'read-only-shell (format "only %s" (string-join (efrit-sandbox-shell-commands target) ", "))))
+      ;; a shell line in context: which of its grant-needing commands
+      ;; the user already granted, which their request names, and
+      ;; which are new (2026-10-16: tmux granted and the task about
+      ;; tmux.conf, and the reviewer saw only "a command outside the
+      ;; read-only set")
+      (when (and (eq cap 'shell) (stringp target)
+                 (not (efrit-sandbox-shell-always-ask-match target)))
+        (let* ((root (efrit-sandbox-project-root))
+               ;; the read-only commands are the read-only-shell fact's
+               ;; business; here only the others count
+               (needed (ignore-errors (efrit-sandbox-shell-unusual-commands target)))
+               (granted (cl-intersection
+                         needed (ignore-errors (efrit-sandbox-shell-granted-commands target root))
+                         :test #'equal))
+               (named (cl-intersection
+                       needed (ignore-errors (efrit-sandbox-shell-named-commands target))
+                       :test #'equal))
+               (new (cl-remove-if (lambda (n) (or (member n granted) (member n named))) needed)))
+          (when granted
+            (fact 'granted-commands (format "%s already granted" (string-join granted ", "))))
+          (when (and named (null (cl-set-difference needed named :test #'equal)))
+            (fact 'task-commands (format "%s named in the user's request" (string-join named ", "))))
+          (when new
+            (fact 'new-commands (format "%s neither granted, named by the user, nor read-only"
+                                        (string-join new ", "))))))
       (when (and (memq cap '(read write)) (stringp target)
                  (efrit-review-confidence--granted-repo-p target))
         (fact 'granted-repo (format "inside %s, which the user granted before"
@@ -248,11 +304,19 @@ Only requests nothing covers are described: covered ones never prompt."
           (unless (ignore-errors (efrit-sandbox-allowed-p cap target))
             (let* ((facts (efrit-review-confidence-facts cap target use))
                    (score (efrit-review-confidence-score facts)))
-              (push (format "[SANDBOX would ask: %s %s | computed confidence %.2f | %s]"
+              (push (format "[SANDBOX would ask: %s %s%s | computed confidence %.2f | %s]"
                             cap
                             (cond ((stringp target) (efrit-sandbox-abbreviate target))
                                   ((consp target) (cdr target))
                                   (t target))
+                            ;; the pattern beside the literal, when they differ:
+                            ;; the reviewer judges "today's work log", the
+                            ;; sandbox grants the file (efrit-sandbox-symbolic)
+                            (or (and (stringp target) (require 'efrit-sandbox-symbolic nil t)
+                                     (let ((sym (ignore-errors (efrit-sandbox-symbolic-path target))))
+                                       (and sym (not (equal sym (efrit-sandbox-abbreviate target)))
+                                            (format " (pattern %s)" sym))))
+                                "")
                             score
                             (if facts
                                 (mapconcat (lambda (f) (if (cdr f) (format "%s: %s" (car f) (cdr f)) (symbol-name (car f))))

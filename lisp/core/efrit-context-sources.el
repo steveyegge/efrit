@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -130,7 +130,7 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
 
 ;;; Built-in sources
 
-(defun efrit-context--source-buffer (_buf)
+(defun efrit-context--source-buffer (buf)
   (let ((file (buffer-file-name)))
     (concat
      (format "Buffer: %s" (buffer-name))
@@ -141,7 +141,8 @@ recent buffer in `buffer-list' that is not efrit's and not hidden."
                                   (and (buffer-narrowed-p) "narrowed")))))
        (when flags (format "\nState: %s" (string-join flags ", "))))
      (unless file
-       (format "\nDirectory: %s" (abbreviate-file-name default-directory))))))
+       (format "\nDirectory: %s" (abbreviate-file-name
+                                  (with-current-buffer (or buf (current-buffer)) default-directory)))))))
 
 (declare-function treesit-node-at "treesit")
 (declare-function treesit-node-parent "treesit")
@@ -267,6 +268,9 @@ enclosing node (after ai-code-interface, 2026-09-28)."
           (buffer-substring (point-min) (min (point-max) 12)))))))
 
 (defun efrit-context--source-project (_buf)
+  ;; `efrit-tool--get-project-root' honours `efrit-project-root', which
+  ;; efrit-repl-loop binds to the session's root while the snapshot is
+  ;; taken, so a bound agent reports its own project
   (let* ((root (condition-case nil
                    (if (fboundp 'efrit-tool--get-project-root)
                        (efrit-tool--get-project-root)
@@ -372,19 +376,45 @@ Moving to another file or selecting a region turns it back on;
 (defvar efrit-context--last-label nil
   "The context label last shown, to redraw agent headers only when it changes.")
 
+(defvar efrit-context--refresh-timer nil
+  "The idle timer that redraws agent headers after the user pauses.")
+
+(defcustom efrit-context-refresh-idle-seconds 0.3
+  "How long the user must be idle before agent headers pick up the new context label."
+  :type 'number
+  :group 'efrit-context)
+
+(defun efrit-context--agent-visible-p ()
+  "Non-nil when some window on some frame shows an agent buffer."
+  (and (fboundp 'efrit-agent-buffers)
+       (cl-some (lambda (w) (with-current-buffer (window-buffer w) (derived-mode-p 'efrit-agent-mode)))
+                (window-list-1 nil 'no-minibuf t))))
+
 (defun efrit-context--refresh-headers ()
-  "After each command: when the context label changed, redraw the agent headers.
+  "When the user pauses: if the context label changed, redraw the agent headers.
 A header-line is re-evaluated only when its own window redisplays;
 moving point in the file next to it does not do that (tour
-2026-09-29: the label kept its first line number)."
-  (when (and (fboundp 'efrit-agent-buffers)
+2026-09-29: the label kept its first line number).  Runs from an idle
+timer, not per command: `efrit-context-describe' finds the project
+root (project.el, then a VC probe) and counts lines, and doing that on
+every keystroke in a large file was the typing stutter (2026-10-16,
+found by the agent itself).  Nothing to do when no agent is on screen."
+  (when (and (efrit-context--agent-visible-p)
              (not (derived-mode-p 'efrit-agent-mode)))
     (let ((label (ignore-errors (efrit-context-describe))))
       (unless (equal label efrit-context--last-label)
         (setq efrit-context--last-label label)
         (force-mode-line-update t)))))
 
-(add-hook 'post-command-hook #'efrit-context--refresh-headers)
+(defun efrit-context--schedule-refresh ()
+  "`post-command-hook': arm the idle refresh.  Costs one timer check."
+  (unless (or (derived-mode-p 'efrit-agent-mode)
+              (and efrit-context--refresh-timer (memq efrit-context--refresh-timer timer-idle-list)))
+    (setq efrit-context--refresh-timer
+          (run-with-idle-timer efrit-context-refresh-idle-seconds nil #'efrit-context--refresh-headers))))
+
+(remove-hook 'post-command-hook #'efrit-context--refresh-headers)
+(add-hook 'post-command-hook #'efrit-context--schedule-refresh)
 (declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defun efrit-context-describe (&optional target)

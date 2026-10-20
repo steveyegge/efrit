@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, diff
-;; Version: 0.11.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -304,6 +304,31 @@ not its own proposal."
                    (new_content . ,(alist-get 'new_content c)))))
              (sort (copy-sequence efrit-diff-preview--edited) #'<)))))
 
+(defvar efrit-diff-preview--depth nil
+  "The `recursion-depth' of the wait the open preview belongs to, or nil.")
+
+(defun efrit-diff-preview--decided ()
+  "Record that the user answered; release the tool's wait.
+The tool waits in a `recursive-edit' (see `efrit-tool-show-diff-preview'),
+so leaving it is what lets the tool continue."
+  (setq efrit-diff-preview--waiting nil)
+  (when (and efrit-diff-preview--depth
+             (= (recursion-depth) efrit-diff-preview--depth))
+    (exit-recursive-edit)))
+
+(defun efrit-diff-preview--buffer-killed ()
+  "Leave the wait when the preview buffer dies with no decision made.
+The tool's loop sees the buffer gone and shows it again; a kill from
+the tool's own cleanup finds no wait to leave."
+  (when (and efrit-diff-preview--waiting
+             efrit-diff-preview--depth
+             (= (recursion-depth) efrit-diff-preview--depth))
+    (run-at-time 0 nil (lambda ()
+                         (when (and efrit-diff-preview--waiting
+                                    efrit-diff-preview--depth
+                                    (= (recursion-depth) efrit-diff-preview--depth))
+                           (exit-recursive-edit))))))
+
 (defun efrit-diff-preview-approve ()
   "Approve the proposed changes."
   (interactive)
@@ -313,8 +338,8 @@ not its own proposal."
                                    (vconcat efrit-diff-preview--selected-indices)
                                  (vconcat (number-sequence 0 (1- (length efrit-diff-preview--changes))))))
           (user_edits . ,(efrit-diff-preview--user-edits))))
-  (setq efrit-diff-preview--waiting nil)
-  (message "Changes approved."))
+  (message "Changes approved.")
+  (efrit-diff-preview--decided))
 
 (defun efrit-diff-preview-reject ()
   "Reject the proposed changes."
@@ -323,8 +348,8 @@ not its own proposal."
         `((approved . :json-false)
           (selected_changes . [])
           (reason . "user_rejected")))
-  (setq efrit-diff-preview--waiting nil)
-  (message "Changes rejected."))
+  (message "Changes rejected.")
+  (efrit-diff-preview--decided))
 
 (defun efrit-diff-preview-toggle-change ()
   "Toggle selection of the change at point (in selective mode)."
@@ -355,8 +380,8 @@ not its own proposal."
           `((approved . t)
             (selected_changes . ,(vconcat (sort efrit-diff-preview--selected-indices #'<)))
             (user_edits . ,(efrit-diff-preview--user-edits))))
-    (setq efrit-diff-preview--waiting nil)
-    (message "Applied %d selected changes." (length efrit-diff-preview--selected-indices))))
+    (message "Applied %d selected changes." (length efrit-diff-preview--selected-indices))
+    (efrit-diff-preview--decided)))
 
 (defun efrit-diff-preview--change-at-point ()
   "Return the index of the change at point, or nil if not on a change."
@@ -512,7 +537,9 @@ not its own proposal."
             efrit-diff-preview--apply-mode apply-mode)
       (efrit-diff-preview--redraw)
       (efrit-diff-preview-mode)
-      (goto-char (point-min)))
+      (goto-char (point-min))
+      ;; a killed buffer leaves the wait so the tool can show it again
+      (add-hook 'kill-buffer-hook #'efrit-diff-preview--buffer-killed nil t))
     ;; Display buffer
     (pop-to-buffer buffer '((display-buffer-reuse-window
                              display-buffer-pop-up-window)
@@ -576,26 +603,29 @@ Returns a standard tool response with:
         ;; Display the diff
         (efrit-diff-preview--display changes description apply-mode-sym)
 
-        ;; Wait for the user's decision; the time does not count
-        ;; against the turn or the tool.  C-g while waiting is a
-        ;; rejection, not a stuck loop: `sit-for' inside a tool call
-        ;; can swallow the quit, so the flag is checked by hand.
+        ;; Wait for the user's decision in a `recursive-edit', the way
+        ;; the sandbox and limits menus do; the time does not count
+        ;; against the turn or the tool.  Until 0.12.16 this was a
+        ;; `sit-for' poll.  Tools run inside the API's process filter,
+        ;; where `inhibit-quit' is t and `sit-for' returns at once
+        ;; whenever input is pending: with a key typed, the loop spun
+        ;; without reading it, Emacs took no commands, and C-g did
+        ;; nothing (2026-10-16: "efrit locked up" at show_diff_preview).
+        ;; A recursive edit reads commands normally; a/y/r/n/s leave it.
         ;; No timeout: nothing but the user answers a prompt (tzz,
-        ;; 2026-10-03: "I should be able to walk away from efrit any
-        ;; time").  The buffer closing under us is not an answer
-        ;; either: it is shown again.
+        ;; 2026-10-03).  A killed buffer is not an answer: shown again.
         (efrit-with-user-waiting
-          (while (and efrit-diff-preview--waiting (not quit-flag))
-            ;; the ediff path hides the window on purpose; only a
-            ;; killed buffer means the question vanished
-            (unless (get-buffer efrit-diff-preview-buffer-name)
-              (efrit-log 'info "diff preview: buffer killed without a decision; showing it again")
-              (efrit-diff-preview--display changes description apply-mode-sym))
-            (with-local-quit (sit-for 0.1))
-            (redisplay)))
-        (when (and efrit-diff-preview--waiting quit-flag)
-          (setq quit-flag nil)
-          (efrit-diff-preview-reject)))
+          (let ((inhibit-quit nil))
+            (while efrit-diff-preview--waiting
+              (unless (get-buffer efrit-diff-preview-buffer-name)
+                (efrit-log 'info "diff preview: buffer killed without a decision; showing it again")
+                (efrit-diff-preview--display changes description apply-mode-sym))
+              (let ((efrit-diff-preview--depth (1+ (recursion-depth))))
+                (condition-case nil
+                    (recursive-edit)
+                  ;; C-g at the preview is a rejection
+                  (quit (efrit-log 'info "diff preview: rejected with C-g")
+                        (efrit-diff-preview-reject))))))))
       ;; refused by the prompt gate (another prompt was up): a rejection
       (unless efrit-diff-preview--result
         (setq efrit-diff-preview--result

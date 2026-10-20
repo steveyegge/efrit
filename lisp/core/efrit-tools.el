@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -208,20 +208,26 @@ Signals an error if rate limit would be exceeded."
 Each blocks the Emacs event loop waiting for keyboard input, which
 freezes the editor when called from the async tool loop (ef-bdg).")
 
+(defvar efrit-tools-input-allowed) ; defined in efrit-events, bound by `efrit-with-user-waiting'
+
 (defun efrit-tools--call-with-input-blocked (thunk)
   "Call THUNK with synchronous input functions overridden to signal errors.
 Temporarily replaces each function in
 `efrit-tools--blocked-input-functions' with a stub that errors,
-directing the model to the request_user_input tool instead."
+directing the model to the request_user_input tool instead.  With
+`efrit-tools-input-allowed' non-nil the real function runs."
   (let ((saved (mapcar (lambda (fn) (cons fn (symbol-function fn)))
                        efrit-tools--blocked-input-functions)))
     (unwind-protect
         (progn
-          (dolist (fn efrit-tools--blocked-input-functions)
-            (let ((fn-name fn))
-              (fset fn (lambda (&rest _)
-                         (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
-                                fn-name)))))
+          (dolist (pair saved)
+            (let ((fn-name (car pair)) (orig (cdr pair)))
+              (fset fn-name
+                    (lambda (&rest args)
+                      (if efrit-tools-input-allowed
+                          (apply orig args)
+                        (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
+                               fn-name))))))
           (funcall thunk))
       (dolist (pair saved)
         (fset (car pair) (cdr pair))))))

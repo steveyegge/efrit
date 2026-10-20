@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
 ;; Author: Ted Zlatanov <tzz@lifelogs.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -132,7 +132,7 @@ Expands macros first so nothing hides behind a macro."
          (bad (cl-remove-duplicates
                (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p (car acc)))))
     (when bad
-      (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools (read_file, edit_file, shell_exec) or ask the user."
+      (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools instead: read_file, edit_file, run_program; load_project_file to load a project .el file; run_ert to run tests. Or ask the user."
               (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))))
 
 ;;; 2. Dynamic enforcement
@@ -185,12 +185,56 @@ Reading those is never the user's data; a `(require ...)' or
                         (string-prefix-p (file-name-as-directory (expand-file-name dir)) path)))
                  load-path))))
 
+(defcustom efrit-sandbox-eval-allow-emacs nil
+  "When non-nil, an eval may start another Emacs after the usual prompt.
+Off by default: another Emacs is never what a task needs; the one
+case is testing a package in a clean `emacs -Q', and for that bind
+this around the call.  Emacs's own native-compiler subprocesses are
+recognised and allowed regardless."
+  :type 'boolean
+  :group 'efrit-sandbox)
+
 (defconst efrit-sandbox-eval--native-comp-frames
   '(comp-trampoline-compile comp--trampoline-compile comp-run-async-workers
     comp--run-async-workers native-compile-async native--compile-async
     comp--native-compile native-compile comp-subr-trampoline-install
     comp--subr-trampoline-install comp-trampoline-search)
   "Functions on the stack when Emacs's native compiler is doing its own work.")
+
+(defconst efrit-sandbox-eval--emacs-helper-frames
+  '(jka-compr-call-process jka-compr-insert-file-contents jka-compr-write-region
+    jka-compr-file-local-copy jka-compr-load
+    epa-file-insert-file-contents epa-file-write-region epg--start
+    tramp-sh-handle-file-local-copy tramp-sh-handle-insert-file-contents
+    archive-extract archive-extract-by-stdout
+    auto-compression-mode
+    ;; packages that save alongside the file, through jka-compr
+    undo-fu-session--save-impl undo-fu-session-save undo-fu-session--save-safe
+    undo-fu-session--recover-impl undo-fu-session-recover undo-fu-session--recover-safe
+    basic-save-buffer save-buffer
+    ;; VC asking the backend about a file Emacs just visited or saved:
+    ;; `git ls-files' under `vc-git-registered' (2026-10-19, from a
+    ;; `save-buffer' in the form; the user: "could have been resolved
+    ;; with VC mode").  VC is Emacs's; `efrit-vcs' routes the model's
+    ;; own version-control work through it on purpose
+    vc-git-registered vc-git--out-ok vc-git--call vc-git-command vc-git-state vc-git-root
+    vc-registered vc-backend vc-state vc-refresh-state vc-find-file-hook vc-after-save
+    vc-call-backend vc-responsible-backend vc-git-mode-line-string vc-mode-line
+    after-find-file find-file-noselect find-file-noselect-1)
+  "Frames of Emacs file machinery that spawns a helper on the user's behalf.
+Visiting `notes.org.gz' runs `sh -c gzip -c -q' (jka-compr); a `.gpg'
+file runs gpg; a remote file over TRAMP runs ssh.  Those are how Emacs
+reads the file the model asked for, and the file itself already went
+through the file-name handler and its grant.  Asking about the helper
+told the user efrit wanted \"a shell decompress\" (tzz, 2026-10-16).")
+
+(defun efrit-sandbox-eval--emacs-helper-p ()
+  "The Emacs file-machinery frame on the stack, or nil."
+  (let ((frame nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not frame) (memq func efrit-sandbox-eval--emacs-helper-frames))
+                      (setq frame func))))
+    frame))
 
 (defun efrit-sandbox-eval--native-comp-p (&optional command)
   "Non-nil when the current operation is Emacs's native compiler, not the model.
@@ -204,15 +248,32 @@ is this very Emacs in batch mode."
     (mapbacktrace (lambda (_evald func _args _flags)
                     (when (memq func efrit-sandbox-eval--native-comp-frames)
                       (setq comp-frame func))))
-    (and comp-frame
-         (or (null command)
-             (and (listp command) (stringp (car command))
-                  (member "--batch" command)
-                  (or (string-suffix-p "/Emacs" (car command))
-                      (string-match-p "/emacs\\(?:-[0-9.]+\\)?\\'" (car command))
-                      (equal (file-truename (car command))
-                             (file-truename (expand-file-name invocation-name invocation-directory))))))
-         comp-frame)))
+    (cond
+     ;; The compiler's command line is unmistakable on its own: this
+     ;; Emacs, -no-comp-spawn -Q --batch, loading an emacs-async-comp-*
+     ;; (comp-run.el, a timer) or emacs-int-comp-* (comp.el `comp--final',
+     ;; synchronous: trampolines, native-compile of a defun) file it
+     ;; just wrote.  The frame test alone missed both (tzz, 2026-10-15:
+     ;; "why does efrit want to run emacs to pwd?").
+     ((and (listp command) (stringp (car command))
+           (member "-no-comp-spawn" command)
+           (member "--batch" command)
+           (cl-some (lambda (a) (and (stringp a) (string-match-p "/emacs-\\(?:async\\|int\\)-comp-.*\\.el\\'" a))) command)
+           (efrit-sandbox-eval--this-emacs-p (car command)))
+      'comp-run-async-workers)
+     ((and comp-frame
+           (or (null command)
+               (and (listp command) (stringp (car command))
+                    (member "--batch" command)
+                    (efrit-sandbox-eval--this-emacs-p (car command)))))
+      comp-frame))))
+
+(defun efrit-sandbox-eval--this-emacs-p (program)
+  "Non-nil when PROGRAM is the running Emacs binary."
+  (or (string-suffix-p "/Emacs" program)
+      (string-match-p "/emacs\\(?:-[0-9.]+\\)?\\'" program)
+      (equal (file-truename program)
+             (file-truename (expand-file-name invocation-name invocation-directory)))))
 
 (defun efrit-sandbox-eval--op-cap (op)
   "Capability OP needs, or nil for pure name manipulation
@@ -294,26 +355,102 @@ file comes back through this handler and is checked then."
 
 ;; Process / network advice.  Installed once; only active inside a
 ;; sandboxed eval.
-(defun efrit-sandbox-eval--guard-process (orig &rest args)
+(defun efrit-sandbox-eval--process-argv (fn args)
+  "The argv (PROGRAM ARG...) FN was called with, from ARGS, or nil.
+`make-process' carries it in :command; `call-process' and
+`process-file' as (PROGRAM INFILE DEST DISPLAY ARG...); `start-process'
+and `start-file-process' as (NAME BUFFER PROGRAM ARG...);
+`call-process-region' as (START END PROGRAM DELETE DEST DISPLAY ARG...).
+Taking only the program lost the flags that identify Emacs's own
+compiler subprocess (2026-10-15: \"again it's asking me to run Emacs\")."
+  (let ((name (and (symbolp fn) fn)))
+    (cond
+     ((plist-get args :command) (plist-get args :command))
+     ((memq name '(call-process process-file))
+      (and (stringp (car args)) (cons (car args) (cl-remove-if-not #'stringp (nthcdr 4 args)))))
+     ((memq name '(start-process start-file-process))
+      (and (stringp (nth 2 args)) (cons (nth 2 args) (cl-remove-if-not #'stringp (nthcdr 3 args)))))
+     ((eq name 'call-process-region)
+      (and (stringp (nth 2 args)) (cons (nth 2 args) (cl-remove-if-not #'stringp (nthcdr 6 args)))))
+     ((stringp (car args)) (list (car args)))
+     (t nil))))
+
+(defun efrit-sandbox-eval--guard-process-1 (name orig &rest args)
+  "The process guard for primitive NAME (a symbol, or nil when unknown).
+Advice receives ORIG as a function object, so NAME comes from the
+per-primitive wrapper `efrit-sandbox-eval--install-advice' makes;
+it decides how the argv is read out of ARGS."
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
     (let ((efrit-sandbox-eval--in-guard t))
-      (let* ((command (or (plist-get args :command)
-                          (and (stringp (car args)) (list (car args)))))
-             (line (cond ((and (listp command) command (cl-every #'stringp command))
-                          (mapconcat #'shell-quote-argument command " "))
-                         ((stringp command) command)
-                         (t t))))
+      (let* ((command (efrit-sandbox-eval--process-argv name args))
+             (line (cond
+                    ;; the shell wrappers take the line itself; quoting
+                    ;; it made "git status x" one command word and the
+                    ;; prompt read "run x" (2026-10-19)
+                    ((and (memq name '(shell-command shell-command-to-string async-shell-command))
+                          (stringp (car args)))
+                     (car args))
+                    ((and (listp command) command (cl-every #'stringp command))
+                     (mapconcat #'shell-quote-argument command " "))
+                    ((stringp command) command)
+                    (t t))))
         ;; a process with a known argv is checked like a shell line, so
         ;; a grant for "git" covers (call-process "git" ...) as well.
         ;; The detail names the primitive, so the prompt reads
         ;; "eval_sexp: call-process emacs ..." and not as if efrit
         ;; itself wanted to run something.
-        (if-let* ((frame (efrit-sandbox-eval--native-comp-p command)))
-            (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed" frame)
+        (cond
+         ((efrit-sandbox-eval--native-comp-p command)
+          (efrit-log 'debug "sandbox: native compiler (%s) starts a batch Emacs; not the model's doing, allowed"
+                     (efrit-sandbox-eval--native-comp-p command)))
+         ;; jka-compr, epa, TRAMP, archive-mode reading a file for the
+         ;; model: the file was checked; its helper process is Emacs's
+         ((efrit-sandbox-eval--emacs-helper-p)
+          (efrit-log 'debug "sandbox: %s runs %s for a file read/write; Emacs's doing, allowed"
+                     (efrit-sandbox-eval--emacs-helper-p)
+                     (if (stringp line) (truncate-string-to-width line 80 nil nil "…") "a process")))
+         ;; The model starting another Emacs is never the right tool:
+         ;; everything it needs is in this one.  Refused outright, no
+         ;; prompt (tzz, 2026-10-15: "running an external emacs almost
+         ;; never makes sense with efrit ... everything it needs should
+         ;; be inside Emacs already").  Two ways to the prompt instead:
+         ;; `efrit-sandbox-eval-allow-emacs', or the reviewer's
+         ;; "emacs": "testing" vouch for this turn (turn state
+         ;; :emacs-vouched, set by efrit-loop at the user's threshold).
+         ((and (not efrit-sandbox-eval-allow-emacs)
+               (not (efrit-sandbox--turn-get :emacs-vouched))
+               (listp command) (stringp (car command))
+               (efrit-sandbox-eval--this-emacs-p (car command)))
+          (signal 'efrit-sandbox-denied
+                  (list (format "eval_sexp must not start another Emacs (%s). Do the work in this Emacs: evaluate the form here, use the tools, or run a shell command that is not Emacs."
+                                (truncate-string-to-width (if (stringp line) line "process") 120 nil nil "…")))))
+         ;; a shell line Emacs does natively (git status, cp, grep…)
+         ;; from Lisp is refused the way shell_exec's is, with the
+         ;; facility named; `git' included here, efrit-vcs and the
+         ;; vcs_* tools exist for it (2026-10-19: an eval ran four
+         ;; shell-command-to-string "git …" and asked the user)
+         ((and efrit-sandbox-shell-refuse-emacs-equivalents
+               (stringp line)
+               (let ((efrit-sandbox-shell-emacs-equivalents
+                      (cons '("git" . "vcs_status, vcs_diff, vcs_log, vcs_blame, or vc-* / efrit-vcs")
+                            efrit-sandbox-shell-emacs-equivalents)))
+                 (and (efrit-sandbox-shell-emacs-does-it-p line)
+                      (not (efrit-sandbox--mentioned-shell-p line))
+                      (progn
+                        (efrit-log 'info "sandbox: eval subprocess refused, Emacs does it: %s" line)
+                        (signal 'efrit-sandbox-denied
+                                (list (efrit-sandbox-request-create
+                                       :cap 'shell :target line :tool "eval_sexp"
+                                       :detail (efrit-sandbox-shell-emacs-refusal line)))))))))
+         (t
           (efrit-sandbox-check 'shell line "eval_sexp"
-                               (format "subprocess via %s: %s"
-                                       (or (and (symbolp orig) orig) "make-process")
-                                       (if (stringp line) line "process")))))))
+                               (format "subprocess via %s: %s%s"
+                                       (or name "make-process")
+                                       (if (stringp line) line "process")
+                                       (let ((why (and (listp command) (stringp (car command))
+                                                       (efrit-sandbox-eval--this-emacs-p (car command))
+                                                       (efrit-sandbox--turn-get :emacs-vouched))))
+                                         (if (stringp why) (format "\nreviewer: an external Emacs for testing: %s" why) "")))))))))
   ;; A nested advised call (call-process under shell-command-to-string)
   ;; runs with the guard suppressed: the outer check already passed.
   (let ((efrit-sandbox-eval--in-guard t))
@@ -336,6 +473,14 @@ file comes back through this handler and is checked then."
 ;; buffers are checked: fileless buffers (`with-temp-buffer', output
 ;; buffers) are the model's own scratch space and must pass freely, or
 ;; every eval that formats output would prompt.
+(defvar efrit-sandbox-eval--denied nil
+  "The first request refused during the running eval, or nil.
+Set by `efrit-sandbox-eval--note-denial'; the second refusal in one
+eval is not asked about, the stored one is re-signalled.")
+
+(defvar efrit-sandbox-eval--sweep-allowed nil
+  "Non-nil once the user allowed a buffer-list walk in the running eval.")
+
 (defvar efrit-sandbox-eval--loading nil
   "Non-nil during a `require' or `load' issued inside a sandboxed eval.
 What runs then is Emacs and the user's configuration (the library's
@@ -375,21 +520,101 @@ never named)."
          (push (symbol-name func) names))))
     (mapconcat #'identity (nreverse names) " < ")))
 
+(defun efrit-sandbox-eval--switched-by-efrit-p ()
+  "Non-nil when the innermost Lisp caller of this buffer switch is efrit's own code.
+`efrit-agent-buffers' walks the buffer list with `with-current-buffer'
+to test the major mode; a form that only called it was asked to grant
+the user's most recent file buffer (2026-10-16: `hrt.md', named
+nowhere in the form).  The model chose the function, not the buffer;
+efrit's functions switch into buffers to look, and the file-name
+handler still guards what they read.  Only efrit's frames count: a
+`with-current-buffer' written in the form is still the model's."
+  ;; Walk outward from the switch to the eval's own frame.  Any named
+  ;; efrit function met on the way (not the sandbox's and not the
+  ;; eval machinery's) made the switch.  Interpreted code shows `let',
+  ;; `progn' and lambdas as frames, so the nearest named frame is not
+  ;; enough; a lambda the model wrote is anonymous and counts for
+  ;; nothing, which is the point.
+  (let ((found nil) (done nil))
+    (mapbacktrace
+     (lambda (_evald func _args _flags)
+       (unless done
+         (when (symbolp func)
+           (cond
+            ((memq func '(eval efrit-sandbox-eval-form efrit-tools-eval-sexp efrit-tools--eval-with-context
+                          efrit-tools--call-with-input-blocked))
+             (setq done t))
+            ((and (string-prefix-p "efrit-" (symbol-name func))
+                  (not (string-prefix-p "efrit-sandbox-eval--" (symbol-name func))))
+             (setq found t done t)))))))
+    found))
+
+(defun efrit-sandbox-eval--emacs-file-hooks-p ()
+  "Non-nil when a buffer switch happens inside Emacs's own find/save machinery.
+`save-buffer' and `find-file-noselect' run the user's hooks
+\(`after-save-hook', `find-file-hook', mode hooks), which walk the
+buffer list or update other buffers; a form that saved one file was
+asked for the user's unrelated `tzz.md' that way (2026-10-19)."
+  (let ((found nil))
+    (mapbacktrace (lambda (_evald func _args _flags)
+                    (when (and (not found)
+                               (memq func '(basic-save-buffer save-buffer save-some-buffers
+                                            find-file-noselect find-file-noselect-1 after-find-file
+                                            normal-mode set-auto-mode revert-buffer
+                                            run-hooks run-hook-with-args run-hook-with-args-until-success)))
+                      (setq found func))))
+    found))
+
 (defun efrit-sandbox-eval--check-buffer (buffer-or-name op)
   "Check BUFFER-OR-NAME for the `buffer' capability if it visits a file.
 OP names the operation for the prompt.  Fileless or missing buffers
-pass; efrit's buffer check applies the target/in-project exemptions."
+pass; efrit's buffer check applies the target/in-project exemptions;
+a switch made inside one of efrit's own functions passes
+\(`efrit-sandbox-eval--switched-by-efrit-p')."
   (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
     (when (and buffer
                (not load-in-progress)
                (not efrit-sandbox-eval--loading)
                (buffer-local-value 'buffer-file-name buffer)
-               (not (efrit-sandbox-buffer-allowed-p buffer)))
-      (let ((callers (efrit-sandbox-eval--caller-summary)))
+               (not (efrit-sandbox-buffer-allowed-p buffer))
+               (not (efrit-sandbox-eval--switched-by-efrit-p))
+               (not (efrit-sandbox-eval--emacs-file-hooks-p))
+               (not efrit-sandbox-eval--sweep-allowed))
+      (let* ((callers (efrit-sandbox-eval--caller-summary))
+             ;; a form walking `buffer-list' meets every out-of-project
+             ;; buffer in turn; asking per buffer is useless (the user
+             ;; cannot say yes to the sweep).  Say how many there are
+             ;; and ask once; `o'/`s' then covers them all this eval
+             ;; (2026-10-19: hrt.md, then tzz.md, for a minor-mode sweep)
+             (others (cl-remove-if-not
+                      (lambda (b) (and (not (eq b buffer))
+                                       (buffer-local-value 'buffer-file-name b)
+                                       (not (efrit-sandbox-buffer-allowed-p b))))
+                      (buffer-list)))
+             (sweep (and others (efrit-sandbox-eval--sweep-p callers))))
         (efrit-log 'info "sandbox: %s on buffer %s from: %s" op (buffer-name buffer) callers)
-        (efrit-sandbox-check-buffer buffer "eval_sexp"
-                                    (format "%s on %s, called from: %s" op (buffer-name buffer)
-                                            (if (string-empty-p callers) "the form itself" callers)))))))
+        (if (not sweep)
+            (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                        (format "%s on %s, called from: %s" op (buffer-name buffer)
+                                                (if (string-empty-p callers) "the form itself" callers)))
+          (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                      (format "%s on %s and %d more file buffer(s) outside the project (a walk over the buffer list; one answer covers the walk)%s"
+                                              op (buffer-name buffer) (length others)
+                                              (if (string-empty-p callers) "" (format ", called from: %s" callers))))
+          ;; allowed: the rest of the walk passes for this eval
+          (setq efrit-sandbox-eval--sweep-allowed t))))))
+
+(defun efrit-sandbox-eval--sweep-p (callers)
+  "Non-nil when the switch comes straight from the form: no named function between.
+CALLERS is the caller summary.  Every entry a special form, a macro
+or a sequence function means the model's own loop made the switch;
+a named function (`efrit-agent-buffers', `ibuffer-update') would be
+that function's business."
+  (cl-every (lambda (name)
+              (let ((sym (intern-soft name)))
+                (or (null sym) (special-form-p sym) (macrop sym)
+                    (memq sym '(mapc mapcar mapcan seq-do seq-filter seq-map cl-loop funcall apply)))))
+            (split-string callers " < " t)))
 
 (defun efrit-sandbox-eval--guard-set-buffer (orig &rest args)
   (when (and efrit-sandbox-eval--active (not efrit-sandbox-eval--in-guard))
@@ -420,8 +645,16 @@ current buffer is where eval already runs."
 
 (defun efrit-sandbox-eval--install-advice ()
   (dolist (fn efrit-sandbox-eval--process-fns)
-    (unless (advice-member-p #'efrit-sandbox-eval--guard-process fn)
-      (advice-add fn :around #'efrit-sandbox-eval--guard-process)))
+    ;; one named wrapper per primitive, so the guard knows which argv
+    ;; shape it is looking at (advice gets the function, not the name)
+    (let ((wrapper (intern (format "efrit-sandbox-eval--guard-%s" fn))))
+      (unless (fboundp wrapper)
+        (fset wrapper
+              (lambda (orig &rest args) (apply #'efrit-sandbox-eval--guard-process-1 fn orig args)))
+        (put wrapper 'function-documentation
+             (format "The eval sandbox's process guard around `%s'." fn)))
+      (unless (advice-member-p wrapper fn)
+        (advice-add fn :around wrapper))))
   (dolist (fn '(make-network-process open-network-stream url-retrieve
                 url-retrieve-synchronously))
     (unless (advice-member-p #'efrit-sandbox-eval--guard-network fn)
@@ -471,9 +704,38 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
                                                 :detail why))))
   (efrit-sandbox-eval--install-advice)
   (let ((efrit-sandbox-eval--active t)
+        (efrit-sandbox-eval--denied nil)
+        (efrit-sandbox-eval--sweep-allowed nil)
         (file-name-handler-alist (cons efrit-sandbox-eval--handler-entry
                                        file-name-handler-alist)))
-    (if evaluator (funcall evaluator form) (eval form t))))
+    (prog1 (if evaluator (funcall evaluator form) (eval form t))
+      ;; The form caught the denial (`ignore-errors', a `condition-case'
+      ;; on `error', a hook runner) and went on.  The user's no is
+      ;; final: the eval fails with it, whatever the form returned
+      ;; (2026-10-19: a save hook's `git ls-files' was refused, the
+      ;; form carried on and asked for a second buffer, then hung).
+      (when efrit-sandbox-eval--denied
+        (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied))))))
+
+(defun efrit-sandbox-eval--note-denial (orig &rest args)
+  "Around `efrit-sandbox-check' and `efrit-sandbox-check-buffer' inside an eval.
+Remembers a denial so `efrit-sandbox-eval-form' can re-raise it, and
+refuses further requests of the same eval without a prompt once one
+was denied: the user already said no to this form."
+  (if (not efrit-sandbox-eval--active)
+      (apply orig args)
+    (when efrit-sandbox-eval--denied
+      (efrit-log 'info "sandbox: a request of this eval was already refused; refusing %s without asking" (car args))
+      (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied)))
+    (condition-case err
+        (apply orig args)
+      (efrit-sandbox-denied
+       (setq efrit-sandbox-eval--denied (cadr err))
+       (signal (car err) (cdr err))))))
+
+(dolist (fn '(efrit-sandbox-check efrit-sandbox-check-buffer))
+  (unless (advice-member-p #'efrit-sandbox-eval--note-denial fn)
+    (advice-add fn :around #'efrit-sandbox-eval--note-denial)))
 
 (provide 'efrit-sandbox-eval)
 

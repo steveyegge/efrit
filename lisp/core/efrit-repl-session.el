@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -125,7 +125,11 @@ session persists and accumulates conversation context."
   (queue nil)                             ; Inputs to send after this turn, oldest first
   (steering nil)                          ; Texts to inject before the next request, oldest first
   ;; Added 2026-09-27
-  (turn-waiting-mark 0))                  ; `efrit-user-waiting-seconds' when the turn began
+  (turn-waiting-mark 0)                   ; `efrit-user-waiting-seconds' when the turn began
+  ;; Added 2026-10-14: small persisted facts about where the session
+  ;; lives: :worktree (a checkout efrit made for it), :branch, :folder
+  ;; (a logical group in the dashboard)
+  (meta nil))
 
 ;;; Session ID Generation
 
@@ -167,7 +171,10 @@ session persists and accumulates conversation context."
         interrupt-requested)
     (16 id created-at last-activity status buffer conversation api-messages budget
         current-turn-tools current-turn-start project-root title pending-question
-        interrupt-requested queue steering))
+        interrupt-requested queue steering)
+    (17 id created-at last-activity status buffer conversation api-messages budget
+        current-turn-tools current-turn-start project-root title pending-question
+        interrupt-requested queue steering turn-waiting-mark))
   "Slot names of earlier `efrit-repl-session' definitions, by slot count.
 The current definition is read from `cl-struct-slot-info'.")
 
@@ -230,6 +237,22 @@ Optional PROJECT-ROOT associates the session with a project."
     (puthash (efrit-repl-session-id session) session efrit-repl-session--registry)
     (efrit-log 'info "Created REPL session %s" (efrit-repl-session-id session))
     session))
+
+(defun efrit-repl-session-meta-get (session key)
+  "SESSION's meta fact KEY (:worktree, :branch, :folder), or nil."
+  (plist-get (efrit-repl-session-meta session) key))
+
+(defun efrit-repl-session-meta-put (session key value)
+  "Set SESSION's meta fact KEY to VALUE (nil removes it)."
+  (let ((meta (copy-sequence (efrit-repl-session-meta session))))
+    (setq meta (if value (plist-put meta key value)
+                 (let ((out nil))
+                   (while meta
+                     (unless (eq (car meta) key) (setq out (append out (list (car meta) (cadr meta)))))
+                     (setq meta (cddr meta)))
+                   out)))
+    (setf (efrit-repl-session-meta session) meta)
+    value))
 
 (defun efrit-repl-session-get (id)
   "Get REPL session by ID, or nil if not found."

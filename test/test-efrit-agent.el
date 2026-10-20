@@ -167,6 +167,34 @@ folds back what it opened unless point is there."
         (should (eq isearch-filter-predicate #'efrit-agent--isearch-filter))
         (should (memq 'efrit-tool-body buffer-invisibility-spec))))))
 
+(ert-deftest test-efrit-agent-prompt-region-survives-tool-rerenders-and-folds ()
+  "A tool row's region never reaches past the conversation end, so a
+re-render (display hint, result update) cannot delete the separator,
+the prompt or typed input; and a stray `invisible' property on the tail
+is removed by the next render (2026-10-16: the bottom of the buffer went
+blank until the next send)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let* ((efrit-agent-display-mode 'minimal)
+           (id (efrit-agent--add-tool-call "eval_sexp" '(("expr" . "(+ 1 1)")))))
+      (test-efrit-agent--type "half-typed question")
+      ;; the last row in the buffer: without the clamp its region would
+      ;; run to point-max
+      (let ((region (efrit-agent--find-tool-region id)))
+        (should (<= (cdr region) (marker-position efrit-agent--conversation-end))))
+      (efrit-agent--update-tool-result id "two" t 0.1)
+      (should (equal "half-typed question" (efrit-agent--get-input-raw)))
+      (should (save-excursion (goto-char efrit-agent--input-start)
+                              (looking-back "> " (- (point) 2))))
+      (should (text-property-any (point-min) (point-max) 'efrit-agent-separator t))
+      ;; invisibility that leaks onto the tail is uncovered by a render
+      (let ((inhibit-read-only t))
+        (put-text-property efrit-agent--conversation-end (point-max) 'invisible 'efrit-tool-body))
+      (efrit-agent--append-to-conversation "note\n")
+      (should-not (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
+      (should (equal "half-typed question" (efrit-agent--get-input-raw))))))
+
 (ert-deftest test-efrit-agent-copy-last-output-and-restart ()
   "Copy-last-output takes the newest answer wherever point is; restart
 gives a fresh session in the same windows and drops the queue."
@@ -781,6 +809,45 @@ animate.  thinking-stop clears both."
             (setq has-diff-face t)))
         (should-not has-diff-face)))))
 
+(ert-deftest test-efrit-agent-clip-line ()
+  "A line over `efrit-agent-max-line-length' is cut and ends in a count marker.
+Short lines come back as they are, with their properties."
+  (let ((efrit-agent-max-line-length 20))
+    (let ((short (propertize "abc" 'face 'bold)))
+      (should (eq short (efrit-agent--clip-line short))))
+    (should (equal "" (efrit-agent--clip-line "")))
+    (let* ((long (propertize (make-string 100 ?x) 'face 'bold))
+           (cut (efrit-agent--clip-line long)))
+      (message "clip-line: %d chars -> %S" (length long) cut)
+      (should (string-prefix-p (make-string 20 ?x) cut))
+      (should (string-suffix-p "+80 chars" cut))
+      (should (< (length cut) 40))
+      ;; the kept text keeps the caller's face, the marker is dim
+      (should (eq (get-text-property 0 'face cut) 'bold))
+      (should (eq (get-text-property (1- (length cut)) 'face cut) 'shadow)))))
+
+(ert-deftest test-efrit-agent-expansion-clips-long-single-line-result ()
+  "A 100k single-line result stays under `long-line-threshold' when rendered.
+A fetch_url result of 213069 characters on one line put the whole
+agent buffer into long-line display mode (2026-10-19)."
+  (let* ((efrit-agent-verbosity 'normal)
+         (efrit-agent-show-diff t)
+         (result (concat "{\"content\":\"" (make-string 100000 ?a) "\"}"))
+         (expansion (efrit-agent--format-tool-expansion nil result t))
+         (longest (apply #'max (mapcar #'length (split-string expansion "\n")))))
+    (message "expansion: longest line %d, max %d" longest efrit-agent-max-line-length)
+    (should (< longest (+ efrit-agent-max-line-length 40)))
+    (should (string-match-p "\\+[0-9]+ chars" expansion))))
+
+(ert-deftest test-efrit-agent-diff-lines-are-clipped ()
+  "Diff lines go through the same cap; the face survives the cut."
+  (let* ((efrit-agent-max-line-length 30)
+         (line (concat "+" (make-string 200 ?y)))
+         (out (efrit-agent--format-diff-line line "")))
+    (should (< (length out) 70))
+    (should (string-match-p "\\+171 chars" out))
+    (should (eq (get-text-property 2 'face out) 'efrit-agent-diff-added))))
+
 (ert-deftest test-efrit-agent-prompt-cannot-be-deleted ()
   "Backspace at the start of the input, or a kill over the prompt, is refused.
 The prompt text is read-only with front-sticky read-only, both at
@@ -943,6 +1010,49 @@ the header hint names the keys."
                 (should (string-match-p "RET sends" hint))
                 (should (string-match-p "S-<return> newline" hint))))
           (efrit-agent--clear-input))))))
+
+(ert-deftest test-efrit-agent-buffers-does-not-switch-buffers ()
+  "`efrit-agent-buffers' finds agent buffers by `major-mode' without `set-buffer'.
+Each switch went through the sandbox's `set-buffer' advice from the
+header, mode and tab lines on every redisplay (2026-10-20: 34 ms per
+call, the main steady cost while typing)."
+  (let ((agent (generate-new-buffer " *agent-buffers-test*"))
+        (other (generate-new-buffer " *agent-buffers-other*"))
+        (switched nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer agent (efrit-agent-mode))
+          (with-current-buffer other (fundamental-mode))
+          (let ((found (cl-letf* ((orig (symbol-function 'set-buffer))
+                                  ((symbol-function 'set-buffer)
+                                   (lambda (b) (setq switched t) (funcall orig b))))
+                         (efrit-agent-buffers))))
+            (message "agent-buffers: %d found, switched=%s" (length found) switched)
+            (should (memq agent found))
+            (should-not (memq other found))
+            (should-not switched)))
+      (kill-buffer agent)
+      (kill-buffer other))))
+
+(ert-deftest test-efrit-agent-input-hint-is-cached-per-keymap ()
+  "The hint is computed once per keymap object and recomputed when the map changes."
+  (require 'efrit-agent-input)
+  (let ((efrit-agent--input-hint-cache nil)
+        (computed 0))
+    (cl-letf* ((orig (symbol-function 'efrit-agent--compute-input-hint))
+               ((symbol-function 'efrit-agent--compute-input-hint)
+                (lambda (map) (cl-incf computed) (funcall orig map))))
+      (let ((first (efrit-agent-input-hint)))
+        (should (string-match-p "sends" first))
+        (should (eq first (efrit-agent-input-hint)))
+        (should (= computed 1))
+        ;; a different keymap object: recomputed, with its own bindings
+        (let ((efrit-agent-input-mode-map (make-sparse-keymap)))
+          (define-key efrit-agent-input-mode-map (kbd "C-c C-c") #'efrit-agent-input-send)
+          (let ((second (efrit-agent-input-hint)))
+            (message "hint for a fresh map: %s" second)
+            (should (= computed 2))
+            (should (string-match-p "C-c C-c sends" second))))))))
 
 (ert-deftest test-efrit-agent-quote-region ()
   "A region of the transcript lands in the input as a `> ' quote when

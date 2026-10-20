@@ -82,5 +82,47 @@ not by the hunk's own line number (which says 2)."
            (should (= 3 (line-number-at-pos)))
            (should (looking-at "BETA"))))))))
 
+(ert-deftest test-diff-preview-tool-waits-in-a-recursive-edit-and-answers ()
+  "The tool blocks in a recursive edit until a/r is pressed (here the edit
+is stubbed to press the key), returns the decision, shows the preview
+again when its buffer is killed under it, and treats C-g as a rejection.
+Until 0.12.16 the wait was a `sit-for' poll that spun with pending input
+under `inhibit-quit' (2026-10-16 lockup)."
+  (require 'efrit-test-sandbox-helpers)
+  (test-diff-preview--with-file
+   (lambda (dir file)
+     (let ((efrit-project-root dir)
+           (changes (vector (list (cons 'file file) (cons 'old_content "alpha\n") (cons 'new_content "ALPHA\n"))))
+           (entered 0))
+       (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
+                 ((symbol-function 'recursive-edit)
+                  (lambda ()
+                    (cl-incf entered)
+                    (should (= (recursion-depth) (1- efrit-diff-preview--depth)))
+                    (with-current-buffer efrit-diff-preview-buffer-name
+                      (efrit-diff-preview-approve)))))
+         (let ((result (efrit-tool-show-diff-preview `((changes . ,changes) (description . "t")))))
+           (should (= 1 entered))
+           (should (string-match-p "\"approved\":true" (json-encode result)))
+           (should-not efrit-diff-preview--waiting)))
+       ;; killed under the wait: the wait returns, the loop shows it again
+       (setq entered 0)
+       (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
+                 ((symbol-function 'recursive-edit)
+                  (lambda ()
+                    (cl-incf entered)
+                    (if (= entered 1)
+                        (kill-buffer efrit-diff-preview-buffer-name)
+                      (with-current-buffer efrit-diff-preview-buffer-name
+                        (efrit-diff-preview-reject))))))
+         (let ((result (efrit-tool-show-diff-preview `((changes . ,changes) (description . "t")))))
+           (should (= 2 entered))
+           (should (string-match-p "user_rejected" (json-encode result)))))
+       ;; C-g is a rejection
+       (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (set-buffer b)))
+                 ((symbol-function 'recursive-edit) (lambda () (signal 'quit nil))))
+         (let ((result (efrit-tool-show-diff-preview `((changes . ,changes) (description . "t")))))
+           (should (string-match-p "user_rejected" (json-encode result)))))))))
+
 (provide 'test-diff-preview-open)
 ;;; test-diff-preview-open.el ends here

@@ -17,5 +17,9 @@
         (ignore req)
         'session))
 
+;; Tool tests run `echo' and `cat' through shell_exec to exercise the
+;; runner; the policy that refuses such lines is test-sandbox's subject
+(setq efrit-sandbox-shell-refuse-emacs-equivalents nil)
+
 (provide 'efrit-test-sandbox-helpers)
 ;;; efrit-test-sandbox-helpers.el ends here
