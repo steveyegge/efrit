@@ -41,6 +41,19 @@ plain defuns under the file's own prefix and quoted data are not."
     ;; tzz-fine is the file's own
     (should-not (cl-some (lambda (e) (string-match-p "tzz-fine" (cdr e))) eff))))
 
+(ert-deftest test-review-flags-while-let-that-never-advances ()
+  "A while-let whose body setq's one of its own spec variables to end
+the loop is flagged as infinite (the spec rebinds it each time); a
+while-let that advances through state outside its spec is not."
+  (let ((bad (efrit-review-flags--text-effects
+              "(let (r) (while-let ((p (overlay-properties o))) (setq r (car p)) (setq p nil)) r)" nil))
+        (ok (efrit-review-flags--text-effects
+             "(let ((i 0)) (while-let ((x (nth i xs))) (push x out) (setq i (1+ i))))" nil)))
+    (should (assq 'loop bad))
+    (should (string-match-p "infinite" (cdr (assq 'loop bad))))
+    (should (string-match-p "\\bp\\b" (cdr (assq 'loop bad))))
+    (should-not (assq 'loop ok))))
+
 (ert-deftest test-review-flags-edit-reports-only-what-changes ()
   "An edit_file to an .el file is flagged for the effects the new text adds,
 not for what the old text already did; a non-Lisp file is not analysed."

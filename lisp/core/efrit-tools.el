@@ -89,9 +89,13 @@
 
 (defcustom efrit-tools-eval-timeout 30
   "Timeout in seconds for eval_sexp calls.
-If an evaluation takes longer than this, it will be interrupted.
-Set to 0 or nil to disable timeout (not recommended).
-Use C-g to manually interrupt if an eval hangs."
+An evaluation that waits (a process, `sleep-for', `accept-process-output',
+redisplay) longer than this is interrupted.  A tight Lisp loop is NOT:
+timers never run inside one, so neither `with-timeout' nor anything
+else efrit could set fires; only C-g reaches it (measured 2026-10-20,
+a `while-let' that never advanced ran 97 s until the user quit).  The
+reviewer flags the loop shapes that are known to do this before they
+run.  Set to 0 or nil to disable the timeout (not recommended)."
   :type '(choice (integer :tag "Timeout in seconds")
                  (const :tag "No timeout (dangerous)" nil))
   :group 'efrit-tools)

@@ -502,7 +502,7 @@ who rebinds them sees their own keys; the result is cached per keymap."
                               (cl-find-if (lambda (d) (not (string-match-p "<" d))) descs)
                               (car descs))))
                   (or k fallback)))))
-    (format "%s sends · %s newline · %s steers · %s/%s history · C-c ? buffer menu · C-c C-m efrit menu"
+    (format "%s sends/steers · %s newline · %s queues · %s/%s history · C-c ? buffer menu · C-c C-m efrit menu"
             (funcall key 'efrit-agent-input-send "RET")
             (funcall key 'efrit-agent-input-newline "S-RET")
             (funcall key 'efrit-agent-input-send-override "M-RET")

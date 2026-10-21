@@ -178,6 +178,26 @@ OWN-PREFIXES are symbol prefixes that count as the file's own (a
                    (push (cons 'shell (format "Emacs does this natively: %s. The sandbox refuses it without asking; reject and name the facility"
                                               (mapconcat (lambda (p) (format "%s -> %s" (car p) (cdr p))) pairs ", ")))
                          out)))
+                ;; `while-let' rebinds its variables from the SPEC on
+                ;; every iteration: a body that only `setq's one of them
+                ;; to end the loop never does, and the loop is infinite.
+                ;; Nothing short of C-g stops a tight Lisp loop (a timer
+                ;; and `with-timeout' never run inside it), so this is
+                ;; caught before it runs (2026-10-20: 97 s hang, C-g).
+                ((and (eq head 'while-let) (consp (cadr f)))
+                 (let* ((vars (delq nil (mapcar (lambda (b) (and (consp b) (symbolp (car b)) (car b))) (cadr f))))
+                        (body (cddr f))
+                        (setqs nil))
+                   (cl-labels ((find-setq (x)
+                                 (when (consp x)
+                                   (when (and (memq (car x) '(setq setf)) (symbolp (cadr x)))
+                                     (push (cadr x) setqs))
+                                   (let ((r (cdr x))) (while (consp r) (find-setq (pop r)))))))
+                     (mapc #'find-setq body))
+                   (when (cl-some (lambda (v) (memq v setqs)) vars)
+                     (push (cons 'loop (format "while-let rebinds %s from its spec on every iteration; the body's setq of it does not end the loop. This is an infinite loop (only C-g stops it). Reject: use while with a let outside, or a cl-loop"
+                                               (mapconcat #'symbol-name (cl-remove-if-not (lambda (v) (memq v setqs)) vars) ", ")))
+                           out))))
                 ((eq head 'use-package)
                  (let ((name (cadr f)) (plist (cddr f)))
                    (let ((vc (plist-get plist :vc)))

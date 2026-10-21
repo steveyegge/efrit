@@ -43,6 +43,7 @@
 (require 'efrit-do-handlers)          ; the handlers efrit-do-dispatch declares
 (require 'efrit-context-sources)
 (require 'efrit-events)
+(require 'efrit-api-stream)        ; efrit-api-stream-active-p
 (defvar efrit-project-root)
 (require 'efrit-models)
 
@@ -479,7 +480,7 @@ whole cancel.  The next input starts a new turn."
 For tests and the test drive, which pretend a turn runs without
 starting one; without the entry `efrit-repl-loop-recover-stale' would
 end the pretend turn at once.  `efrit-repl-loop-release' undoes it."
-  (puthash (efrit-repl-session-id session) (list session nil 0) efrit-repl-loop--active)
+  (puthash (efrit-repl-session-id session) (list session nil 0 'held) efrit-repl-loop--active)
   (efrit-repl-session-set-status session 'working))
 
 (defun efrit-repl-loop-release (session)
@@ -487,19 +488,36 @@ end the pretend turn at once.  `efrit-repl-loop-release' undoes it."
   (remhash (efrit-repl-session-id session) efrit-repl-loop--active)
   (efrit-repl-session-set-status session 'idle))
 
+(defun efrit-repl-loop--entry-dead-p (session)
+  "Non-nil when SESSION's loop entry cannot be driving a turn.
+An entry with no request ever sent (iteration 0), no stream of this
+session in flight and no tool running is a turn that never started or
+whose start died: 2026-10-21 a session sat `working' with entry
+\(SESSION nil 0) for an hour, every RET steered into it, cancel said
+\"no active session\".  A held entry (`efrit-repl-loop-hold', tests)
+carries `held' as its fourth element and is left alone."
+  (when-let* ((entry (efrit-repl-loop-active-p session)))
+    (and (zerop (or (nth 2 entry) 0))
+         (not (eq (nth 3 entry) 'held))
+         (not (efrit-api-stream-active-p (efrit-repl-session-id session)))
+         (not (efrit-repl-session-current-turn-tools session)))))
+
 (defun efrit-repl-loop-recover-stale (session)
-  "End SESSION's turn when it says `working' but no loop is running it.
+  "End SESSION's turn when it says `working' but nothing is running it.
 Returns non-nil when it did.  How a session gets there: a reload
 replaced `efrit-repl-loop--active' with an empty table (or a request
 died without its callback) while a turn was in flight, so nothing was
 left to call `efrit-repl-loop--end-turn' and every later submit was
-refused with \"busy\" (2026-09-27).  Ending the turn publishes
-`status' and `turn-complete' as an interruption, so subscribers (a
-batch driver) hear it too."
+refused with \"busy\" (2026-09-27); or the entry exists but never
+sent a request (`efrit-repl-loop--entry-dead-p', 2026-10-21).  Ending
+the turn publishes `status' and `turn-complete' as an interruption,
+so subscribers (a batch driver) hear it too.  Steering that was never
+delivered becomes queued input, as at a normal turn end."
   (when (and session
              (eq (efrit-repl-session-status session) 'working)
-             (not (efrit-repl-loop-active-p session)))
-    (efrit-log 'warn "REPL session %s: working with no loop; ending the stale turn"
+             (or (not (efrit-repl-loop-active-p session))
+                 (efrit-repl-loop--entry-dead-p session)))
+    (efrit-log 'warn "REPL session %s: working with no live loop; ending the stale turn"
                (efrit-repl-session-id session))
     (efrit-repl-loop-abandon-turn session)
     t))

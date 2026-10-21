@@ -95,11 +95,71 @@ narrowing restored."
               (cl-incf count)))))
       count)))
 
+(defun efrit-file--stale-buffer-p (buf)
+  "Non-nil when BUF visits a file whose disk copy changed since the visit."
+  (and (buffer-file-name buf)
+       (file-exists-p (buffer-file-name buf))
+       (not (verify-visited-file-modtime buf))))
+
+(defun efrit-file--disk-string (path)
+  (with-temp-buffer (insert-file-contents path) (buffer-string)))
+
+(defun efrit-file-reconcile-buffer (buf old)
+  "Bring BUF up to date with its file when the file changed under it.
+efrit decides; the user is never asked y/n/r (tzz, 2026-10-20: a
+reinstall changed the file, `basic-save-buffer' asked, and the model
+read the \"File reverted\" outcome as a failed edit).
+
+- Buffer unmodified, file changed: revert quietly.  The buffer held
+  nothing of its own.
+- Buffer modified, file changed, and OLD (the text about to be
+  replaced) reads the same in both: keep the buffer.  Its edits are
+  the newer intent; the save below overwrites the disk copy on
+  purpose, with the supersession question answered yes.
+- Buffer modified, file changed, and OLD differs between them or is
+  missing from the disk copy: signal `efrit-file-changed' with both
+  versions.  Nobody can pick for the user here.
+
+Returns `reverted', `kept' or nil (nothing was stale)."
+  (when (efrit-file--stale-buffer-p buf)
+    (with-current-buffer buf
+      (if (not (buffer-modified-p))
+          (progn
+            (let ((inhibit-message t))
+              (revert-buffer t t t))
+            'reverted)
+        (let* ((disk (efrit-file--disk-string (buffer-file-name)))
+               (here (save-restriction (widen) (buffer-substring-no-properties (point-min) (point-max))))
+               (in-disk (efrit-file--count-occurrences old disk))
+               (in-here (efrit-file--count-occurrences old here)))
+          (if (and (> in-disk 0) (= in-disk in-here))
+              'kept
+            (signal 'efrit-file-changed
+                    (list (buffer-file-name)
+                          (format "%s changed on disk while its buffer holds unsaved edits, and the text to replace differs between them (buffer: %d match%s, disk: %d). Read the file (the buffer is what read_file returns) and the disk copy, decide which is current, and retry; or ask the user."
+                                  (file-name-nondirectory (buffer-file-name))
+                                  in-here (if (= in-here 1) "" "es") in-disk)))))))))
+
+(defun efrit-file--save-buffer-quietly (buf)
+  "Save BUF without the supersession question: the buffer's content wins.
+`basic-save-buffer' asks \"has changed since visited or saved.  Save
+anyway?\" through `yes-or-no-p' itself; the modtime is refreshed first
+so the question never arises, and the editing-time check
+\(`ask-user-about-supersession-threat') is a no-op for the save."
+  (with-current-buffer buf
+    (save-excursion
+      (let ((inhibit-message t))
+        (cl-letf (((symbol-function 'ask-user-about-supersession-threat) #'ignore))
+          (set-visited-file-modtime)
+          (basic-save-buffer))))))
+
 (defun efrit-file-replace (path old new &optional replace-all expected-content)
   "Replace OLD with NEW in PATH; return a plist describing what happened.
 
 When a buffer visits PATH the change is made there (and saved per
-`efrit-file-save-after-edit'); otherwise the file is rewritten.
+`efrit-file-save-after-edit'); otherwise the file is rewritten.  A
+buffer whose file changed on disk is reconciled first
+\(`efrit-file-reconcile-buffer'): no question reaches the user.
 
 EXPECTED-CONTENT, if given, is the full content the caller previously
 read.  The current content is compared against it immediately before
@@ -108,8 +168,9 @@ Even without it, OLD must still be present exactly the expected number
 of times at apply time.
 
 Returns (:count N :via buffer|disk :saved BOOL :buffer-modified BOOL
-:content NEW-CONTENT)."
+:content NEW-CONTENT :reconciled reverted|kept|nil)."
   (let* ((buf (efrit-file-visiting-buffer path))
+         (reconciled (and buf (efrit-file-reconcile-buffer buf old)))
          (current (efrit-file-read-string path)))
     (when (and expected-content (not (string= current expected-content)))
       (signal 'efrit-file-changed
@@ -127,14 +188,12 @@ Returns (:count N :via buffer|disk :saved BOOL :buffer-modified BOOL
           (let ((count (efrit-file--apply-in-buffer buf old new replace-all))
                 (saved nil))
             (when efrit-file-save-after-edit
-              (with-current-buffer buf
-                (save-excursion
-                  (let ((inhibit-message t))
-                    (basic-save-buffer)))
-                (setq saved t)))
+              (efrit-file--save-buffer-quietly buf)
+              (setq saved t))
             (list :count count :via 'buffer :saved saved
                   :buffer-modified (buffer-modified-p buf)
-                  :content (efrit-file-read-string path)))
+                  :content (efrit-file-read-string path)
+                  :reconciled reconciled))
         (let* ((new-content
                 (with-temp-buffer
                   (insert current)
@@ -145,7 +204,7 @@ Returns (:count N :via buffer|disk :saved BOOL :buffer-modified BOOL
                   (buffer-string))))
           (with-temp-file path (insert new-content))
           (list :count (if replace-all occurrences 1) :via 'disk :saved t
-                :buffer-modified nil :content new-content))))))
+                :buffer-modified nil :content new-content :reconciled nil))))))
 
 (defun efrit-file-write-string (path content)
   "Write CONTENT to PATH, through the visiting buffer if there is one.
@@ -161,7 +220,9 @@ Returns (:via buffer|disk :saved BOOL)."
               (insert content))))
         (let ((saved nil))
           (when efrit-file-save-after-edit
-            (save-excursion (let ((inhibit-message t)) (basic-save-buffer)))
+            ;; whole-content write: the caller means this content;
+            ;; a changed disk copy is overwritten without a question
+            (efrit-file--save-buffer-quietly (current-buffer))
             (setq saved t))
           (list :via 'buffer :saved saved)))
     (let ((dir (file-name-directory path)))

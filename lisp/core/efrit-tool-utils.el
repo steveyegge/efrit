@@ -102,13 +102,38 @@ this package supports and is kept behind this name."
   (with-suppressed-warnings ((obsolete dom-texts))
     (dom-texts node separator)))
 
+(defcustom efrit-default-project-root 'user-emacs-directory
+  "Where efrit's project is when the current directory is in no repository.
+Used when `efrit-project-root' is unset and neither project.el nor VC
+finds a root for `default-directory': the agent opened from ~ or a
+scratch buffer.  Before 2026-10-21 that fell back to `default-directory'
+itself, so grants were keyed on ~/ and \"the project\" was the home
+directory.  The usual home of an Emacs user's own configuration is the
+default; set a directory for a checkout that holds it (tzz: ~/autodist)."
+  :type '(choice (const :tag "user-emacs-directory (~/.emacs.d or ~/.config/emacs)" user-emacs-directory)
+                 (const :tag "~/.config/emacs" config-emacs)
+                 (const :tag "the current directory (old behaviour)" default-directory)
+                 (directory :tag "a directory"))
+  :group 'efrit-tool-utils)
+
+(defun efrit-default-project-root ()
+  "The directory `efrit-default-project-root' names, expanded; nil for the old behaviour."
+  (pcase efrit-default-project-root
+    ('user-emacs-directory (expand-file-name user-emacs-directory))
+    ('config-emacs (expand-file-name "~/.config/emacs/"))
+    ('default-directory nil)
+    ((and (pred stringp) dir) (file-name-as-directory (expand-file-name dir)))
+    (_ nil)))
+
 (defun efrit-tool--get-project-root ()
   "Get the project root directory.
 
 Priority order:
 1. `efrit-project-root' if explicitly set
 2. `project-current' via project.el
-3. `default-directory' as fallback
+3. the VC checkout containing `default-directory'
+4. `efrit-default-project-root' (the user's configuration directory)
+5. `default-directory' as a last resort
 
 Returns the expanded absolute path."
   (expand-file-name
@@ -136,7 +161,10 @@ Returns the expanded absolute path."
        (and top (not (string= (expand-file-name top) (expand-file-name "~/")))
             (not (string= (expand-file-name top) "/"))
             top)))
-    ;; Fallback to default-directory
+    ;; Not in any repository: the user's configuration directory, or
+    ;; the directory itself when they chose the old behaviour
+    ((let ((dir (and (not (file-remote-p default-directory)) (efrit-default-project-root))))
+       (and dir (file-directory-p dir) dir)))
     (t default-directory))))
 
 ;;;###autoload

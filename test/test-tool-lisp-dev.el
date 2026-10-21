@@ -53,6 +53,38 @@ project is refused; an unknown selector says to load first."
       (ignore-errors (delete-file outside))
       (delete-directory root t))))
 
+(defun test-lisp-dev--boom ()
+  (interactive)
+  (test-lisp-dev--inner (list 1 2)))
+(defun test-lisp-dev--inner (x)
+  (car (cdr (cdr (cdr x)))))
+
+(ert-deftest test-lisp-dev-reproduce-command-returns-error-and-frames ()
+  "reproduce_command runs the command in the named buffer and returns the
+error with the frames from the signal point; a form that succeeds
+returns its value; an unknown command is refused."
+  (require 'efrit-tool-lisp-dev)
+  (let ((buf (generate-new-buffer "reproduce")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'efrit-sandbox-check-buffer) #'ignore))
+          (fset 'test-lisp-dev--inner (lambda (x) (signal 'wrong-type-argument (list 'listp (nth 1 x)))))
+          (let* ((r (efrit-tool-reproduce-command `((command . "test-lisp-dev--boom") (buffer . ,(buffer-name buf)))))
+                 (res (alist-get 'result r)))
+            (should (eq t (alist-get 'success r)))
+            (should (eq t (alist-get 'failed res)))
+            (should (equal "wrong-type-argument" (alist-get 'condition res)))
+            (should (string-match-p "listp" (alist-get 'error res)))
+            (should (equal (buffer-name buf) (alist-get 'buffer res)))
+            (should (cl-some (lambda (f) (string-match-p "test-lisp-dev--boom" f))
+                             (append (alist-get 'backtrace res) nil))))
+          (let* ((r (efrit-tool-reproduce-command '((form . "(+ 1 2)"))))
+                 (res (alist-get 'result r)))
+            (should (eq :json-false (alist-get 'failed res)))
+            (should (equal "3" (alist-get 'value res))))
+          (let ((r (efrit-tool-reproduce-command '((command . "no-such-command-xyz")))))
+            (should-not (eq t (alist-get 'success r)))))
+      (kill-buffer buf))))
+
 (provide 'test-tool-lisp-dev)
 
 ;;; test-tool-lisp-dev.el ends here

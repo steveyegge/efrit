@@ -235,6 +235,8 @@ Shown in the status line and header-line when status is `failed'.")
 (defvar-local efrit-agent--pending-question nil
   "The current pending question from Claude.
 Format: (question options timestamp) or nil.")
+(defvar-local efrit-agent--pending-question-multi nil
+  "Non-nil when the pending question takes several answers (toggles + RET).")
 
 (defvar-local efrit-agent--input-text ""
   "Current text in the input area.")

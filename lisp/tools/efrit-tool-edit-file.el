@@ -180,10 +180,14 @@ Returns a standard tool response with diff showing changes."
                   warnings)))
 
             (when (eq (plist-get result :via) 'buffer)
-              (push (format "Applied in the live buffer visiting %s%s"
+              (push (format "Applied in the live buffer visiting %s%s%s"
                             path-relative
                             (if (plist-get result :saved) " and saved"
-                              " (buffer left modified, not saved)"))
+                              " (buffer left modified, not saved)")
+                            (pcase (plist-get result :reconciled)
+                              ('reverted "; the file had changed on disk and the buffer held no edits, so it was reverted first")
+                              ('kept "; the file had changed on disk, the buffer's unsaved edits were kept and now overwrite it")
+                              (_ "")))
                     warnings))
 
             ;; Return success with diff

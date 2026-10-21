@@ -396,6 +396,11 @@ Returns the `efrit-api-stream' handle, for `efrit-api-stream-cancel'."
       (push st efrit-api-stream--active)
       st)))
 
+(defun efrit-api-stream-active-p (session-id)
+  "Non-nil when a request of SESSION-ID is in flight."
+  (cl-some (lambda (x) (equal (efrit-api-stream-session-id x) session-id))
+           efrit-api-stream--active))
+
 (defun efrit-api-stream-cancel (&optional st)
   "Cancel stream ST, or every active stream when nil.
 ST may also be a session id: then the streams of that session.

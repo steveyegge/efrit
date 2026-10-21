@@ -389,6 +389,23 @@ an exact-line target is never persisted."
                   (when t (symbol-function 'efrit-sandbox-check))))
     (should (efrit-sandbox-eval-inspect form))))
 
+(ert-deftest test-sb-eval-inspect-refuses-blocking-package-ops ()
+  "Package installs and synchronous url fetches freeze Emacs with no
+way to interrupt them from a timer (2026-10-21); the inspector refuses
+them and points at run_program.  Reading package state is fine."
+  (dolist (form '((package-refresh-contents)
+                  (progn (add-to-list 'package-pinned-packages '(embark . "gnu-devel"))
+                         (package-upgrade 'embark))
+                  (package-vc-install "https://example.invalid/x")
+                  (url-retrieve-synchronously "https://example.invalid/")))
+    (let ((why (efrit-sandbox-eval-inspect form)))
+      (should why)
+      (should (string-match-p "run_program" why))))
+  (dolist (form '((package-installed-p 'embark)
+                  (locate-library "embark")
+                  (assq 'embark package-alist)))
+    (should-not (efrit-sandbox-eval-inspect form))))
+
 (ert-deftest test-sb-eval-inspect-accepts-ordinary-code ()
   (dolist (form '((+ 1 2)
                   (with-current-buffer "*scratch*" (buffer-string))
@@ -793,6 +810,39 @@ the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
                             :type 'efrit-sandbox-denied)
               (should (= 1 (length details))))
           (kill-buffer a) (kill-buffer b)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-eval-buffer-sweep-over-remote-buffers-is-refused ()
+  "A buffer-list walk that would enter a remote (TRAMP) buffer is refused
+without a prompt; the denial names buffer_list and the one-at-a-time way
+\(tzz, 2026-10-20: local first, remote by name, ask before reading one)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (remote (generate-new-buffer "remote.py"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (req) (push req asked) 'once)))
+        (with-current-buffer remote
+          ;; a remote file name without a connection: `file-remote-p'
+          ;; reads the string only
+          (setq buffer-file-name "/ssh:host.invalid:/home/u/remote.py"))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (condition-case err
+                  (progn
+                    (efrit-sandbox-eval-form
+                     '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                    (should nil))
+                (efrit-sandbox-denied
+                 (let ((req (cadr err)))
+                   (should (string-match-p "remote (TRAMP) buffer" (efrit-sandbox-request-detail req)))
+                   (should (string-match-p "buffer_list" (efrit-sandbox-request-detail req))))))
+              ;; nobody was asked
+              (should-not asked))
+          (with-current-buffer remote (setq buffer-file-name nil) (set-buffer-modified-p nil))
+          (kill-buffer remote) (kill-buffer a)
           (delete-directory outside t))))))
 
 (ert-deftest test-sb-eval-jka-compr-helper-is-not-the-model ()

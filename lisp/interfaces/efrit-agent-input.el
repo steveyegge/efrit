@@ -27,7 +27,11 @@
 (require 'efrit-repl-session)
 (require 'efrit-repl-loop)
 (require 'efrit-agent-mentions)
+(require 'efrit-agent-screenshot)   ; /shot and show_ui_element
 (require 'efrit-brief)
+(require 'efrit-questions)
+(require 'efrit-agent-fold)
+(require 'wid-edit)
 
 ;; Forward declarations
 (declare-function efrit-executor-respond "efrit-executor")
@@ -53,7 +57,8 @@ persists and accumulates conversation context.")
 
 ;;; Question Display
 
-(declare-function efrit-agent-question-menu "efrit-agent-input")
+(declare-function efrit-choice-open "efrit-choice")
+(declare-function efrit-choice-close "efrit-choice")
 (declare-function efrit-review-answer-escalation "efrit-review")
 (defvar transient--prefix)
 (defvar efrit-agent--question-menu-buffer)
@@ -74,42 +79,39 @@ Returns the question ID for tracking responses."
   ;; End any streaming Claude message first
   (efrit-agent--stream-end-message)
   (let* ((q-id (format "question-%d" (cl-incf efrit-agent--message-counter)))
-         (formatted-text
-          (concat
-           ;; Question indicator
-           (propertize (format "%s " (efrit-agent--char 'status-waiting))
-                       'face 'efrit-agent-timestamp)
-           ;; Question text
-           (propertize question 'face 'efrit-agent-question)
-           "\n"
-           ;; Options (if provided)
-           (when options
-             (concat
-              "   "
-              (mapconcat
-               (lambda (opt-pair)
-                 (let* ((idx (car opt-pair))
-                        (opt (cdr opt-pair)))
-                   (efrit-agent--make-option-button opt idx)))
-               (cl-loop for opt in options
-                        for idx from 1
-                        collect (cons idx opt))
-               " ")
-              "\n"))
-           ;; Hint for keyboard selection
-           (when options
-             (propertize (format "   Press %s or type custom response\n"
-                                 (mapconcat #'number-to-string
-                                            (number-sequence 1 (min 4 (length options)))
-                                            "/"))
-                         'face 'efrit-agent-timestamp))
-           "\n")))
+         (multi efrit-agent--pending-question-multi)
+         (start nil))
     (efrit-agent--append-to-conversation
-     formatted-text
-     (list 'efrit-type 'question
-           'efrit-id q-id
-           'efrit-question question
-           'efrit-options options))
+     (concat (propertize (format "%s " (efrit-agent--char 'status-waiting))
+                         'face 'efrit-agent-timestamp)
+             (propertize question 'face 'efrit-agent-question)
+             "\n")
+     (list 'efrit-type 'question 'efrit-id q-id
+           'efrit-question question 'efrit-options options))
+    (when options
+      ;; The choices are Emacs widgets (wid-edit): a push-button per
+      ;; option, or a checkbox each plus a submit button for a set.
+      ;; One per line; TAB moves between them, RET or mouse-1 presses.
+      ;; The "[1] a [2] b [3] c" text ran off the window edge (2026-10-21).
+      (efrit-agent--with-render
+        (goto-char (efrit-agent--insertion-point))
+        (setq start (point))
+        (efrit-agent--insert-option-widgets options multi)
+        (insert (propertize (if multi
+                                "   toggle (All / None), then press Submit; or type an answer\n"
+                              (format "   %s or type an answer\n"
+                                      (if (<= (length options) 9)
+                                          (format "Press %s" (mapconcat #'number-to-string (number-sequence 1 (length options)) "/"))
+                                        "TAB to a choice and RET")))
+                            'face 'efrit-agent-timestamp))
+        (insert "\n")
+        (add-text-properties start (point)
+                             (list 'efrit-type 'question 'efrit-id q-id
+                                   'efrit-question question 'efrit-options options))
+        (efrit-agent--seal-rendered start (point))
+        (when-let* ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+          (when (and (marker-position (car ind)) (= (marker-position (car ind)) start))
+            (set-marker (car ind) (point))))))
     ;; Update input prompt to indicate we're waiting
     (efrit-agent--update-input-prompt question options)
     ;; A menu for the choices, on top of the transcript.  Opened from
@@ -125,13 +127,118 @@ Returns the question ID for tracking responses."
                                        ;; Answered meanwhile (from Lisp, a
                                        ;; fast typist)?  Then no menu.
                                        (when efrit-agent--pending-question
-                                         (efrit-agent--open-question-menu question options)))))))))
+                                         (efrit-agent--open-question-menu
+                                          question options efrit-agent--pending-question-multi)))))))))
     q-id))
 
 (defun efrit-agent--cancel-question-menu-timer ()
   (when (timerp efrit-agent--question-menu-timer)
     (cancel-timer efrit-agent--question-menu-timer))
   (setq efrit-agent--question-menu-timer nil))
+
+(defvar-local efrit-agent--option-widgets nil
+  "The checkbox widgets of the pending multi question, in option order.")
+
+(defvar efrit-agent-option-widget-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map widget-keymap)
+    (define-key map (kbd "RET") #'widget-button-press)
+    (define-key map (kbd "SPC") #'widget-button-press)
+    (define-key map (kbd "x") #'widget-button-press)
+    (define-key map [mouse-1] #'widget-button-click)
+    (define-key map [mouse-2] #'widget-button-click)
+    map)
+  "Keys on an option widget in the agent buffer.
+`widget-keymap' is not the buffer's local map here, so a widget
+without its own `:keymap' got the agent buffer's RET (fold the row)
+and no mouse at all (2026-10-21).")
+
+(defun efrit-agent--insert-option-widgets (options multi)
+  "Insert one widget per option of OPTIONS at point.
+Single choice: a `push-button' that answers with the option.  MULTI: a
+`checkbox' per option and a Submit button that answers with the
+checked set.  A widget whose question was already answered does
+nothing (`efrit-agent--pending-question' is nil by then)."
+  (setq efrit-agent--option-widgets nil)
+  (let ((buf (current-buffer)) (idx 0))
+    (dolist (opt options)
+      (cl-incf idx)
+      (insert "   ")
+      (if multi
+          (let ((box (widget-create 'checkbox
+                                    :keymap efrit-agent-option-widget-map
+                                    :help-echo "RET, SPC, x or mouse-1: toggle; Submit sends the checked set"
+                                    nil)))
+            (push box efrit-agent--option-widgets)
+            (insert " " (propertize opt 'face 'efrit-agent-option)))
+        (let ((n idx))
+          (widget-create 'push-button
+                         :keymap efrit-agent-option-widget-map
+                         :notify (lambda (&rest _)
+                                   (with-current-buffer buf
+                                     (if (efrit-agent--select-option n)
+                                         (efrit-agent--clear-input)
+                                       (message "That question was already answered"))))
+                         :help-echo (format "press %d, RET or mouse-1: answer with this" idx)
+                         :button-face 'efrit-agent-option
+                         :format "%[%v%]"
+                         (if (<= (length options) 9) (format "%d  %s" idx opt) opt))))
+      (insert "\n"))
+    (when multi
+      (setq efrit-agent--option-widgets (nreverse efrit-agent--option-widgets))
+      (insert "   ")
+      (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--submit-checked-options)))
+                     :help-echo "answer with the checked options"
+                     "Submit")
+      (insert "  ")
+      (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--toggle-all-options)))
+                     :help-echo "check every option; again: clear them all"
+                     "All")
+      (insert "  ")
+      (widget-create 'push-button
+                     :keymap efrit-agent-option-widget-map
+                     :notify (lambda (&rest _)
+                               (with-current-buffer buf
+                                 (efrit-agent--toggle-all-options 'none)))
+                     :help-echo "clear every option"
+                     "None")
+      (insert "\n"))
+    ;; No `widget-setup': it installs `widget-before-change', which
+    ;; refused every keystroke in the input region ("Attempt to change
+    ;; text outside editable field", 2026-10-21).  There are no
+    ;; editable fields here, only buttons.
+    ))
+
+(defun efrit-agent--toggle-all-options (&optional none)
+  "Check every option widget of the pending question; clear them when
+all are checked already, or when NONE."
+  (let* ((boxes efrit-agent--option-widgets)
+         (all-on (cl-every #'widget-value boxes))
+         (value (not (or none all-on))))
+    (efrit-agent--with-render
+      (dolist (box boxes)
+        (unless (eq (and (widget-value box) t) value)
+          (widget-value-set box value))))
+    (message "efrit: %s" (if value "all options checked; Submit sends them" "all options cleared"))))
+
+(defun efrit-agent--submit-checked-options ()
+  "Answer the pending multi question with the checked widgets' options."
+  (when efrit-agent--pending-question
+    (let* ((options (cadr efrit-agent--pending-question))
+           (chosen (cl-loop for box in efrit-agent--option-widgets
+                            for opt in options
+                            when (widget-value box) collect opt))
+           (text (if chosen (string-join chosen "; ") "none of them")))
+      (efrit-agent--clear-input)
+      (efrit-agent--answer-question text))))
 
 (defun efrit-agent--close-question-menu ()
   "Make sure no question menu is up or about to come up.
@@ -150,9 +257,10 @@ suffix runs, so `transient-active-prefix' is the check."
   ;; the menu four sections later, then a hang).
   (when (and (boundp 'transient--prefix)
              transient--prefix
-             (eq (oref transient--prefix command) 'efrit-agent-question-menu)
+             (eq (oref transient--prefix command) 'efrit-choice-menu)
              (or (null efrit-agent--question-menu-buffer)
                  (eq efrit-agent--question-menu-buffer (current-buffer))))
+    (when (fboundp 'efrit-choice-close) (efrit-choice-close))
     ;; `transient-quit-one' is an empty command: the exit happens in
     ;; transient's pre-command hook when the USER invokes it.  Called
     ;; from Lisp it did nothing and the menu stayed up (2026-09-26).
@@ -169,8 +277,6 @@ question waiting for a typed answer."
   :type 'boolean
   :group 'efrit-agent)
 
-(defvar efrit-agent--question-menu-options nil
-  "Options of the question the menu is showing, for its suffixes.")
 (defvar efrit-agent--question-menu-buffer nil
   "The agent buffer the open question menu answers into.")
 
@@ -178,79 +284,50 @@ question waiting for a typed answer."
   "Non-nil when the choices menu can be shown."
   (and efrit-agent-question-menu
        (not noninteractive)
-       (require 'transient nil t)))
+       (require 'efrit-choice nil t)))
 
-(defun efrit-agent--question-menu-choose (n)
-  "Answer the pending question with option N from the menu."
+(defun efrit-agent--question-menu-answered (answer)
+  "`efrit-choice-open' callback: ANSWER chosen in the menu for this buffer's question.
+A single pick is the option's text; a multi pick is the chosen options
+joined with \"; \"; `typed' leaves the question in the input for a
+typed answer; `cancelled' leaves it too (q is not an answer)."
   (when (buffer-live-p efrit-agent--question-menu-buffer)
     (with-current-buffer efrit-agent--question-menu-buffer
-      (when (efrit-agent--select-option n)
-        (efrit-agent--clear-input)))))
+      (pcase answer
+        ((or 'typed 'cancelled) (efrit-agent-display (current-buffer) t))
+        ((pred listp)
+         (when efrit-agent--pending-question
+           (let ((text (if answer (string-join answer "; ") "none of them")))
+             (efrit-agent--clear-input)
+             (efrit-agent--answer-question text))))
+        ((pred stringp)
+         (when efrit-agent--pending-question
+           (let ((n (1+ (or (cl-position answer (cadr efrit-agent--pending-question) :test #'equal) -1))))
+             (if (> n 0)
+                 (when (efrit-agent--select-option n) (efrit-agent--clear-input))
+               (efrit-agent--clear-input)
+               (efrit-agent--answer-question answer)))))))))
 
-(defun efrit-agent--question-menu-custom ()
-  "Close the menu and leave point in the input for a typed answer."
-  (interactive)
-  (when (buffer-live-p efrit-agent--question-menu-buffer)
-    (efrit-agent-display efrit-agent--question-menu-buffer t)))
+(defun efrit-agent--answer-question (text)
+  "Send TEXT as the answer to the pending question, as the user would."
+  (when (eq efrit-agent--status 'waiting)
+    (if (and efrit-agent--repl-session
+             (eq (efrit-repl-session-status efrit-agent--repl-session) 'waiting))
+        (progn (efrit-agent--add-user-message text)
+               (efrit-agent--repl-send text))
+      (efrit-executor-respond text))
+    (setq efrit-agent--status 'working)
+    t))
 
-(defun efrit-agent--question-menu-description ()
-  "The question text as the menu's heading, wrapped to the frame."
-  (let ((q (car efrit-agent--pending-question)))
-    (with-temp-buffer
-      (insert (or q "Choose"))
-      (let ((fill-column (max 40 (- (frame-width) 10))))
-        (fill-region (point-min) (point-max)))
-      (buffer-string))))
-
-(defun efrit-agent--question-menu-option-label (n)
-  "Label of option N, or nil past the end.  Long labels are cut."
-  (when-let* ((opt (nth (1- n) efrit-agent--question-menu-options)))
-    (truncate-string-to-width opt (max 30 (- (frame-width) 12)) nil nil "…")))
-
-(defconst efrit-agent--question-menu-definition
-     '(transient-define-prefix efrit-agent-question-menu ()
-        "Answer the model's question."
-        [:description efrit-agent--question-menu-description
-         ["Choose"
-          ("1" (lambda () (interactive) (efrit-agent--question-menu-choose 1))
-           :description (lambda () (efrit-agent--question-menu-option-label 1))
-           :if (lambda () (efrit-agent--question-menu-option-label 1)))
-          ("2" (lambda () (interactive) (efrit-agent--question-menu-choose 2))
-           :description (lambda () (efrit-agent--question-menu-option-label 2))
-           :if (lambda () (efrit-agent--question-menu-option-label 2)))
-          ("3" (lambda () (interactive) (efrit-agent--question-menu-choose 3))
-           :description (lambda () (efrit-agent--question-menu-option-label 3))
-           :if (lambda () (efrit-agent--question-menu-option-label 3)))
-          ("4" (lambda () (interactive) (efrit-agent--question-menu-choose 4))
-           :description (lambda () (efrit-agent--question-menu-option-label 4))
-           :if (lambda () (efrit-agent--question-menu-option-label 4)))
-          ("5" (lambda () (interactive) (efrit-agent--question-menu-choose 5))
-           :description (lambda () (efrit-agent--question-menu-option-label 5))
-           :if (lambda () (efrit-agent--question-menu-option-label 5)))
-          ("6" (lambda () (interactive) (efrit-agent--question-menu-choose 6))
-           :description (lambda () (efrit-agent--question-menu-option-label 6))
-           :if (lambda () (efrit-agent--question-menu-option-label 6)))]
-         ["Or"
-          ("t" "type an answer" efrit-agent--question-menu-custom)
-          ("q" "type an answer" efrit-agent--question-menu-custom)]])
-  "The question menu, kept as data so a reload redefines it.")
-
-(defun efrit-agent--define-question-menu ()
-  "Define `efrit-agent-question-menu' (the transient) when transient is available.
-Evaluated on every call, not behind `fboundp': a prefix defined once
-kept stale suffixes across reloads (\"Suffix command ... is not
-defined\" after a rename, 2026-09-25)."
-  (when (require 'transient nil t)
-    (eval efrit-agent--question-menu-definition t)))
-
-(defun efrit-agent--open-question-menu (question options)
-  "Show the transient menu for QUESTION with OPTIONS in this agent buffer."
+(defun efrit-agent--open-question-menu (question options &optional multi)
+  "Show the chooser for QUESTION with OPTIONS in this agent buffer.
+MULTI makes the options toggles with RET to submit."
   (when (efrit-agent-question-menu-available-p)
-    (efrit-agent--define-question-menu)
-    (setq efrit-agent--question-menu-options options
-          efrit-agent--question-menu-buffer (current-buffer))
-    (ignore question)
-    (call-interactively #'efrit-agent-question-menu)))
+    (setq efrit-agent--question-menu-buffer (current-buffer))
+    (efrit-choice-open question
+                       (mapcar (lambda (o) (list nil o o)) options)
+                       #'efrit-agent--question-menu-answered
+                       :multi multi)))
 
 (defun efrit-agent--set-input-prompt (text)
   "Replace the input prompt with TEXT.
@@ -302,12 +379,13 @@ have been sent back to Claude as part of the user's answer."
   "Update the input region prompt for question with OPTIONS.
 Shows context about what input is expected."
   (efrit-agent--set-input-prompt
-   (if options
-       (format "Answer (or %s): "
-               (mapconcat #'number-to-string
-                          (number-sequence 1 (min 4 (length options)))
-                          "/"))
-     "Answer: ")))
+   (cond
+    ((and options efrit-agent--pending-question-multi) "Answer (or toggle in the menu): ")
+    (options (format "Answer (or %s): "
+                     (mapconcat #'number-to-string
+                                (number-sequence 1 (min 9 (length options)))
+                                "/")))
+    (t "Answer: "))))
 
 (defun efrit-agent--reset-input-prompt ()
   "Reset the input region prompt to the default state.
@@ -528,20 +606,27 @@ list ends.  Idea from agent-shell's list-edit mode."
 ;; while the model works.  Two things can be meant: "after this, do
 ;; that" (queue: the text starts its own turn when this one ends) or
 ;; "while you are at it" (steer: the text goes to the model with the
-;; next tool results, inside this turn).  RET does the first by
-;; default and M-RET the second; both are customizable.
+;; next tool results, inside this turn).  RET steers by default and
+;; M-RET queues; both are customizable.  Steer is the default because
+;; what the user types during a turn is nearly always a correction to
+;; it ("keep the one in the buffer", "drop just the right-hand one"),
+;; and a queued correction is read only after the turn has gone the
+;; wrong way and asked its questions (2026-10-20).  A steer that
+;; finds no tool round is queued anyway, so it is never the worse
+;; choice.
 
-(defcustom efrit-agent-busy-submit-default-function #'efrit-agent-busy-submit-queue
+(defcustom efrit-agent-busy-submit-default-function #'efrit-agent-busy-submit-steer
   "What RET does with the input while a turn runs.
 A function of one argument, the input text, in the agent buffer.
-`efrit-agent-busy-submit-queue' starts a new turn with it when this one
-ends; `efrit-agent-busy-submit-steer' hands it to the running turn."
+`efrit-agent-busy-submit-steer' hands it to the running turn, which
+reads it with its next tool results; `efrit-agent-busy-submit-queue'
+starts a new turn with it when this one ends."
   :type '(choice (const :tag "Queue for the next turn" efrit-agent-busy-submit-queue)
                  (const :tag "Steer the running turn" efrit-agent-busy-submit-steer)
                  function)
   :group 'efrit-agent)
 
-(defcustom efrit-agent-busy-submit-override-function #'efrit-agent-busy-submit-steer
+(defcustom efrit-agent-busy-submit-override-function #'efrit-agent-busy-submit-queue
   "What M-RET (or C-u RET) does with the input while a turn runs.
 See `efrit-agent-busy-submit-default-function'."
   :type '(choice (const :tag "Queue for the next turn" efrit-agent-busy-submit-queue)
@@ -594,9 +679,9 @@ Conversation context accumulates across inputs - Claude remembers
 what was discussed previously.
 
 If the REPL session is idle, a new turn starts with the input.  If it
-is working, `efrit-agent-busy-submit-default-function' decides (queue
+is working, `efrit-agent-busy-submit-default-function' decides (steer
 by default); with OVERRIDE, `efrit-agent-busy-submit-override-function'
-\(steer by default).  If no REPL session exists, one is created.
+\(queue by default).  If no REPL session exists, one is created.
 Idle, a prefix argument (OVERRIDE) means \"grill me\": the model asks
 its clarifying questions before acting (`efrit-grill-me')."
   (interactive "P")
@@ -642,16 +727,46 @@ default applies."
      (images (vconcat images (list `((type . "text") (text . ,(substring-no-properties text))))))
      ((not (equal text input)) (substring-no-properties text)))))
 
+(defcustom efrit-agent-queue-merge t
+  "Non-nil sends every queued input as one turn when the running turn ends.
+The inputs are joined with a blank line between them, in the order
+they were queued.  Inputs queued during one turn are nearly always
+one instruction typed in pieces (\"after that, also...\"), and a model
+that reads only the first acts on it before it sees the rest.  Nil
+sends them one per turn, oldest first, as before 2026-10-20."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defconst efrit-agent--queue-merge-separator "\n\n"
+  "Text between queued inputs merged into one turn.")
+
+(defun efrit-agent--dequeue-for-turn (session)
+  "Take what the next turn sends from SESSION's queue.
+Returns (INPUT . PARTS): INPUT is the text to send, PARTS the queued
+strings it came from (one, or all of them under
+`efrit-agent-queue-merge').  Nil when the queue is empty."
+  (when-let* ((first (efrit-repl-session-dequeue session)))
+    (if (and efrit-agent-queue-merge (efrit-repl-session-queue session))
+        (let ((parts (list first)) next)
+          (while (setq next (efrit-repl-session-dequeue session))
+            (push next parts))
+          (setq parts (nreverse parts))
+          (cons (mapconcat #'identity parts efrit-agent--queue-merge-separator) parts))
+      (cons first (list first)))))
+
 (defun efrit-agent--send-queued (session)
   "Start the next queued input of SESSION as a turn, keeping the user's draft.
-The queued line already shows in the conversation; its waiting mark
-is dropped.  Returns non-nil when a turn started."
-  (when-let* ((input (efrit-repl-session-dequeue session))
+Under `efrit-agent-queue-merge' the whole queue goes as one turn.  The
+queued lines already show in the conversation; their waiting marks
+are dropped.  Returns non-nil when a turn started."
+  (when-let* ((taken (efrit-agent--dequeue-for-turn session))
+              (input (car taken))
               (buffer (efrit-repl-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (let ((draft (efrit-agent--get-input)))
-          (efrit-agent--unmark-queued-message input)
+          (dolist (part (cdr taken))
+            (efrit-agent--unmark-queued-message part))
           (prog1 (efrit-agent--repl-send input)
             ;; The turn start does not touch the input, but keep the
             ;; contract explicit: what the user was typing stays.
@@ -824,6 +939,31 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
        ((or "api-error" "error") 'failed)
        (_ 'idle))
      (and session (efrit-repl-session-buffer session))))
+  ;; A final message that lists choices and asks which ("1. ... 2. ...
+  ;; Which one?") is a question the model forgot to ask through
+  ;; request_user_input.  Register it as one, so 1/2/3 and the menu
+  ;; work; the user typed "1" RET into a new turn otherwise (2026-10-20).
+  (when (and session (member stop-reason '("end_turn" "session-complete" "unknown")))
+    (when-let* ((parsed (efrit-questions-parse-prose-choices
+                         (efrit-repl-session-last-answer session)))
+                (buffer (efrit-repl-session-buffer session)))
+      (when (buffer-live-p buffer)
+        (setf (efrit-repl-session-pending-question session)
+              (list (car parsed) (cdr parsed) (current-time) (list :kind 'prose)))
+        (efrit-repl-session-set-status session 'waiting)
+        (setq stop-reason "waiting-for-user")
+        (efrit-agent-set-status 'waiting buffer)
+        (with-current-buffer buffer
+          (setq efrit-agent--pending-question
+                (list (car parsed) (cdr parsed) (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+          (efrit-agent--update-input-prompt (car parsed) (cdr parsed))
+          (when (efrit-agent-question-menu-available-p)
+            (let ((buf buffer) (q (car parsed)) (opts (cdr parsed)))
+              (run-at-time 0 nil (lambda ()
+                                   (when (and (buffer-live-p buf)
+                                              (buffer-local-value 'efrit-agent--pending-question buf))
+                                     (with-current-buffer buf
+                                       (efrit-agent--open-question-menu q opts)))))))))))
   ;; Reset prompt if we were waiting -- but keep the Answer: prompt when
   ;; the turn paused on request_user_input (ef-dcn).  This callback runs
   ;; from the API response handler, whose current buffer is NOT the agent
@@ -834,6 +974,14 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (efrit-agent--reset-input-prompt)))))
+  ;; The turn is over: its tool and review rows fold under one line
+  ;; above the answer (not while a question keeps the turn open)
+  (when (and efrit-agent-fold-past-turns session
+             (member stop-reason '("end_turn" "session-complete" "unknown")))
+    (let ((buffer (efrit-repl-session-buffer session)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors (efrit-agent-fold-last-turn))))))
   ;; Auto-save session if enabled
   (when (and efrit-session-persist-auto-save session)
     (efrit-agent--auto-save-session session))
@@ -843,10 +991,33 @@ SESSION is the REPL session, STOP-REASON indicates why the turn ended."
   ;; restarts it), and not for a paused or waiting turn, whose answer
   ;; is the next input.  Off the event: let the turn tear down first.
   (when (efrit-repl-session-queue session)
-    (if (member stop-reason '("end_turn" "session-complete" "unknown"))
-        (run-at-time 0.1 nil #'efrit-agent--send-queued session)
+    (cond
+     ((member stop-reason '("end_turn" "session-complete" "unknown"))
+      (run-at-time 0.1 nil #'efrit-agent--send-queued session))
+     ;; The user cancelled: they are at the keyboard, so ask instead
+     ;; of printing.  Off the event, so the turn has torn down and the
+     ;; prompt is answered in the agent buffer, not the API callback's.
+     ((equal stop-reason "interrupted")
+      (run-at-time 0.1 nil #'efrit-agent--offer-queue-after-cancel session))
+     (t
       (message "Efrit: %d queued input(s) held after %s; C-c C-q lists them, M-x efrit-agent-queue-resume sends"
-               (length (efrit-repl-session-queue session)) stop-reason))))
+               (length (efrit-repl-session-queue session)) stop-reason)))))
+
+(defun efrit-agent--offer-queue-after-cancel (session)
+  "After a cancel, ask whether SESSION's queued inputs go next or wait.
+No means they stay queued; `efrit-agent-queue-resume' sends them and
+C-c C-q drops them.  Nothing is asked when the queue emptied or a new
+turn started in the meantime."
+  (let ((buffer (efrit-repl-session-buffer session))
+        (count (length (efrit-repl-session-queue session))))
+    (when (and (> count 0) (buffer-live-p buffer)
+               (not (eq (efrit-repl-session-status session) 'working)))
+      (with-current-buffer buffer
+        (if (y-or-n-p (format "Efrit: turn cancelled; send the %d queued input%s now? "
+                              count (if (= count 1) "" "s")))
+            (efrit-agent--send-queued session)
+          (message "Efrit: %d queued input%s kept; C-c C-q lists them, M-x efrit-agent-queue-resume sends"
+                   count (if (= count 1) "" "s")))))))
 
 (defun efrit-agent-queue-resume ()
   "Send the next queued input now, after a turn that failed or was interrupted."

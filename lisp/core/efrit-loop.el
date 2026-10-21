@@ -48,6 +48,7 @@
 (require 'efrit-permissions)
 (require 'efrit-sandbox)
 (require 'efrit-review)
+(require 'efrit-questions)
 (require 'efrit-limits)
 (declare-function efrit-sandbox--turn-set "efrit-sandbox")
 (defvar efrit-review-auto-grant-threshold)
@@ -477,14 +478,31 @@ response's stop_reason."
                              (format "No progress in %d API rounds (no tool call, no new text); the turn was stopped. Say how to proceed."
                                      efrit-loop-stall-rounds)))
         ("tool_use"
-         (if (efrit-review-applies-p content (funcall (efrit-loop-adapter-id-fn adapter) session))
-             (efrit-loop--review-then-execute session adapter content)
+         (cond
+          ;; The user answered a question with a question; the model
+          ;; asks again without a word.  Refuse the re-ask: the tool
+          ;; result tells it to answer in text first (2026-10-20).
+          ((efrit-questions-answer-first-p
+            (funcall (efrit-loop-adapter-messages-fn adapter) session) content)
+           (efrit-log 'info "%s %s: request_user_input without answering the user's question; refused" name session-id)
+           (efrit-publish 'note `((:session-id . ,session-id) (:kind . question) (:face . warning)
+                                  (:text . "⚖ asked again without answering your question; told the model to answer first")))
+           (funcall (efrit-loop-adapter-add-assistant-fn adapter) session content)
+           (let ((text (efrit-questions-answer-first-result
+                        (funcall (efrit-loop-adapter-messages-fn adapter) session))))
+             (funcall (efrit-loop-adapter-add-tool-results-fn adapter) session
+                      (mapcar (lambda (use) (efrit-api-build-tool-result (nth 0 use) text t))
+                              (efrit-review--tool-uses content))))
+           (funcall (efrit-loop-adapter-continue-fn adapter) session))
+          ((efrit-review-applies-p content (funcall (efrit-loop-adapter-id-fn adapter) session))
+           (efrit-loop--review-then-execute session adapter content))
+          (t
            ;; Say why there is no review row, so a missing one is
            ;; never mistaken for a missed review
            (when-let* ((why (efrit-review-skip-reason content)))
              (efrit-publish 'review-skipped `((:session-id . ,session-id) (:reason . ,why))))
            (funcall (efrit-loop-adapter-execute-tools-fn adapter)
-                    session content)))
+                    session content))))
         ("end_turn"
          (cond
           ;; The user cancelled mid-answer: what arrived is kept in

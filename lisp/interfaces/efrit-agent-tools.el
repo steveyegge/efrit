@@ -248,16 +248,26 @@ marking the end of the turn."
         ;; with no transcript, shows nothing else), so rendering both
         ;; gave the same paragraph twice.  Show the message only when
         ;; no text was streamed this turn and it IS the answer.
-        (when (and msg (not (string-empty-p msg))
-                   (not (efrit-agent--turn-has-streamed-text-p)))
-          (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
-        (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
-        (add-text-properties start (point)
-                             (list 'efrit-type 'tool-call
-                                   'efrit-id (efrit-agent-tool-view-id tv)
-                                   'efrit-tool-name "session_complete"
-                                   'efrit-tool-result (efrit-agent-tool-view-result tv)
-                                   'efrit-tool-success t))
+        (let ((rule-start nil))
+          (when (and msg (not (string-empty-p msg))
+                     (not (efrit-agent--turn-has-streamed-text-p)))
+            (insert (propertize msg 'face 'efrit-agent-claude-message) "\n"))
+          (setq rule-start (point))
+          (insert (propertize (concat (make-string 3 ?·) "\n") 'face 'efrit-agent-timestamp))
+          ;; The message IS the answer: it is a `claude-message' like
+          ;; streamed prose, so the turn fold leaves it visible (a turn
+          ;; whose only answer was this message folded down to its
+          ;; summary line, 2026-10-21).  Only the rule is the tool row.
+          (when (> rule-start start)
+            (add-text-properties start rule-start
+                                 (list 'efrit-type 'claude-message
+                                       'efrit-id (efrit-agent-tool-view-id tv))))
+          (add-text-properties rule-start (point)
+                               (list 'efrit-type 'tool-call
+                                     'efrit-id (efrit-agent-tool-view-id tv)
+                                     'efrit-tool-name "session_complete"
+                                     'efrit-tool-result (efrit-agent-tool-view-result tv)
+                                     'efrit-tool-success t)))
         (point))
     (efrit-agent--render-tool-call-1 tv)))
 
@@ -658,18 +668,68 @@ right-edge marker and a column of slack so the row never wraps."
 Like `less -S': no wrapping, the surplus is chopped and a dim
 `efrit-agent--chop-marker' is pinned at the right window edge with a
 `display' space so it reads as a margin mark, not part of the text.
-The full text is in the row's expansion; nothing is lost.
+The full text is in the row's expansion; nothing is lost.  The
+string carries `efrit-chop' (PREFIX-WIDTH FULL-TEXT FACE) so
+`efrit-agent--rechop-rows' can redo the cut at another window width.
 Returns a propertized string, possibly TEXT unchanged."
   (let* ((text (replace-regexp-in-string "[\n\r\t]+" " " text))
-         (avail (- (efrit-agent--row-width) prefix-width)))
-    (if (<= (string-width text) avail)
-        (propertize text 'face face)
-      (concat (propertize (truncate-string-to-width text (max 8 (1- avail))) 'face face)
-              ;; a stretch space up to the marker's column, then the
-              ;; marker: it sits flush right however wide the text was
-              (propertize " " 'display `(space :align-to (- right ,(1+ (string-width efrit-agent--chop-marker)))))
-              (propertize efrit-agent--chop-marker 'face 'efrit-agent-chop-marker
-                          'help-echo "Row chopped to the window width; expand for the full text")))))
+         (avail (- (efrit-agent--row-width) prefix-width))
+         (chop (list prefix-width text face)))
+    (propertize
+     (if (<= (string-width text) avail)
+         (propertize text 'face face)
+       (concat (propertize (truncate-string-to-width text (max 8 (1- avail))) 'face face)
+               ;; a stretch space up to the marker's column, then the
+               ;; marker: it sits flush right however wide the text was
+               (propertize " " 'display `(space :align-to (- right ,(1+ (string-width efrit-agent--chop-marker)))))
+               (propertize efrit-agent--chop-marker 'face 'efrit-agent-chop-marker
+                           'help-echo "Row chopped to the window width; expand for the full text")))
+     'efrit-chop chop)))
+
+(defvar-local efrit-agent--chopped-width nil
+  "The row width the chopped summaries in this buffer were cut for.")
+
+(defun efrit-agent--rechop-rows (&optional _frame)
+  "Re-cut every chopped summary in this buffer to the current window width.
+On `window-size-change-functions': rows cut on a laptop screen stayed
+short on a wide monitor (2026-10-21).  Each chopped span carries the
+full text in `efrit-chop'; the span is replaced in place, with the
+row's other properties kept."
+  (let ((width (efrit-agent--row-width)))
+    (unless (eql width efrit-agent--chopped-width)
+      (setq efrit-agent--chopped-width width)
+      (save-excursion
+        (efrit-agent--with-render
+          (let ((pos (point-min)) (spans nil))
+            (while (setq pos (text-property-not-all pos (point-max) 'efrit-chop nil))
+              (let ((end (or (next-single-property-change pos 'efrit-chop) (point-max))))
+                (push (cons (copy-marker pos) (copy-marker end)) spans)
+                (setq pos end)))
+            (dolist (span spans)
+              (let* ((beg (car span)) (end (cdr span))
+                     (chop (get-text-property beg 'efrit-chop))
+                     (row-props (let ((all (text-properties-at beg)) (keep nil))
+                                  (while all
+                                    (unless (memq (car all) '(face font-lock-face display help-echo efrit-chop))
+                                      (setq keep (cons (car all) (cons (cadr all) keep))))
+                                    (setq all (cddr all)))
+                                  keep))
+                     (new (apply #'efrit-agent--chop-to-row chop)))
+                (goto-char beg)
+                (delete-region beg end)
+                (insert new)
+                (add-text-properties beg (point) row-props)
+                (efrit-agent--seal-rendered beg (point))
+                (set-marker beg nil) (set-marker end nil)))))))))
+
+(defun efrit-agent--rechop-on-resize (frame)
+  "`window-size-change-functions' entry: re-cut the agent buffers shown in FRAME."
+  (dolist (win (window-list frame 'no-minibuf))
+    (with-current-buffer (window-buffer win)
+      (when (derived-mode-p 'efrit-agent-mode)
+        (efrit-agent--rechop-rows)))))
+
+(add-hook 'window-size-change-functions #'efrit-agent--rechop-on-resize)
 
 (defun efrit-agent--format-wrapped-paragraph (text indent face)
   "TEXT filled to the window width, every line prefixed with INDENT, in FACE."
@@ -1034,6 +1094,9 @@ Returns t if toggled, nil if no tool at point."
        ((not hidden) (isearch-filter-visible beg end))
        ((null search-invisible) nil)
        ((eq search-invisible 'open)
+        ;; a folded turn first (its rows are under it), then the row
+        (when (fboundp 'efrit-agent-fold-open-containing)
+          (efrit-agent-fold-open-containing beg))
         (let ((id (get-text-property beg 'efrit-id)))
           (when (and id (efrit-agent--set-tool-expanded id t))
             (push id efrit-agent--isearch-opened))

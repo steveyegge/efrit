@@ -147,6 +147,38 @@ received in `test-review--requests'.  A string starting with
     (should (< (length batch) 120))
     (should (string-match-p "more chars" batch))))
 
+(ert-deftest test-review-turn-recap-shows-earlier-steps ()
+  "The reviewer sees what the agent said and called earlier in the same
+turn, oldest first, with tool targets; nothing from before the user's
+last message; nil when the turn has no earlier steps.  A removal that
+completes an earlier addition then reads as one move (2026-10-20)."
+  (let* ((tr (let ((h (make-hash-table :test 'equal)))
+               (puthash "type" "tool_result" h) (puthash "content" "ok" h) h))
+         (messages
+          (list '((role . "user") (content . "old request"))
+                `((role . "assistant") (content . ,(vector (test-review--text "old answer"))))
+                '((role . "user") (content . "move the settings into libraries.el"))
+                `((role . "assistant") (content . ,(vector (test-review--text "Moving the three into use-package emacs.")
+                                                           (test-review--tool-use "1" "edit_file" '(("path" . "~/x/libraries.el") ("old_str" . "a"))))))
+                `((role . "user") (content . ,(vector tr)))
+                `((role . "assistant") (content . ,(vector (test-review--text "Now remove them from custom.el.")
+                                                           (test-review--tool-use "2" "edit_file" '(("path" . "~/x/custom.el"))))))
+                `((role . "user") (content . ,(vector tr))))))
+    (let ((recap (efrit-review-turn-recap messages)))
+      (should (string-match-p "Moving the three" recap))
+      (should (string-match-p "- edit_file ~/x/libraries.el" recap))
+      (should (string-match-p "- edit_file ~/x/custom.el" recap))
+      (should-not (string-match-p "old answer" recap))
+      ;; order: the addition before the removal
+      (should (< (string-match "libraries.el" recap) (string-match "custom.el" recap))))
+    (should-not (efrit-review-turn-recap (list '((role . "user") (content . "just asked")))))
+    ;; it reaches the reviewer's message
+    (let ((msg (efrit-review--user-message "move" "Removing." "1. edit_file {}"
+                                           (efrit-review-turn-recap messages))))
+      (should (string-match-p "EARLIER THIS TURN" msg))
+      (should (< (string-match "EARLIER THIS TURN" msg) (string-match "Moving the three" msg)
+                 (string-match "AGENT SAID THIS TURN" msg))))))
+
 (ert-deftest test-review-request-shape ()
   "The review request carries no tools, the configured model, and no history."
   (let ((efrit-review-enabled t)

@@ -104,6 +104,8 @@ Live: transient calls it on every redraw, so toggles show at once."
       ["Tool rows"
        ("RET" efrit-agent-toggle-expand :description (lambda () (efrit-agent-menu--desc "fold / unfold the row at point" 'efrit-agent-toggle-expand)))
        ("e" efrit-agent-expand-all :description (lambda () (efrit-agent-menu--desc "unfold every row" 'efrit-agent-expand-all)) :transient t)
+       ("E" efrit-agent-fold-all :description (lambda () (efrit-agent-menu--desc "close every past turn's steps (C-u: open)" 'efrit-agent-fold-all)) :transient t)
+       ("H" efrit-agent-fold-history :description (lambda () (efrit-agent-menu--desc "fold the turns that are not folded yet" 'efrit-agent-fold-history)) :transient t)
        ("c" efrit-agent-collapse-all :description (lambda () (efrit-agent-menu--desc "fold every row" 'efrit-agent-collapse-all)) :transient t)
        ("n" efrit-agent-next-tool :description (lambda () (efrit-agent-menu--desc "next row" 'efrit-agent-next-tool)) :transient t)
        ("b" efrit-agent-previous-tool :description (lambda () (efrit-agent-menu--desc "previous row" 'efrit-agent-previous-tool)) :transient t)

@@ -1067,7 +1067,7 @@ was failing every time.)"
            ;; still delayed by `transient-show-popup' (2026-09-30: it
            ;; came up later over the idle buffer and swallowed keys)
            ((and (boundp 'transient--prefix) transient--prefix
-                 (eq (oref transient--prefix command) 'efrit-agent-question-menu))
+                 (eq (oref transient--prefix command) 'efrit-choice-menu))
             (ignore-errors (transient--emergency-exit 'drive))
             (cons 'FAIL "the question menu is still active after the answer"))
            ((string-match-p "blue" (downcase (efrit-testdrive--reply-text))) 'PASS)

@@ -138,6 +138,104 @@ output captured; failures come back with their messages, capped at
        (and (> (length failures) efrit-tool-run-ert-max-failures)
             (list (format "%d more failure(s) not shown" (- (length failures) efrit-tool-run-ert-max-failures))))))))
 
+;;;; reproduce_command
+
+(declare-function efrit-sandbox-eval-inspect "efrit-sandbox-eval" (form))
+(declare-function efrit-sandbox-check-buffer "efrit-sandbox" (buffer &optional tool detail))
+(declare-function efrit-context-target-buffer "efrit-context-sources" ())
+(defvar efrit-sandbox-enabled)
+(defvar efrit-tools-input-allowed)
+
+(defcustom efrit-tool-reproduce-max-frames 40
+  "Backtrace frames returned by reproduce_command."
+  :type 'integer
+  :group 'efrit)
+
+(defun efrit-tool-reproduce--backtrace (skip)
+  "The current backtrace as strings, innermost first, SKIP frames dropped.
+Frames of the capture machinery itself are dropped too."
+  (let ((out nil) (n 0) (seen 0))
+    (mapbacktrace
+     (lambda (evald func args _flags)
+       (cl-incf seen)
+       (when (and (> seen skip) (< n efrit-tool-reproduce-max-frames)
+                  (not (memq func '(efrit-tool-reproduce--backtrace mapbacktrace signal))))
+         (cl-incf n)
+         (push (if (and evald args)
+                   (truncate-string-to-width (format "%S" (cons func args)) 200 nil nil "…")
+                 (format "%S" (if (symbolp func) func (type-of func))))
+               out))))
+    (nreverse out)))
+
+(defun efrit-tool-reproduce-command (args)
+  "Run ARGS's `command' (or `form') in `buffer' and return its error with a backtrace.
+What `toggle-debug-on-error' plus pressing the key would show, without
+the debugger: the backtrace is captured at the signal point with
+`handler-bind', so the frames are the real ones, not a summary.
+`command' is called with `call-interactively' in the user's buffer
+\(the one `buffer' names, or the target buffer), so its `interactive'
+spec runs.  Returns the error, its condition and the frames, or the
+value when nothing failed.  Commands that read from the minibuffer
+cannot be driven here; use `form' with the arguments spelled out."
+  (efrit-tool-execute reproduce_command args
+    (let* ((command (alist-get 'command args))
+           (form-text (alist-get 'form args))
+           (buf (let ((name (alist-get 'buffer args)))
+                  (cond
+                   ((and name (not (string-empty-p name)))
+                    (or (get-buffer name) (signal 'user-error (list (format "No buffer named %s" name)))))
+                   ((and (require 'efrit-context-sources nil t) (fboundp 'efrit-context-target-buffer)
+                         (efrit-context-target-buffer)))
+                   (t (current-buffer)))))
+           (thunk nil) (label nil))
+      (cond
+       ((and command (not (string-empty-p command)))
+        (let ((sym (intern-soft command)))
+          (unless (and sym (commandp sym))
+            (signal 'user-error (list (format "%s is not an interactive command" command))))
+          (setq label command
+                thunk (lambda () (let ((this-command sym) (last-command this-command))
+                                   (call-interactively sym))))))
+       ((and form-text (not (string-empty-p form-text)))
+        (let ((form (car (read-from-string form-text))))
+          (when (bound-and-true-p efrit-sandbox-enabled)
+            (when-let* ((why (and (fboundp 'efrit-sandbox-eval-inspect) (efrit-sandbox-eval-inspect form))))
+              (signal 'user-error (list why))))
+          (setq label form-text
+                thunk (lambda () (eval form t)))))
+       (t (signal 'user-error (list "command or form is required"))))
+      (efrit-sandbox-check-buffer buf "reproduce_command")
+      (let ((frames nil) (outcome nil))
+        (with-current-buffer buf
+          (condition-case err
+              (let ((debug-on-error nil) (inhibit-quit nil)
+                    (efrit-tools-input-allowed nil))
+                (setq outcome
+                      (list 'value
+                            (handler-bind ((error (lambda (_e)
+                                                    (unless frames
+                                                      (setq frames (efrit-tool-reproduce--backtrace 3))))))
+                              (funcall thunk)))))
+            (quit (setq outcome (list 'quit nil)))
+            (error (setq outcome (list 'error err)))))
+        (pcase (car outcome)
+          ('error
+           (let ((err (cadr outcome)))
+             (efrit-tool-success
+              `((ran . ,label) (buffer . ,(buffer-name buf)) (failed . t)
+                (error . ,(error-message-string err))
+                (condition . ,(format "%S" (car err)))
+                (data . ,(truncate-string-to-width (format "%S" (cdr err)) 600 nil nil "…"))
+                (backtrace . ,(vconcat frames))))))
+          ('quit
+           (efrit-tool-success `((ran . ,label) (buffer . ,(buffer-name buf)) (failed . :json-false)
+                                 (note . "the command quit (C-g or a minibuffer read it could not do here)"))))
+          (_
+           (efrit-tool-success
+            `((ran . ,label) (buffer . ,(buffer-name buf)) (failed . :json-false)
+              (value . ,(truncate-string-to-width (format "%S" (cadr outcome)) 600 nil nil "…"))
+              (note . "no error this time; if the user still sees one, the trigger differs (buffer, point, region, a prefix arg) — ask which")))))))))
+
 (provide 'efrit-tool-lisp-dev)
 
 ;;; efrit-tool-lisp-dev.el ends here

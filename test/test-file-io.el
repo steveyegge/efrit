@@ -85,6 +85,53 @@ means none (2026-10-19: FILE~ beside every edited file)."
         (with-temp-buffer (insert-file-contents path)
                           (should (equal (buffer-string) "baz\nbar\nbaz\n")))))))
 
+(defun test-fio--change-on-disk (path content)
+  "Write CONTENT to PATH with a modtime the visiting buffer will see as newer."
+  (with-temp-file path (insert content))
+  (set-file-times path (time-add (current-time) 5)))
+
+(ert-deftest test-fio-replace-reconciles-a-file-changed-on-disk ()
+  "No y/n/r reaches the user.  Unmodified buffer, file changed: revert,
+then apply.  Modified buffer, file changed, old text the same in both:
+keep the buffer, apply, save over the disk copy without a question.
+Modified buffer, file changed around the very text: refuse with a
+message naming both."
+  (cl-letf (((symbol-function 'ask-user-about-supersession-threat)
+             (lambda (&rest _) (error "the user was asked y/n/r"))))
+    ;; 1: unmodified buffer, disk changed elsewhere
+    (test-fio--with-file "alpha\nfoo\n"
+      (let ((buf (find-file-noselect path)))
+        (test-fio--change-on-disk path "ALPHA\nfoo\n")
+        (let ((r (efrit-file-replace path "foo" "bar")))
+          (should (eq 'reverted (plist-get r :reconciled)))
+          (with-current-buffer buf
+            (should (equal (buffer-string) "ALPHA\nbar\n"))
+            (should-not (buffer-modified-p))))))
+    ;; 2: modified buffer, disk changed elsewhere, old text same
+    (test-fio--with-file "alpha\nfoo\n"
+      (let ((buf (find-file-noselect path)))
+        (with-current-buffer buf (goto-char (point-max)) (insert "mine\n"))
+        (test-fio--change-on-disk path "ALPHA\nfoo\n")
+        (let ((r (efrit-file-replace path "foo" "bar")))
+          (should (eq 'kept (plist-get r :reconciled)))
+          (should (plist-get r :saved))
+          (with-current-buffer buf
+            (should (equal (buffer-string) "alpha\nbar\nmine\n"))
+            (should-not (buffer-modified-p)))
+          (with-temp-buffer (insert-file-contents path)
+                            (should (equal (buffer-string) "alpha\nbar\nmine\n"))))))
+    ;; 3: modified buffer, disk changed the very text
+    (test-fio--with-file "alpha\nfoo\n"
+      (let ((buf (find-file-noselect path)))
+        (with-current-buffer buf (goto-char (point-max)) (insert "mine\n"))
+        (test-fio--change-on-disk path "alpha\nFOO\n")
+        (condition-case err
+            (progn (efrit-file-replace path "foo" "bar") (should nil))
+          (efrit-file-changed
+           (should (string-match-p "unsaved edits" (cadr (cdr err))))))
+        ;; nothing was changed
+        (with-current-buffer buf (should (equal (buffer-string) "alpha\nfoo\nmine\n")))))))
+
 (ert-deftest test-fio-replace-refuses-when-content-changed ()
   "If the file changed after the caller read it, nothing is applied."
   (test-fio--with-file "one\n"

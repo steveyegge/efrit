@@ -281,6 +281,41 @@ it is busy; a held (pretend-busy) session is left alone."
               (should (eq 'idle (efrit-repl-session-status session))))
           (efrit-unsubscribe 'turn-complete listener))))))
 
+(ert-deftest test-repl-loop-recovers-a-dead-loop-entry ()
+  "A loop entry that never sent a request (iteration 0, no stream, no
+tool) is stale even though it exists: 2026-10-21 such an entry kept
+a session `working' for an hour and every RET steered into it.  Its
+undelivered steering becomes queued input.  An entry at iteration 1,
+or with a stream in flight, is not touched."
+  (let ((session (efrit-repl-session-create)) (seen nil))
+    (cl-letf (((symbol-function 'efrit-agent-set-status) #'ignore))
+      (let ((listener (lambda (e) (push (alist-get :stop-reason e) seen)))
+            (id (efrit-repl-session-id session)))
+        (efrit-subscribe 'turn-complete listener)
+        (unwind-protect
+            (progn
+              (efrit-repl-session-set-status session 'working)
+              (puthash id (list session nil 0) efrit-repl-loop--active)
+              (setf (efrit-repl-session-steering session) '("ping"))
+              (should (efrit-repl-loop--entry-dead-p session))
+              (should (efrit-repl-loop-recover-stale session))
+              (should (eq 'idle (efrit-repl-session-status session)))
+              (should-not (efrit-repl-loop-active-p session))
+              (should (equal '("interrupted") seen))
+              (should (equal '("ping") (efrit-repl-session-queue session)))
+              ;; iteration 1: a request went out, not dead
+              (efrit-repl-session-set-status session 'working)
+              (puthash id (list session nil 1) efrit-repl-loop--active)
+              (should-not (efrit-repl-loop--entry-dead-p session))
+              (should-not (efrit-repl-loop-recover-stale session))
+              ;; iteration 0 with a stream of this session in flight: not dead
+              (puthash id (list session nil 0) efrit-repl-loop--active)
+              (cl-letf (((symbol-function 'efrit-api-stream-active-p)
+                         (lambda (sid) (equal sid id))))
+                (should-not (efrit-repl-loop--entry-dead-p session))))
+          (remhash id efrit-repl-loop--active)
+          (efrit-unsubscribe 'turn-complete listener))))))
+
 (ert-deftest test-repl-loop-api-error-fails-turn ()
   "An API error ends the turn with the api-error reason."
   (let ((session (efrit-repl-session-create))

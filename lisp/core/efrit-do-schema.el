@@ -265,13 +265,17 @@ EXAMPLES:
 - Confirmation: \"This will delete 15 files. Proceed?\" with options [\"Yes\", \"No\"]
 - Choice: \"How should I format the output?\" with options [\"Table\", \"List\", \"JSON\"]
 
-IMPORTANT: After calling this tool, the session pauses. You will receive the user's response in the next API call continuation.")
+IMPORTANT: After calling this tool, the session pauses. You will receive the user's response in the next API call continuation.
+
+RULES: (1) If the user answers with a question of their own, answer it in text BEFORE asking again; a repeated ask without an answer is refused. (2) Never put choices in a final message as prose (\"1. ... 2. ... Which one?\"): the user gets no menu. Choices always go through this tool, with the options list. (3) Options are things only the user can decide; do not offer a plan you have already chosen as three variants of itself. (4) For a set the user picks several from (which items to adopt, which files to include), pass multi=true: the user gets toggles and RET, and the answer lists the chosen options separated by \"; \". Never ask the user to type numbers.")
      ("input_schema" . (("type" . "object")
                        ("properties" . (("question" . (("type" . "string")
                                                        ("description" . "The question to ask the user")))
                                        ("options" . (("type" . "array")
                                                     ("items" . (("type" . "string")))
-                                                    ("description" . "Optional list of choices. If provided, user picks one. If omitted, user provides free-form input.")))))
+                                                    ("description" . "Optional list of choices. If provided, user picks one (or several with multi). If omitted, user provides free-form input.")))
+                                       ("multi" . (("type" . "boolean")
+                                                  ("description" . "The user may choose several options (toggles + RET); the answer lists them separated by \"; \"")))))
                        ("required" . ["question"]))))
    (("name" . "confirm_action")
     ("description" . "Request explicit user confirmation before a destructive or important operation. Use this INSTEAD of request_user_input when confirming a specific action.
@@ -286,7 +290,7 @@ EXAMPLES:
 - Modify config: action=\"Update production config\" severity=\"warning\"
 - Create directory: action=\"Create src/utils/ directory\" severity=\"info\"
 
-The session PAUSES until user responds. On timeout, treated as rejection.")
+The session PAUSES until the user responds, however long that takes; there is no timeout. If the result is an error, the prompt itself failed; the action was never started.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("action" . (("type" . "string")
                                                     ("description" . "Short description of what will happen")))
@@ -298,9 +302,7 @@ The session PAUSES until user responds. On timeout, treated as rejection.")
                                                     ("description" . "Severity level: info (y/n), warning (highlighting), danger (type 'yes')")))
                                       ("options" . (("type" . "array")
                                                    ("items" . (("type" . "string")))
-                                                   ("description" . "Custom choices (default: ['Yes', 'No'])")))
-                                      ("timeout_seconds" . (("type" . "number")
-                                                           ("description" . "How long to wait before auto-rejecting (default: 300)")))))
+                                                   ("description" . "Custom choices (default: ['Yes', 'No'])")))))
                       ("required" . ["action"]))))
    ;; Checkpoint tools - Phase 3: Workflow Enhancement
    (("name" . "checkpoint")
@@ -414,6 +416,12 @@ IMPORTANT: Session PAUSES until user responds.")
                                       ("line" . (("type" . "integer") ("description" . "1-based, when no start_text")))
                                       ("end_line" . (("type" . "integer")))))
                       ("required" . ["file"]))))
+   (("name" . "show_ui_element")
+    ("description" . "Point at a piece of the user's screen: flash the mode line, header line or tab line of a window (by buffer name) for two seconds and return where it is in frame pixels. Use it instead of describing a location in words (\"the arc on row 2 next to the status word\"), and when a user's screenshot shows a window line, to confirm which one you mean before acting. A screenshot the user attaches with /shot comes with a LAYOUT block: window rectangles and the constructs of each line; read it before asking which element they meant.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("buffer" . (("type" . "string") ("description" . "Name of the buffer whose window line to flash")))
+                                      ("element" . (("type" . "string") ("enum" . ["mode-line" "header-line" "tab-line"]) ("description" . "Default mode-line")))))
+                      ("required" . ["buffer"]))))
    (("name" . "get_last_error")
     ("description" . "The user's recent command errors in this Emacs (message, condition, command, buffer, backtrace frame summary), newest first. Use this when the user asks why something just failed, before reproducing anything. Read-only.")
     ("input_schema" . (("type" . "object")
@@ -528,6 +536,13 @@ Returns: Matches with file path, line number, column, content, and context lines
     ("input_schema" . (("type" . "object")
                       ("properties" . (("selector" . (("type" . "string") ("description" . "Regexp on test names, or \"t\" for all")))))
                       ("required" . []))))
+   (("name" . "reproduce_command")
+    ("description" . "Reproduce an error the user reports from a key or command: runs the command (call-interactively, in the user's buffer) or a form, with the backtrace captured at the point of the signal, as toggle-debug-on-error would show it. Returns error, condition, data and the real frames. Use it FIRST when the user says 'X gives an error' and names or implies the command (look the key up with eval_sexp (key-binding (kbd \"<f3>\")) if needed); get_last_error is the recorded summary, this is the live reproduction. Exec class: reviewed like eval_sexp. Commands that prompt in the minibuffer cannot be driven; pass form with the arguments spelled out instead.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("command" . (("type" . "string") ("description" . "Interactive command name, e.g. tzz/transient/context")))
+                                      ("form" . (("type" . "string") ("description" . "A Lisp form to evaluate instead of a command")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer to run in (default: the user's buffer)")))))
+                      ("required" . []))))
    (("name" . "project_outline")
     ("description" . "Every top-level definition in the project's source files, by file, with line numbers (imenu). A few thousand tokens for a typical project; cached, so repeating it is free. Call it FIRST when a task spans files you have not read: it answers 'where is X' in one call, then read the two or three files whole. Read-only.")
     ("input_schema" . (("type" . "object")
@@ -535,6 +550,61 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("pattern" . (("type" . "string") ("description" . "Glob to keep only some files, e.g. *.el or lisp/interfaces/*")))
                                       ("max_files" . (("type" . "integer") ("description" . "Default 400")))))
                       ("required" . []))))
+   (("name" . "symbol_info")
+    ("description" . "Everything about one Emacs Lisp symbol in ONE call: kinds (function/command/macro/variable/user-option/face), signature, docstring, defining file and line, the definition's source text, the current value (in a buffer you name), default and standard values, advice, whether it is compiled, and (optionally) its callers. Read-only, not reviewed. Use this instead of search_content + read_file + eval_sexp probes of symbol-file/fboundp/describe-*.
+
+EXAMPLES:
+- symbol_info symbol=\"efrit-agent-spinner-mode-line-string\"
+- symbol_info symbol=\"global-mode-string\" buffer=\"*scratch*\"
+- symbol_info symbol=\"efrit-agent-buffers\" include_callers=true")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The symbol's name")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose binding of a variable is read (default: the user's buffer)")))
+                                      ("include_source" . (("type" . "boolean") ("description" . "Include the definition's text (default true)")))
+                                      ("include_callers" . (("type" . "boolean") ("description" . "Walk xref for callers (default false; slower)")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "live_state")
+    ("description" . "Current values of named variables and the bound/fbound state of names, in one buffer. Names only: nothing is evaluated or called, so it is read-only and not reviewed. Use it for every 'what is X right now' instead of an eval_sexp of (list x y z).
+
+EXAMPLE: live_state names=[\"global-mode-string\", \"header-line-format\", \"efrit-agent--thinking-label\"] buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("names" . (("type" . "array") ("items" . (("type" . "string"))) ("description" . "Symbol names")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose bindings are read (default: the user's buffer)")))))
+                      ("required" . ["names"]))))
+   (("name" . "mode_line_report")
+    ("description" . "Every window's mode line, header line and tab line as rendered text, taken apart into the constructs they are made of, each named by the variable or (:eval FUNCTION) it came from; plus global-mode-string and mode-line-misc-info. Answers 'what is that thing in the mode line / header' by name in one call. Read-only.
+
+EXAMPLE: mode_line_report buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("frame" . (("type" . "string") ("enum" . ["selected" "all"]) ("description" . "Windows of the selected frame (default) or all frames")))
+                                      ("buffer" . (("type" . "string") ("description" . "Only windows showing this buffer")))))
+                      ("required" . []))))
+   (("name" . "buffer_list")
+    ("description" . "The user's live buffers: name, file, remote (TRAMP host or false), size, major mode, modified, shown. Nothing is entered or read. Local buffers come first. RULE for remote buffers (the user's): consider local buffers first; then the NAMES of remote ones; only when a remote buffer is very likely the one that matters, ask the user (request_user_input) before reading it. Never sweep remote buffers with a search: each costs a round trip to the host and a grant prompt.
+
+EXAMPLES:
+- buffer_list pattern=\"report\\|adopt\"
+- buffer_list  (everything; then buffer_scan or read_buffer on the ones that matter)")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string") ("description" . "Regexp on buffer and file names")))
+                                      ("include_hidden" . (("type" . "boolean") ("description" . "Also names starting with a space (default false)")))
+                                      ("max" . (("type" . "integer") ("description" . "Default 200")))))
+                      ("required" . []))))
+   (("name" . "buffer_scan")
+    ("description" . "Regexp matches with surrounding lines in one buffer, or in every live buffer whose name matches buffer_regexp. Read-only; each buffer passes the sandbox's buffer check. Use it instead of re-search-forward loops in eval_sexp: logs (*efrit-log*, *Messages*), the agent transcript, any buffer.
+
+EXAMPLES:
+- buffer_scan buffer=\"*efrit-log*\" pattern=\"sandbox: denied\" from_end=true max=5
+- buffer_scan buffer_regexp=\"^\\\\*efrit\" pattern=\"kill.ring\" context=3")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string") ("description" . "Emacs regexp")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer name (default: the user's buffer)")))
+                                      ("buffer_regexp" . (("type" . "string") ("description" . "Scan every live buffer whose name matches, instead of buffer")))
+                                      ("context" . (("type" . "integer") ("description" . "Lines of context each side (default 2)")))
+                                      ("max" . (("type" . "integer") ("description" . "Most matches returned (default 200)")))
+                                      ("from_end" . (("type" . "boolean") ("description" . "Newest first: search from the end")))
+                                      ("include_remote" . (("type" . "boolean") ("description" . "Under buffer_regexp, also scan buffers of remote files (default false: they are listed as skipped)")))))
+                      ("required" . ["pattern"]))))
    (("name" . "read_file")
     ("description" . "Read files and return their contents with metadata. READ WHOLE FILES, SEVERAL AT ONCE: pass paths=[...] for every file the task touches in ONE call; the result holds them all under a token budget (default 40k), and a file that does not fit comes back as its outline (definitions with line numbers) so you read a range of it next. Do not read a file in 60-line windows: nine range reads of one file cost nine round trips where one whole read costs one.
 

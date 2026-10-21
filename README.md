@@ -36,16 +36,21 @@ A structured, real-time view of agentic sessions with:
   `efrit-data-directory/transcripts/` (`efrit-transcript-enabled`);
   `C-c C-f` opens this session's
 - A prompt that is writable at all times.  `RET` while a turn runs
-  queues the input for the next turn; `M-RET` (or `C-u RET`) steers
-  the running turn: the model reads the text with its next tool
-  results.  Both are `efrit-agent-busy-submit-*-function`.  `C-c C-q`
+  steers the running turn: the model reads the text with its next
+  tool results (a steer the turn no longer has room for starts the
+  next turn).  `M-RET` (or `C-u RET`) queues the input for the next
+  turn instead.  Both are `efrit-agent-busy-submit-*-function`.  `C-c C-q`
   lists and drops queued inputs.
 - `@path` mentions complete over the project's files and inline the
   file for the model; images are attached.  Drag a file onto the buffer
-  to mention it (a screenshot dragged from the OS is kept under
-  `.efrit/dropped/`).
+  or paste an image to mention it (kept outside the project, under
+  `efrit-agent-dropped-directory`).  `/shot` attaches a screenshot of
+  the frame with a layout block (every window's rectangle and the
+  constructs of its mode, header and tab lines), so "this thing" in a
+  crop can be placed; the model points back with `show_ui_element`,
+  which flashes a window's mode or header line.
 - `/commands` at the start of the input run efrit's own commands:
-  `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, ...).
+  `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, `/shot`, ...).
 - Lists in the input: `S-RET` on a `- ` or `1. ` line continues the
   list (on an empty item it ends it), `TAB` / `S-TAB` indent and dedent
   the item.
@@ -177,8 +182,8 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `TAB` / `S-TAB` | Move between sections |
 | `M-n` / `M-p` | Next / previous tool call |
 | `RET` | Expand/collapse tool at point |
-| `RET` (input) | Send; queue while a turn runs |
-| `M-RET` / `C-u RET` (input) | Steer the running turn |
+| `RET` (input) | Send; steer while a turn runs |
+| `M-RET` / `C-u RET` (input) | Queue for the next turn |
 | `S-RET` / `C-j` (input) | Newline |
 | `C-c C-c` | Send input / continue session |
 | `C-c C-q` (input) | Show / drop queued inputs |

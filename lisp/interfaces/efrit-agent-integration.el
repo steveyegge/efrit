@@ -255,7 +255,8 @@ same key (the sandbox's \"asks to …\" line becomes the outcome line)."
   (efrit-agent--in-agent-buffer event
     (when-let* ((response (alist-get :response event)))
       (efrit-agent--add-user-message (format "%s" response)))
-    (setq efrit-agent--pending-question nil)
+    (setq efrit-agent--pending-question nil
+          efrit-agent--pending-question-multi nil)
     (efrit-agent--close-question-menu)
     (setq efrit-agent--status 'working)
     (efrit-agent--reset-input-prompt)))

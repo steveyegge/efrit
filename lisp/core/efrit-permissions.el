@@ -71,7 +71,7 @@
 (defcustom efrit-permission-tool-classes
   '(;; exec: arbitrary code or commands
     ("eval_sexp" . exec) ("shell_exec" . exec) ("run_program" . exec)
-    ("load_project_file" . exec) ("run_ert" . exec)
+    ("load_project_file" . exec) ("run_ert" . exec) ("reproduce_command" . exec)
     ;; write: files and buffers
     ("edit_file" . write) ("create_file" . write) ("format_file" . write)
     ("undo_edit" . write) ("restore_checkpoint" . write)

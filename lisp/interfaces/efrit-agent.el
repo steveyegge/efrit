@@ -66,6 +66,7 @@
 (require 'efrit-repl-loop)
 (declare-function efrit-session-active "efrit-session")
 (require 'efrit-agent-integration)
+(require 'efrit-agent-fold)
 
 ;; Forward declarations to silence byte-compiler
 (declare-function efrit-executor-cancel "efrit-executor")
@@ -394,6 +395,8 @@ Status is shown in the header-line at top of window.
   ;; Folded tool bodies are `invisible' text; let ellipses off and
   ;; make isearch honour `search-invisible' over them
   (add-to-invisibility-spec 'efrit-tool-body)
+  ;; A finished turn's work rows fold the same way, under one header
+  (add-to-invisibility-spec 'efrit-turn-work)
   (efrit-agent--setup-isearch)
   ;; @file mentions, /commands, drag and drop
   (efrit-agent-mentions-setup)
@@ -414,7 +417,33 @@ Status is shown in the header-line at top of window.
   (add-hook 'before-change-functions #'efrit-agent--note-followers nil t)
   ;; Save session and clean up timer when buffer is killed
   (add-hook 'kill-buffer-hook #'efrit-agent--save-session-on-kill nil t)
-  (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t))
+  (add-hook 'kill-buffer-hook #'efrit-agent--cleanup-timer nil t)
+  ;; A running turn or queued inputs die with the buffer: ask first
+  (add-hook 'kill-buffer-query-functions #'efrit-agent--kill-buffer-query nil t))
+
+(defun efrit-agent--pending-work-description ()
+  "What killing this agent buffer would lose, as a phrase, or nil.
+Names the running turn, the queued inputs, or both."
+  (let* ((session efrit-agent--repl-session)
+         (running (and session (eq (efrit-repl-session-status session) 'working)))
+         (queued (if session (length (efrit-repl-session-queue session)) 0)))
+    (cond
+     ((and running (> queued 0))
+      (format "a running turn and %d queued input%s" queued (if (= queued 1) "" "s")))
+     (running "a running turn")
+     ((> queued 0) (format "%d queued input%s" queued (if (= queued 1) "" "s"))))))
+
+(defun efrit-agent--kill-buffer-query ()
+  "Confirm before killing an agent buffer with a running turn or a queue.
+On `kill-buffer-query-functions', buffer-local.  Non-nil lets the
+kill proceed; a running turn is cancelled first so its request stops
+with the buffer."
+  (let ((pending (efrit-agent--pending-work-description)))
+    (or (null pending)
+        (when (yes-or-no-p (format "%s has %s; kill it anyway? " (buffer-name) pending))
+          (when (eq (efrit-repl-session-status efrit-agent--repl-session) 'working)
+            (ignore-errors (efrit-agent-cancel)))
+          t))))
 
 ;;; Interactive Commands
 
@@ -431,7 +460,13 @@ turn waiting on a question is ended so the next input is a new turn
 \(the model's question is withdrawn).  The efrit-do session, when one
 is active, is cancelled as before."
   (interactive)
-  (if (memq efrit-agent--status '(working paused waiting))
+  (if (or (memq efrit-agent--status '(working paused waiting))
+          ;; The UI may read idle while the session is stuck working
+          ;; (a turn that never sent its first request, 2026-10-21);
+          ;; the session's own status decides
+          (and efrit-agent--repl-session
+               (memq (efrit-repl-session-status efrit-agent--repl-session)
+                     '(working waiting paused))))
       (let ((session efrit-agent--repl-session))
         ;; Abort this session's in-flight streaming request first so
         ;; the model actually stops, not just the UI.  Only this
@@ -442,7 +477,11 @@ is active, is cancelled as before."
           (pcase (efrit-repl-session-status session)
             ;; Between requests or inside a tool: the loop checks the
             ;; flag before its next request and finishes "paused"
-            ('working (setf (efrit-repl-session-interrupt-requested session) t))
+            ('working
+             (if (efrit-repl-loop--entry-dead-p session)
+                 ;; Nothing will ever read the flag: end the turn now
+                 (efrit-repl-loop-abandon-turn session)
+               (setf (efrit-repl-session-interrupt-requested session) t)))
             ;; Waiting on request_user_input: nothing is in flight,
             ;; the loop is gone; just end the turn
             ((or 'waiting 'paused)
@@ -757,8 +796,10 @@ In conversation region, expands/collapses tool calls to show input and results."
   ;; Legacy activity items (efrit-agent-item-id) only existed in the
   ;; full-render layout, which no session path produces anymore; the
   ;; old fallback's full render destroyed the transcript (ef-7t0).
-  (unless (efrit-agent--toggle-tool-expansion)
-    (message "No expandable tool call at point")))
+  (cond
+   ((eq (get-text-property (point) 'efrit-type) 'turn-fold) (efrit-agent-fold-toggle))
+   ((efrit-agent--toggle-tool-expansion))
+   (t (message "No expandable tool call at point"))))
 
 (defun efrit-agent-expand-all ()
   "Expand all tool calls in the buffer.
@@ -1516,15 +1557,17 @@ Uses in-place update - does not trigger full re-render."
       (with-current-buffer buffer
         (efrit-agent--update-tool-result tool-id result success-p elapsed)))))
 
-(defun efrit-agent-show-question (question &optional options buffer)
+(defun efrit-agent-show-question (question &optional options buffer multi)
   "Display a QUESTION from Claude with optional OPTIONS for the user to select.
 OPTIONS is a list of strings representing the available choices.
+MULTI makes them toggles (several may be chosen).
 Returns a question-id for tracking.
 Uses incremental update - does not trigger full re-render."
   (let ((buffer (efrit-agent--target-buffer buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; Store for keyboard shortcut handling
+        (setq efrit-agent--pending-question-multi (and multi t))
         (setq efrit-agent--pending-question
               (list question options (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
         (setq efrit-agent--status 'waiting)

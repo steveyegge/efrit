@@ -51,8 +51,230 @@
   (goto-char (point-max))
   (insert text))
 
-(ert-deftest test-efrit-agent-busy-submit-queues-then-steers ()
-  "RET on a busy session queues, M-RET steers, both show the line at once
+(ert-deftest test-efrit-agent-past-turn-folds-under-one-header ()
+  "When a turn ends, its tool rows and notes fold under one summary line
+placed where the first of them was; the answer after them stays
+visible; RET on the header opens them (between header and answer) and
+closes them again; a turn paused on a question is not folded; the
+next turn's rows are untouched by the previous fold."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (efrit-agent-question-menu nil))
+      (cl-letf (((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-agent--add-user-message "fix the spinner")
+        (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+          (efrit-agent-show-tool-result id "ok" t 0.1))
+        (efrit-agent--append-to-conversation
+         (concat (propertize "  ⛨ eval_sexp: granted" 'face 'shadow) "\n") '(efrit-type sandbox-note))
+        (let ((id (efrit-agent-show-tool-start "review" nil)))
+          (efrit-agent-show-tool-result id "approved" t 0.3))
+        (efrit-agent-stream-content "The spinner is gone.")
+        (efrit-agent-stream-end)
+        (efrit-repl-session-set-status session 'idle)
+        (efrit-agent--on-turn-complete session "end_turn")
+        (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
+               (header (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold))
+               (tool (text-property-any (point-min) (point-max) 'efrit-type 'tool-call)))
+          (should header)
+          (should (string-match-p "1 step · 1 review" text))
+          ;; the rows are hidden, the answer and the user line are not
+          (should (eq 'efrit-turn-work (get-text-property tool 'invisible)))
+          (should-not (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'claude-message) 'invisible))
+          (should-not (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'user-message) 'invisible))
+          ;; the header sits before the rows, after the user line
+          (should (< (text-property-any (point-min) (point-max) 'efrit-type 'user-message) header tool))
+          ;; open: rows visible, header glyph flips; close again
+          (goto-char header)
+          (efrit-agent-toggle-expand)
+          (should-not (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'tool-call) 'invisible))
+          (should (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold) 'efrit-fold-open))
+          (goto-char (text-property-any (point-min) (point-max) 'efrit-type 'turn-fold))
+          (efrit-agent-toggle-expand)
+          (should (eq 'efrit-turn-work (get-text-property (text-property-any (point-min) (point-max) 'efrit-type 'tool-call) 'invisible))))
+        ;; work after the answer (the session_complete row) does not
+        ;; pull the answer into the fold: only the work before it folds
+        (efrit-agent--add-user-message "which option?")
+        (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+          (efrit-agent-show-tool-result id "ok" t 0.1))
+        (efrit-agent-stream-content "Options: 1) keep; 2) drop.")
+        (efrit-agent-stream-end)
+        (let ((id (efrit-agent-show-tool-start "session_complete" nil)))
+          (efrit-agent-show-tool-result id "done" t 0.1))
+        (efrit-repl-session-set-status session 'idle)
+        (efrit-agent--on-turn-complete session "end_turn")
+        (let ((answers nil) (pos (point-min)))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'claude-message))
+            (push (get-text-property pos 'invisible) answers)
+            (setq pos (or (next-single-property-change pos 'efrit-type) (point-max))))
+          (should (= 2 (length answers)))
+          (should-not (cl-some #'identity answers))
+          (should (string-match-p "Options: 1) keep" (buffer-substring-no-properties (point-min) (point-max)))))
+        ;; a third turn that pauses on a question is left open
+        (efrit-agent--add-user-message "and the header?")
+        (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+          (efrit-agent-show-tool-result id "ok" t 0.1))
+        (efrit-agent--on-turn-complete session "waiting-for-user")
+        (let ((folds 0) (pos (point-min)))
+          (while (setq pos (text-property-any pos (point-max) 'efrit-type 'turn-fold))
+            (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+          (should (= 2 folds)))))))
+
+(ert-deftest test-efrit-agent-question-options-are-widgets ()
+  "A question's options are wid-edit widgets, one per line: a push-button
+each for a single choice (pressing one answers), checkboxes plus a
+Submit button for a multi question (Submit answers with the checked
+set)."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session)) (sent nil)
+          (efrit-agent-question-menu nil))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t)))
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Colour?" '("red" "blue" "green") (current-buffer))
+        (let ((buttons nil))
+          (save-excursion
+            (goto-char (point-min))
+            (while (let ((w (widget-at (point))))
+                     (when (and w (eq (widget-type w) 'push-button)) (push w buttons))
+                     (not (eobp)))
+              (forward-char)))
+          (should (= 3 (length (cl-remove-duplicates buttons))))
+          ;; one per line
+          (should (string-match-p "1  red\\][^\n]*\n[^\n]*2  blue\\][^\n]*\n[^\n]*3  green\\]"
+                                  (buffer-substring-no-properties (point-min) (point-max))))
+          (widget-apply (car (last buttons)) :notify (car (last buttons)) nil))
+        (should (equal '("red") sent))
+        ;; multi: checkboxes and Submit
+        (setq sent nil)
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Which?" '("a" "b" "c") (current-buffer) t)
+        (should (= 3 (length efrit-agent--option-widgets)))
+        ;; the keys on a checkbox toggle it (RET/SPC/x -> widget-button-press)
+        (let ((box (nth 0 efrit-agent--option-widgets)))
+          (goto-char (widget-get box :from))
+          (dolist (key '("RET" "SPC" "x"))
+            (should (eq #'widget-button-press (key-binding (kbd key)))))
+          (should (eq #'widget-button-click (key-binding [mouse-1])))
+          (widget-button-press (point))
+          (should (eq t (widget-value box))))
+        (widget-value-set (nth 2 efrit-agent--option-widgets) t)
+        ;; All: checks the rest; All again: clears; None: clears
+        (efrit-agent--toggle-all-options)
+        (should (cl-every #'widget-value efrit-agent--option-widgets))
+        (efrit-agent--toggle-all-options)
+        (should (cl-notany #'widget-value efrit-agent--option-widgets))
+        (efrit-agent--toggle-all-options)
+        (efrit-agent--toggle-all-options 'none)
+        (should (cl-notany #'widget-value efrit-agent--option-widgets))
+        (should (string-match-p "\\[Submit\\]  \\[All\\]  \\[None\\]" (buffer-substring-no-properties (point-min) (point-max))))
+        (widget-value-set (nth 0 efrit-agent--option-widgets) t)
+        (widget-value-set (nth 2 efrit-agent--option-widgets) t)
+        ;; typing in the input still works: no widget-before-change guard
+        (goto-char (point-max))
+        (should-not (memq #'widget-before-change before-change-functions))
+        (insert "all")
+        (should (equal "all" (efrit-agent--get-input)))
+        (efrit-agent--clear-input)
+        (efrit-agent--submit-checked-options)
+        (should (equal '("a; c") sent))))))
+
+(ert-deftest test-efrit-agent-multi-question-answers-with-the-chosen-set ()
+  "A multi question opens the chooser with toggles; the menu's answer (a
+list) is sent as the options joined by \"; \"; an empty set says none;
+a single-choice menu answer maps to the option number."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (sent nil) (opened nil)
+          (efrit-agent-question-menu t))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t))
+                ((symbol-function 'efrit-agent-question-menu-available-p) (lambda () t))
+                ((symbol-function 'efrit-choice-open)
+                 (cl-function (lambda (heading items cb &key multi &allow-other-keys)
+                                (setq opened (list heading (mapcar (lambda (i) (nth 1 i)) items) multi cb))
+                                t)))
+                ((symbol-function 'run-at-time) (lambda (_s _r fn &rest args) (apply fn args) nil)))
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Which to adopt?" '("alpha" "beta" "gamma") (current-buffer) t)
+        (should (eq t (nth 2 opened)))
+        (should (equal '("alpha" "beta" "gamma") (nth 1 opened)))
+        ;; the menu answers with a set
+        (funcall (nth 3 opened) '("alpha" "gamma"))
+        (should (equal '("alpha; gamma") sent))
+        ;; single choice: the menu's value is the option text -> its number
+        (setq sent nil)
+        (efrit-repl-session-set-status session 'waiting)
+        (efrit-agent-show-question "Colour?" '("red" "blue") (current-buffer))
+        (should-not (nth 2 opened))
+        (funcall (nth 3 opened) "blue")
+        (should (equal '("blue") sent))))))
+
+(ert-deftest test-efrit-agent-fold-history-folds-earlier-turns ()
+  "A buffer with several finished turns and no folds (a transcript from
+before the fold, or across a reload) gets one fold per earlier turn
+from `efrit-agent-fold-history'; the last turn stays open unless asked;
+the invisibility spec is restored when missing."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (remove-from-invisibility-spec 'efrit-turn-work)
+    (dotimes (i 3)
+      (efrit-agent--add-user-message (format "turn %d" i))
+      (let ((id (efrit-agent-show-tool-start "read_file" nil)))
+        (efrit-agent-show-tool-result id "ok" t 0.1))
+      (efrit-agent-stream-content (format "answer %d" i))
+      (efrit-agent-stream-end))
+    (should (= 2 (efrit-agent-fold-history)))
+    (should (memq 'efrit-turn-work buffer-invisibility-spec))
+    (let ((folds 0) (pos (point-min)))
+      (while (setq pos (text-property-any pos (point-max) 'efrit-type 'turn-fold))
+        (cl-incf folds) (setq pos (or (next-single-property-change pos 'efrit-id) (point-max))))
+      (should (= 2 folds)))
+    ;; the last turn's row is still visible
+    (let ((last-user (car (last (efrit-agent-fold--turn-starts)))))
+      (should-not (get-text-property (text-property-any last-user (point-max) 'efrit-type 'tool-call) 'invisible)))
+    (should (= 1 (efrit-agent-fold-history t)))
+    (should (= 0 (efrit-agent-fold-history t)))))
+
+(ert-deftest test-efrit-agent-prose-choices-become-a-question ()
+  "A turn whose final message lists choices and asks which leaves the
+session waiting with a pending question built from the list, so 1
+answers it as an option; a final message without choices does not."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (sent nil)
+          (efrit-agent-question-menu nil))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t))
+                ((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-repl-session-add-assistant-message
+         session "Two ways:\n1. Enable it globally. Cheap.\n2. Skip it.\nWhich one?")
+        (efrit-agent--on-turn-complete session "end_turn")
+        (should (eq 'waiting (efrit-repl-session-status session)))
+        (should (equal '("Enable it globally" "Skip it") (cadr efrit-agent--pending-question)))
+        (should (efrit-agent-input--option-available-p 2))
+        ;; 1 picks the first option and sends it as the answer
+        (efrit-agent-input-select-option 1)
+        (should (equal '("Enable it globally") sent))
+        ;; a plain ending leaves nothing pending (the loop, not this
+        ;; callback, sets the session idle)
+        (setq efrit-agent--pending-question nil)
+        (efrit-repl-session-set-status session 'idle)
+        (efrit-repl-session-add-assistant-message session "All done. Nothing else to change.")
+        (efrit-agent--on-turn-complete session "end_turn")
+        (should (eq 'idle (efrit-repl-session-status session)))
+        (should-not efrit-agent--pending-question)))))
+
+(ert-deftest test-efrit-agent-busy-submit-steers-then-queues ()
+  "RET on a busy session steers, M-RET queues, both show the line at once
 with their own prefix; the queue drains in order when the turn ends,
 turning the waiting mark into a sent one, and keeps the user's draft;
 a failed turn holds the queue.  `efrit-submit' from Lisp returns nil
@@ -72,17 +294,18 @@ on a busy session without drawing anything."
         (unwind-protect
             (progn
               (efrit-repl-loop-hold session)
-              ;; RET: queued, drawn with the waiting prefix, input cleared
+              ;; M-RET: queued, drawn with the waiting prefix, input cleared
               (test-efrit-agent--type "second thing")
-              (efrit-agent-input-send)
+              (efrit-agent-input-send-override)
               (should (equal '("second thing") (efrit-repl-session-queue session)))
               (should (equal "" (efrit-agent--get-input)))
               (should (efrit-agent--find-user-message "second thing" 'queued))
               (should (equal '(queued . "second thing") (car events)))
               (should-not sent)
-              ;; M-RET: steer event, drawn as a steer line
+              ;; RET: steer event, drawn as a steer line (the default
+              ;; since 2026-10-20: mid-turn input is a correction)
               (test-efrit-agent--type "and be brief")
-              (efrit-agent-input-send-override)
+              (efrit-agent-input-send)
               (should (equal '(steer . "and be brief") (car events)))
               (should (efrit-agent--find-user-message "and be brief" 'steer))
               (should-not sent)
@@ -91,7 +314,7 @@ on a busy session without drawing anything."
               (should-not (efrit-agent--find-user-message "from lisp" nil))
               ;; Another queued one, then a draft the user is typing
               (test-efrit-agent--type "third thing")
-              (efrit-agent-input-send)
+              (efrit-agent-input-send-override)
               (test-efrit-agent--type "draft in progress")
               ;; A failed turn holds the queue
               (efrit-repl-loop-release session)
@@ -99,7 +322,9 @@ on a busy session without drawing anything."
               (should-not sent)
               (should (= 2 (length (efrit-repl-session-queue session))))
               ;; A good turn sends the oldest, keeps the draft, remarks the line
-              (efrit-agent--on-turn-complete session "end_turn")
+              ;; (one per turn with merging off)
+              (let ((efrit-agent-queue-merge nil))
+                (efrit-agent--on-turn-complete session "end_turn"))
               (should (equal '("second thing") sent))
               (should (equal '("third thing") (efrit-repl-session-queue session)))
               (should (equal "draft in progress" (efrit-agent--get-input)))
@@ -111,7 +336,29 @@ on a busy session without drawing anything."
               (should-not (efrit-repl-session-queue session))
               ;; Undo history holds only the draft
               (should (equal (list (cons (marker-position efrit-agent--input-start) (point-max)))
-                             buffer-undo-list)))
+                             buffer-undo-list))
+              ;; Merging on (the default): the whole queue is one turn,
+              ;; joined with blank lines, every line remarked as sent
+              (setq sent nil)
+              (efrit-repl-loop-hold session)
+              (dolist (text '("part one" "part two" "part three"))
+                (test-efrit-agent--type text)
+                (efrit-agent-input-send-override))
+              (should (= 3 (length (efrit-repl-session-queue session))))
+              (efrit-repl-loop-release session)
+              (let ((efrit-agent-queue-merge t))
+                (efrit-agent--on-turn-complete session "end_turn"))
+              (should (equal '("part one\n\npart two\n\npart three") sent))
+              (should-not (efrit-repl-session-queue session))
+              (dolist (text '("part one" "part two" "part three"))
+                (should-not (efrit-agent--find-user-message text 'queued))
+                (should (efrit-agent--find-user-message text nil)))
+              ;; A single queued input is sent as itself either way
+              (setq sent nil)
+              (efrit-repl-session-enqueue session "alone")
+              (let ((efrit-agent-queue-merge t))
+                (efrit-agent-queue-resume))
+              (should (equal '("alone") sent)))
           (dolist (type '(steer queued))
             (dolist (fn (cdr (assq type efrit-events--subscribers)))
               (unless (symbolp fn) (efrit-unsubscribe type fn)))))))))
@@ -282,6 +529,92 @@ session it sets the interrupt flag for the loop."
               (should (eq 'working (efrit-repl-session-status session))))
           (dolist (fn (cdr (assq 'turn-complete efrit-events--subscribers)))
             (unless (symbolp fn) (efrit-unsubscribe 'turn-complete fn))))))))
+
+(ert-deftest test-efrit-agent-cancel-offers-the-queue ()
+  "A turn that ends as interrupted with inputs queued asks whether to
+send them: yes sends (merged), no keeps them for `efrit-agent-queue-resume'.
+An api-error still only prints.  Nothing is asked once the queue is empty."
+  (with-efrit-agent-test-buffer
+    (efrit-agent--init-regions)
+    (efrit-agent--setup-regions)
+    (let ((session (efrit-agent-repl-session))
+          (sent nil) (asked nil) (answer nil))
+      (cl-letf (((symbol-function 'efrit-agent--repl-send)
+                 (lambda (input &optional _api) (push input sent) t))
+                ((symbol-function 'run-at-time)
+                 (lambda (_s _r fn &rest args) (apply fn args) nil))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (prompt) (push prompt asked) answer))
+                ((symbol-function 'efrit-agent--auto-save-session) #'ignore))
+        (efrit-repl-session-enqueue session "do a")
+        (efrit-repl-session-enqueue session "do b")
+        ;; no: kept, asked once, count in the prompt
+        (efrit-agent--on-turn-complete session "interrupted")
+        (should (= 1 (length asked)))
+        (should (string-match-p "2 queued inputs" (car asked)))
+        (should-not sent)
+        (should (= 2 (length (efrit-repl-session-queue session))))
+        ;; an API error does not ask
+        (efrit-agent--on-turn-complete session "api-error")
+        (should (= 1 (length asked)))
+        ;; yes: the queue goes, merged
+        (setq answer t)
+        (efrit-agent--on-turn-complete session "interrupted")
+        (should (= 2 (length asked)))
+        (should (equal '("do a\n\ndo b") sent))
+        (should-not (efrit-repl-session-queue session))
+        ;; empty queue: no question
+        (efrit-agent--on-turn-complete session "interrupted")
+        (should (= 2 (length asked)))))))
+
+(ert-deftest test-efrit-agent-kill-asks-about-pending-work ()
+  "Killing an agent buffer with a running turn or queued inputs asks;
+no keeps the buffer, yes cancels the turn and kills.  An idle buffer
+with an empty queue is killed without a question."
+  (let ((efrit-agent-auto-show nil))
+    (with-current-buffer (generate-new-buffer "*efrit-agent kill test*")
+      (efrit-agent-mode)
+      (efrit-agent--init-regions)
+      (efrit-agent--setup-regions)
+      (let ((session (efrit-agent-repl-session))
+            (buffer (current-buffer))
+            (asked nil) (answer nil) (cancelled nil))
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (prompt) (push prompt asked) answer))
+                  ((symbol-function 'efrit-agent-cancel)
+                   (lambda () (setq cancelled t)
+                     (efrit-repl-session-set-status session 'idle)))
+                  ((symbol-function 'efrit-agent--save-session-on-kill) #'ignore))
+          (should (memq #'efrit-agent--kill-buffer-query kill-buffer-query-functions))
+          ;; queued only
+          (efrit-repl-session-enqueue session "later")
+          (kill-buffer buffer)
+          (should (buffer-live-p buffer))
+          (should (string-match-p "1 queued input;" (car asked)))
+          (should-not cancelled)
+          ;; running and queued: the phrase names both
+          (efrit-repl-session-set-status session 'working)
+          (kill-buffer buffer)
+          (should (buffer-live-p buffer))
+          (should (string-match-p "a running turn and 1 queued input" (car asked)))
+          ;; yes: cancelled, then gone
+          (setq answer t)
+          (kill-buffer buffer)
+          (should cancelled)
+          (should-not (buffer-live-p buffer)))))
+    ;; nothing pending: no question
+    (with-current-buffer (generate-new-buffer "*efrit-agent kill test 2*")
+      (efrit-agent-mode)
+      (efrit-agent--init-regions)
+      (efrit-agent--setup-regions)
+      (efrit-agent-repl-session)
+      (let ((buffer (current-buffer)) (asked nil))
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (prompt) (push prompt asked) nil))
+                  ((symbol-function 'efrit-agent--save-session-on-kill) #'ignore))
+          (kill-buffer buffer)
+          (should-not asked)
+          (should-not (buffer-live-p buffer)))))))
 
 (ert-deftest test-efrit-agent-last-answer-bounds-span-rendered-chrome ()
   "The last answer's bounds cover the whole message even after the

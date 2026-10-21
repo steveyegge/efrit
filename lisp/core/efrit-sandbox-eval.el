@@ -121,19 +121,46 @@ Descends into quoted data too: a quoted symbol can be `funcall'ed."
       (push (intern-soft form) (car acc)))))
   acc)
 
+(defconst efrit-sandbox-eval--blocking-symbols
+  '(package-refresh-contents package-install package-install-file
+    package-install-selected-packages package-upgrade package-upgrade-all
+    package-reinstall package-delete package-autoremove package-menu-execute
+    package-vc-install package-vc-upgrade package-vc-upgrade-all
+    package-vc-install-from-checkout package-vc-checkout
+    package-import-keyring package-download-transaction
+    url-retrieve-synchronously url-insert-file-contents url-copy-file
+    url-file-local-copy)
+  "Functions that hold the Emacs event loop until they finish.
+Package operations download archives, verify signatures with gpg
+through `call-process' and compile, with the user's Emacs frozen the
+whole time and no timer able to interrupt them (the eval timeout did
+not fire; 2026-10-21 a `package-upgrade' from eval_sexp sat on
+\"Importing package-keyring.gpg...\" until the user's C-g).  They
+belong in a batch Emacs via run_program, or in the user's hands.")
+
+(defun efrit-sandbox-eval--blocking-p (sym)
+  (and (symbolp sym) (memq sym efrit-sandbox-eval--blocking-symbols)))
+
 (defun efrit-sandbox-eval-inspect (form)
   "Return nil if FORM is acceptable, else a string saying why not.
-Expands macros first so nothing hides behind a macro."
+Expands macros first so nothing hides behind a macro.  Two kinds of
+refusal: symbols the sandbox never permits (its own machinery), and
+symbols that freeze the user's Emacs (`efrit-sandbox-eval--blocking-symbols')."
   (let* ((expanded (condition-case err
                        (macroexpand-all form)
                      (error (list 'efrit-sandbox--unexpandable
                                   (error-message-string err)))))
          (acc (efrit-sandbox-eval--walk expanded (list nil)))
-         (bad (cl-remove-duplicates
-               (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p (car acc)))))
-    (when bad
+         (symbols (cl-remove-duplicates (car acc)))
+         (bad (cl-remove-if-not #'efrit-sandbox-eval--forbidden-p symbols))
+         (blocking (cl-remove-if-not #'efrit-sandbox-eval--blocking-p symbols)))
+    (cond
+     (bad
       (format "the form references %s, which the sandbox never permits from eval_sexp. Use the dedicated tools instead: read_file, edit_file, run_program; load_project_file to load a project .el file; run_ert to run tests. Or ask the user."
-              (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))))
+              (mapconcat (lambda (s) (format "`%s'" s)) bad ", ")))
+     (blocking
+      (format "the form calls %s, which freezes the user's Emacs until it finishes and cannot be interrupted or timed out. Run it in a separate Emacs with run_program (emacs --batch --eval ...), or ask the user to run it themselves; then verify the outcome from eval_sexp (package-installed-p, locate-library)."
+              (mapconcat (lambda (s) (format "`%s'" s)) blocking ", "))))))
 
 ;;; 2. Dynamic enforcement
 
@@ -593,16 +620,32 @@ a switch made inside one of efrit's own functions passes
                       (buffer-list)))
              (sweep (and others (efrit-sandbox-eval--sweep-p callers))))
         (efrit-log 'info "sandbox: %s on buffer %s from: %s" op (buffer-name buffer) callers)
-        (if (not sweep)
-            (efrit-sandbox-check-buffer buffer "eval_sexp"
-                                        (format "%s on %s, called from: %s" op (buffer-name buffer)
-                                                (if (string-empty-p callers) "the form itself" callers)))
+        (cond
+         ;; A sweep that reaches REMOTE buffers is refused, not asked:
+         ;; the user's rule is local buffers first, remote ones by
+         ;; name, one at a time and only when very likely useful
+         ;; (2026-10-20: a search-forward over (buffer-list) entered
+         ;; seven TRAMP buffers and asked).  The result names the way.
+         ((and sweep
+               (cl-some (lambda (b) (file-remote-p (buffer-local-value 'buffer-file-name b)))
+                        (cons buffer others)))
+          (let ((remote (cl-count-if (lambda (b) (file-remote-p (buffer-local-value 'buffer-file-name b)))
+                                     (cons buffer others))))
+            (signal 'efrit-sandbox-denied
+                    (list (efrit-sandbox-request-create
+                           :cap 'buffer :target (efrit-sandbox-buffer-target buffer) :tool "eval_sexp"
+                           :detail (format "a walk over the buffer list that enters %d remote (TRAMP) buffer(s); refused without asking. Use buffer_list (remote buffers are flagged), consider local buffers first, then name one remote buffer with buffer_scan buffer=NAME or read_buffer and ask the user before reading it" remote))))))
+         ((not sweep)
+          (efrit-sandbox-check-buffer buffer "eval_sexp"
+                                      (format "%s on %s, called from: %s" op (buffer-name buffer)
+                                              (if (string-empty-p callers) "the form itself" callers))))
+         (t
           (efrit-sandbox-check-buffer buffer "eval_sexp"
                                       (format "%s on %s and %d more file buffer(s) outside the project (a walk over the buffer list; one answer covers the walk)%s"
                                               op (buffer-name buffer) (length others)
                                               (if (string-empty-p callers) "" (format ", called from: %s" callers))))
           ;; allowed: the rest of the walk passes for this eval
-          (setq efrit-sandbox-eval--sweep-allowed t))))))
+          (setq efrit-sandbox-eval--sweep-allowed t)))))))
 
 (defun efrit-sandbox-eval--sweep-p (callers)
   "Non-nil when the switch comes straight from the form: no named function between.
@@ -683,6 +726,10 @@ current buffer is where eval already runs."
                 (format "\n… [%d more chars]" (- (length text) efrit-sandbox-eval-detail-max-chars)))
       text)))
 
+(defvar efrit-sandbox-eval--nesting 0
+  "How many `efrit-sandbox-eval-form' calls are active; the handler entry
+stays on `file-name-handler-alist' until the outermost returns.")
+
 (defun efrit-sandbox-eval-form (form &optional evaluator)
   "Evaluate FORM under the sandbox; return its value.
 Requires the `elisp' capability, refuses forms the static inspection
@@ -703,19 +750,35 @@ instead of `eval' (the caller's timeout/input-blocking wrapper)."
             (list (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp"
                                                 :detail why))))
   (efrit-sandbox-eval--install-advice)
-  (let ((efrit-sandbox-eval--active t)
-        (efrit-sandbox-eval--denied nil)
-        (efrit-sandbox-eval--sweep-allowed nil)
-        (file-name-handler-alist (cons efrit-sandbox-eval--handler-entry
-                                       file-name-handler-alist)))
-    (prog1 (if evaluator (funcall evaluator form) (eval form t))
-      ;; The form caught the denial (`ignore-errors', a `condition-case'
-      ;; on `error', a hook runner) and went on.  The user's no is
-      ;; final: the eval fails with it, whatever the form returned
-      ;; (2026-10-19: a save hook's `git ls-files' was refused, the
-      ;; form carried on and asked for a second buffer, then hung).
-      (when efrit-sandbox-eval--denied
-        (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied))))))
+  ;; efrit's handler entry goes onto the GLOBAL alist for the eval's
+  ;; duration, not into a `let' binding: a library that registers
+  ;; handlers while the form runs (tramp, autoloaded by the first
+  ;; remote path it meets) would register into the binding and lose
+  ;; them when it ends; tramp then stayed loaded with no handler and
+  ;; every remote path read as local (2026-10-20, found by a test that
+  ;; passed alone and failed after a sweep test).
+  (cl-incf efrit-sandbox-eval--nesting)
+  (unwind-protect
+      (let ((efrit-sandbox-eval--active t)
+            (efrit-sandbox-eval--denied nil)
+            (efrit-sandbox-eval--sweep-allowed nil))
+        (unless (memq efrit-sandbox-eval--handler-entry file-name-handler-alist)
+          (push efrit-sandbox-eval--handler-entry file-name-handler-alist))
+        (prog1 (if evaluator (funcall evaluator form) (eval form t))
+          ;; The form caught the denial (`ignore-errors', a `condition-case'
+          ;; on `error', a hook runner) and went on.  The user's no is
+          ;; final: the eval fails with it, whatever the form returned
+          ;; (2026-10-19: a save hook's `git ls-files' was refused, the
+          ;; form carried on and asked for a second buffer, then hung).
+          (when efrit-sandbox-eval--denied
+            (signal 'efrit-sandbox-denied (list efrit-sandbox-eval--denied)))))
+    ;; nested evals (a tool run from a form) share the one entry; the
+    ;; outermost removes it
+    (cl-decf efrit-sandbox-eval--nesting)
+    (when (<= efrit-sandbox-eval--nesting 0)
+      (setq efrit-sandbox-eval--nesting 0)
+      (setq file-name-handler-alist (delq efrit-sandbox-eval--handler-entry file-name-handler-alist)))))
+
 
 (defun efrit-sandbox-eval--note-denial (orig &rest args)
   "Around `efrit-sandbox-check' and `efrit-sandbox-check-buffer' inside an eval.
