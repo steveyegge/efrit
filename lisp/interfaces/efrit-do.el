@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -19,11 +19,8 @@
 ;; Require extracted modules
 (require 'efrit-do-prompt)
 (require 'efrit-do-dispatch)
+(require 'efrit-result-struct)
 
-;; Declare external functions from efrit-chat (optional dependency)
-(declare-function efrit--setup-buffer "efrit-chat")
-(declare-function efrit--display-message "efrit-chat")
-(declare-function efrit--insert-prompt "efrit-chat")
 (declare-function efrit-api-build-headers "efrit-api")
 
 ;; Declare external functions from efrit-executor
@@ -63,12 +60,13 @@
 (declare-function efrit-tool--get-project-root "efrit-tool-utils")
 (declare-function efrit-set-project-root "efrit-tool-utils")
 (declare-function efrit-clear-project-root "efrit-tool-utils")
-(declare-function efrit-tool--format-agent-instructions-for-prompt "efrit-tool-utils")
 (defvar efrit-project-root)
 
 ;; Declare external functions from efrit-agent
 (declare-function efrit-agent--get-buffer "efrit-agent-core")
-(declare-function efrit-agent--show-buffer "efrit-agent-core")
+(declare-function efrit-agent-buffer-for-do-session "efrit-agent-core")
+(declare-function efrit-agent-display "efrit-agent-core")
+(defvar efrit-agent-auto-show)
 (declare-function efrit-agent--begin-session "efrit-agent-core")
 (declare-function efrit-agent-mode "efrit-agent")
 
@@ -77,7 +75,6 @@
 (require 'efrit-common)
 (require 'efrit-session)
 (require 'efrit-todo)
-(require 'efrit-chat)
 (require 'efrit-progress)
 (require 'efrit-tool-utils)
 (require 'efrit-do-circuit-breaker)
@@ -171,9 +168,6 @@ the traditional progress buffer."
 (defvaralias 'efrit-do-retry-on-errors 'efrit-retry-on-errors
   "Alias to `efrit-retry-on-errors' in efrit-config.el.")
 
-;; Use centralized model configuration from efrit-config
-(defvar efrit-model)  ;; Forward declaration for efrit-chat's alias
-
 (defcustom efrit-api-channel nil
   "API channel to use. Can be \\='ai-efrit or nil for default."
   :type '(choice (const :tag "Default" nil)
@@ -189,13 +183,8 @@ the traditional progress buffer."
 (defvar efrit-do-history nil
   "History of executed commands.")
 
-(defvar efrit-do--last-result nil
-  "Result of the last executed command.")
-
-;; TODO state is now managed by efrit-todo.el
-;; Keep backward-compatible variable aliases
-(defvaralias 'efrit-do--current-todos 'efrit-todo--current-todos)
-(defvaralias 'efrit-do--todo-counter 'efrit-todo--counter)
+;; TODO state is managed by efrit-todo.el, which also defines the
+;; `efrit-do--current-todos' / `efrit-do--todo-counter' aliases.
 
 (defvar efrit-do--force-complete nil
   "When t, forces session completion on next API response.")
@@ -327,51 +316,6 @@ Returns a string with current Emacs state, buffer info, and recent history."
     ;; Join all context parts
     (string-join (reverse context-parts) "\n")))
 
-(defun efrit-do--extract-error-info (result)
-  "Extract error information from RESULT string.
-Returns (error-p . error-msg) where error-p is t if errors found."
-  (when (stringp result)
-    (cond
-     ;; Syntax errors
-     ((string-match "\\[Syntax Error in \\([^:]+\\): \\(.+\\)\\]" result)
-      (cons t (format "Syntax error in %s: %s" 
-                      (match-string 1 result) 
-                      (match-string 2 result))))
-     ;; Runtime errors
-     ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
-      (cons t (format "Runtime error in %s: %s"
-                      (match-string 1 result)
-                      (match-string 2 result))))
-     ;; Efrit-internal dispatch errors (ef-hn6)
-     ((string-match "\\[Efrit internal error: \\(.+\\)\\]" result)
-      (cons t (format "Efrit internal error: %s" (match-string 1 result))))
-     ;; API errors - match the specific format from efrit-do--process-api-response
-     ;; Format: "API Error (type): message" - must have parenthesized type
-     ((string-match "^API Error ([^)]+):" result)
-      (cons t result))
-     ;; General errors - match at start of line to avoid false positives
-     ((string-match "^Error:" result)
-      (cons t result))
-     ;; No error detected
-     (t (cons nil nil)))))
-
-(defun efrit-do--extract-executed-code (result)
-  "Extract the executed code from RESULT string.
-Returns the code string that was executed, or nil if not found."
-  (when (stringp result)
-    (cond
-     ;; Extract from syntax error message
-     ((string-match "\\[Syntax Error in \\([^:]+\\):" result)
-      (match-string 1 result))
-     ;; Extract from runtime error message
-     ((string-match "\\[Error executing \\([^:]+\\):" result)
-      (match-string 1 result))
-     ;; Extract from successful execution message
-     ((string-match "\\[Executed: \\([^]]+\\)\\]" result)
-      (match-string 1 result))
-     ;; No code found
-     (t nil))))
-
 (defun efrit-do--extract-response-text (response-buffer)
   "Extract response text from RESPONSE-BUFFER with proper cleanup.
 Returns the response body as a string, or nil if extraction fails.
@@ -391,7 +335,7 @@ The RESPONSE-BUFFER is automatically killed after extraction."
 ;;; Command execution
 ;; NOTE: efrit-do--command-examples, efrit-do--command-formatting-tools,
 ;; efrit-do--command-common-tasks, efrit-do--command-project-workflow,
-;; efrit-do--classify-task-complexity, and efrit-do--command-system-prompt
+;; and efrit-do--command-system-prompt
 ;; have been moved to efrit-do-prompt.el
 
 (defun efrit-do--format-result (command result)
@@ -431,12 +375,13 @@ exceeds `efrit-do-max-buffer-lines' lines."
                                "s" "")))))))))
 
 (defun efrit-do--agent-surface-visible-p ()
-  "Non-nil when the agent buffer is displayed in some window.
-The agent buffer is the single user-facing surface; when it is
-visible, other meta-buffers should not pop additional windows."
-  (when-let* ((name (bound-and-true-p efrit-agent-buffer-name))
-              (buffer (get-buffer name)))
-    (get-buffer-window buffer t)))
+  "Non-nil when an agent buffer is displayed in some window.
+The agent buffer is the user-facing surface; when one is visible,
+other meta-buffers should not pop additional windows."
+  (and (fboundp 'efrit-agent-buffers)
+       (cl-some (lambda (b) (get-buffer-window b t)) (efrit-agent-buffers))))
+
+(declare-function efrit-agent-buffers "efrit-agent-core")
 
 (defun efrit-do--display-result (command result &optional error-p)
   "Display COMMAND and RESULT in the results buffer.
@@ -535,7 +480,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
                    ((string= type "tool_use")
                     (setq message-text 
                           (concat message-text 
-                                  (efrit-do--execute-tool item))))))))
+                                  (efrit-tool-result-text
+                                   (efrit-do--execute-tool item)))))))))
             
             (or message-text "Command executed"))))
     (error
@@ -699,12 +645,13 @@ This function can be called from:
     ;; Optionally show agent buffer UI
     (when efrit-do-use-agent-ui
       (require 'efrit-agent)
-      (let ((buffer (efrit-agent--get-buffer)))
+      (let ((buffer (efrit-agent-buffer-for-do-session (efrit-session-id session))))
         (with-current-buffer buffer
           (unless (derived-mode-p 'efrit-agent-mode)
             (efrit-agent-mode))
           (efrit-agent--begin-session session command))
-        (efrit-agent--show-buffer)))
+        (when (and efrit-agent-auto-show (not noninteractive))
+          (efrit-agent-display buffer))))
     
     (efrit-do-async-loop session nil #'efrit-do--on-async-complete)
     session))
@@ -1048,15 +995,18 @@ Keeps the last `efrit-do-keep-results' command results in the buffer."
         (goto-char (point-min))
         (special-mode)))
     
-    ;; Display buffer with optional shrink-to-fit
+    ;; Display as a dedicated popup so `q' (special-mode) removes the
+    ;; window rather than leaving it showing some other buffer
     (let ((window (display-buffer buffer
                                  (if efrit-do-auto-shrink-todo-buffers
                                      '((display-buffer-reuse-window
                                         display-buffer-below-selected)
                                        (window-height . fit-window-to-buffer)
+                                       (dedicated . t)
                                        (window-parameters . ((no-delete-other-windows . t))))
-                                   '(display-buffer-reuse-window
-                                     display-buffer-below-selected)))))
+                                   '((display-buffer-reuse-window
+                                      display-buffer-below-selected)
+                                     (dedicated . t))))))
       (when (and window efrit-do-auto-shrink-todo-buffers)
         (fit-window-to-buffer window nil nil 15 nil)))))
 
@@ -1101,64 +1051,6 @@ This includes: history, context, results buffer, TODOs, and conversations."
      ((eq choice ?t) (efrit-do-clear-todos))
      ((eq choice ?a) (efrit-do-clear-all))
      ((eq choice ?q) (message "Reset cancelled")))))
-
-;;;###autoload
-(defun efrit-do-to-chat (&optional n)
-  "Convert recent efrit-do context to efrit-chat session.
-Include last N commands (default 5)."
-  (interactive "P")
-  (require 'efrit-chat)
-  (let* ((count (or n 5))
-         (items (efrit-do--get-context-items count))
-         (buffer (efrit--setup-buffer)))
-    
-    (if (not items)
-        (message "No efrit-do context to convert")
-      
-      (with-current-buffer buffer
-        (setq buffer-read-only nil)
-        (let ((inhibit-read-only t))
-          ;; Clear existing content and history
-          (erase-buffer)
-          (setq-local efrit--message-history nil)
-          
-          ;; Add context summary
-          (efrit--display-message 
-           (format "Chat session from %d recent efrit-do commands:" (length items))
-           'system)
-          
-          ;; Convert each context item to conversation
-          (dolist (item items) ; Show oldest first (items already in oldest-first order)
-            (let ((command (efrit-context-item-command item))
-                  (result (efrit-context-item-result item))
-                  (timestamp (efrit-context-item-timestamp item)))
-              
-              ;; Display user command
-              (efrit--display-message 
-               (format "[%s] %s" 
-                       (format-time-string "%H:%M:%S" timestamp)
-                       command)
-               'user)
-              
-              ;; Display result (truncated if too long)
-              (efrit--display-message 
-               (truncate-string-to-width result 500 nil nil t)
-               'assistant)))
-          
-          ;; Build history in correct order for efrit-chat (newest first)
-          ;; Process items in reverse order so newest ends up first
-          (dolist (item items)
-            (let ((command (efrit-context-item-command item))
-                  (result (efrit-context-item-result item)))
-              (push `((role . "assistant") (content . ,result)) efrit--message-history)
-              (push `((role . "user") (content . ,command)) efrit--message-history)))
-          
-          ;; Insert prompt for new input
-          (efrit--insert-prompt)))
-      
-      ;; Switch to the chat buffer
-      (switch-to-buffer buffer)
-      (message "Converted %d efrit-do commands to chat session" (length items)))))
 
 ;;; Initialization
 

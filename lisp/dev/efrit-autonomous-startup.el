@@ -4,7 +4,7 @@
 
 ;; Author: Efrit Development Team
 ;; Keywords: ai, development, autonomous
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "25.1"))
 
 ;;; Commentary:
@@ -97,7 +97,6 @@
     (progn
       (require 'efrit-tools)
       (require 'efrit-do)
-      (require 'efrit-chat)
       (require 'efrit-remote-queue)
       (require 'efrit)
       (message "Efrit modules loaded successfully"))

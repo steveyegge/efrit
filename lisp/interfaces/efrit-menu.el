@@ -1,0 +1,272 @@
+;;; efrit-menu.el --- Transient menu and status dashboard -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Free Software Foundation, Inc.
+
+;; Author: Ted Zlatanov <tzz@lifelogs.com>
+;; Version: 0.12.12
+;; Package-Requires: ((emacs "28.1") (transient "0.4"))
+;; Keywords: tools, convenience, ai
+
+;;; Commentary:
+
+;; `M-x efrit-menu' (C-c C-m in the agent buffer): one place to see
+;; the current model, endpoint, permission policy, streaming state
+;; and token usage, and to reach every command.  Descriptions are
+;; functions, so the menu doubles as a status display (copilot-menu's
+;; approach); toggles stay open so several can be flipped in a row.
+;;
+;; `transient' has been bundled since Emacs 28.1.  The prefix is kept
+;; as data and evaluated at load so a build without transient (or a
+;; broken one) degrades to a `user-error' rather than a load failure.
+
+;;; Code:
+
+(require 'cl-lib)
+
+(defvar efrit-default-model)
+(defvar efrit-api-base-url)
+(defvar efrit-api-auth-scheme)
+(defvar efrit-api-streaming)
+(defvar efrit-api-prompt-caching)
+(defvar efrit-sandbox-enabled)
+(defvar efrit-agent-header-style)
+(defvar efrit-context-sources)
+(defvar efrit-agent--repl-session)
+(defvar efrit-agent--status)
+(declare-function efrit-usage-indicator "efrit-usage")
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function url-host "url-parse" (cl-x) t)
+(declare-function url-generic-parse-url "url-parse" (url))
+(declare-function efrit-doctor--redact-url "efrit-doctor")
+(declare-function efrit-permissions "efrit-permissions-ui")
+(declare-function efrit-review-package "efrit-package-review")
+(declare-function efrit-review-all-packages "efrit-package-review-ui")
+(declare-function efrit-code-review "efrit-code-review-ui")
+(declare-function efrit-agent-next-attention "efrit-agent-ring")
+(declare-function efrit-agent-previous-attention "efrit-agent-ring")
+(declare-function efrit-agent-focus "efrit-agent-dashboard")
+(declare-function efrit-agent-dashboard "efrit-agent-dashboard")
+(declare-function efrit-agent-diagnose "efrit-agent-diagnose")
+(declare-function efrit-agent-new-worktree-instance "efrit-agent-instances")
+(declare-function efrit-agent-new-instance "efrit-agent-instances")
+(declare-function efrit-agent-toggle-unread "efrit-agent-ring")
+(declare-function efrit-agent-tab-line-mode "efrit-agent-tab-line")
+(declare-function efrit-testdrive "efrit-testdrive")
+(declare-function efrit-testdrive-tour "efrit-testdrive")
+(declare-function efrit-log-toggle-debug "efrit-log")
+(defvar efrit-log-level)
+(declare-function efrit-sandbox-reset-session "efrit-sandbox")
+(declare-function efrit-review-probe-refusal "efrit-review")
+
+;;; Description helpers (all pure, all safe with modules unloaded)
+
+(defun efrit-menu--desc-model ()
+  (format "Select model (%s)" (if (boundp 'efrit-default-model) efrit-default-model "?")))
+
+(defun efrit-menu--desc-endpoint ()
+  (format "Endpoint: %s [%s]"
+          (if (and (boundp 'efrit-api-base-url) (stringp efrit-api-base-url))
+              (condition-case nil
+                  (let ((u (url-generic-parse-url efrit-api-base-url)))
+                    (or (url-host u) efrit-api-base-url))
+                (error efrit-api-base-url))
+            "function")
+          (if (boundp 'efrit-api-auth-scheme) efrit-api-auth-scheme "?")))
+
+(defvar efrit-unattended-mode)
+(defvar efrit-notify-enabled)
+(declare-function efrit-unattended-mode "efrit-unattended")
+
+(defun efrit-menu--desc-toggle (label var)
+  (format "%s [%s]" label (if (and (boundp var) (symbol-value var)) "on" "off")))
+
+(defun efrit-menu--desc-streaming ()
+  (efrit-menu--desc-toggle "Streaming" 'efrit-api-streaming))
+(defun efrit-menu--desc-caching ()
+  (efrit-menu--desc-toggle "Prompt caching" 'efrit-api-prompt-caching))
+
+(defun efrit-menu--desc-permissions ()
+  (format "Sandbox [%s]"
+          (if (bound-and-true-p efrit-sandbox-enabled) "on" "off")))
+
+(defun efrit-menu--desc-header ()
+  (format "Header style [%s]" (if (boundp 'efrit-agent-header-style) efrit-agent-header-style "?")))
+
+(defun efrit-menu--desc-usage ()
+  (let* ((id (and (boundp 'efrit-agent--repl-session) efrit-agent--repl-session
+                  (fboundp 'efrit-repl-session-id)
+                  (efrit-repl-session-id efrit-agent--repl-session)))
+         (u (and id (fboundp 'efrit-usage-indicator) (efrit-usage-indicator id))))
+    (format "Session: %s%s"
+            (if (boundp 'efrit-agent--status) efrit-agent--status "none")
+            (if u (format "  context %s" (substring-no-properties u)) ""))))
+
+;;; Toggle commands
+
+(defconst efrit-menu-saved-settings
+  '(efrit-default-model efrit-api-streaming efrit-api-prompt-caching efrit-sandbox-enabled
+    efrit-review-enabled efrit-agent-header-style efrit-agent-verbosity efrit-agent-display-mode
+    efrit-log-level efrit-notify-enabled efrit-review-auto-grant-threshold efrit-agent-tab-line-mode)
+  "The settings the menu's toggles change, saved together by `efrit-menu-save-settings'.")
+
+(defun efrit-menu-save-settings ()
+  "Save the menu's toggles (`efrit-menu-saved-settings') to the custom file.
+Toggling in the menu changes the running Emacs only; this makes it
+stick (claude-code-ide's Save suffix, 2026-09-28)."
+  (interactive)
+  (let ((saved nil))
+    (dolist (var efrit-menu-saved-settings)
+      (when (boundp var)
+        (customize-save-variable var (symbol-value var))
+        (push (symbol-name var) saved)))
+    (message "Saved %d settings to %s" (length saved) (or custom-file user-init-file))))
+
+(defun efrit-menu-toggle-streaming ()
+  "Toggle `efrit-api-streaming'."
+  (interactive)
+  (require 'efrit-api-stream)
+  (setq efrit-api-streaming (not efrit-api-streaming))
+  (message "efrit streaming %s" (if efrit-api-streaming "on" "off")))
+
+(defun efrit-menu-toggle-caching ()
+  "Toggle `efrit-api-prompt-caching'."
+  (interactive)
+  (require 'efrit-api)
+  (setq efrit-api-prompt-caching (not efrit-api-prompt-caching))
+  (message "efrit prompt caching %s" (if efrit-api-prompt-caching "on" "off")))
+
+(defun efrit-menu--desc-unattended ()
+  (efrit-menu--desc-toggle "Unattended (answer prompts by policy)" 'efrit-unattended-mode))
+(defun efrit-menu--desc-notify ()
+  (efrit-menu--desc-toggle "Desktop notifications" 'efrit-notify-enabled))
+
+(defun efrit-menu-toggle-unattended ()
+  "Toggle `efrit-unattended-mode'."
+  (interactive)
+  (require 'efrit-unattended)
+  (efrit-unattended-mode 'toggle))
+
+(defvar efrit-review-auto-grant-threshold)
+(defun efrit-menu--desc-auto-grant ()
+  (require 'efrit-review-confidence)
+  (format "Reviewer may grant for you (%s)"
+          (if efrit-review-auto-grant-threshold
+              (format "at confidence ≥ %.2f" efrit-review-auto-grant-threshold)
+            "off")))
+
+(defun efrit-menu-cycle-auto-grant ()
+  "Cycle `efrit-review-auto-grant-threshold': 0.95 → 0.90 → 0.99 → off → 0.95 (menu W: when the reviewer may vouch)."
+  (interactive)
+  (require 'efrit-review-confidence)
+  (setq efrit-review-auto-grant-threshold
+        (let ((v efrit-review-auto-grant-threshold))
+          (cond ((null v) 0.95)
+                ((< (abs (- v 0.95)) 0.001) 0.90)
+                ((< (abs (- v 0.90)) 0.001) 0.99)
+                (t nil))))
+  (message "efrit: the reviewer %s"
+           (if efrit-review-auto-grant-threshold
+               (format "may stand in for you at confidence ≥ %.2f" efrit-review-auto-grant-threshold)
+             "never grants for you")))
+
+(defun efrit-menu-toggle-notify ()
+  "Toggle `efrit-notify-enabled'."
+  (interactive)
+  (require 'efrit-notify)
+  (setq efrit-notify-enabled (not efrit-notify-enabled))
+  (message "efrit desktop notifications %s" (if efrit-notify-enabled "on" "off")))
+
+(defun efrit-menu-toggle-sandbox ()
+  "Toggle `efrit-sandbox-enabled'."
+  (interactive)
+  (require 'efrit-sandbox)
+  (setq efrit-sandbox-enabled (not efrit-sandbox-enabled))
+  (message "efrit sandbox %s" (if efrit-sandbox-enabled "on" "OFF -- every tool runs unchecked")))
+
+(defun efrit-menu-show-log ()
+  "Show efrit's log buffer."
+  (interactive)
+  (require 'efrit-log)
+  (if (fboundp 'efrit-log-show) (efrit-log-show)
+    (pop-to-buffer (get-buffer-create "*efrit-log*"))))
+
+;;; The menu
+
+(defconst efrit-menu--definition
+  '(transient-define-prefix efrit-menu ()
+     "Efrit: status and commands."
+     [:description efrit-menu--desc-usage
+      ["Session"
+       ("e" "Open agent (REPL)" efrit)
+       ("d" "One-shot command" efrit-do)
+       ("n" "New conversation" efrit-agent-new-session)
+       ("r" "Resume a saved session" efrit-resume)
+       ("k" "Cancel current turn" efrit-agent-cancel)
+       ("Q" "Show / drop queued inputs" efrit-agent-queue-show)
+       ("y" "Copy last answer" efrit-agent-copy-last-output)
+       ("i" "Copy session id" efrit-agent-copy-session-id)
+       ("N" "Restart in place (fresh session, same windows)" efrit-agent-restart)
+       ("]" "Next agent that needs you (prompt first, then unread)" efrit-agent-next-attention :transient t)
+       ("[" "Previous agent that needs you" efrit-agent-previous-attention :transient t)
+       ("z" "Focus one agent (again: restore windows)" efrit-agent-focus)
+       ("a" "Agents dashboard (folders, state, worktrees)" efrit-agent-dashboard)
+       ("I" "Diagnose this session" efrit-agent-diagnose)
+       ("J" "New agent for a directory (no repository needed)" efrit-agent-new-instance)
+       ("f" "New agent in a fresh Git worktree" efrit-agent-new-worktree-instance)
+       ("U" "Mark this agent unread / read" efrit-agent-toggle-unread :transient t)
+       ("B" efrit-agent-tab-line-mode :transient t
+        :description (lambda () (format "Agents in the tab line [%s]" (if (bound-and-true-p efrit-agent-tab-line-mode) "on" "off"))))]
+      ["Configuration"
+       ("m" efrit-select-model :description efrit-menu--desc-model)
+       ("M" "Select model (probe all)" (lambda () (interactive) (efrit-select-model t)))
+       ("s" efrit-menu-toggle-streaming :transient t :description efrit-menu--desc-streaming)
+       ("c" efrit-menu-toggle-caching :transient t :description efrit-menu--desc-caching)
+       ("b" efrit-menu-toggle-sandbox :transient t :description efrit-menu--desc-permissions)
+       ("A" efrit-menu-toggle-unattended :transient t :description efrit-menu--desc-unattended)
+       ("Y" efrit-menu-toggle-notify :transient t :description efrit-menu--desc-notify)
+       ("W" efrit-menu-cycle-auto-grant :transient t :description efrit-menu--desc-auto-grant)
+       ("x" "Permissions editor (grants, review, limits)" efrit-permissions)
+       ("p" "Prompt library (per-item / over-everything prompts)" efrit-prompts-manage)
+       ("g" "Document source check: Google Drive" efrit-documents-gdrive-check)
+       ("w" "Document source check: Confluence" efrit-documents-confluence-check)
+       ("K" "Document source check: Google Calendar" efrit-documents-gcalendar-check)
+       ("j" "Document source check: Jira" efrit-documents-jira-check)
+       ("P" "Review an installed package" efrit-review-package)
+       ("V" "Review all installed packages" efrit-review-all-packages)
+       ("O" "Code review of the staged changes (C-u: unpushed, branch)" efrit-code-review)
+       ("X" "Forget session sandbox grants" efrit-sandbox-reset-session :transient t)
+       ("S" "Save these settings (customize-save-variable)" efrit-menu-save-settings)
+       ("h" efrit-agent-cycle-header-style :transient t :description efrit-menu--desc-header)]]
+     [["Diagnostics"
+       ("D" "Doctor (static)" efrit-doctor)
+       ("L" "Doctor with live API check" (lambda () (interactive) (efrit-doctor t)))
+       ("l" "Show log" efrit-menu-show-log)
+       ("G" efrit-log-toggle-debug :transient t
+        :description (lambda () (format "Debug logging [%s]" (if (eq efrit-log-level 'debug) "on" "off"))))
+       ("R" "Reload efrit from source" efrit-reload)
+       ("F" "Bisect the last refused review request" efrit-review-probe-refusal)
+       ("T" "Test drive: automatic (live, costs tokens)" efrit-testdrive)
+       ("t" "Test drive: the tour (what needs eyes)" efrit-testdrive-tour)
+       ("u" "Usage / endpoint" (lambda () (interactive) (message "%s" (efrit-menu--desc-endpoint))))]
+      ["View"
+       ("TAB" "Toggle tool call at point" efrit-agent-toggle-expand)
+       ("E" "Expand all tool calls" efrit-agent-expand-all)
+       ("C" "Collapse all tool calls" efrit-agent-collapse-all)
+       ("v" "Cycle verbosity" efrit-agent-cycle-verbosity :transient t)
+       ("o" "Cycle display mode" efrit-agent-cycle-display-mode :transient t)
+       ("q" "Close this menu" transient-quit-one)]])
+  "The `efrit-menu' prefix, kept as data (see Commentary).")
+
+(if (require 'transient nil t)
+    (eval efrit-menu--definition t)
+  (defun efrit-menu ()
+    "Efrit menu (requires the `transient' package)."
+    (interactive)
+    (if (require 'transient nil t)
+        (progn (eval efrit-menu--definition t)
+               (call-interactively 'efrit-menu))
+      (user-error "efrit-menu needs the `transient' package"))))
+
+(provide 'efrit-menu)
+
+;;; efrit-menu.el ends here

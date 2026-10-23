@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'json)
 
 ;; Add load paths for test
@@ -22,14 +23,12 @@
 (require 'efrit-tool-inputs)
 (require 'efrit-do-handlers)
 
-;; Mock the TODO struct accessors if not available
-(unless (fboundp 'efrit-do-todo-item-create)
-  (cl-defstruct (efrit-do-todo-item (:constructor efrit-do-todo-item-create))
-    id content status priority created-at completed-at))
-
-;; Variables needed by handlers
-(defvar efrit-do--current-todos nil)
-(defvar efrit-do--todo-counter 0)
+;; The TODO struct, its efrit-do-todo-item-* aliases and the
+;; efrit-do--current-todos alias all come from efrit-todo.el, loaded
+;; by efrit-do-handlers.  A "mock" struct once defined here inside an
+;; `unless' was still expanded at load time (cl-defstruct is a macro),
+;; so it redefined the accessors as record accessors and the three
+;; todo_write tests failed for days (found 2026-09-30).
 
 ;;; ============================================================
 ;;; Tests for efrit-do--validate-elisp
@@ -126,11 +125,15 @@ so extra chars after are ignored (not a syntax error)."
         (should (stringp (cdr result)))))))
 
 (ert-deftest test-validate-shell-blocked-patterns ()
-  "Test validation blocks forbidden patterns."
+  "Test validation blocks forbidden patterns.
+Command substitution is blocked; plain chaining (&&, ;, |) is allowed
+by design (see `efrit-do-forbidden-shell-patterns')."
   (let ((efrit-do-shell-security-enabled t))
-    (dolist (cmd '("ls && rm" "ls ; rm" "echo $(whoami)" "echo `date`"))
+    (dolist (cmd '("echo $(whoami)" "echo `date`" "echo ${HOME}"))
       (let ((result (efrit-do--validate-shell-command cmd)))
-        (should-not (car result))))))
+        (should-not (car result))))
+    (dolist (cmd '("ls && echo ok" "ls ; echo ok" "ls | wc -l"))
+      (should (car (efrit-do--validate-shell-command cmd))))))
 
 (ert-deftest test-validate-shell-empty-command ()
   "Test validation rejects empty command."
@@ -139,14 +142,11 @@ so extra chars after are ignored (not a syntax error)."
       (should-not (car result))
       (should (string-match-p "Empty" (cdr result))))))
 
-(ert-deftest test-validate-shell-too-long ()
-  "Test validation rejects overly long commands.
-Note: whitelist check happens first, so very long commands fail that check first."
+(ert-deftest test-validate-shell-long-command-allowed ()
+  "There is no length cap; a long but whitelisted command passes."
   (let ((efrit-do-shell-security-enabled t))
-    ;; Use an allowed command that's too long
-    (let ((result (efrit-do--validate-shell-command (concat "echo " (make-string 250 ?a)))))
-      (should-not (car result))
-      (should (string-match-p "too long" (cdr result))))))
+    (should (car (efrit-do--validate-shell-command
+                  (concat "echo " (make-string 250 ?a)))))))
 
 (ert-deftest test-validate-shell-security-disabled ()
   "Test all commands allowed when security disabled."
@@ -167,8 +167,15 @@ Note: whitelist check happens first, so very long commands fail that check first
       (should (string-match-p "hello" result)))))
 
 (ert-deftest test-handle-shell-exec-blocked ()
-  "Test shell-exec blocks dangerous command."
-  (let ((efrit-do-shell-security-enabled t))
+  "Without a shell grant the sandbox denies; with the sandbox off the
+legacy whitelist blocks rm."
+  (let ((efrit-sandbox-request-function nil)
+        (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--turn-state (make-hash-table :test (quote equal))))
+    (should-error (efrit-do--handle-shell-exec "rm important.txt")
+                  :type 'efrit-sandbox-denied))
+  (let ((efrit-sandbox-enabled nil) (efrit-do-shell-security-enabled t))
     (let ((result (efrit-do--handle-shell-exec "rm important.txt")))
       (should (stringp result))
       (should (string-match-p "SECURITY" result))
@@ -182,6 +189,51 @@ Note: whitelist check happens first, so very long commands fail that check first
       (should (stringp result))
       (when (> (length result) 1200)
         (should (string-match-p "truncated" result))))))
+
+;;; ============================================================
+;;; Tests for efrit-do--handle-run-program
+;;; ============================================================
+
+(defun test-run-program--input (&rest kv)
+  (let ((h (make-hash-table :test 'equal)))
+    (while kv (puthash (pop kv) (pop kv) h))
+    h))
+
+(ert-deftest test-handle-run-program-argv-stdin-exit-and-grant ()
+  "run_program runs one program with an argv (no shell: `$x' stays
+literal), feeds stdin, reports the exit code; the sandbox is asked about
+the program name alone, so a grant on it covers the next call; a missing
+program is an error result, not a signal."
+  (skip-unless (executable-find "sh"))
+  (let ((efrit-sandbox-request-function (lambda (_req) 'session))
+        (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+        (efrit-sandbox--turn-state (make-hash-table :test 'equal))
+        (efrit-sandbox-shell-refuse-emacs-equivalents nil)
+        (asked nil))
+    (progn
+      (let ((efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) 'session)))
+        (let ((result (efrit-do--handle-run-program
+                       (test-run-program--input "program" "sh" "args" ["-c" "cat; echo \"$1\"; exit 3" "x" "$HOME"]
+                                                "stdin" "from-stdin\n"))))
+          (should (string-match-p "\\[Exit: 3\\]" result))
+          (should (string-match-p "from-stdin" result))
+          ;; the argv literal `$HOME' reached sh as the text, printed unexpanded
+          (should (string-match-p "\n\\$HOME\n" result))
+          (should (equal '((shell "sh")) asked)))
+        ;; second call: the grant covers sh, no new prompt
+        (setq asked nil)
+        (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" ["-c" "true"]))
+        (should (null asked))))
+    (should (string-match-p "requires 'program'" (efrit-do--handle-run-program (test-run-program--input "args" ["x"]))))
+    (should (string-match-p "array of strings" (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" [1]))))
+    (should (string-match-p "not found" (efrit-do--handle-run-program
+                                         (test-run-program--input "program" "efrit-no-such-program-xyz"))))
+    ;; refused without a prompt when the sandbox denies
+    (let ((efrit-sandbox-request-function nil))
+      (clrhash efrit-sandbox--session-grants)
+      (should-error (efrit-do--handle-run-program (test-run-program--input "program" "sh" "args" ["-c" "true"]))
+                    :type 'efrit-sandbox-denied))))
 
 ;;; ============================================================
 ;;; Tests for efrit-do--handle-todo-write

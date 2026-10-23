@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -41,6 +41,13 @@
   :group 'efrit
   :prefix "efrit-agent-")
 
+(defface efrit-agent-separator
+  '((((background dark)) :overline "#4c566a" :height 0.4)
+    (t :overline "#c0c6d0" :height 0.4))
+  "The hairline between the transcript and the input.
+Drawn as an overline on a short empty line, so it spans the window."
+  :group 'efrit-agent)
+
 (defcustom efrit-agent-buffer-name "*efrit-agent*"
   "Name of the agent session buffer."
   :type 'string
@@ -61,6 +68,30 @@ If nil, use `M-x efrit-agent' to open the buffer manually."
                  (const :tag "Normal" normal)
                  (const :tag "Verbose" verbose))
   :group 'efrit-agent)
+
+(defcustom efrit-agent-max-line-length 1000
+  "Longest line, in characters, rendered from a tool input or result.
+Longer lines are cut and end in a dim marker with the number of
+characters dropped; `w' on the row still copies the full output.
+A single line above `long-line-threshold' (50000) makes Emacs switch
+the whole agent buffer to long-line display shortcuts, which clip the
+left edge of every row; a 213069-character fetch_url result did that
+on 2026-10-19.  Lines in the low thousands only wrap into unreadable
+blocks.  Raise this if you read minified or JSON results in place."
+  :type 'natnum
+  :group 'efrit-agent)
+
+(defun efrit-agent--clip-line (line)
+  "LINE cut to `efrit-agent-max-line-length' characters, or LINE unchanged.
+The cut line ends in a dim marker with the number of characters dropped.
+Text properties of LINE are kept; callers apply their face first."
+  (let ((max efrit-agent-max-line-length))
+    (if (<= (length line) max)
+        line
+      (concat (substring line 0 max)
+              (propertize (format " … +%d chars" (- (length line) max))
+                          'face 'shadow
+                          'help-echo "Line cut at `efrit-agent-max-line-length'; `w' copies the full output")))))
 
 (defcustom efrit-agent-display-style 'unicode
   "Display style for the agent buffer.
@@ -128,6 +159,8 @@ Only affects newly generated diffs, not pre-formatted diff output."
     (tool-running . "⟳")
     (tool-success . "✓")
     (tool-failure . "✗")
+    (tool-denied . "⊘")
+    (lisp-marker . "λ")
     (message-icon . "💬")
     (error-icon . "❌"))
   "Unicode characters for display elements.")
@@ -155,6 +188,8 @@ Only affects newly generated diffs, not pre-formatted diff output."
     (tool-running . "~")
     (tool-success . "[x]")
     (tool-failure . "[!]")
+    (tool-denied . "[-]")
+    (lisp-marker . ";")
     (message-icon . "[C]")
     (error-icon . "[E]"))
   "ASCII characters for display elements (terminal compatible).")
@@ -200,6 +235,8 @@ Shown in the status line and header-line when status is `failed'.")
 (defvar-local efrit-agent--pending-question nil
   "The current pending question from Claude.
 Format: (question options timestamp) or nil.")
+(defvar-local efrit-agent--pending-question-multi nil
+  "Non-nil when the pending question takes several answers (toggles + RET).")
 
 (defvar-local efrit-agent--input-text ""
   "Current text in the input area.")
@@ -242,10 +279,6 @@ Non-nil means an API call is in flight and the spinner is animating.")
 
 (defvar-local efrit-agent--message-counter 0
   "Counter for generating unique message IDs.")
-
-(defvar-local efrit-agent--failed-tools nil
-  "Alist mapping tool-id to tool execution context for retry.
-Each entry is (tool-id . (:name name :input input :item tool-item)).")
 
 (defvar-local efrit-agent--expansion-state nil
   "Hash table mapping tool-id to user-specified expansion state.
@@ -309,21 +342,90 @@ Should be called after `efrit-agent--init-regions' when the buffer is empty."
     (insert "\n")
     ;; Remember where conversation ends (before separator)
     (setq conversation-end-pos (point))
-    ;; Insert separator between conversation and input
-    (insert (propertize (concat (make-string 60 ?─) "\n")
+    ;; Separator between conversation and input: one full-width hairline
+    ;; drawn as a display-space overline, not a row of box characters
+    (insert (propertize " \n"
+                        'display '(space :align-to right)
+                        'face 'efrit-agent-separator
                         'efrit-agent-separator t
                         'read-only t
+                        'field 'output
                         'rear-nonsticky t))
-    ;; Insert input prompt (read-only)
-    (insert (propertize "> " 'efrit-agent-prompt t 'read-only t 'rear-nonsticky t))
+    ;; Insert input prompt.  The comint/eshell model: the prompt is
+    ;; read-only, front-sticky so a backspace at the start of the input
+    ;; cannot eat it, and in the `output' field so C-a, C-e, kill-line
+    ;; and line motion stop at the prompt instead of crossing it.
+    (insert (propertize "> " 'face 'efrit-agent-input-prompt
+                        'efrit-agent-prompt t 'read-only t
+                        'field 'output
+                        'front-sticky '(read-only field) 'rear-nonsticky t))
     ;; Mark start of user input (AFTER the prompt)
     (setq input-start-pos (point))
     ;; Set markers at the saved positions (after all inserts to avoid insertion-type issues)
     (set-marker efrit-agent--conversation-end conversation-end-pos)
     (set-marker efrit-agent--input-start input-start-pos)
-    ;; Make conversation region read-only (front-sticky prevents insertion at point-min)
+    ;; Make conversation region read-only and part of the output field
     (add-text-properties (point-min) efrit-agent--conversation-end
-                         '(read-only t front-sticky (read-only)))))
+                         '(read-only t field output front-sticky (read-only field)))))
+
+;;; Rendering discipline
+;;
+;; Every programmatic edit of the conversation goes through
+;; `efrit-agent--with-render'.  It binds `buffer-undo-list' to t, so
+;; streamed chunks, spinner ticks and tool re-renders never enter the
+;; undo list (they used to: C-/ in the input walked back through the
+;; model's output), and afterwards resets the list to one entry that
+;; re-records the input as a single insertion -- undo entries are
+;; absolute positions, and the render moved the input.  It also mirrors
+;; `face' to `font-lock-face' and marks the range `fontified', so a
+;; font-lock pass over the buffer neither wipes nor recomputes it.
+
+(defmacro efrit-agent--with-render (&rest body)
+  "Run BODY as a render of the conversation: no undo, read-only lifted.
+Point is preserved.  After BODY the undo list is reset to record the
+input region as one insertion (see the commentary above)."
+  (declare (indent 0) (debug t))
+  `(prog1
+       (let ((inhibit-read-only t)
+             (buffer-undo-list t)
+             (inhibit-modification-hooks nil))
+         (save-excursion ,@body))
+     (efrit-agent--uncover-tail)
+     (efrit-agent--reset-undo-history)))
+
+(defun efrit-agent--reset-undo-history ()
+  "Make the undo list hold only the input region, as one insertion.
+A no-op when undo is disabled in the buffer."
+  (unless (eq buffer-undo-list t)
+    (setq buffer-undo-list
+          (if (and efrit-agent--input-start
+                   (marker-position efrit-agent--input-start)
+                   (< efrit-agent--input-start (point-max)))
+              (list (cons (marker-position efrit-agent--input-start) (point-max)))
+            nil))))
+
+(defun efrit-agent--uncover-tail ()
+  "Make sure nothing from the conversation end onward is `invisible'.
+The separator, the prompt and the input are never folded text; a fold
+property that reached them hid the bottom of the buffer until the next
+send rewrote the prompt (2026-10-16).  Cheap, called after renders."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (text-property-not-all efrit-agent--conversation-end (point-max) 'invisible nil))
+    (let ((inhibit-read-only t) (buffer-undo-list t))
+      (efrit-log 'warn "agent: invisible text reached the prompt region; uncovered")
+      (remove-list-of-text-properties efrit-agent--conversation-end (point-max) '(invisible)))))
+
+(defun efrit-agent--seal-rendered (start end)
+  "Mark START..END as rendered output: read-only, in the output field,
+faces mirrored to `font-lock-face', and `fontified' so font-lock leaves it."
+  (add-text-properties start end '(read-only t field output fontified t))
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (or (next-single-property-change pos 'face nil end) end))
+            (face (get-text-property pos 'face)))
+        (when face (put-text-property pos next 'font-lock-face face))
+        (setq pos next)))))
 
 (defun efrit-agent--append-to-conversation (text &optional properties)
   "Append TEXT with optional PROPERTIES to the conversation region.
@@ -331,16 +433,32 @@ Inserts just before the conversation-end marker, preserving read-only.
 Does nothing if the conversation-end marker is not initialized."
   (when (and efrit-agent--conversation-end
              (marker-position efrit-agent--conversation-end))
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char efrit-agent--conversation-end)
-        (let ((start (point)))
-          (insert text)
-          ;; Apply any additional properties
-          (when properties
-            (add-text-properties start (point) properties))
-          ;; Make the new text read-only
-          (add-text-properties start (point) '(read-only t)))))))
+    (efrit-agent--with-render
+      ;; Insert BEFORE the thinking indicator when it is showing.  The
+      ;; indicator is the last thing in the conversation, its end
+      ;; marker advances on insertion, so text put at conversation-end
+      ;; landed inside it and vanished with it on the next hide: every
+      ;; queued or steer line drawn while the model worked was erased
+      ;; (2026-09-25).
+      (goto-char (efrit-agent--insertion-point))
+      (let ((start (point)))
+        (insert text)
+        (when properties
+          (add-text-properties start (point) properties))
+        (efrit-agent--seal-rendered start (point))
+        ;; The indicator's start marker does not advance; when we
+        ;; inserted at it, move it past the new text
+        (when-let* ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+          (when (and (marker-position (car ind)) (= (marker-position (car ind)) start))
+            (set-marker (car ind) (point))))))))
+
+(defun efrit-agent--insertion-point ()
+  "Where new conversation content goes: the end, or before the thinking line."
+  (let ((ind (bound-and-true-p efrit-agent--thinking-indicator)))
+    (if (and ind (marker-position (car ind))
+             (<= (marker-position (car ind)) (marker-position efrit-agent--conversation-end)))
+        (marker-position (car ind))
+      (marker-position efrit-agent--conversation-end))))
 
 (defun efrit-agent--get-input ()
   "Get the current user input from the input region.
@@ -367,8 +485,76 @@ Deletes from input-start marker to end of buffer."
 ;;; Buffer Creation and Management
 
 (defun efrit-agent--get-buffer ()
-  "Get or create the agent buffer."
+  "Get or create the default agent buffer.
+Interactive entry points open this one.  Anything that renders on
+behalf of a session must use `efrit-agent-buffer-for' instead: with
+several sessions, each has its own buffer."
   (get-buffer-create efrit-agent-buffer-name))
+
+(declare-function efrit-repl-session-get "efrit-repl-session")
+(declare-function efrit-repl-session-buffer "efrit-repl-session")
+(defvar efrit-agent--repl-session)
+(defvar-local efrit-agent--instance nil
+  "This buffer's instance when made by efrit-agent-instances:
+a plist (:project ROOT :name NAME :number N); nil for the default buffer.")
+(declare-function efrit-agent-display-in-side-window "efrit-agent-instances")
+
+(defun efrit-agent-buffers ()
+  "Every live agent buffer.
+Reads each buffer's `major-mode' without switching into it: this runs
+from the header line, the mode line, the tab line and the ring
+heartbeat, and a `set-buffer' per buffer goes through the sandbox's
+`set-buffer' advice once any eval has run.  Measured 2026-10-20: 34 ms
+per call over 67 buffers with the switch, under 1 ms without."
+  (cl-remove-if-not (lambda (b) (provided-mode-derived-p (buffer-local-value 'major-mode b)
+                                                         'efrit-agent-mode))
+                    (buffer-list)))
+
+(defun efrit-agent-buffer-for (session-id)
+  "The agent buffer that shows SESSION-ID, or nil.
+A REPL session names its buffer; an efrit-do session is found by the
+buffer's `efrit-agent--session-id'.  With SESSION-ID nil, the default
+buffer when it exists.  Never creates a buffer."
+  (cond
+   ((null session-id) (get-buffer efrit-agent-buffer-name))
+   ((when-let* ((session (and (fboundp 'efrit-repl-session-get)
+                              (efrit-repl-session-get session-id)))
+                (buf (efrit-repl-session-buffer session)))
+      (and (buffer-live-p buf) buf)))
+   (t (or (cl-find-if (lambda (b) (equal (buffer-local-value 'efrit-agent--session-id b) session-id))
+                      (efrit-agent-buffers))
+          ;; an efrit-do session not yet attached anywhere: the default
+          ;; buffer, unless instances are on (then it gets its own, see
+          ;; `efrit-agent-buffer-for-do-session')
+          (and (not (bound-and-true-p efrit-agent-instances-mode))
+               (let ((b (get-buffer efrit-agent-buffer-name)))
+                 (and b (with-current-buffer b
+                          (or (null efrit-agent--session-id) (null efrit-agent--repl-session)))
+                      b)))))))
+
+(declare-function efrit-agent-instance-for-project "efrit-agent-instances")
+
+(defun efrit-agent-buffer-for-do-session (session-id &optional root)
+  "The agent buffer an efrit-do SESSION-ID renders into, created when needed.
+The buffer already attached to SESSION-ID when there is one; else,
+with `efrit-agent-instances-mode', the instance of ROOT's project
+\(default the current project) so `efrit-do' output lands beside the
+project's REPL buffer instead of in a `*efrit-agent*' nobody has
+open (multi-session gap, closed 2026-09-30); else the default buffer."
+  (or (cl-find-if (lambda (b) (equal (buffer-local-value 'efrit-agent--session-id b) session-id))
+                  (efrit-agent-buffers))
+      (if (bound-and-true-p efrit-agent-instances-mode)
+          (progn (require 'efrit-agent-instances)
+                 (efrit-agent-instance-for-project root t))
+        (efrit-agent--get-buffer))))
+
+(defmacro efrit-agent-with-session-buffer (session-id &rest body)
+  "Run BODY in the agent buffer of SESSION-ID when there is one."
+  (declare (indent 1))
+  `(let ((buffer (efrit-agent-buffer-for ,session-id)))
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         ,@body))))
 
 (defun efrit-agent--create-buffer (session-id command)
   "Create and initialize the agent buffer for SESSION-ID with COMMAND."
@@ -396,14 +582,72 @@ Deletes from input-start marker to end of buffer."
             (run-at-time 1 1 #'efrit-agent--update-elapsed buffer)))
     buffer))
 
+(defcustom efrit-agent-display-buffer-action
+  '((display-buffer-reuse-window
+     display-buffer-at-bottom)
+    (window-height . 0.4)
+    (reusable-frames . visible)
+    (dedicated . t))
+  "How the agent buffer is shown (a `display-buffer' action).
+The default reuses a window already showing it (in any visible frame),
+otherwise splits off a bottom window -- the eshell model: the window
+is created for the buffer and `quit-window' deletes it again.
+
+`display-buffer-in-previous-window' is deliberately absent.  It
+reuses whatever window the buffer was last in, and a reused window
+carries no record that it was made for this buffer, so quitting
+swapped buffers and left the split behind.  The window is dedicated
+for the same reason: nothing else moves in, so quit means close."
+  :type 'sexp
+  :group 'efrit-agent)
+
+(defun efrit-agent--dedicate-window (window)
+  "Dedicate WINDOW to its buffer unless it is the frame's only window.
+A dedicated window is deleted by `kill-buffer' as well as by
+`quit-window'.  `display-buffer' only honours the `dedicated' entry
+for a window it created, so a reused window (one made by older code,
+by `switch-to-buffer', or by an action list from before a reload)
+is brought under the contract here."
+  (when (and (window-live-p window)
+             (not (window-dedicated-p window))
+             (not (eq window (frame-root-window window))))
+    (set-window-dedicated-p window t)))
+
+(defun efrit-agent-display (&optional buffer select)
+  "Show the agent BUFFER (default the current one) per `efrit-agent-display-buffer-action'.
+With SELECT, select its window and put point in the input region.
+Returns the window.  Every path that shows the agent buffer goes
+through here so window behaviour is consistent.
+
+Showing a buffer that is already visible leaves the window's
+`quit-restore' alone: `display-buffer' would otherwise downgrade it
+from delete-the-window to show-the-previous-buffer, and the next quit
+would leave the split behind."
+  (let* ((buffer (or buffer (efrit-agent--get-buffer)))
+         (existing (get-buffer-window buffer 'visible))
+         (win (cond
+               (existing)
+               ;; an instance buffer (efrit-agent-instances) has a
+               ;; side-window slot of its own
+               ((and (fboundp 'efrit-agent-display-in-side-window)
+                     (buffer-local-value 'efrit-agent--instance buffer))
+                (efrit-agent-display-in-side-window buffer))
+               (t (display-buffer buffer efrit-agent-display-buffer-action)))))
+    (efrit-agent--dedicate-window win)
+    (when (and select (window-live-p win))
+      (select-window win)
+      (with-current-buffer buffer
+        (when (and efrit-agent--input-start
+                   (marker-position efrit-agent--input-start))
+          (goto-char (point-max)))))
+    win))
+
 (defun efrit-agent--show-buffer ()
   "Display the agent buffer.
 Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
   (when (and efrit-agent-auto-show
              (not noninteractive))
-    (let ((buffer (efrit-agent--get-buffer)))
-      (display-buffer buffer '(display-buffer-at-bottom
-                               (window-height . 15))))))
+    (efrit-agent-display (efrit-agent--get-buffer))))
 
 (defun efrit-agent--cleanup-timer ()
   "Clean up the elapsed and spinner timers when buffer is killed."
@@ -433,36 +677,59 @@ Does nothing in batch mode or when `efrit-agent-auto-show' is nil."
   ["-" "\\" "|" "/"]
   "Spinner animation frames (ascii display style).")
 
-(defun efrit-agent--spinner-frame ()
-  "Return the current spinner frame for the active display style."
-  (let ((frames (if (eq efrit-agent-display-style 'unicode)
-                    efrit-agent--spinner-frames-unicode
-                  efrit-agent--spinner-frames-ascii)))
-    (aref frames (mod efrit-agent--spinner-index (length frames)))))
+(declare-function efrit-agent-spinner-frame "efrit-agent-spinner")
+(declare-function efrit-agent--refresh-thinking-line "efrit-agent-render")
 
-(defun efrit-agent--spinner-tick (buffer)
-  "Advance the spinner in BUFFER and refresh its header-line."
-  (when (buffer-live-p buffer)
+(defun efrit-agent--spinner-frame (&optional text-only)
+  "Return the current spinner frame: an SVG arc, or a text glyph.
+TEXT-ONLY forces the glyph (for places that cannot show an image)."
+  (or (and (not text-only)
+           (require 'efrit-agent-spinner nil t)
+           (efrit-agent-spinner-frame))
+      (let ((frames (if (eq efrit-agent-display-style 'unicode)
+                        efrit-agent--spinner-frames-unicode
+                      efrit-agent--spinner-frames-ascii)))
+        (aref frames (mod efrit-agent--spinner-index (length frames))))))
+
+(defun efrit-agent--spinner-tick (buffer timer)
+  "Advance the spinner in BUFFER and refresh its header-line.
+TIMER is the timer this tick belongs to: a tick that finds its buffer
+dead or its label cleared cancels that exact timer, so no repeating
+timer outlives the buffer (the buffer-local variable that held it is
+gone with the buffer; after copilot-chat's thinking indicator,
+2026-09-28)."
+  (if (not (buffer-live-p buffer))
+      (cancel-timer timer)
     (with-current-buffer buffer
       (if efrit-agent--thinking-label
           (progn
             (setq efrit-agent--spinner-index (1+ efrit-agent--spinner-index))
-            (force-mode-line-update))
-        ;; Stale tick after the label was cleared — stop the timer
-        (when efrit-agent--spinner-timer
-          (cancel-timer efrit-agent--spinner-timer)
+            (when (fboundp 'efrit-agent--refresh-thinking-line)
+              (efrit-agent--refresh-thinking-line))
+            ;; every window: the agent buffer's mode-name e animates
+            ;; wherever that buffer is shown (efrit-agent-ring-mode-line-string)
+            (force-mode-line-update t))
+        ;; Stale tick after the label was cleared: stop this timer
+        (cancel-timer timer)
+        (when (eq efrit-agent--spinner-timer timer)
           (setq efrit-agent--spinner-timer nil))))))
 
 (defun efrit-agent--spinner-start (&optional label)
   "Show LABEL with an animated spinner in the header-line.
 Call in the agent buffer when an API call starts."
+  ;; Load the SVG spinner even where it will fall back to text, so
+  ;; the mode-name e animates from the first request onward.
+  (require 'efrit-agent-spinner nil t)
   (setq efrit-agent--thinking-label (or label "thinking..."))
   (setq efrit-agent--spinner-index 0)
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer))
-  (setq efrit-agent--spinner-timer
-        (run-at-time 0 efrit-agent-spinner-interval
-                     #'efrit-agent--spinner-tick (current-buffer)))
+  ;; The timer is created idle, then pointed at itself, so each tick
+  ;; can cancel the very timer that fired it
+  (let ((timer (run-at-time 0 efrit-agent-spinner-interval #'ignore))
+        (buffer (current-buffer)))
+    (timer-set-function timer #'efrit-agent--spinner-tick (list buffer timer))
+    (setq efrit-agent--spinner-timer timer))
   (force-mode-line-update))
 
 (defun efrit-agent--spinner-stop ()
@@ -471,7 +738,9 @@ Call in the agent buffer when an API call starts."
   (when efrit-agent--spinner-timer
     (cancel-timer efrit-agent--spinner-timer)
     (setq efrit-agent--spinner-timer nil))
-  (force-mode-line-update))
+  ;; all windows: every window showing this buffer must redraw the
+  ;; mode-name e at rest
+  (force-mode-line-update t))
 
 (defun efrit-agent--attach-session (session-id command)
   "Attach this agent buffer to SESSION-ID for COMMAND.
@@ -488,7 +757,6 @@ Inserts a visible delimiter between sessions."
   (setq efrit-agent--activities nil)
   (setq efrit-agent--pending-question nil)
   (setq efrit-agent--pending-tools (make-hash-table :test 'equal))
-  (setq efrit-agent--failed-tools nil)
   (setq efrit-agent--streaming-message nil)
   (setq efrit-agent--thinking-indicator nil)
   (setq efrit-agent--todos-region nil)
@@ -525,10 +793,24 @@ Session: %s
 See `efrit-agent--attach-session'."
   (efrit-agent--attach-session (efrit-session-id session) command))
 
+(declare-function efrit-session-persist-save "efrit-session-persist")
+(declare-function efrit-repl-session-api-messages "efrit-repl-session")
+
 (defun efrit-agent--save-session-on-kill ()
-  "Save the current session when the agent buffer is killed.
-Only saves if session has content worth preserving."
-  (when efrit-agent--session-id
+  "Save the buffer's session when the agent buffer is killed.
+A REPL session (the buffer-local `efrit-agent--repl-session') is
+saved through the persist layer when it has messages; an efrit-do
+session through the transcript.  Before 2026-09-28 the REPL case was
+looked up in the efrit-do table and never found, so nothing was saved."
+  (when (and (bound-and-true-p efrit-agent--repl-session)
+             (fboundp 'efrit-repl-session-api-messages)
+             (efrit-repl-session-api-messages efrit-agent--repl-session)
+             (bound-and-true-p efrit-session-persist-auto-save))
+    (condition-case err
+        (progn (require 'efrit-session-persist)
+               (efrit-session-persist-save efrit-agent--repl-session))
+      (error (efrit-log 'warn "Failed to save REPL session on kill: %s" (error-message-string err)))))
+  (when (and efrit-agent--session-id (not (bound-and-true-p efrit-agent--repl-session)))
     (condition-case err
         (progn
           (require 'efrit-do-async-loop)

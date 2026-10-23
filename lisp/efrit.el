@@ -4,8 +4,8 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Maintainer: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
-;; Package-Requires: ((emacs "28.1"))
+;; Version: 0.14.0
+;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tools, convenience, ai, assistant, claude
 ;; URL: https://github.com/steveyegge/efrit
 ;; Homepage: https://github.com/steveyegge/efrit
@@ -59,10 +59,6 @@
 ;; (require 'efrit-use-case-tests)
 ;; (require 'efrit-integration-tests)
 
-;; Make external API accessible with clear naming
-(defalias 'efrit-start 'efrit-chat
-  "Start a new Efrit chat session (alias for efrit-chat).")
-
 ;;;###autoload
 (defun efrit ()
   "Open or switch to the Efrit REPL session buffer.
@@ -75,12 +71,12 @@ The agent buffer provides a conversation-style REPL where you can:
 - Have your context maintained across multiple commands
 
 Keybindings in the agent buffer:
-  RET       - Toggle tool call expansion
+  RET       - Send input (in the input area) / toggle tool call (in the conversation)
   TAB       - Next section
   Shift-TAB - Previous section
-  n/p       - Next/previous tool call
-  k         - Cancel current session
-  ?         - Show help
+  M-n/M-p   - Next/previous tool call
+  C-c C-k   - Cancel current session
+  C-c ?     - Show help
 
 Use M-x efrit-help for more information."
   (interactive)
@@ -99,8 +95,6 @@ Use M-x efrit-help for more information."
 ;; Global keymap for Efrit (not bound by default)
 (defvar efrit-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "c") 'efrit-chat)    ; 'c' for chat (classic)
-    (define-key map (kbd "s") 'efrit-streamlined-send) ; 's' for streamlined chat
     (define-key map (kbd "a") 'efrit-agent)   ; 'a' for agent buffer
     (define-key map (kbd "d") 'efrit-do)      ; 'd' for do/execute (async by default)
     (define-key map (kbd "w") 'efrit-do-silently) ; 'w' for background work
@@ -108,6 +102,17 @@ Use M-x efrit-help for more information."
     (define-key map (kbd "D") 'efrit-do-sync) ; 'D' for sync do/execute (legacy)
     (define-key map (kbd "q") 'efrit-remote-queue-start) ; 'q' for queue
     (define-key map (kbd "Q") 'efrit-remote-queue-status) ; 'Q' for queue status
+    (define-key map (kbd "]") 'efrit-agent-next)           ; next agent buffer
+    (define-key map (kbd "[") 'efrit-agent-previous)
+    (define-key map (kbd "}") 'efrit-agent-next-attention) ; the one that needs you
+    (define-key map (kbd "{") 'efrit-agent-previous-attention)
+    (define-key map (kbd "l") 'efrit-agent-dashboard)      ; list them
+    (define-key map (kbd "z") 'efrit-agent-focus)          ; one agent, whole frame; again restores
+    (define-key map (kbd "i") 'efrit-agent-diagnose)
+    (define-key map (kbd "u") 'efrit-agent-toggle-unread)  ; mark the agent unread / read
+    (define-key map (kbd "n") 'efrit-agent-new-instance)          ; new agent for a directory
+    (define-key map (kbd "f") 'efrit-agent-new-worktree-instance) ; new agent in a fresh worktree
+    (define-key map (kbd "r") 'efrit-code-review)          ; review the staged changes
     map)
   "Keymap for Efrit commands.")
 
@@ -145,7 +150,6 @@ Use M-x efrit-help for more information."
       (insert "  M-x efrit              - Open REPL session buffer (PRIMARY INTERFACE)\n")
       (insert "                           Persistent conversation with Claude\n")
       (insert "                           Recommended for all interactive use\n\n")
-      (insert "  M-x efrit-chat         - Start new chat session (alternative)\n")
       (insert "                           Single-window chat mode\n\n")
       (insert "  M-x efrit-do-sync      - Execute command synchronously (scripting)\n")
       (insert "                           For shell scripts and automation\n\n")
@@ -161,7 +165,6 @@ Use M-x efrit-help for more information."
       (insert "  Set `efrit-enable-global-keymap` to t, or run:\n")
       (insert "  M-x efrit-setup-keybindings\n\n")
       (insert "  Then use C-c C-e prefix:\n")
-      (insert "    C-c C-e c  - efrit-chat (multi-turn chat)\n")
       (insert "    C-c C-e d  - efrit-do (async execution, internal API)\n")
       (insert "    C-c C-e D  - efrit-do-sync (sync execution, scripting)\n")
       (insert "    C-c C-e p  - efrit-do-show-progress\n")
@@ -179,12 +182,6 @@ Use M-x efrit-help for more information."
     (display-buffer (current-buffer))))
 
 ;; For package system (lazy loading)
-;;;###autoload
-(autoload 'efrit-chat "efrit-chat" "Start a new Efrit chat session" t)
-
-;;;###autoload
-(autoload 'efrit-streamlined-send "efrit-chat" "Send message via streamlined chat" t)
-
 ;;;###autoload
 (autoload 'efrit-do "efrit-do" "Execute natural language command in Emacs" t)
 
@@ -218,7 +215,7 @@ Shows version, installation status, and basic connectivity."
   (interactive)
   (require 'efrit-config)
   (require 'efrit-common)
-  (let* ((version "0.4.1")
+  (let* ((version "0.12.12")
          (api-key (condition-case nil
                       (efrit-common-get-api-key)
                     (error nil)))
@@ -245,10 +242,9 @@ Shows version, installation status, and basic connectivity."
       (when (not has-api-key)
         (insert "⚠ No API key found. Set ANTHROPIC_API_KEY or configure via efrit-config.\n"))
       (insert "\nQuick Start:\n")
-      (insert "  M-x efrit-chat      - Start interactive chat\n")
       (insert "  M-x efrit-do        - Execute natural language command\n")
       (insert "  M-x efrit-run-tests - Run test suite\n")
-      (insert "  M-x efrit-doctor    - Validate installation\n")
+      (insert "  M-x efrit-doctor    - Verify configuration (C-u: live API check)\n")
       (display-buffer (current-buffer)))))
 
 (defun efrit-run-tests ()
@@ -266,92 +262,126 @@ Executes all ERT tests and displays results in a buffer."
       (message "Running tests...")
       (ert-run-tests-interactively t))))
 
-(defun efrit-doctor ()
-  "Validate Efrit installation and configuration.
-Performs comprehensive checks and suggests fixes for issues."
-  (interactive)
-  (require 'efrit-config)
-  (require 'efrit-common)
-  (let ((issues nil)
-        (warnings nil))
-    (with-current-buffer (get-buffer-create "*Efrit Doctor*")
-      (erase-buffer)
-      (insert "Efrit Installation Doctor\n")
-      (insert "=========================\n\n")
-
-      ;; Check API key
-      (insert "Checking API configuration...\n")
-      (let ((api-key (condition-case nil
-                         (efrit-common-get-api-key)
-                       (error nil))))
-        (if api-key
-            (insert "  ✓ Claude API key configured\n")
-          (insert "  ✗ No API key found\n")
-          (push "No Claude API key configured" issues)))
-
-      ;; Check required files
-      (insert "\nChecking installation files...\n")
-      (let ((required-modules '("efrit-config" "efrit-tools" "efrit-chat"
-                                "efrit-do" "efrit-remote-queue")))
-        (dolist (module required-modules)
-          (if (locate-library module)
-              (insert (format "  ✓ %s.el found\n" module))
-            (insert (format "  ✗ %s.el missing\n" module))
-            (push (format "Missing module: %s" module) issues))))
-
-      ;; Check test infrastructure
-      (insert "\nChecking test infrastructure...\n")
-      (let* ((lisp-dir (file-name-directory (locate-library "efrit")))
-             (test-dir (expand-file-name "../test" lisp-dir)))
-        (if (file-directory-p test-dir)
-            (let ((test-count (length (directory-files test-dir nil "^test-.*\\.el$"))))
-              (insert (format "  ✓ Test directory found (%d tests)\n" test-count)))
-          (insert "  ⚠ Test directory not found\n")
-          (push "Test directory not accessible" warnings)))
-
-      ;; Check MCP server
-      (insert "\nChecking MCP server...\n")
-      (let* ((lisp-dir (file-name-directory (locate-library "efrit")))
-             (mcp-dir (expand-file-name "../mcp" lisp-dir))
-             (mcp-package (expand-file-name "package.json" mcp-dir)))
-        (if (file-exists-p mcp-package)
-            (insert "  ✓ MCP server found\n")
-          (insert "  ⚠ MCP server not found\n")
-          (push "MCP server not installed" warnings)))
-
-      ;; Check Emacs version
-      (insert "\nChecking Emacs version...\n")
-      (if (version<= "28.1" emacs-version)
-          (insert (format "  ✓ Emacs %s (>= 28.1 required)\n" emacs-version))
-        (insert (format "  ✗ Emacs %s (28.1+ required)\n" emacs-version))
-        (push (format "Emacs version too old: %s" emacs-version) issues))
-
-      ;; Summary
-      (insert "\n")
-      (insert "=========================\n")
-      (if (and (null issues) (null warnings))
-          (insert "✓ All checks passed! Efrit is ready to use.\n")
-        (when issues
-          (insert (format "\n✗ Found %d critical issue(s):\n" (length issues)))
-          (dolist (issue issues)
-            (insert (format "  - %s\n" issue))))
-        (when warnings
-          (insert (format "\n⚠ Found %d warning(s):\n" (length warnings)))
-          (dolist (warning warnings)
-            (insert (format "  - %s\n" warning)))))
-
-      ;; Remediation
-      (when issues
-        (insert "\nRemediation:\n")
-        (when (member "No Claude API key configured" issues)
-          (insert "  - Set ANTHROPIC_API_KEY environment variable\n")
-          (insert "    or configure via (setq efrit-api-key \"sk-...\")\n"))
-        (when (cl-some (lambda (s) (string-match "Missing module" s)) issues)
-          (insert "  - Reinstall Efrit or check load-path\n"))
-        (when (cl-some (lambda (s) (string-match "Emacs version" s)) issues)
-          (insert "  - Upgrade to Emacs 28.1 or later\n")))
-
-      (display-buffer (current-buffer)))))
+;; efrit-doctor lives in lisp/support/, which package.el does not scan
+;; for cookies; this cookie makes it reachable from efrit-autoloads,
+;; and the plain autoload covers a bare (require 'efrit).
+;;;###autoload
+(autoload 'efrit-doctor "efrit-doctor"
+  "Verify every layer of the efrit configuration and suggest fixes." t)
+;;;###autoload
+(autoload 'efrit-menu "efrit-menu" "Efrit status and command menu." t)
+;;;###autoload
+(autoload 'efrit-sandbox "efrit-permissions-ui" "Show and edit sandbox grants for the project." t)
+;;;###autoload
+(autoload 'efrit-review-package "efrit-package-review"
+  "Review an installed package with efrit and show the report." t)
+;;;###autoload
+(autoload 'efrit-package-review-mode "efrit-package-review"
+  "Have efrit review packages before package-review asks." t)
+;;;###autoload
+(autoload 'efrit-review-all-packages "efrit-package-review-ui"
+  "Review every installed package with efrit; collect the verdicts in one buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-next "efrit-agent-ring" "Show the next agent buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-previous "efrit-agent-ring" "Show the previous agent buffer." t)
+;;;###autoload
+(autoload 'efrit-agent-next-attention "efrit-agent-ring" "Show the agent buffer that needs you." t)
+;;;###autoload
+(autoload 'efrit-agent-previous-attention "efrit-agent-ring" "Show the previous agent buffer that needs you." t)
+;;;###autoload
+(autoload 'efrit-agent-toggle-unread "efrit-agent-ring" "Mark the agent buffer unread, or read." t)
+;;;###autoload
+(autoload 'efrit-agent-tab-line-mode "efrit-agent-tab-line" "Agent buffers in every tab line, lit when they need you." t)
+;;;###autoload
+(autoload 'efrit-agent-focus "efrit-agent-dashboard" "Fill the frame with one agent buffer, or restore." t)
+;;;###autoload
+(autoload 'efrit-agent-diagnose "efrit-agent-diagnose" "Diagnose an agent session without touching it." t)
+;;;###autoload
+(autoload 'efrit-agent-new-worktree-instance "efrit-agent-instances" "A new agent in a fresh Git worktree." t)
+;;;###autoload
+(autoload 'efrit-agent-new-instance "efrit-agent-instances" "A new agent for a directory you name." t)
+;;;###autoload
+(autoload 'efrit-code-review "efrit-code-review-ui"
+  "Review the staged changes (prefix: unpushed, branch); findings as patches." t)
+;;;###autoload
+(autoload 'efrit-testdrive "efrit-testdrive"
+  "Walk through efrit's live test plan interactively." t)
+;;;###autoload
+(autoload 'efrit-package-review-probe "efrit-package-review"
+  "Send shrinking variants of a package review request to find what the API refuses." t)
+;;;###autoload
+(autoload 'efrit-permissions "efrit-permissions-ui"
+  "Edit grants, review policy and limits for every known project." t)
+;;;###autoload
+(autoload 'efrit-register-tool "efrit-tool-registry"
+  "Offer the model a tool implemented by another package.")
+;;;###autoload
+(autoload 'efrit-list-registered-tools "efrit-tool-registry"
+  "Show the tools other packages have registered with efrit." t)
+;;;###autoload
+(autoload 'efrit-documents-ensure-tools "efrit-documents"
+  "Register the document tools (doc_fetch, doc_search, doc_sources) with efrit." t)
+;;;###autoload
+(autoload 'efrit-documents-list-sources "efrit-documents"
+  "Say which document sources are registered and whether they work." t)
+;;;###autoload
+(autoload 'efrit-documents-gdrive-check "efrit-documents-gdrive"
+  "Check that Google Drive is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-documents-gcalendar-check "efrit-documents-gcalendar"
+  "Check that Google Calendar is reachable as a related-documents provider." t)
+;;;###autoload
+(autoload 'efrit-documents-jira-check "efrit-documents-jira"
+  "Check that Jira is reachable as a document source (through jira.el)." t)
+;;;###autoload
+(autoload 'efrit-documents-confluence-check "efrit-documents-confluence"
+  "Check that each configured Confluence site is reachable as a document source." t)
+;;;###autoload
+(autoload 'efrit-auth-reauthorize "efrit-auth"
+  "Run the OAuth2 consent flow again for an auth-source host." t)
+;;;###autoload
+(autoload 'efrit-auth-check "efrit-auth"
+  "Describe the credentials auth-source holds for a host." t)
+;;;###autoload
+(autoload 'efrit-prompts-manage "efrit-prompts"
+  "List and edit efrit's two-part prompts for analyses over many items." t)
+;;;###autoload
+(autoload 'efrit-prompts-edit "efrit-prompts"
+  "Edit one of efrit's two-part prompts, or write a new one." t)
+;;;###autoload
+(autoload 'efrit-prompts-read "efrit-prompts"
+  "Ask the user for a two-part prompt; returns (ITEM . SUMMARY).")
+;;;###autoload
+(autoload 'efrit-gnus-analyze "efrit-gnus"
+  "Ask efrit about the selected articles in a Gnus summary." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-unread "efrit-gnus"
+  "Ask efrit about every unread article of a Gnus group." t)
+;;;###autoload
+(autoload 'efrit-gnus-analyze-search "efrit-gnus"
+  "Ask efrit about the results of a Gnus search." t)
+;;;###autoload
+(autoload 'efrit-gnus-ensure-tools "efrit-gnus"
+  "Register the Gnus tools (gnus_groups, gnus_search, gnus_articles) with efrit." t)
+;;;###autoload
+(autoload 'efrit-submit "efrit-agent-input"
+  "Start a REPL turn from Lisp with a prepared prompt.")
+(autoload 'efrit-testdrive-tour "efrit-testdrive"
+  "Walk through what only eyes can check in the agent buffer." t)
+(autoload 'efrit-agent-menu "efrit-agent-menu"
+  "The agent buffer's command menu." t)
+(autoload 'efrit-agent-repl-session "efrit-agent-input"
+  "The agent buffer's REPL session, created if needed.")
+;;;###autoload
+(autoload 'efrit-reload "efrit-reload"
+  "Reload every loaded efrit library from source, dependencies first." t)
+;;;###autoload
+(autoload 'efrit-instructions-show "efrit-instructions"
+  "Show which AGENTS.md / CLAUDE.md files apply and what the model receives." t)
+;;;###autoload
+(autoload 'efrit-select-model "efrit-models"
+  "Choose efrit-default-model from what the endpoint offers." t)
 
 ;; Initialize on load
 (provide 'efrit)

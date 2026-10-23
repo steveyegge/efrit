@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -46,8 +46,9 @@
 (require 'json)
 (require 'cl-lib)
 (require 'auth-source)
-(require 'efrit-tools-prompt)
 (require 'efrit-todo)
+(require 'efrit-elisp-fix)
+(require 'efrit-tool-last-error)
 
 ;; Load efrit-log if it exists, otherwise use minimal logging
 (declare-function efrit-log "efrit-log")
@@ -58,6 +59,8 @@
      "Fallback logging function when efrit-log is not available."
      (when (memq level '(warn error))
        (message (apply #'format format-string args))))))
+
+(require 'efrit-sandbox-eval)   ; wraps eval_sexp; see efrit-tools-eval-sexp
 
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
@@ -86,9 +89,13 @@
 
 (defcustom efrit-tools-eval-timeout 30
   "Timeout in seconds for eval_sexp calls.
-If an evaluation takes longer than this, it will be interrupted.
-Set to 0 or nil to disable timeout (not recommended).
-Use C-g to manually interrupt if an eval hangs."
+An evaluation that waits (a process, `sleep-for', `accept-process-output',
+redisplay) longer than this is interrupted.  A tight Lisp loop is NOT:
+timers never run inside one, so neither `with-timeout' nor anything
+else efrit could set fires; only C-g reaches it (measured 2026-10-20,
+a `while-let' that never advanced ran 97 s until the user quit).  The
+reviewer flags the loop shapes that are known to do this before they
+run.  Set to 0 or nil to disable the timeout (not recommended)."
   :type '(choice (integer :tag "Timeout in seconds")
                  (const :tag "No timeout (dangerous)" nil))
   :group 'efrit-tools)
@@ -131,8 +138,14 @@ immediately, telling the model to use the request_user_input tool."
 (defvar efrit-tools--total-call-count 0
   "Count of all tool calls in current session.")
 
+(require 'efrit-events)
+;; per turn of one session, not shared across sessions
+(efrit-session-local 'efrit-tools--eval-count 'efrit-tools--total-call-count)
+
 (defun efrit-tools--reset-rate-limits ()
-  "Reset rate limiting counters. Called at session start."
+  "Reset the per-turn tool counters.
+Called at the start of every REPL turn and every efrit-do session;
+without that the counters span the whole Emacs process."
   (setq efrit-tools--eval-count 0
         efrit-tools--total-call-count 0))
 
@@ -141,15 +154,13 @@ immediately, telling the model to use the request_user_input tool."
 Signals an error if rate limit would be exceeded."
   (when (> efrit-tools-max-total-calls-per-session 0)
     (when (>= efrit-tools--total-call-count efrit-tools-max-total-calls-per-session)
-      (error "Tool call rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--total-call-count
+      (error "Tool call limit for this turn reached (%d; efrit-max-tool-calls-per-session). Tell the user; do not retry."
              efrit-tools-max-total-calls-per-session)))
 
   (when (and (string= tool-name "eval_sexp")
              (> efrit-tools-max-eval-per-session 0))
     (when (>= efrit-tools--eval-count efrit-tools-max-eval-per-session)
-      (error "eval_sexp rate limit exceeded: %d calls per session (limit: %d)"
-             efrit-tools--eval-count
+      (error "eval_sexp limit for this turn reached (%d; efrit-max-eval-per-session). Tell the user; do not retry."
              efrit-tools-max-eval-per-session))))
 
 (defun efrit-tools--increment-rate-limit (tool-name)
@@ -201,20 +212,26 @@ Signals an error if rate limit would be exceeded."
 Each blocks the Emacs event loop waiting for keyboard input, which
 freezes the editor when called from the async tool loop (ef-bdg).")
 
+(defvar efrit-tools-input-allowed) ; defined in efrit-events, bound by `efrit-with-user-waiting'
+
 (defun efrit-tools--call-with-input-blocked (thunk)
   "Call THUNK with synchronous input functions overridden to signal errors.
 Temporarily replaces each function in
 `efrit-tools--blocked-input-functions' with a stub that errors,
-directing the model to the request_user_input tool instead."
+directing the model to the request_user_input tool instead.  With
+`efrit-tools-input-allowed' non-nil the real function runs."
   (let ((saved (mapcar (lambda (fn) (cons fn (symbol-function fn)))
                        efrit-tools--blocked-input-functions)))
     (unwind-protect
         (progn
-          (dolist (fn efrit-tools--blocked-input-functions)
-            (let ((fn-name fn))
-              (fset fn (lambda (&rest _)
-                         (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
-                                fn-name)))))
+          (dolist (pair saved)
+            (let ((fn-name (car pair)) (orig (cdr pair)))
+              (fset fn-name
+                    (lambda (&rest args)
+                      (if efrit-tools-input-allowed
+                          (apply orig args)
+                        (error "`%s' is blocked in eval_sexp: synchronous user input freezes Emacs.  Use the request_user_input tool to ask the user"
+                               fn-name))))))
           (funcall thunk))
       (dolist (pair saved)
         (fset (car pair) (cdr pair))))))
@@ -227,17 +244,30 @@ non-nil."
   (let* ((timeout (and efrit-tools-eval-timeout
                        (> efrit-tools-eval-timeout 0)
                        efrit-tools-eval-timeout))
+         ;; The scope sandbox wraps the evaluation: static inspection,
+         ;; then file/process/network checks during the run
+         ;; (efrit-sandbox-eval).  The input-blocking wrapper is passed
+         ;; in as the evaluator so both apply.
+         (evaluator (lambda (form)
+                      (if efrit-tools-block-interactive-input
+                          (efrit-tools--call-with-input-blocked
+                           (lambda () (eval form t)))
+                        (eval form t))))
          (do-eval (lambda ()
-                    (if efrit-tools-block-interactive-input
-                        (efrit-tools--call-with-input-blocked
-                         (lambda () (eval sexp t)))
-                      (eval sexp t))))
-         (result (if timeout
-                     (with-timeout (timeout
-                                    (signal 'efrit-eval-timeout
-                                            (list (format "Evaluation timed out after %d seconds" timeout))))
-                       (funcall do-eval))
-                   (funcall do-eval)))
+                    (if (bound-and-true-p efrit-sandbox-enabled)
+                        (efrit-sandbox-eval-form sexp evaluator)
+                      (funcall evaluator sexp))))
+         ;; what the evaluation did besides return: messages written,
+         ;; buffers changed (efrit-tool-last-error)
+         (observed (efrit-eval-observe
+                    (lambda ()
+                      (if timeout
+                          (with-timeout (timeout
+                                         (signal 'efrit-eval-timeout
+                                                 (list (format "Evaluation timed out after %d seconds" timeout))))
+                            (funcall do-eval))
+                        (funcall do-eval)))))
+         (result (nth 0 observed))
          (result-string (format "%S" result)))
     ;; Truncate if result is too long
     (when (and result-string 
@@ -247,6 +277,8 @@ non-nil."
     
     (list :success t
           :result result-string
+          :messages (nth 1 observed)
+          :changed-buffers (nth 2 observed)
           :input (format "%S" sexp)
           :context (condition-case _
                       (efrit-tools-get-buffer-context)
@@ -286,6 +318,9 @@ non-nil."
 
 ;; Security validation completely removed
 
+(defvar efrit-tools--eval-fix-note nil
+  "What `efrit-elisp-fix' did to the expression being evaluated, for the result.")
+
 (defun efrit-tools-eval-sexp (sexp-string)
   "Evaluate the Lisp expression in SEXP-STRING and return the result as a string.
 Handles parsing, evaluation, error handling, and result formatting."
@@ -307,17 +342,41 @@ Handles parsing, evaluation, error handling, and result formatting."
   ;; Increment rate limit counter
   (efrit-tools--increment-rate-limit "eval_sexp")
 
+  ;; Unbalanced parens are fixed before the read when the fix reads;
+  ;; the result says so, so the model sees what it sent was off
+  (let ((fix (and (not (condition-case nil (progn (efrit-tools--safe-read sexp-string) t) (error nil)))
+                  (efrit-elisp-fix sexp-string))))
+    (when fix
+      (efrit-log 'info "eval_sexp: %s" (cdr fix))
+      (setq efrit-tools--eval-fix-note (cdr fix)
+            sexp-string (car fix))))
+
   (let ((result-data (condition-case err
                          (efrit-tools--eval-with-context
                           (efrit-tools--parse-sexp-string sexp-string))
+                       ;; A sandbox denial is not an eval error: let it
+                       ;; reach the dispatcher, which ends the turn
+                       (efrit-sandbox-denied (signal (car err) (cdr err)))
                        (error (efrit-tools--handle-eval-error err sexp-string)))))
 
     ;; Return formatted result
-    (if (plist-get result-data :success)
-        (format "%s" (plist-get result-data :result))
-      (format "Error evaluating %s: %s"
-              (efrit-truncate-string (plist-get result-data :input) 30)
-              (plist-get result-data :error)))))
+    (prog1
+        (concat
+         (if (plist-get result-data :success)
+             (concat (format "%s" (plist-get result-data :result))
+                     ;; side effects worth knowing about
+                     (when-let* ((ms (plist-get result-data :messages)))
+                       (format "\n[messages during evaluation: %s]"
+                               (efrit-truncate-string (mapconcat #'identity ms " | ") 400)))
+                     (when-let* ((bs (plist-get result-data :changed-buffers)))
+                       (format "\n[buffers changed: %s]" (mapconcat #'identity bs ", "))))
+           (format "Error evaluating %s: %s"
+                   (efrit-truncate-string (plist-get result-data :input) 30)
+                   (plist-get result-data :error)))
+         (when efrit-tools--eval-fix-note
+           (format "\n[Your expression was unbalanced: %s. Fixed before evaluation; write balanced Lisp.]"
+                   efrit-tools--eval-fix-note)))
+      (setq efrit-tools--eval-fix-note nil))))
 
 ;;; Safe Text Manipulation Functions
 
@@ -634,9 +693,6 @@ Arguments:
     
     ;; Return both the processed text and results
     (cons processed-text (nreverse results))))
-
-;;; Updated System Prompt
-;; NOTE: efrit-tools-system-prompt has been moved to efrit-tools-prompt.el
 
 ;;; Pure Tools for Claude to Use Explicitly
 

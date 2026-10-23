@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -54,8 +54,11 @@
 (require 'efrit-progress)
 (require 'efrit-common)
 (require 'efrit-todo)
+(require 'efrit-sandbox)
+(require 'efrit-events)
 
 ;; Forward declarations
+(declare-function efrit-tool-emacs-apropos "efrit-tool-emacs-apropos")
 (declare-function efrit-tool-confirm-action "efrit-tool-confirm-action")
 (declare-function efrit-tool-checkpoint "efrit-tool-checkpoint")
 (declare-function efrit-tool-restore-checkpoint "efrit-tool-checkpoint")
@@ -67,6 +70,17 @@
 (declare-function efrit-tool-project-files "efrit-tool-project-files")
 (declare-function efrit-tool-search-content "efrit-tool-search-content")
 (declare-function efrit-tool-read-file "efrit-tool-read-file")
+(declare-function efrit-tool-read-files "efrit-tool-outline")
+(declare-function efrit-tool-project-outline "efrit-tool-outline")
+(declare-function efrit-tool-load-project-file "efrit-tool-lisp-dev")
+(declare-function efrit-tool-run-ert "efrit-tool-lisp-dev")
+(declare-function efrit-tool-reproduce-command "efrit-tool-lisp-dev")
+(declare-function efrit-tool-symbol-info "efrit-tool-introspect")
+(declare-function efrit-tool-show-ui-element "efrit-agent-screenshot")
+(declare-function efrit-tool-live-state "efrit-tool-introspect")
+(declare-function efrit-tool-mode-line-report "efrit-tool-introspect")
+(declare-function efrit-tool-buffer-scan "efrit-tool-introspect")
+(declare-function efrit-tool-buffer-list "efrit-tool-introspect")
 (declare-function efrit-tool-undo-edit "efrit-tool-undo-edit")
 (declare-function efrit-tool-edit-file "efrit-tool-edit-file")
 (declare-function efrit-tool-create-file "efrit-tool-create-file")
@@ -90,6 +104,13 @@
 (declare-function efrit-tool-buffer-info "efrit-tool-edit-buffer")
 ;; Other tools with dynamic require
 (declare-function efrit-tool-get-diagnostics "efrit-tool-diagnostics")
+(declare-function efrit-tool-xref-references "efrit-tool-navigate")
+(declare-function efrit-tool-xref-apropos "efrit-tool-navigate")
+(declare-function efrit-tool-imenu-symbols "efrit-tool-navigate")
+(declare-function efrit-tool-treesit-info "efrit-tool-navigate")
+(declare-function efrit-tool-surrounding-context "efrit-tool-navigate")
+(declare-function efrit-tool-show-location "efrit-tool-navigate")
+(declare-function efrit-tool-get-last-error "efrit-tool-last-error")
 (declare-function efrit-tool-read-image "efrit-tool-read-image")
 (declare-function efrit-tool-format-file "efrit-tool-format-file")
 (declare-function efrit-tool-beads-ready "efrit-tool-beads")
@@ -98,12 +119,11 @@
 (declare-function efrit-tool-beads-close "efrit-tool-beads")
 (declare-function efrit-tool-beads-list "efrit-tool-beads")
 (declare-function efrit-tool-beads-show "efrit-tool-beads")
+(declare-function efrit-context-snapshot "efrit-context-sources")
+(declare-function efrit-context-target-buffer "efrit-context-sources")
 
-;; TODO struct accessors and state now come from efrit-todo.el
-;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
-;; Declare the aliased variables to silence byte-compiler warnings
-(defvar efrit-do--current-todos)
-(defvar efrit-do--todo-counter)
+;; TODO struct accessors, state and the efrit-do--* aliases come from
+;; efrit-todo.el (required above).
 
 ;;; Customization
 
@@ -119,8 +139,19 @@ Prevents runaway searches from overwhelming the system."
   :type 'integer
   :group 'efrit-do)
 
+(defcustom efrit-do-shell-output-max 8000
+  "Characters of shell_exec output returned to the model; the tail is kept."
+  :type 'integer
+  :group 'efrit-do)
+
 (defcustom efrit-do-shell-timeout 10
-  "Seconds to allow a shell_exec command before it is killed."
+  "Seconds to allow a shell_exec or run_program command before it is killed.
+run_program may ask for more, up to `efrit-do-run-program-max-timeout'."
+  :type 'integer
+  :group 'efrit-do)
+
+(defcustom efrit-do-run-program-max-timeout 120
+  "Longest timeout the model may request for one run_program call, in seconds."
   :type 'integer
   :group 'efrit-do)
 
@@ -341,6 +372,8 @@ Validates syntax before execution and returns the result or error."
               (format "\n[Executed: %s]\n[Result: %s]"
                       input-str
                       eval-result))
+          ;; Sandbox denials end the turn; the dispatcher handles them
+          (efrit-sandbox-denied (signal (car eval-err) (cdr eval-err)))
           (error
            (format "\n[Efrit internal error: %s]\n[This error was raised by efrit's own tool dispatch, NOT by your elisp, which was likely never evaluated. Do not debug efrit internals. Retry the tool call once; if the error persists, stop and report it to the user.]"
                    (error-message-string eval-err))))
@@ -350,35 +383,63 @@ Validates syntax before execution and returns the result or error."
 
 (define-error 'efrit-shell-timeout "Shell command timeout")
 
-(defun efrit-do--shell-exec-to-string (command timeout)
-  "Run COMMAND via the shell and return its output as a string.
+(defun efrit-do--run-argv (argv timeout &optional stdin)
+  "Run ARGV (a list of strings, no shell) and return (OUTPUT . EXIT-CODE).
+STDIN, when a string, is written to the process and its input closed.
 Kill the process and signal `efrit-shell-timeout' if it runs longer
 than TIMEOUT seconds.  `shell-command-to-string' wrapped in
 `with-timeout' cannot time out at all: timers never fire while Emacs
 blocks inside `call-process'.  This loop checks the clock between
 `accept-process-output' calls instead."
   (with-temp-buffer
-    (let ((proc (make-process :name "efrit-shell-exec"
-                              :buffer (current-buffer)
-                              :command (list shell-file-name
-                                             shell-command-switch command)
-                              :connection-type 'pipe))
-          (deadline (+ (float-time) timeout)))
+    ;; Run in the project root, on its host: for a Tramp root
+    ;; `start-file-process' spawns the program remotely (efrit-tramp).
+    (let* ((default-directory (efrit-tool--get-project-root))
+           (proc (if (file-remote-p default-directory)
+                     (apply #'start-file-process "efrit-run" (current-buffer) argv)
+                   (make-process :name "efrit-run"
+                                 :buffer (current-buffer)
+                                 :command argv
+                                 :connection-type 'pipe)))
+           (deadline (+ (float-time) timeout)))
       (set-process-query-on-exit-flag proc nil)
-      (while (process-live-p proc)
-        (accept-process-output proc 0.2)
-        (when (and (process-live-p proc)
-                   (> (float-time) deadline))
-          (delete-process proc)
-          (signal 'efrit-shell-timeout (list command))))
-      (buffer-string))))
+      ;; C-g while waiting must kill the command, not leave it running
+      ;; against a dead buffer
+      (unwind-protect
+          (progn
+            (when (stringp stdin)
+              (process-send-string proc stdin)
+              (process-send-eof proc))
+            (while (process-live-p proc)
+              (accept-process-output proc 0.2)
+              (when (and (process-live-p proc)
+                         (> (float-time) deadline))
+                (delete-process proc)
+                (signal 'efrit-shell-timeout (list (mapconcat #'identity argv " "))))))
+        (when (process-live-p proc) (delete-process proc)))
+      (cons (buffer-string) (process-exit-status proc)))))
+
+(defun efrit-do--shell-exec-to-string (command timeout)
+  "Run COMMAND via the shell and return its output as a string."
+  (car (efrit-do--run-argv (list shell-file-name shell-command-switch command) timeout)))
 
 (defun efrit-do--handle-shell-exec (input-str)
   "Handle shell_exec tool to execute a shell command.
 INPUT-STR is the shell command to execute.
-Validates against security whitelist before execution.
+With the scope sandbox on, the command names on the line need a
+`shell' grant (`efrit-sandbox-shell-commands'); a line matching
+`efrit-sandbox-shell-always-ask' is asked about every time.  Without
+the sandbox the legacy whitelist applies.
 Returns output or security error."
-  (let ((validation (efrit-do--validate-shell-command input-str)))
+  (when (bound-and-true-p efrit-sandbox-enabled)
+    (efrit-sandbox-check 'shell input-str "shell_exec" input-str)
+    ;; the user may have rewritten the line at the prompt
+    (when-let* ((edited (efrit-sandbox-take-edited-input "shell_exec")))
+      (efrit-log 'info "shell_exec: running the user's edited line instead of the model's")
+      (setq input-str edited)))
+  (let ((validation (if (bound-and-true-p efrit-sandbox-enabled)
+                        (cons t nil)
+                      (efrit-do--validate-shell-command input-str))))
     (if (car validation)
         ;; Command is safe, execute it
         (condition-case shell-err
@@ -387,11 +448,13 @@ Returns output or security error."
                                   input-str efrit-do-shell-timeout))
                    (end-time (current-time))
                    (duration (float-time (time-subtract end-time start-time))))
-              (format "\n[Executed: %s]\n[Duration: %.2fs]\n[Result: %s]"
-                      input-str duration
-                      (if (> (length shell-result) 1000)
-                          (concat (substring shell-result 0 1000) "\n... (output truncated)")
-                        shell-result)))
+              (format "\n[Executed: %s]%s\n[Duration: %.2fs]\n[Result: %s]"
+                      input-str
+                      (let ((remote (file-remote-p (efrit-tool--get-project-root))))
+                        (if remote (format "\n[On host: %s]" remote) ""))
+                      duration
+                      ;; Keep the tail: that's where the error is
+                      (efrit-truncate-output shell-result efrit-do-shell-output-max 'tail)))
           (efrit-shell-timeout
            (format "\n[Shell command killed after exceeding the %d second timeout: %s]"
                    efrit-do-shell-timeout input-str))
@@ -400,6 +463,51 @@ Returns output or security error."
       ;; Command failed validation
       (format "\n[SECURITY: Shell command blocked - %s]\n[Command: %s]"
               (cdr validation) input-str))))
+
+(defun efrit-do--handle-run-program (tool-input)
+  "Handle run_program: one program with an argument vector, no shell.
+The sandbox sees the program name alone, so a grant on `tmux' covers
+every tmux call and nothing else; there is no redirection,
+substitution or loop for the user to read.  STDIN, when given, is fed
+to the program, which replaces `echo X | prog'.  The result carries
+the exit code (2026-10-16: a tmux.conf review asked the user eight
+times for lines of `tmux ... 2>&1 | grep ...; sleep; for v in ...')."
+  (or (efrit-do--validate-hash-table tool-input "run_program")
+      (let* ((program (gethash "program" tool-input))
+             (args (efrit-do--vector-to-list (gethash "args" tool-input)))
+             (stdin (gethash "stdin" tool-input))
+             (timeout (let ((v (gethash "timeout" tool-input)))
+                        (if (and (numberp v) (> v 0)) (min v efrit-do-run-program-max-timeout)
+                          efrit-do-shell-timeout)))
+             (argv (cons program args))
+             (line (and (stringp program) (listp args) (cl-every #'stringp args)
+                        (mapconcat #'shell-quote-argument argv " "))))
+        (cond
+         ((or (not (stringp program)) (string-empty-p program))
+          "\n[Error: run_program requires 'program', the executable name or path]")
+         ((not (and (listp args) (cl-every #'stringp args)))
+          "\n[Error: run_program 'args' must be an array of strings]")
+         ((not (or (null stdin) (stringp stdin)))
+          "\n[Error: run_program 'stdin' must be a string]")
+         (t
+          (when (bound-and-true-p efrit-sandbox-enabled)
+            (efrit-sandbox-check 'shell line "run_program" line))
+          (condition-case err
+              (let* ((start (current-time))
+                     (run (efrit-do--run-argv argv timeout stdin))
+                     (duration (float-time (time-subtract (current-time) start))))
+                (format "\n[Ran: %s]%s\n[Exit: %d]\n[Duration: %.2fs]\n[Output: %s]"
+                        line
+                        (let ((remote (file-remote-p (efrit-tool--get-project-root))))
+                          (if remote (format "\n[On host: %s]" remote) ""))
+                        (cdr run) duration
+                        (efrit-truncate-output (car run) efrit-do-shell-output-max 'tail)))
+            (efrit-sandbox-denied (signal (car err) (cdr err)))
+            (efrit-shell-timeout
+             (format "\n[Program killed after exceeding the %d second timeout: %s]" timeout line))
+            (file-missing
+             (format "\n[Error: program not found: %s]" program))
+            (error (format "\n[Error running %s: %s]" line (error-message-string err)))))))))
 
 (defun efrit-do--handle-todo-write (tool-input)
   "Handle todo_write tool - replaces entire TODO list.
@@ -441,6 +549,7 @@ Claude sends without validation or state machine logic."
     ;; Replace the entire TODO list (nreverse is destructive, so capture result)
     (setq efrit-do--current-todos (nreverse new-todos))
     (setq efrit-do--todo-counter (length efrit-do--current-todos))
+    (efrit-publish 'todos-changed `((:todos . ,efrit-do--current-todos)))
 
     ;; Return a summary
     (let* ((total (length efrit-do--current-todos))
@@ -602,15 +711,17 @@ Includes safety limits to prevent hanging on large directories."
           (error
            (format "\n[Error finding files: %s]" (error-message-string err))))))))))
 
-(defun efrit-do--waiting-for-user-marker (question options)
+(defun efrit-do--waiting-for-user-marker (question options &optional multi)
   "Format the [WAITING-FOR-USER] tool result for QUESTION with OPTIONS.
 The executor and the REPL loop both recognize this marker and pause
-the turn until the user responds."
-  (format "\n[WAITING-FOR-USER]\nQuestion: %s%s\n\nSession paused. User response required before continuing."
+the turn until the user responds.  MULTI says the answer may name
+several options."
+  (format "\n[WAITING-FOR-USER]\nQuestion: %s%s%s\n\nSession paused. User response required before continuing."
           question
           (if options
               (format "\nOptions: %s" (mapconcat #'identity options ", "))
-            "")))
+            "")
+          (if multi "\n(multi-select: the answer lists the chosen options, separated by \"; \", or says none)" "")))
 
 (defun efrit-do--handle-request-user-input (tool-input)
   "Handle request_user_input tool to pause and ask user a question.
@@ -626,6 +737,7 @@ session whose tool call is executing (ef-dcn)."
         (format "\n[Error: %s]" (cdr validation))
       (let* ((question (efrit-request-user-input-input-get-question input))
              (options (efrit-request-user-input-input-get-options input))
+             (multi (let ((v (gethash "multi" tool-input))) (and v (not (eq v :json-false)))))
              (repl-session (bound-and-true-p efrit-repl-loop--tool-session))
              (session (and (not repl-session) (efrit-session-active))))
         (cond
@@ -633,10 +745,11 @@ session whose tool call is executing (ef-dcn)."
          ;; pauses on the marker and the next user input is the answer.
          (repl-session
           (setf (efrit-repl-session-pending-question repl-session)
-                (list question options (current-time)))
+                (list question options (current-time) (and multi (list :multi t))))
           (when (fboundp 'efrit-agent-show-question)
-            (efrit-agent-show-question question options))
-          (efrit-do--waiting-for-user-marker question options))
+            (efrit-agent-show-question question options
+                                       (efrit-repl-session-buffer repl-session) multi))
+          (efrit-do--waiting-for-user-marker question options multi))
 
          ((not session)
           "\n[Error: request_user_input requires an active session]")
@@ -759,12 +872,84 @@ Returns JSON-encoded list of checkpoint metadata."
   :fn efrit-tool-search-content
   :label "Search Content Result")
 
-(efrit-define-simple-tool-handler efrit-do--handle-read-file "read_file"
+(efrit-define-simple-tool-handler efrit-do--handle-read-file-1 "read_file"
   :require efrit-tool-read-file
   :required ("path")
   :fields ("path" "start_line" "end_line" "encoding" "max_size")
   :fn efrit-tool-read-file
   :label "Read File Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-read-files "read_file"
+  :require efrit-tool-outline
+  :fields ("paths" "budget")
+  :fn efrit-tool-read-files
+  :label "Read Files Result")
+
+(defun efrit-do--handle-read-file (tool-input)
+  "read_file: one path with an optional range, or several paths whole (efrit-tool-outline)."
+  (if (and (hash-table-p tool-input)
+           (let ((paths (gethash "paths" tool-input)))
+             (and paths (> (length paths) 0))))
+      (efrit-do--handle-read-files tool-input)
+    (efrit-do--handle-read-file-1 tool-input)))
+
+(efrit-define-simple-tool-handler efrit-do--handle-load-project-file "load_project_file"
+  :require efrit-tool-lisp-dev
+  :required ("path")
+  :fields ("path")
+  :fn efrit-tool-load-project-file
+  :label "Load Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-run-ert "run_ert"
+  :require efrit-tool-lisp-dev
+  :fields ("selector")
+  :fn efrit-tool-run-ert
+  :label "ERT Result")
+
+(efrit-define-optional-input-handler efrit-do--handle-reproduce-command "reproduce_command"
+  :require efrit-tool-lisp-dev
+  :fields ("command" "form" "buffer")
+  :fn efrit-tool-reproduce-command
+  :label "Reproduced")
+
+(efrit-define-optional-input-handler efrit-do--handle-project-outline "project_outline"
+  :require efrit-tool-outline
+  :fields ("path" "pattern" "max_files")
+  :fn efrit-tool-project-outline
+  :label "Project Outline")
+
+(efrit-define-simple-tool-handler efrit-do--handle-symbol-info "symbol_info"
+  :require efrit-tool-introspect
+  :required ("symbol")
+  :fields ("symbol" "buffer" "include_source" "include_callers")
+  :fn efrit-tool-symbol-info
+  :label "Symbol Info")
+
+(efrit-define-simple-tool-handler efrit-do--handle-live-state "live_state"
+  :require efrit-tool-introspect
+  :required ("names")
+  :fields (("names" . efrit-do--vector-to-list) "buffer")
+  :fn efrit-tool-live-state
+  :label "Live State")
+
+(efrit-define-optional-input-handler efrit-do--handle-mode-line-report "mode_line_report"
+  :require efrit-tool-introspect
+  :fields ("frame" "buffer")
+  :fn efrit-tool-mode-line-report
+  :label "Mode Line Report")
+
+(efrit-define-optional-input-handler efrit-do--handle-buffer-list "buffer_list"
+  :require efrit-tool-introspect
+  :fields ("pattern" "include_hidden" "max")
+  :fn efrit-tool-buffer-list
+  :label "Buffer List")
+
+(efrit-define-simple-tool-handler efrit-do--handle-buffer-scan "buffer_scan"
+  :require efrit-tool-introspect
+  :required ("pattern")
+  :fields ("pattern" "buffer" "buffer_regexp" "context" "max" "from_end" "include_remote")
+  :fn efrit-tool-buffer-scan
+  :label "Buffer Scan")
 
 (efrit-define-simple-tool-handler efrit-do--handle-undo-edit "undo_edit"
   :require efrit-tool-undo-edit
@@ -783,7 +968,7 @@ Returns JSON-encoded list of checkpoint metadata."
 (efrit-define-simple-tool-handler efrit-do--handle-create-file "create_file"
   :require efrit-tool-create-file
   :required ("path" "content")
-  :fields ("path" "content" "overwrite")
+  :fields ("path" "content" "overwrite" "show")
   :fn efrit-tool-create-file
   :label "Create File Result")
 
@@ -820,8 +1005,18 @@ Returns JSON-encoded list of checkpoint metadata."
   :label "VCS Blame Result")
 
 (defun efrit-do--handle-set-project-root (tool-input)
-  "Handle set_project_root tool to set the project context."
+  "Handle set_project_root: refused under the scope sandbox.
+Letting the model move the project root let it move its own fence.
+The tool is no longer in the schema; a stale conversation may still
+call it, so answer clearly instead of silently obeying."
   (require 'efrit-tool-utils)
+  (if (bound-and-true-p efrit-sandbox-enabled)
+      (format "\n[Error: set_project_root is not available. The project root is %s and only the user can change it (M-x efrit-set-project-root). If you need files outside it, request them by path and the user will be asked to grant access.]"
+              (efrit-tool--get-project-root))
+    (efrit-do--handle-set-project-root-legacy tool-input)))
+
+(defun efrit-do--handle-set-project-root-legacy (tool-input)
+  "Pre-sandbox set_project_root behaviour (efrit-sandbox-enabled nil)."
   (or (efrit-do--validate-hash-table tool-input "set_project_root")
       (let ((path (gethash "path" tool-input)))
         (cond
@@ -838,12 +1033,71 @@ Returns JSON-encoded list of checkpoint metadata."
               (efrit-format-error "set_project_root"
                                   (format "Path does not exist: %s" path)))))))))
 
+(efrit-define-simple-tool-handler efrit-do--handle-emacs-apropos "emacs_apropos"
+  :require efrit-tool-emacs-apropos
+  :required ("query")
+  :fields ("query" "kind" "include_values" "include_internal" "max")
+  :fn efrit-tool-emacs-apropos
+  :label "Emacs Apropos Result")
+
 (efrit-define-simple-tool-handler efrit-do--handle-elisp-docs "elisp_docs"
   :require efrit-tool-elisp-docs
   :required ("symbol")
   :fields (("symbol" . efrit-do--vector-to-list) "type" "include_source" "related")
   :fn efrit-tool-elisp-docs
   :label "Elisp Docs Result")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-references "xref_references"
+  :require efrit-tool-navigate
+  :required ("symbol")
+  :fields ("symbol" "file" "line" "column")
+  :fn efrit-tool-xref-references
+  :label "References")
+
+(efrit-define-simple-tool-handler efrit-do--handle-xref-apropos "xref_apropos"
+  :require efrit-tool-navigate
+  :required ("pattern")
+  :fields ("pattern" "file")
+  :fn efrit-tool-xref-apropos
+  :label "Definitions")
+
+(efrit-define-optional-input-handler efrit-do--handle-imenu-symbols "imenu_symbols"
+  :require efrit-tool-navigate
+  :fields ("file")
+  :fn efrit-tool-imenu-symbols
+  :label "Symbols")
+
+(efrit-define-optional-input-handler efrit-do--handle-treesit-info "treesit_info"
+  :require efrit-tool-navigate
+  :fields ("file" "line" "column" "ancestors" "children" "whole_tree")
+  :fn efrit-tool-treesit-info
+  :label "Syntax")
+
+(efrit-define-optional-input-handler efrit-do--handle-surrounding-context "surrounding_context"
+  :require efrit-tool-navigate
+  :fields ("file" "line" "depth")
+  :fn efrit-tool-surrounding-context
+  :label "Context")
+
+(efrit-define-simple-tool-handler efrit-do--handle-show-ui-element "show_ui_element"
+  :require efrit-agent-screenshot
+  :required ("buffer")
+  :fields ("buffer" "element")
+  :fn efrit-tool-show-ui-element
+  :label "UI Element")
+
+(efrit-define-simple-tool-handler efrit-do--handle-show-location "show_location"
+  :require efrit-tool-navigate
+  :required ("file")
+  :fields ("file" "start_text" "end_text" "line" "end_line")
+  :fn efrit-tool-show-location
+  :label "Shown")
+
+(efrit-define-optional-input-handler efrit-do--handle-get-last-error "get_last_error"
+  :require efrit-tool-last-error
+  :fields ("count")
+  :fn efrit-tool-get-last-error
+  :label "Last error")
 
 (efrit-define-optional-input-handler efrit-do--handle-get-diagnostics "get_diagnostics"
   :require efrit-tool-get-diagnostics
@@ -1033,6 +1287,24 @@ TOOL-INPUT contains buffer name to get info about."
              (args `((buffer . ,buffer))))
         (format "\n[%s]" (efrit-tool-buffer-info args)))))
 
+(defun efrit-do--handle-editor-state (tool-input)
+  "Handle editor_state: return the editor-context snapshot.
+TOOL-INPUT may name a BUFFER; otherwise the user's working buffer is
+used (see `efrit-context-target-buffer')."
+  (require 'efrit-context-sources)
+  (require 'efrit-sandbox)
+  (let* ((name (and (hash-table-p tool-input) (gethash "buffer" tool-input)))
+         (buf (if (and name (not (string-empty-p name)))
+                  (or (get-buffer name)
+                      (error "No buffer named %s" name))
+                (efrit-context-target-buffer))))
+    ;; A named buffer may visit a file outside the project; the default
+    ;; target buffer is always allowed by the buffer rules.
+    (when (and name (not (string-empty-p name)))
+      (efrit-sandbox-check-buffer buf "editor_state"))
+    (or (efrit-context-snapshot buf)
+        "<editor-context>\n(no context sources enabled)\n</editor-context>")))
+
 (defun efrit-do--handle-get-context-alias (_tool-input)
   "Alias handler for get_context.
 Returns Emacs context information (current buffer, point, etc.)."
@@ -1061,8 +1333,11 @@ TOOL-INPUT is a hash table with keys:
              (auto-expand (gethash "auto_expand" tool-input))
              (importance (gethash "importance" tool-input))
              (annotations (gethash "annotations" tool-input))
-             (agent-buffer (and (boundp 'efrit-agent-buffer-name)
-                               (get-buffer efrit-agent-buffer-name))))
+             ;; the buffer of the session whose tool this is, not "the" one
+             (agent-buffer (or (and (bound-and-true-p efrit-repl-loop--tool-session)
+                                    (efrit-repl-session-buffer efrit-repl-loop--tool-session))
+                               (and (boundp 'efrit-agent-buffer-name)
+                                    (get-buffer efrit-agent-buffer-name)))))
         
         ;; Validate required parameters
         (unless tool-use-id

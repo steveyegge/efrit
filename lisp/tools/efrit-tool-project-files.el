@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
 (require 'cl-lib)
 
 ;;; Customization
@@ -37,17 +38,16 @@
 
 ;;; Git-based file listing
 
-(defun efrit-tool-project-files--git-ls-files (root pattern include-hidden)
-  "List files using git ls-files.
-ROOT is the repository root.
+(defun efrit-tool-project-files--project-files (root pattern include-hidden)
+  "List the project's files through `project-files' (VC-aware, ignores honoured).
+ROOT is the project root.
 PATTERN is an optional glob filter.
 INCLUDE-HIDDEN when non-nil includes dotfiles.
-Returns a list of relative paths."
+Returns a list of relative paths, or nil when ROOT is not a project."
   (let* ((default-directory root)
-         (args (list "ls-files" "--cached" "--others" "--exclude-standard"))
-         (result (efrit-tool-run-git args)))
-    (when (plist-get result :success)
-      (let ((files (split-string (plist-get result :output) "\n" t)))
+         (files (efrit-vcs-files root)))
+    (when files
+      (progn
         ;; Filter by pattern if specified
         (when pattern
           (let ((regex (wildcard-to-regexp pattern)))
@@ -147,7 +147,7 @@ Returns a standard tool response with file listing."
                           efrit-tool-project-files-max-default))
            (offset (or (alist-get 'offset args) 0))
            ;; Resolve path with sandbox check
-           (path-info (efrit-resolve-path path-input))
+           (path-info (efrit-resolve-path path-input 'read "project_files"))
            (root (plist-get path-info :path))
            (project-root (plist-get path-info :project-root))
            (warnings '())
@@ -159,14 +159,13 @@ Returns a standard tool response with file listing."
 
       ;; Get files using appropriate method
       (let ((project-type (efrit-tool-detect-project-type)))
-        (if (and (eq project-type 'git)
-                 (efrit-tool-git-available-p))
-            ;; Use git ls-files (fast, respects .gitignore)
-            (let ((git-files (efrit-tool-project-files--git-ls-files
-                              project-root pattern include-hidden)))
-              (setq files (mapcar (lambda (f)
-                                    (expand-file-name f project-root))
-                                  git-files)))
+        (if-let* ((project-files (and (eq project-type 'git)
+                                      (efrit-tool-project-files--project-files
+                                       project-root pattern include-hidden))))
+            ;; project.el lists the VC project's files (tracked plus
+            ;; untracked, ignores honoured) without running git here
+            (setq files (mapcar (lambda (f) (expand-file-name f project-root))
+                                project-files))
           ;; Fall back to directory traversal
           (setq files (efrit-tool-project-files--dir-recursive
                        root pattern max-depth include-hidden))

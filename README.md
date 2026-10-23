@@ -10,12 +10,6 @@ Efrit is an AI coding agent that brings Claude's intelligence directly into Emac
 
 ## Features
 
-### Conversational Chat (`efrit-chat`)
-Multi-turn conversations with Claude that understand your Emacs context:
-- Ask questions about code, get explanations
-- Refactor with guidance
-- Debug issues interactively
-
 ### Agentic Task Execution (`efrit-do`)
 Execute natural language commands that Claude translates to actions:
 - "Create a buffer with today's date"
@@ -27,8 +21,156 @@ Execute natural language commands that Claude translates to actions:
 A structured, real-time view of agentic sessions with:
 - Session status and elapsed time in header-line
 - Task progress tracking (TODOs) updated by Claude
-- Conversation view with expandable tool calls
-- Interactive input for follow-up commands and mid-session guidance
+- Conversation view with expandable tool calls (folded bodies are
+  searchable: `isearch` honours `search-invisible`)
+- The model's answers rendered as Markdown in place: headers, emphasis,
+  code blocks with the language's fontification, links, block quotes,
+  pipe tables as aligned columns, images (`![alt](file-or-url)`, drawn
+  in the buffer; `+` / `-` / `=` resize the one at point), and file
+  references like `lisp/efrit.el:120` that open the file
+- Select part of an earlier answer and `C-c C-y` quotes it into the
+  input as a `>` block (queued for the next turn when one is running);
+  `C-c C-z` narrows to the last turn (`C-u 3 C-c C-z` the last three),
+  `C-c C-a` widens
+- A Markdown transcript of every session is written as it goes under
+  `efrit-data-directory/transcripts/` (`efrit-transcript-enabled`);
+  `C-c C-f` opens this session's
+- A prompt that is writable at all times.  `RET` while a turn runs
+  steers the running turn: the model reads the text with its next
+  tool results (a steer the turn no longer has room for starts the
+  next turn).  `M-RET` (or `C-u RET`) queues the input for the next
+  turn instead.  Both are `efrit-agent-busy-submit-*-function`.  `C-c C-q`
+  lists and drops queued inputs.
+- `@path` mentions complete over the project's files and inline the
+  file for the model; images are attached.  Drag a file onto the buffer
+  or paste an image to mention it (kept outside the project, under
+  `efrit-agent-dropped-directory`).  `/shot` attaches a screenshot of
+  the frame with a layout block (every window's rectangle and the
+  constructs of its mode, header and tab lines), so "this thing" in a
+  crop can be placed; the model points back with `show_ui_element`,
+  which flashes a window's mode or header line.
+- `/commands` at the start of the input run efrit's own commands:
+  `/help` lists them (`/new`, `/model`, `/mode`, `/queue`, `/shot`, ...).
+- Lists in the input: `S-RET` on a `- ` or `1. ` line continues the
+  list (on an empty item it ends it), `TAB` / `S-TAB` indent and dedent
+  the item.
+- The diff preview (`show_diff_preview`) opens the file at the change
+  on `o` or `RET`; it finds the hunk by its text, not its line numbers.
+- `C-c C-.` (menu `g`) regenerates: the last question is sent again
+  and the old exchange is replaced when the new turn succeeds.  `C-u`
+  edits the question first.
+- Code blocks in answers are things: `C-c C-b` copies the block at
+  point raw (off a block, pick one by completion), `C-c C-j` inserts
+  it at point in the other window without leaving the agent buffer.
+- Presets bundle settings (model, reviewer, default grants, verbosity,
+  rows): `/preset fast`, `/preset careful`, menu `P`; add your own to
+  `efrit-presets`.
+- Optional desktop notification when a slow turn ends while you are in
+  another buffer (`efrit-notify-enabled`; through `alert` when
+  installed, else `notifications-notify`, else the echo area).
+
+**Several agent buffers** (`efrit-agent-instances-mode`): one buffer
+per project, `*efrit[proj]*`; `C-u M-x efrit` opens another instance,
+`*efrit[proj:2]*`, and menu `j` names it.  They live in side windows
+grouped by project (`efrit-agent-side`).  `C-c t` hides and restores a
+project's agent windows per tab, `C-c l` switches between all of them.
+Each has its own session: its own turns, project root for the sandbox
+and tools, cancel (`C-c C-k` stops only this one), queue and question
+menu.  Gnus gets `*efrit[gnus]*` (`efrit-gnus-own-buffer`).  A sandbox
+prompt is one at a time: a request from another session that arrives
+while a prompt is open is denied with a note, and the model can retry.
+
+**Navigation and context** (after claude-code-ide): the model has
+`xref_references`, `xref_apropos`, `imenu_symbols` and `treesit_info`,
+answered by whatever backend you run (eglot, lsp-mode, etags, the
+elisp backend), and `show_location` to open a file for you at a text
+anchor.  `get_diagnostics path="project"` covers every open file of
+the project.  The header shows what editor context the next turn
+carries (`⧉ foo.el:120, 3 lines`); `C-c C-;` dismisses the current
+file's until you move on, `C-c ;` restores it.
+`M-x efrit-agent-mention-range` on a region puts `@file#L10-L20` into
+the input: the model gets those lines, not the file.  In a diff
+preview `E` opens the change in ediff; edit buffer B, quit, accept:
+the model applies your text (`user_edits`).  `C-c C-m` `S` saves the
+menu's toggles with `customize-save-variable`.
+
+**Briefs, pins, next steps** (after ai-code-interface):
+
+- Commands from any buffer build a structured brief (Goal / Scope /
+  Context / Boundaries / Agent responsibilities / Verification
+  evidence): `efrit-fix-errors-in-scope` (the Flymake/Flycheck errors
+  of the region, line, defun or file), `efrit-investigate-exception`
+  (a visible `*compilation*`, `*Backtrace*` or `*Warnings*`, the
+  region, C-u the clipboard; a question), `efrit-send-dwim` (Dired
+  marks, region, diagnostics at point as `@file#L42`, else the line),
+  `efrit-refactor` (Fowler's catalog; placeholders ask you with a
+  default from point), `blame-analysis` / `log-analysis` prompts for
+  `efrit-scope-run`, `efrit-shell-command` (`:words` has the model
+  write the one-liner; you edit, it runs in `*compilation*`).
+- A question is a read-only turn: `explain`, `review`,
+  `efrit-investigate-exception` and Magit `explain`/`question` make the
+  sandbox refuse writes, shell and eval for that turn without asking.
+- `C-u RET` grills you first: the model asks its clarifying questions
+  and does not act until you answer (`C-c g` arms it too).  `C-u` on
+  `efrit-scope-run` adds the files of your other windows, `C-u C-u`
+  the clipboard as well.
+- `efrit-prompt-suffix-functions`: an abnormal hook over every
+  outgoing input (a context with the text, the command, a memo).  Add
+  your project rule or test-after-change instruction there.
+- Text marked with `efrit-mark-verbatim` (a pasted diff) is data: no
+  mention expansion inside it.
+- `efrit-context-pin` on a region pins `file#L10-L20` for this project:
+  sent with every turn (header shows `+N pins`) until
+  `efrit-context-unpin` / `efrit-context-clear-pins`.  After `@file`,
+  typing `#` completes the file's definitions and writes the range.
+- Answers that end with a `Next steps` list get buttons: `RET` on an
+  item or `M-1`..`M-4` sends that step.  `efrit-next-steps-ask` asks
+  the model for such a list on non-change prompts.
+- After each `edit_file`/`edit_buffer`, the new Flymake/Flycheck
+  diagnostics of the file (against the turn's baseline) are appended
+  to the tool result, so the model fixes what it broke before saying
+  done (`efrit-diagnostics-baseline-enabled`).
+- `get_last_error`: the model can read your recent command errors
+  with backtrace frames (`efrit-last-error-mode`, on with efrit);
+  `eval_sexp` results also list messages written and buffers changed.
+- `C-c C-,` / menu `,`: checkpoint, the running turn stops and reports
+  goal, files, hypothesis, tests, blockers, failed approaches, next.
+- Magit: `C-c e` on a hunk (or selected hunks) explains, asks, changes
+  or writes tests, with a provenance line; changes are refused on a
+  historical diff.  `efrit-agent-dashboard` (menu `D`) lists every
+  agent buffer with project, branch, dirty count, status and queue.
+- The `position` context source now carries the enclosing function
+  and type headers with line ranges (tree-sitter, else which-function).
+  `path#L3-L5` and `path:L3-L5` in answers open the file with the range
+  selected.
+
+**Outside the agent buffer:**
+
+- `M-x efrit-rewrite-region`: the model rewrites the selected text per
+  your instruction; the change is drawn over the text itself (removed
+  lines in red, new lines in green; `efrit-rewrite-preview` `buffer`
+  for a diff popup instead), then it replaces the region (only if the
+  region is unchanged since).
+- `M-x efrit-edit-history-mode` (or the global variant) records what
+  you change in a buffer as diffs, one entry per burst of typing, and
+  the `edit-history` context source shows the model the latest ones:
+  "continue what I was doing" works.  Off by default.
+- A turn you cancel mid-answer keeps the text that arrived, marked
+  `[answer cut short here]` in the history, so the next turn knows.
+- `M-x efrit-scope-run`: run a library prompt (`explain`, `fix`,
+  `document`, `tests`, `review`, `simplify`, or your own) over the
+  region, the defun at point, or the buffer, as a turn in the agent
+  buffer.  Prompts may use `{{{:text}}}`, `{{{:file}}}`, `{{{:mode}}}`,
+  `{{{:scope}}}`, `{{{:lines}}}`.
+- `M-x efrit-commit-message` in a commit buffer: a conventional commit
+  message from the staged diff (read through VC); `C-u` asks for three
+  and opens a pick panel.  A `.github/git-commit-instructions.md` in
+  the repository is obeyed.
+- A sandbox prompt for a shell line or an elisp form has `e`: edit the
+  text, then allow; the edited text runs once, no standing grant.
+- `eval_sexp` balances an unbalanced form before evaluation and tells
+  the model; `edit_buffer` refuses positional edits to a buffer that
+  changed since the model read it.
 
 **Agent Buffer Keybindings:**
 
@@ -40,7 +182,23 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `TAB` / `S-TAB` | Move between sections |
 | `M-n` / `M-p` | Next / previous tool call |
 | `RET` | Expand/collapse tool at point |
+| `RET` (input) | Send; steer while a turn runs |
+| `M-RET` / `C-u RET` (input) | Queue for the next turn |
+| `S-RET` / `C-j` (input) | Newline |
 | `C-c C-c` | Send input / continue session |
+| `C-c C-q` (input) | Show / drop queued inputs |
+| `C-c C-w` | Copy the last answer |
+| `C-c C-i` | Copy the session id |
+| `C-c C-x` | Restart: fresh session, same windows |
+| `C-c C-y` | Quote the region into the input (queued when busy) |
+| `C-c C-z` / `C-c C-a` | Narrow to the last N turns / widen |
+| `C-c C-f` | Open this session's transcript file |
+| `C-c C-.` | Regenerate the last answer (`C-u`: edit the question) |
+| `C-c C-;` / `C-c ;` | Dismiss / restore the current file's editor context |
+| `C-c l` / `C-c t` / `C-c I` | Switch agent buffer / toggle this project's / new instance |
+| `C-c C-b` / `C-c C-j` | Copy the code block at point / insert it in the other window |
+| `+` / `-` / `=` (transcript), `C-c +` etc. | Resize the image at point, else all |
+| `S-RET` on a list item | Continue the list; `TAB` / `S-TAB` indent it |
 | `C-c C-k` | Cancel session |
 | `C-c C-n` | New session |
 | `C-c C-r` | Resume paused session |
@@ -52,9 +210,9 @@ Actions use the `C-c` prefix so standard editing keys (`C-k`, `C-g`,
 | `C-c C-v` | Cycle verbosity (minimal/normal/verbose) |
 | `C-c C-o` | Cycle display mode (minimal/smart/verbose) |
 | `C-c C-g` | Refresh display |
-| `C-c C-q` | Quit buffer (session continues) |
+| `C-c C-q` (conversation) | Quit buffer (session continues) |
 | `1`-`4` | Select option when Claude asks (in input region) |
-| `C-c ?` | Show help |
+| `C-c ?` / `?` (transcript) | The buffer's command menu (transient) |
 
 ### Rich Tool Suite
 Efrit provides Claude with 35+ tools:
@@ -80,10 +238,20 @@ Efrit provides Claude with 35+ tools:
 ### AI-to-AI Communication
 Other AI agents (Claude Code, Cursor, etc.) can interact with Efrit via file-based JSON queue for autonomous development.
 
+### Mail and documents (Gnus, Google Drive, Google Calendar, Confluence)
+`efrit-gnus` analyzes selected Gnus articles with a library of two-part
+prompts (`M-x efrit-prompts-manage`), and the model gets `gnus_search`
+and `gnus_articles`. Documents the articles link to, and documents
+related to them (the notes Calendar attached to the meeting, the
+Confluence page with the same title), are fetched through
+`efrit-documents` and its sources; `doc_search` and `doc_fetch` let the
+model look for more. Setup, including which Google APIs to enable in
+the Cloud console, is in [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
+
 ## Installation
 
 ### Prerequisites
-- Emacs 28.1+
+- Emacs 29.1+
 - Anthropic API key from [console.anthropic.com](https://console.anthropic.com/)
 
 ### Quick Start
@@ -93,12 +261,17 @@ git clone https://github.com/steveyegge/efrit.git
 cd efrit
 ```
 
-Add to `~/.emacs.d/init.el`:
+Generate the autoloads once (`make autoloads`), then add to
+`~/.emacs.d/init.el`:
 
 ```elisp
 (add-to-list 'load-path "/path/to/efrit/lisp")
-(require 'efrit)
+(load "efrit-autoloads")   ; every command available lazily, incl. efrit-doctor
 ```
+
+or, to load everything eagerly, `(require 'efrit)` instead of the
+`load`.  With `use-package :load-path`, put the `load` in `:init`
+(see `docs/examples/proxy-config.el`).
 
 ### API Key Configuration
 
@@ -129,17 +302,15 @@ Verify with `M-x efrit-doctor`.
 
 | Mode | Use When | Tools Available |
 |------|----------|-----------------|
-| **`efrit-chat`** | Multi-turn conversations, asking questions, explanations | Buffer-centric (read buffer, search) |
 | **`efrit-do`** | Quick agentic commands, shows progress in minibuffer | Full suite (35+ tools) |
 | **`efrit-agent`** | Complex tasks needing visibility and interaction | Full suite + structured UI |
 
 **Decision guide:**
-- **Just asking?** → `efrit-chat` (conversational, no file changes)
+- **Just asking?** → `M-x efrit` (the same buffer; a question is a turn with read-only tools)
 - **Quick command?** → `efrit-do` (runs in background, shows progress buffer)
 - **Complex task?** → `efrit-agent` (real-time visibility, can guide mid-session)
 
 **Key differences:**
-- `efrit-chat`: Read-only context, conversational UI, retains history
 - `efrit-do`: Fire-and-forget, progress buffer with raw output
 - `efrit-agent`: Interactive session buffer with expandable tool calls, TODO tracking, and mid-session guidance (`i` key)
 
@@ -147,7 +318,6 @@ Verify with `M-x efrit-doctor`.
 
 | Command | Description |
 |---------|-------------|
-| `M-x efrit-chat` | Multi-turn conversational interface |
 | `M-x efrit-do` | Execute natural language command asynchronously with progress buffer |
 | `M-x efrit-agent` | Open the structured agent session buffer |
 | `M-x efrit-do-sync` | Execute natural language command synchronously (blocking) |
@@ -185,10 +355,10 @@ M-x efrit-do RET
 
 **Conversational:**
 ```
-M-x efrit-chat RET
-You: Help me understand how the error handling works in this file
-Assistant: [analyzes current buffer and explains]
-You: Can you refactor it to use condition-case-unless-debug instead?
+M-x efrit RET
+> Help me understand how the error handling works in this file
+[analyzes current buffer and explains]
+> Can you refactor it to use condition-case-unless-debug instead?
 ```
 
 ### Agentic Workflows
@@ -368,6 +538,42 @@ The async API is now recommended for all use cases. Use `efrit-do-sync` only if 
 (setq efrit-do-show-progress-buffer t)  ; Show progress buffer automatically
 (setq efrit-do-queue-max-size 10)       ; Max commands to queue
 ```
+
+### Version control
+
+The `vcs_status`, `vcs_diff`, `vcs_log` and `vcs_blame` tools, the
+project file list and checkpoints all go through Emacs's VC layer, not
+a `git` subprocess, so they work wherever VC does (local, TRAMP) with
+your VC settings.  A `checkpoint` is a Git stash named
+`efrit-checkpoint <id>: <description>`; you will see it in `git stash
+list` and Magit.  In a tree without Git, checkpoints are file snapshots
+under `.efrit/checkpoints/`.
+
+### Remote hosts (TRAMP)
+
+A path with a TRAMP prefix is on another machine, and the local
+project's default grants never apply to it, even when the project root
+itself is remote.  What the model may read or write there is decided
+per host:
+
+```elisp
+(setq efrit-sandbox-remote-hosts
+      '(("build-box"          . (:read allow :write ask))
+        ("prod-"              . (:read once  :write deny))
+        ("/sudo:"             . (:read deny  :write deny))))
+(setq efrit-sandbox-remote-default '(:read ask :write once))
+```
+
+A host entry matches the TRAMP identity (`/ssh:me@box:`), the host
+name, or a host suffix.  `allow` needs no prompt, `ask` prompts with
+the usual once / session / project scopes, `once` prompts and only a
+one-time grant is offered, `deny` refuses without a prompt.  The
+policy covers every path the sandbox sees: the file tools, elisp
+evaluated by `eval_sexp` (through the file-name handler), buffers
+visiting remote files, and shell commands run in a remote project root
+(governed by the host's write policy).  The sandbox decides lexically
+for remote paths and never opens a connection to ask.  `M-x
+efrit-permissions` shows and edits both variables.
 
 ### Elisp Evaluation Safety
 

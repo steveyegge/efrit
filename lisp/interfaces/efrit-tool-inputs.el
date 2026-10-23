@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, validation, ai
 

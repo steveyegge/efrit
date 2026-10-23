@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, git
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -21,8 +21,11 @@
 
 ;;; Code:
 
+(require 'parse-time)
 (require 'efrit-tool-utils)
+(require 'efrit-vcs)
 (require 'cl-lib)
+(require 'iso8601)
 (require 'json)
 
 ;;; Customization
@@ -34,9 +37,20 @@
   :group 'efrit-tool-utils)
 
 (defcustom efrit-checkpoint-max-age-hours 24
-  "Auto-expire checkpoints older than this many hours."
+  "Checkpoints older than this many hours are reported as expired.
+`list_checkpoints' marks them with `expired: true' and an age so the
+model (or user) can decide to delete them; nothing is removed
+automatically, since the underlying git stash may still be wanted."
   :type 'integer
   :group 'efrit-tool-utils)
+
+(defun efrit-checkpoint--age-hours (created-at)
+  "Hours since CREATED-AT (an ISO 8601 string), or nil if unparsable."
+  (when (stringp created-at)
+    (condition-case nil
+        (/ (float-time (time-since (parse-iso8601-time-string created-at)))
+           3600.0)
+      (error nil))))
 
 ;;; Registry Management
 
@@ -105,53 +119,32 @@ Note: JSON decodes string keys as symbols, so we check both."
           (format-time-string "%Y%m%d-%H%M%S")
           (substring (md5 (format "%s%s" (random) (current-time))) 0 6)))
 
-;;; Git Stash Integration
+;;; Storage: a Git stash, or a file snapshot
+;;
+;; In a Git tree the checkpoint is a real stash named
+;; "efrit-checkpoint ID: DESCRIPTION", so `git stash list' and Magit
+;; show where it came from.  Elsewhere (no Git, or the tree is not
+;; under version control) the changed files are copied under
+;; .efrit/checkpoints/ID/ and copied back on restore.
 
-(defun efrit-checkpoint--create-stash (message)
-  "Create a git stash with MESSAGE.
-Returns plist with :success, :stash-ref, :error."
-  (let* ((stash-msg (format "efrit-checkpoint: %s" message))
-         ;; First check if there are changes to stash
-         (status-result (efrit-tool-run-git '("status" "--porcelain")))
-         (has-changes (and (plist-get status-result :success)
-                          (not (string-empty-p
-                                (string-trim (plist-get status-result :output)))))))
-    (if (not has-changes)
-        (list :success nil :error "No changes to checkpoint")
-      ;; Create stash including untracked files
-      (let ((stash-result (efrit-tool-run-git
-                          (list "stash" "push"
-                                "--include-untracked"
-                                "-m" stash-msg))))
-        (if (plist-get stash-result :success)
-            ;; Get the stash reference
-            (let* ((list-result (efrit-tool-run-git '("stash" "list" "-n" "1")))
-                   (stash-ref (when (plist-get list-result :success)
-                               (car (split-string
-                                     (plist-get list-result :output)
-                                     ":")))))
-              (list :success t :stash-ref (or stash-ref "stash@{0}")))
-          (list :success nil
-                :error (or (plist-get stash-result :error) "Failed to create stash")))))))
+(defun efrit-checkpoint--root ()
+  "The project root checkpoints are taken in."
+  (file-name-as-directory (efrit-tool--get-project-root)))
 
-(defun efrit-checkpoint--apply-stash (stash-ref &optional pop)
-  "Apply stash at STASH-REF.
-If POP is non-nil, drop the stash after applying."
-  (let ((cmd (if pop "pop" "apply")))
-    (efrit-tool-run-git (list "stash" cmd stash-ref))))
+(defun efrit-checkpoint--method (root)
+  "How checkpoints are stored for ROOT: `stash' or `snapshot'."
+  (if (efrit-vcs-git-p root) 'stash 'snapshot))
 
-(defun efrit-checkpoint--drop-stash (stash-ref)
-  "Drop stash at STASH-REF."
-  (efrit-tool-run-git (list "stash" "drop" stash-ref)))
-
-(defun efrit-checkpoint--find-stash-by-message (checkpoint-id)
-  "Find stash reference containing CHECKPOINT-ID in message."
-  (let ((list-result (efrit-tool-run-git '("stash" "list"))))
-    (when (plist-get list-result :success)
-      (let ((lines (split-string (plist-get list-result :output) "\n" t)))
-        (cl-loop for line in lines
-                 when (string-match-p (regexp-quote checkpoint-id) line)
-                 return (car (split-string line ":")))))))
+(defun efrit-checkpoint--stored-method (metadata)
+  "The method recorded in METADATA as a symbol.
+The registry is JSON: written as a string, read back as a symbol (the
+reader interns object keys and, with `json-object-type' alist, some
+values come back as symbols too); older entries have no method."
+  (let ((m (alist-get 'method metadata)))
+    (cond ((null m) 'stash)
+          ((symbolp m) m)
+          ((stringp m) (intern m))
+          (t 'stash))))
 
 ;;; Checkpoint Tool
 
@@ -163,41 +156,39 @@ ARGS is an alist with:
 
 Returns a standard tool response with checkpoint info."
   (efrit-tool-execute checkpoint args
-    (let* ((description (alist-get 'description args)))
-
-      ;; Validate
+    (efrit-resolve-path nil 'write "checkpoint")
+    (let* ((description (alist-get 'description args))
+           (root (efrit-checkpoint--root))
+           (method (efrit-checkpoint--method root)))
       (unless description
         (signal 'user-error (list "description is required")))
-
-      ;; Check git availability
-      (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
-
-      ;; Generate checkpoint ID
       (let* ((checkpoint-id (efrit-checkpoint--generate-id))
-             (stash-message (format "%s | %s" checkpoint-id description))
-             (stash-result (efrit-checkpoint--create-stash stash-message)))
-
-        (if (not (plist-get stash-result :success))
-            ;; Failed to create stash
+             (ref nil) (count nil) (failure nil))
+        (condition-case err
+            (pcase method
+              ('stash (setq ref (efrit-vcs-stash-push checkpoint-id description root)))
+              (_ (setq count (efrit-vcs-snapshot-create checkpoint-id root))
+                 (when (zerop count) (setq failure "No changed files to checkpoint"))))
+          (efrit-vcs-error (setq failure (cadr err))))
+        (if failure
             (efrit-tool-success
              `((created . :json-false)
-               (reason . ,(plist-get stash-result :error))
+               (reason . ,failure)
                (checkpoint_id . nil)))
-
-          ;; Success - save to registry
-          (let* ((metadata `((description . ,description)
-                             (created_at . ,(efrit-tool-format-time nil))
-                             (stash_ref . ,(plist-get stash-result :stash-ref))
-                             (project_root . ,(efrit-tool--get-project-root)))))
+          (let ((metadata `((description . ,description)
+                            (created_at . ,(efrit-tool-format-time nil))
+                            (method . ,(symbol-name method))
+                            (stash_ref . ,ref)
+                            (project_root . ,root))))
             (efrit-checkpoint--add-to-registry checkpoint-id metadata)
-
             (efrit-tool-success
              `((created . t)
                (checkpoint_id . ,checkpoint-id)
                (description . ,description)
-               (stash_ref . ,(plist-get stash-result :stash-ref))
-               (method . "git_stash")
+               (method . ,(if (eq method 'stash) "git_stash" "file_snapshot"))
+               ,@(when ref `((stash_ref . ,ref)
+                             (stash_name . ,(efrit-vcs-stash-name checkpoint-id description))))
+               ,@(when count `((files_saved . ,count)))
                (restore_command . ,(format "Use restore_checkpoint with checkpoint_id: %s"
                                           checkpoint-id))))))))))
 
@@ -212,51 +203,41 @@ ARGS is an alist with:
 
 Returns a standard tool response with restore result."
   (efrit-tool-execute restore_checkpoint args
+    (efrit-resolve-path nil 'write "restore_checkpoint")
     (let* ((checkpoint-id (alist-get 'checkpoint_id args))
-           (keep-checkpoint (alist-get 'keep_checkpoint args)))
-
-      ;; Validate
+           (keep-checkpoint (alist-get 'keep_checkpoint args))
+           (root (efrit-checkpoint--root)))
       (unless checkpoint-id
         (signal 'user-error (list "checkpoint_id is required")))
-
-      ;; Check git availability
-      (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
-
-      ;; Look up checkpoint
       (let ((metadata (efrit-checkpoint--get-from-registry checkpoint-id)))
         (unless metadata
-          (signal 'user-error
-                  (list (format "Checkpoint not found: %s" checkpoint-id))))
-
-        ;; Find the stash
-        (let ((stash-ref (efrit-checkpoint--find-stash-by-message checkpoint-id)))
-          (unless stash-ref
-            (signal 'user-error
-                    (list (format "Stash for checkpoint not found (may have been manually removed): %s"
-                                 checkpoint-id))))
-
-          ;; Apply the stash
-          (let ((apply-result (efrit-checkpoint--apply-stash
-                               stash-ref
-                               (not keep-checkpoint))))
-            (if (not (plist-get apply-result :success))
-                ;; Failed to apply
-                (efrit-tool-error
-                 'execution_error
-                 (format "Failed to restore checkpoint: %s"
-                        (or (plist-get apply-result :error) "unknown error"))
-                 `((checkpoint_id . ,checkpoint-id)))
-
-              ;; Success
-              (unless keep-checkpoint
-                (efrit-checkpoint--remove-from-registry checkpoint-id))
-
-              (efrit-tool-success
-               `((restored . t)
-                 (checkpoint_id . ,checkpoint-id)
-                 (description . ,(alist-get 'description metadata))
-                 (kept . ,(if keep-checkpoint t :json-false)))))))))))
+          (signal 'user-error (list (format "Checkpoint not found: %s" checkpoint-id))))
+        (let* ((method (efrit-checkpoint--stored-method metadata))
+               (failure
+                (condition-case err
+                    (progn
+                      (pcase method
+                        ('stash (efrit-vcs-stash-apply checkpoint-id (not keep-checkpoint) root))
+                        (_ (efrit-vcs-snapshot-restore checkpoint-id root)
+                           (unless keep-checkpoint (efrit-vcs-snapshot-delete checkpoint-id root))))
+                      nil)
+                  ;; every failure, VC's own included, must reach the
+                  ;; caller with its text: a plain value from
+                  ;; `efrit-tool-error' here was dropped and the tool
+                  ;; went on to report success (2026-09-28)
+                  (error (error-message-string err)))))
+          (if failure
+              (efrit-tool-error 'execution_error
+                                (format "Failed to restore checkpoint: %s" failure)
+                                `((checkpoint_id . ,checkpoint-id) (method . ,(symbol-name method))))
+            (unless keep-checkpoint
+              (efrit-checkpoint--remove-from-registry checkpoint-id))
+            (efrit-tool-success
+             `((restored . t)
+               (checkpoint_id . ,checkpoint-id)
+               (description . ,(alist-get 'description metadata))
+               (method . ,(symbol-name method))
+               (kept . ,(if keep-checkpoint t :json-false))))))))))
 
 ;;; List Checkpoints Tool
 
@@ -270,14 +251,27 @@ Returns a standard tool response with checkpoint list."
             (mapcar (lambda (entry)
                       (let ((id (car entry))
                             (meta (cdr entry)))
-                        `((checkpoint_id . ,id)
-                          (description . ,(alist-get 'description meta))
-                          (created_at . ,(alist-get 'created_at meta))
-                          (stash_ref . ,(alist-get 'stash_ref meta)))))
-                    registry)))
+                        (let* ((created (alist-get 'created_at meta))
+                               (age (efrit-checkpoint--age-hours created)))
+                          `((checkpoint_id . ,id)
+                            (description . ,(alist-get 'description meta))
+                            (created_at . ,created)
+                            (method . ,(or (alist-get 'method meta) "stash"))
+                            (stash_ref . ,(alist-get 'stash_ref meta))
+                            ,@(when age
+                                `((age_hours . ,(/ (round (* age 10)) 10.0))
+                                  (expired . ,(if (> age efrit-checkpoint-max-age-hours)
+                                                  t :json-false))))))))
+                    registry))
+           (expired (cl-count-if (lambda (c) (eq (alist-get 'expired c) t))
+                                 checkpoints)))
       (efrit-tool-success
        `((checkpoints . ,(vconcat checkpoints))
-         (count . ,(length checkpoints)))))))
+         (count . ,(length checkpoints))
+         (expired_count . ,expired)
+         ,@(when (> expired 0)
+             `((note . ,(format "%d checkpoint(s) older than %d hours; consider delete_checkpoint"
+                                expired efrit-checkpoint-max-age-hours)))))))))
 
 ;;; Delete Checkpoint Tool
 
@@ -289,34 +283,24 @@ ARGS is an alist with:
 
 Returns a standard tool response."
   (efrit-tool-execute delete_checkpoint args
-    (let* ((checkpoint-id (alist-get 'checkpoint_id args)))
-
-      ;; Validate
+    (efrit-resolve-path nil 'write "delete_checkpoint")
+    (let* ((checkpoint-id (alist-get 'checkpoint_id args))
+           (root (efrit-checkpoint--root)))
       (unless checkpoint-id
         (signal 'user-error (list "checkpoint_id is required")))
-
-      ;; Check git availability
-      (unless (efrit-tool-git-available-p)
-        (signal 'user-error (list "Not a git repository or git not available")))
-
-      ;; Look up checkpoint
       (let ((metadata (efrit-checkpoint--get-from-registry checkpoint-id)))
         (unless metadata
-          (signal 'user-error
-                  (list (format "Checkpoint not found: %s" checkpoint-id))))
-
-        ;; Find and drop the stash
-        (let ((stash-ref (efrit-checkpoint--find-stash-by-message checkpoint-id)))
-          (when stash-ref
-            (efrit-checkpoint--drop-stash stash-ref))
-
-          ;; Remove from registry
+          (signal 'user-error (list (format "Checkpoint not found: %s" checkpoint-id))))
+        (let* ((method (efrit-checkpoint--stored-method metadata))
+               (dropped (pcase method
+                          ('stash (and (efrit-vcs-stash-drop checkpoint-id root) t))
+                          (_ (efrit-vcs-snapshot-delete checkpoint-id root)))))
           (efrit-checkpoint--remove-from-registry checkpoint-id)
-
           (efrit-tool-success
            `((deleted . t)
              (checkpoint_id . ,checkpoint-id)
-             (stash_dropped . ,(if stash-ref t :json-false)))))))))
+             (method . ,(symbol-name method))
+             (stash_dropped . ,(if dropped t :json-false)))))))))
 
 (provide 'efrit-tool-checkpoint)
 

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, web
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -23,11 +23,14 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
+(declare-function libxml-parse-html-region "xml.c")
 (require 'shr)
 (require 'dom)
 (require 'cl-lib)
+(require 'efrit-api)   ; efrit-api-display-url
 
 ;; Declare url-http-target-url which is set during URL fetching
 (defvar url-http-target-url nil
@@ -38,7 +41,10 @@
 (defcustom efrit-fetch-url-security-level 'allowlist
   "Security level for URL fetching.
 Options:
-  allowlist - Only fetch from approved domains (default)
+  allowlist - Domains in `efrit-fetch-url-allowed-domains' fetch without
+              a prompt; any other domain goes through the sandbox, which
+              asks once / this session / this project for that host
+              (default)
   confirm - Ask user before each fetch
   open - Fetch any URL (not recommended)"
   :type '(choice (const :tag "Allowlist only" allowlist)
@@ -93,10 +99,12 @@ May prompt user depending on security level."
       ('open t)
       ('confirm
        (y-or-n-p (format "Fetch content from %s? " domain)))
+      ;; Not on the list: the sandbox asks for the host, with the usual
+      ;; once / session / project scopes, instead of a dead end that
+      ;; told the user to edit a variable (2026-09-27)
       ('allowlist
-       (if (efrit-fetch-url--domain-allowed-p domain)
-           t
-         (user-error "Domain %s not in allowlist. Add to efrit-fetch-url-allowed-domains or change security level" domain)))
+       (or (efrit-fetch-url--domain-allowed-p domain)
+           (efrit-sandbox-check 'net (cons 'host domain) "fetch_url" (format "GET %s" url))))
       (_ nil))))
 
 ;;; Content Fetching
@@ -108,7 +116,10 @@ May prompt user depending on security level."
           '(("User-Agent" . "Mozilla/5.0 (compatible; Emacs Efrit)")))
          (buffer (url-retrieve-synchronously url t nil efrit-fetch-url-timeout)))
     (if (not buffer)
-        (list :success nil :error "Failed to fetch URL" :fetch-time 0)
+        (list :success nil
+              :error (format "No response from %s within %ds (timeout, DNS failure, or connection refused)"
+                             (efrit-api-display-url url) efrit-fetch-url-timeout)
+              :fetch-time 0)
       (unwind-protect
           (with-current-buffer buffer
             (goto-char (point-min))
@@ -119,7 +130,7 @@ May prompt user depending on security level."
               (let ((status (string-to-number (match-string 1))))
                 (if (not (and (>= status 200) (< status 300)))
                     (list :success nil
-                          :error (format "HTTP error: %d" status)
+                          :error (format "HTTP %d from %s" status (efrit-api-display-url url))
                           :fetch-time (- (float-time) start-time))
                   ;; Extract content-type
                   (let ((content-type "text/html")
@@ -251,7 +262,7 @@ Currently supports simple selectors: tag, #id, .class"
                       ;; Tag selector
                       (t (dom-by-tag dom (intern selector))))))
           (when nodes
-            (mapconcat (lambda (node) (dom-texts node))
+            (mapconcat (lambda (node) (efrit-tool--dom-text node))
                        (if (listp nodes) nodes (list nodes))
                        "\n\n")))))))
 

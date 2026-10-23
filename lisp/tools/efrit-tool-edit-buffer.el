@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/steveyegge/efrit
@@ -16,6 +16,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-sandbox)
+(require 'efrit-buffer-watch)
 
 (declare-function efrit-log "efrit-log")
 
@@ -29,6 +31,23 @@
        (message (apply #'format format-string args))))))
 
 ;;; Buffer Creation Tool
+
+(defvar efrit-tool-report-keys-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") #'quit-window)
+    map)
+  "Keys layered onto every buffer `buffer_create' makes.")
+
+(defun efrit-tool--make-report-quittable ()
+  "Give the current buffer a `q' that closes its window, whatever its mode.
+Composed under the mode map, so a mode that already binds q wins."
+  (unless (and (current-local-map)
+               (eq (lookup-key (current-local-map) (kbd "q")) #'quit-window))
+    (use-local-map (make-composed-keymap (current-local-map) efrit-tool-report-keys-map)))
+  (setq-local efrit-tool-report-buffer t))
+
+(defvar-local efrit-tool-report-buffer nil
+  "Non-nil in buffers created by `buffer_create'.")
 
 (defun efrit-tool-create-buffer (args)
   "Create a new buffer with optional initial content and mode.
@@ -53,6 +72,12 @@ Returns a string describing what was created."
           (unless (stringp content)
             (error "Content must be a string, got %s" (type-of content))))
         
+        ;; An existing buffer of this name would be erased below; if it
+        ;; visits a file outside the project, that is a destructive
+        ;; touch and needs a grant.  A brand-new buffer needs none.
+        (when-let* ((existing (get-buffer name)))
+          (efrit-sandbox-check-buffer existing "create_buffer"))
+
         ;; Create buffer
         (let ((buffer (get-buffer-create name)))
           (with-current-buffer buffer
@@ -69,6 +94,9 @@ Returns a string describing what was created."
                                      mode)))
                   (when (fboundp mode-symbol)
                     (funcall mode-symbol))))
+              ;; A report buffer behaves like a popup: `q' closes it.
+              ;; The major mode keeps its own keys; only q is added.
+              (efrit-tool--make-report-quittable)
               ;; Set read-only if requested
               (when read-only
                 (setq buffer-read-only t))))
@@ -76,7 +104,7 @@ Returns a string describing what was created."
           ;; Return success message
           (format "Created buffer '%s' with %d characters"
                   name (length (or content "")))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error creating buffer: %s" (error-message-string err)))))
 
@@ -113,7 +141,14 @@ Returns a string describing the edit operation."
           (error "Text must be a string"))
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "edit_buffer")
+        ;; The user (or another tool) may have changed the buffer since
+        ;; the model read it: positions are then stale.  Refuse the
+        ;; positional edit and say what moved, so the model re-reads.
+        (when-let* ((change (and (or replace (integerp position))
+                                 (efrit-buffer-watch-changes buffer))))
+          (error "%s" (efrit-buffer-watch-describe change buffer)))
+
         ;; Edit the buffer
         (with-current-buffer buffer
           (let ((inhibit-read-only t))
@@ -142,7 +177,7 @@ Returns a string describing the edit operation."
                 (insert text)
                 (format "Inserted %d characters into buffer '%s' at position %s"
                         (length text) (buffer-name) position))))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error editing buffer: %s" (error-message-string err)))))
 
@@ -168,12 +203,15 @@ Returns the buffer contents as a string."
         
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "read_buffer")
+        ;; From here on, an edit by position is judged against this read
+        (efrit-buffer-watch-note-read buffer)
+
         (with-current-buffer buffer
           (let ((min (if (integerp start) start (point-min)))
                 (max (if (integerp end) end (point-max))))
             (buffer-substring-no-properties min max))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error reading buffer: %s" (error-message-string err)))))
 
@@ -195,7 +233,8 @@ Returns an alist with buffer properties."
         
         (unless buffer
           (error "Buffer %s not found" buffer-arg))
-        
+        (efrit-sandbox-check-buffer buffer "buffer_info")
+
         (with-current-buffer buffer
           `((name . ,(buffer-name))
             (file . ,buffer-file-name)
@@ -206,7 +245,7 @@ Returns an alist with buffer properties."
             (point . ,(point))
             (point-min . ,(point-min))
             (point-max . ,(point-max)))))
-    
+    (efrit-sandbox-denied (signal (car err) (cdr err)))
     (error
      (format "Error getting buffer info: %s" (error-message-string err)))))
 

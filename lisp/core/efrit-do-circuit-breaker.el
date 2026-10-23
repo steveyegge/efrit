@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -17,11 +17,61 @@
 
 (require 'efrit-common)
 (require 'efrit-log)
+(require 'efrit-limits)
 (require 'cl-lib)
 (require 'seq)
 
-;; Forward declaration for function defined in efrit-do.el
-(declare-function efrit-do--extract-error-info "efrit-do")
+
+;;; Result parsing
+;;
+;; Pure string parsers over tool results.  They live here, below
+;; efrit-do, because the loop detector needs them and efrit-do is an
+;; interface-layer module that requires this one.
+
+(defun efrit-do--extract-error-info (result)
+  "Extract error information from RESULT string.
+Returns (error-p . error-msg) where error-p is t if errors found."
+  (when (stringp result)
+    (cond
+     ;; Syntax errors
+     ((string-match "\\[Syntax Error in \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Syntax error in %s: %s" 
+                      (match-string 1 result) 
+                      (match-string 2 result))))
+     ;; Runtime errors
+     ((string-match "\\[Error executing \\([^:]+\\): \\(.+\\)\\]" result)
+      (cons t (format "Runtime error in %s: %s"
+                      (match-string 1 result)
+                      (match-string 2 result))))
+     ;; Efrit-internal dispatch errors (ef-hn6)
+     ((string-match "\\[Efrit internal error: \\(.+\\)\\]" result)
+      (cons t (format "Efrit internal error: %s" (match-string 1 result))))
+     ;; API errors - match the specific format from efrit-do--process-api-response
+     ;; Format: "API Error (type): message" - must have parenthesized type
+     ((string-match "^API Error ([^)]+):" result)
+      (cons t result))
+     ;; General errors - match at start of line to avoid false positives
+     ((string-match "^Error:" result)
+      (cons t result))
+     ;; No error detected
+     (t (cons nil nil)))))
+
+(defun efrit-do--extract-executed-code (result)
+  "Extract the executed code from RESULT string.
+Returns the code string that was executed, or nil if not found."
+  (when (stringp result)
+    (cond
+     ;; Extract from syntax error message
+     ((string-match "\\[Syntax Error in \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from runtime error message
+     ((string-match "\\[Error executing \\([^:]+\\):" result)
+      (match-string 1 result))
+     ;; Extract from successful execution message
+     ((string-match "\\[Executed: \\([^]]+\\)\\]" result)
+      (match-string 1 result))
+     ;; No code found
+     (t nil))))
 
 ;;; Customization
 
@@ -37,10 +87,23 @@ terminated.  This prevents infinite loops from burning through API tokens."
   :type 'integer
   :group 'efrit-do-circuit-breaker)
 
-(defcustom efrit-do-max-same-tool-calls 15
-  "Maximum consecutive calls to the same tool before circuit breaker trips.
-Set higher (15) to allow legitimate multi-step coding tasks that require
-many eval_sexp calls in sequence (e.g., writing multiple functions)."
+(defcustom efrit-do-max-same-tool-calls 100
+  "Maximum consecutive calls to the same tool before that tool is blocked.
+Consecutive calls with different targets are fan-out, not a loop: one
+fetch per article, one read per file.  The old limit of 15 stopped a
+15-article run at the 16th URL (tzz, 2026-10-02: \"each one would need
+at most 100 requests, not 100 across all of them\").  Loops are caught
+by `efrit-do-max-identical-tool-calls' and `efrit-do-max-calls-per-target';
+this limit is the backstop, and tripping it blocks only this tool until
+another tool runs, not the whole turn."
+  :type 'integer
+  :group 'efrit-do-circuit-breaker)
+
+(defcustom efrit-do-max-calls-per-target 100
+  "Maximum calls to one tool on one target (URL, path, command, form) per turn.
+Counted across the turn, not only consecutively: the budget is per
+article, per file, per command.  A call over the budget is refused;
+nothing else is blocked."
   :type 'integer
   :group 'efrit-do-circuit-breaker)
 
@@ -52,7 +115,7 @@ likely to indicate a loop than varied calls to the same tool."
   :type 'integer
   :group 'efrit-do-circuit-breaker)
 
-(defcustom efrit-do-same-tool-warning-threshold 10
+(defcustom efrit-do-same-tool-warning-threshold 60
   "Warn after this many consecutive calls to the same tool.
 Warning is sent before the hard limit at `efrit-do-max-same-tool-calls'."
   :type 'integer
@@ -91,6 +154,17 @@ runaway loops.")
   "When non-nil, circuit breaker has tripped and session is terminated.
 Stores reason for tripping as a string.")
 
+(defvar efrit-do--tripped-tool nil
+  "(TOOL-NAME . MESSAGE) when one tool is blocked for repeating itself.
+Unlike `efrit-do--circuit-breaker-tripped' this blocks that tool only;
+a call to any other tool clears it.")
+
+(defvar efrit-do--target-counts (make-hash-table :test 'equal)
+  "(TOOL-NAME . TARGET) -> calls this turn, for `efrit-do-max-calls-per-target'.")
+
+(defconst efrit-do--target-keys '("url" "path" "file" "buffer" "command" "expr" "pattern" "query")
+  "Input keys that name what a tool call acts on, first match wins.")
+
 (defvar efrit-do--last-tool-called nil
   "Track the last tool that was called.")
 
@@ -114,6 +188,14 @@ Stores reason for tripping as a string.")
 (defvar efrit-do--error-history nil
   "List of recent error signatures for pattern analysis.
 Each entry is (error-hash . error-message).")
+
+(require 'efrit-events)
+;; one session's runaway must not trip, or reset, another's breaker
+(efrit-session-local 'efrit-do--session-tool-count 'efrit-do--circuit-breaker-tripped
+                     'efrit-do--last-tool-called 'efrit-do--tool-call-count
+                     'efrit-do--last-tool-input 'efrit-do--identical-call-count
+                     'efrit-do--last-error-hash 'efrit-do--same-error-count
+                     'efrit-do--error-history)
 
 ;;; Error Loop Detection Functions
 
@@ -209,9 +291,14 @@ was modified with an error loop warning."
 ;;; Circuit Breaker Implementation
 
 (defun efrit-do--circuit-breaker-reset ()
-  "Reset circuit breaker state for a new session."
+  "Reset circuit breaker state for a new session or REPL turn.
+Every counter here is process-global; without this call at the start
+of each REPL turn, 30 tool calls spread over any number of turns
+tripped the breaker for the rest of the Emacs session."
   (setq efrit-do--session-tool-count 0)
   (setq efrit-do--circuit-breaker-tripped nil)
+  (setq efrit-do--tripped-tool nil)
+  (clrhash efrit-do--target-counts)
   (setq efrit-do--last-tool-called nil)
   (setq efrit-do--tool-call-count 0)
   (setq efrit-do--last-tool-input nil)
@@ -244,6 +331,28 @@ Converts hash tables to sorted alists for order-independent comparison."
     (mapcar #'efrit-do--normalize-for-hash obj))
    (t obj)))
 
+(defun efrit-do--tool-target (tool-input)
+  "What TOOL-INPUT acts on: the first of `efrit-do--target-keys' present,
+else the hash of the whole input, else nil."
+  (cond
+   ((hash-table-p tool-input)
+    (or (cl-some (lambda (k) (let ((v (gethash k tool-input)))
+                               (and v (format "%s" v))))
+                 efrit-do--target-keys)
+        (efrit-do--hash-tool-input tool-input)))
+   (tool-input (efrit-do--hash-tool-input tool-input))
+   (t nil)))
+
+(defun efrit-do--target-count (tool-name tool-input)
+  "Calls to TOOL-NAME on TOOL-INPUT's target so far this turn."
+  (if-let* ((target (efrit-do--tool-target tool-input)))
+      (gethash (cons tool-name target) efrit-do--target-counts 0)
+    0))
+
+(defun efrit-do--tool-call-cap ()
+  "The tool-call cap in force: `efrit-do-max-tool-calls-per-session' unless raised."
+  (efrit-limits-effective 'max-tool-calls efrit-do-max-tool-calls-per-session))
+
 (defun efrit-do--circuit-breaker-check-limits (tool-name &optional tool-input)
   "Check circuit breaker limits before executing TOOL-NAME with TOOL-INPUT.
 Returns (ALLOWED-P . MESSAGE) where ALLOWED-P is t if execution should proceed.
@@ -265,12 +374,35 @@ Uses efrit--safe-execute for error handling."
                  (cons nil (format "Circuit breaker active: %s"
                                    efrit-do--circuit-breaker-tripped)))
 
-                ;; Check session-wide limit
-                ((>= efrit-do--session-tool-count efrit-do-max-tool-calls-per-session)
+                ;; One tool blocked for repeating itself: that tool
+                ;; waits until another has run; the rest of the turn
+                ;; goes on (2026-10-02: a tripped fetch_url blocked
+                ;; search_content and eval_sexp too, and the turn died)
+                ((and efrit-do--tripped-tool (equal (car efrit-do--tripped-tool) tool-name))
+                 (cons nil (format "%s is paused for this turn until another tool runs: %s"
+                                   tool-name (cdr efrit-do--tripped-tool))))
+
+                ;; Per-target budget: the same URL, file or command over
+                ;; and over is a loop even with other calls in between
+                ((and tool-input
+                      (>= (efrit-do--target-count tool-name tool-input) efrit-do-max-calls-per-target))
+                 (cons nil (format "'%s' already ran %d times on %s this turn (limit: %d per target). Use what you have or try another target."
+                                   tool-name (efrit-do--target-count tool-name tool-input)
+                                   (truncate-string-to-width (efrit-do--tool-target tool-input) 80 nil nil "…")
+                                   efrit-do-max-calls-per-target)))
+
+                ;; Check the per-turn tool-call cap.  At the cap, ask
+                ;; before tripping: a long task is not a loop.  A
+                ;; raise (once / session / project) lifts the effective
+                ;; cap and the call proceeds.
+                ((let ((cap (efrit-do--tool-call-cap)))
+                   (and (> cap 0)
+                        (>= efrit-do--session-tool-count cap)
+                        (not (efrit-limits-ask-to-raise 'max-tool-calls cap))))
                  (setq efrit-do--circuit-breaker-tripped
-                       (format "Session limit reached: %d/%d tool calls. Last tool: %s (consecutive: %d)"
+                       (format "Tool-call limit for this turn reached: %d/%d (efrit-do-max-tool-calls-per-session). Last tool: %s (consecutive: %d)"
                                efrit-do--session-tool-count
-                               efrit-do-max-tool-calls-per-session
+                               (efrit-do--tool-call-cap)
                                (or efrit-do--last-tool-called "none")
                                efrit-do--tool-call-count))
                  (cons nil efrit-do--circuit-breaker-tripped))
@@ -278,24 +410,26 @@ Uses efrit--safe-execute for error handling."
                 ;; Check identical call limit (same tool + same input) - this catches true loops
                 ((and is-identical-call
                       (>= efrit-do--identical-call-count efrit-do-max-identical-tool-calls))
-                 (setq efrit-do--circuit-breaker-tripped
-                       (format "Identical tool call detected: '%s' called %d times with same input (limit: %d). This appears to be an infinite loop."
-                               tool-name
-                               (1+ efrit-do--identical-call-count)
-                               efrit-do-max-identical-tool-calls))
-                 (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
-                 (cons nil efrit-do--circuit-breaker-tripped))
+                 (setq efrit-do--tripped-tool
+                       (cons tool-name
+                             (format "Identical tool call detected: '%s' called %d times with same input (limit: %d). This appears to be an infinite loop."
+                                     tool-name
+                                     (1+ efrit-do--identical-call-count)
+                                     efrit-do-max-identical-tool-calls)))
+                 (efrit-log 'warn "Circuit breaker: %s" (cdr efrit-do--tripped-tool))
+                 (cons nil (cdr efrit-do--tripped-tool)))
 
                 ;; Check same-tool hard limit
                 ((and is-same-tool
                       (>= efrit-do--tool-call-count efrit-do-max-same-tool-calls))
-                 (setq efrit-do--circuit-breaker-tripped
-                       (format "Same tool '%s' called %d times consecutively (limit: %d)"
-                               tool-name
-                               (1+ efrit-do--tool-call-count)
-                               efrit-do-max-same-tool-calls))
-                 (efrit-log 'warn "Circuit breaker tripped: %s" efrit-do--circuit-breaker-tripped)
-                 (cons nil efrit-do--circuit-breaker-tripped))
+                 (setq efrit-do--tripped-tool
+                       (cons tool-name
+                             (format "Same tool '%s' called %d times consecutively (limit: %d)"
+                                     tool-name
+                                     (1+ efrit-do--tool-call-count)
+                                     efrit-do-max-same-tool-calls)))
+                 (efrit-log 'warn "Circuit breaker: %s" (cdr efrit-do--tripped-tool))
+                 (cons nil (cdr efrit-do--tripped-tool)))
 
                 ;; Check same-tool warning threshold - allow but warn
                 ((and is-same-tool
@@ -322,9 +456,19 @@ Updates counters and session tracking. Uses efrit--safe-execute for safety."
   (when efrit-do-circuit-breaker-enabled
     (efrit--safe-execute
      (lambda ()
-       (let ((input-hash (when tool-input (efrit-do--hash-tool-input tool-input))))
+       (let ((input-hash (when tool-input (efrit-do--hash-tool-input tool-input)))
+             (target (efrit-do--tool-target tool-input)))
          ;; Update session-wide counter
          (cl-incf efrit-do--session-tool-count)
+
+         ;; Another tool ran: the paused one may try again
+         (when (and efrit-do--tripped-tool
+                    (not (equal (car efrit-do--tripped-tool) tool-name)))
+           (setq efrit-do--tripped-tool nil))
+
+         ;; Per-target count for the turn
+         (when target
+           (cl-incf (gethash (cons tool-name target) efrit-do--target-counts 0)))
 
          ;; Update same-tool counter
          (if (string= tool-name efrit-do--last-tool-called)

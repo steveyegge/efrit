@@ -3,17 +3,15 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
 ;;; Commentary:
 
-;; Integration module for efrit-agent providing:
-;; - TODO tracking integration with efrit-do
-;; - Activity tracking integration with efrit-progress
-;; - Session lifecycle integration
-;; - User input integration
+;; The agent buffer's subscriptions to the event bus: tool rows,
+;; streamed text, thinking indicator, questions, TODOs, session
+;; lifecycle, review rows.  See "Wiring" below.
 
 ;;; Code:
 
@@ -23,13 +21,51 @@
 (require 'efrit-agent-tools)
 (require 'efrit-agent-input)
 (require 'efrit-todo)
+(require 'efrit-events)
 
 ;; TODO struct accessors and state now come from efrit-todo.el
 ;; Backward-compatible aliases (efrit-do-todo-item-*, efrit-do--current-todos) are provided there.
 ;; Declare the aliased variable to silence byte-compiler warnings
 (defvar efrit-do--current-todos)
 
-;;; Integration with efrit-do TODO tracking
+;;; Wiring
+;;
+;; Everything the agent buffer shows comes in through `efrit-events'
+;; (`efrit-subscribe').  The loop engines, the progress layer, the
+;; session and the TODO store publish at the source; nothing here
+;; advises a function.  The subscribers below are installed at load,
+;; once, and are idempotent, so an `efrit-reload' re-running this file
+;; changes nothing (efrit-subscribe adds a function at most once).
+;;
+;; Event vocabulary this file consumes (see efrit-events.el):
+;;
+;;   session-start    :session-id :command          (efrit-do path)
+;;   session-end      :session-id :success
+;;   status           :session-id :status           (REPL path)
+;;   thinking-start   :session-id :label
+;;   thinking-stop    :session-id
+;;   text-delta       :session-id :text
+;;   text-end         :session-id
+;;   tool-start       :session-id :tool :input [:tool-id]
+;;   tool-result      :session-id :tool :result :success [:tool-id] [:elapsed]
+;;   message          :session-id :text :kind
+;;   error            :session-id :message [:buffer]
+;;   question         :session-id :question :options
+;;   question-answered :session-id :response
+;;   todos-changed    :todos
+;;   review-start / review-verdict / review-skipped
+
+(defmacro efrit-agent--in-agent-buffer (event &rest body)
+  "Run BODY in the agent buffer of EVENT's session; otherwise do nothing.
+The buffer is the one of the event's :session-id (`efrit-agent-buffer-for');
+an event without a session id goes to the default buffer."
+  (declare (indent 1))
+  `(let ((buffer (efrit-agent-buffer-for (alist-get :session-id ,event))))
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         ,@body))))
+
+;;; TODOs
 
 (defun efrit-agent--convert-todo-item (todo)
   "Convert an efrit-do-todo-item struct TODO to plist format for display.
@@ -48,234 +84,230 @@ Uses proper accessor functions to avoid fragility when struct changes."
             :content content
             :status agent-status))))
 
-(defun efrit-agent-sync-todos ()
-  "Sync TODOs from `efrit-do--current-todos' to the agent buffer."
+(defun efrit-agent-sync-todos (&optional session-id)
+  "Sync TODOs from `efrit-do--current-todos' to SESSION-ID's agent buffer."
   (when (and (bound-and-true-p efrit-do--current-todos)
-             (get-buffer efrit-agent-buffer-name))
+             (efrit-agent-buffer-for session-id))
     (let ((converted-todos
            (mapcar #'efrit-agent--convert-todo-item
                    efrit-do--current-todos)))
-      (efrit-agent-update-todos converted-todos))))
+      (efrit-agent-update-todos converted-todos (efrit-agent-buffer-for session-id)))))
 
-(defun efrit-agent--on-todo-update (&rest _args)
-  "Advice function called when TODOs are updated in efrit-do.
-Syncs the updated TODOs to the agent buffer."
-  (efrit-agent-sync-todos))
+(defun efrit-agent--on-todos-changed (event)
+  "Subscriber: the TODO store changed."
+  (efrit-agent-sync-todos (alist-get :session-id event)))
 
-(defun efrit-agent-setup-todo-integration ()
-  "Set up advice to sync TODOs from efrit-do to agent buffer.
-Call this after loading efrit-do to enable real-time TODO updates."
-  (when (fboundp 'efrit-do--update-todo-status)
-    (advice-add 'efrit-do--update-todo-status :after #'efrit-agent--on-todo-update))
-  ;; Also hook into todo_write tool handler for batch updates
-  (when (fboundp 'efrit-do--handle-todo-write)
-    (advice-add 'efrit-do--handle-todo-write :after #'efrit-agent--on-todo-update)))
-
-(defun efrit-agent-remove-todo-integration ()
-  "Remove advice for TODO syncing."
-  (advice-remove 'efrit-do--update-todo-status #'efrit-agent--on-todo-update)
-  (advice-remove 'efrit-do--handle-todo-write #'efrit-agent--on-todo-update))
-
-;;; Integration with efrit-progress activity tracking
+;;; Tool rows
 ;;
-;; These hooks connect efrit-progress events to the conversation-first display.
-;; Tools are tracked in efrit-agent--pending-tools hash table to match results.
+;; A row is opened on tool-start and closed on tool-result.  The REPL
+;; engine sends the API's tool_use id in :tool-id, which pairs the two
+;; exactly.  The efrit-do path (via efrit-progress) has no id, so
+;; there the most recent open row for the same tool name is closed,
+;; as before.
 
-(defun efrit-agent--on-tool-start (tool-name input)
-  "Advice function called when a tool starts.
-TOOL-NAME is the name of the tool being called.
-INPUT is the tool's input parameters (preserved for expanded view).
-Uses incremental conversation update instead of activity list."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+(defun efrit-agent--on-tool-start (event)
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--init-pending-tools)
+    (let* ((tool-name (alist-get :tool event))
+           (row (efrit-agent--add-tool-call tool-name (alist-get :input event)))
+           (key (or (alist-get :tool-id event) tool-name)))
+      (puthash key
+               (cons (list :id row :start-time (current-time))
+                     (gethash key efrit-agent--pending-tools))
+               efrit-agent--pending-tools))))
+
+(defun efrit-agent--on-tool-result (event)
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--init-pending-tools)
+    (let* ((key (or (alist-get :tool-id event) (alist-get :tool event)))
+           (pending (gethash key efrit-agent--pending-tools)))
+      (when pending
+        (let* ((entry (car pending))
+               (elapsed (or (alist-get :elapsed event)
+                            (when-let* ((start (plist-get entry :start-time)))
+                              (float-time (time-subtract (current-time) start))))))
+          (efrit-agent--update-tool-result (plist-get entry :id)
+                                           (alist-get :result event)
+                                           (alist-get :success event)
+                                           elapsed)
+          (puthash key (cdr pending) efrit-agent--pending-tools))))))
+
+;;; Text, thinking, messages, errors, status
+
+(defun efrit-agent--on-text-delta (event)
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--add-claude-message (alist-get :text event))))
+
+(defun efrit-agent--on-text-end (event)
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--stream-end-message)))
+
+(defun efrit-agent--on-thinking-start (event)
+  (efrit-agent--in-agent-buffer event
+    ;; The spinner timer drives both the in-buffer line and the
+    ;; mode-line glyph; `efrit-agent--show-thinking' only inserts
+    ;; the line.  Without the timer both stand still.
+    (efrit-agent--spinner-start (alist-get :label event))
+    (efrit-agent--show-thinking (alist-get :label event))))
+
+(defun efrit-agent--on-thinking-stop (event)
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--hide-thinking)))
+
+(defun efrit-agent--on-message (event)
+  "Subscriber: a progress message (the efrit-do path).
+Claude messages are rendered inline; errors with the error face."
+  (efrit-agent--in-agent-buffer event
+    (let ((message (alist-get :text event)))
+      (pcase (alist-get :kind event)
+        ('claude (efrit-agent--add-claude-message (or message "")))
+        ('error
+         (efrit-agent--append-to-conversation
+          (concat (propertize (format "%s Error: " (efrit-agent--char 'error-icon))
+                              'face 'efrit-agent-error)
+                  (propertize (or message "") 'face 'efrit-agent-error)
+                  "\n\n")
+          (list 'efrit-type 'error-message
+                'efrit-id (format "err-%d" (cl-incf efrit-agent--message-counter)))))
+        (_ (efrit-agent--add-claude-message (or message "")))))))
+
+(defun efrit-agent--on-error (event)
+  "Subscriber: the REPL loop failed a turn; show it in the transcript.
+The publisher may name the buffer (:buffer); else the session's."
+  (let ((buffer (or (let ((b (alist-get :buffer event))) (and (buffer-live-p b) b))
+                    (efrit-agent-buffer-for (alist-get :session-id event)))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (efrit-agent--init-pending-tools)
-        ;; Add tool call to conversation and get the tool-id
-        (let ((tool-id (efrit-agent--add-tool-call tool-name input)))
-          ;; Track the tool-id for later result matching
-          ;; Store: tool-id, start-time, and input for potential retry
-          ;; Push to front of list (most recent first)
-          (let ((existing (gethash tool-name efrit-agent--pending-tools)))
-            (puthash tool-name
-                     (cons (list :id tool-id
-                                 :start-time (current-time)
-                                 :input input)
-                           existing)
-                     efrit-agent--pending-tools)))))))
+        (efrit-agent--add-error-message (alist-get :message event))))))
 
-(defun efrit-agent--on-tool-result (tool-name result success-p)
-  "Advice function called when a tool completes.
-Updates the most recently started (not yet completed) tool call for TOOL-NAME.
-Uses in-place update instead of full re-render.
-When a tool fails, stores its context for potential retry."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (efrit-agent--init-pending-tools)
-        ;; Get the first pending tool entry for this tool-name
-        (let ((pending-list (gethash tool-name efrit-agent--pending-tools)))
-          (when pending-list
-            (let* ((entry (car pending-list))
-                   (tool-id (plist-get entry :id))
-                   (start-time (plist-get entry :start-time))
-                   (tool-input (plist-get entry :input))
-                   (elapsed (when start-time
-                              (float-time (time-subtract (current-time) start-time)))))
-              ;; Update the tool in-place
-              (efrit-agent--update-tool-result tool-id result success-p elapsed)
-              ;; If tool failed, store context for retry
-              (when (not success-p)
-                (let ((tool-item (make-hash-table :test 'equal)))
-                  (puthash "name" tool-name tool-item)
-                  (puthash "input" tool-input tool-item)
-                  (efrit-agent--store-failed-tool tool-id tool-name tool-input tool-item)))
-              ;; Remove from pending list
-              (puthash tool-name (cdr pending-list) efrit-agent--pending-tools))))))))
+(defun efrit-agent--on-note (event)
+  "Subscriber: a one-line note from the sandbox, the limits prompt, or review.
+A note with a `:replaces' key rewrites the last note that carried the
+same key (the sandbox's \"asks to …\" line becomes the outcome line)."
+  (efrit-agent--in-agent-buffer event
+    (let* ((key (alist-get :replaces event))
+           (line (concat (propertize (concat "  " (alist-get :text event)) 'face (alist-get :face event)) "\n"))
+           (props (list 'efrit-type (intern (format "%s-note" (alist-get :kind event)))
+                        'efrit-note-key key))
+           (old (and key (efrit-agent--find-note key))))
+      (if old
+          (efrit-agent--with-render
+            (let ((inhibit-read-only t))
+              (save-excursion
+                (goto-char (car old))
+                (delete-region (car old) (cdr old))
+                (insert (apply #'propertize line props)))))
+        (efrit-agent--append-to-conversation line props)))))
 
-(defun efrit-agent--on-message (message &optional type)
-  "Advice function called when a message is shown.
-MESSAGE is the text, TYPE indicates the message type.
-Claude messages are rendered inline in the conversation.
-Error messages are rendered with error face."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (pcase type
-          ('claude
-           ;; Claude messages go directly to conversation
-           (efrit-agent--add-claude-message (or message "")))
-          ('error
-           ;; Error messages with special formatting
-           (efrit-agent--append-to-conversation
-            (concat (propertize (format "%s Error: " (efrit-agent--char 'error-icon))
-                                'face 'efrit-agent-error)
-                    (propertize (or message "") 'face 'efrit-agent-error)
-                    "\n\n")
-            (list 'efrit-type 'error-message
-                  'efrit-id (format "err-%d" (cl-incf efrit-agent--message-counter)))))
-          (_
-           ;; Other messages (system, info) - also to conversation
-           (efrit-agent--add-claude-message (or message ""))))))))
+(defun efrit-agent--find-note (key)
+  "Bounds (START . END) of the last note line whose `efrit-note-key' is KEY, or nil."
+  (let ((pos (and efrit-agent--conversation-end (marker-position efrit-agent--conversation-end)))
+        (found nil))
+    (while (and pos (not found)
+                (setq pos (previous-single-property-change pos 'efrit-note-key)))
+      (let ((v (get-text-property pos 'efrit-note-key)))
+        (when (eq v key)
+          (setq found (cons pos (or (next-single-property-change pos 'efrit-note-key) pos))))))
+    found))
 
-(defun efrit-agent-setup-progress-integration ()
-  "Set up advice to track activities from efrit-progress.
-Call this after loading efrit-progress to enable real-time activity updates."
-  (when (fboundp 'efrit-progress-show-tool-start)
-    (advice-add 'efrit-progress-show-tool-start :after #'efrit-agent--on-tool-start))
-  (when (fboundp 'efrit-progress-show-tool-result)
-    (advice-add 'efrit-progress-show-tool-result :after #'efrit-agent--on-tool-result))
-  (when (fboundp 'efrit-progress-show-message)
-    (advice-add 'efrit-progress-show-message :after #'efrit-agent--on-message)))
+(defun efrit-agent--on-steered (event)
+  "Subscriber: the steering text was handed to the model; say so under its line."
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--append-to-conversation
+     (concat (propertize "  ↳ delivered with the tool results" 'face 'shadow) "\n")
+     (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
 
-(defun efrit-agent-remove-progress-integration ()
-  "Remove advice for activity tracking."
-  (advice-remove 'efrit-progress-show-tool-start #'efrit-agent--on-tool-start)
-  (advice-remove 'efrit-progress-show-tool-result #'efrit-agent--on-tool-result)
-  (advice-remove 'efrit-progress-show-message #'efrit-agent--on-message))
+(defun efrit-agent--on-steer-queued (event)
+  "Subscriber: the turn ended before a tool round could take the steer; it runs next."
+  (efrit-agent--in-agent-buffer event
+    (efrit-agent--append-to-conversation
+     (concat (propertize "  ↳ the turn ended first; sent as the next turn" 'face 'shadow) "\n")
+     (list 'efrit-type 'steer-note 'efrit-steer-text (alist-get :text event)))))
 
-;;; Session lifecycle integration
+(defun efrit-agent--on-status (event)
+  (efrit-agent-set-status (alist-get :status event)
+                          (efrit-agent-buffer-for (alist-get :session-id event))))
 
-(defun efrit-agent--on-session-start (session-id command)
-  "Advice function called when a session starts.
-Creates and displays the agent buffer for SESSION-ID with COMMAND."
-  (efrit-agent-start-session session-id command)
-  ;; Reset activity counter for new session
+;;; Session lifecycle (the efrit-do path)
+
+(defun efrit-agent--on-session-start (event)
+  (efrit-agent-start-session (alist-get :session-id event) (alist-get :command event))
   (setq efrit-agent--activity-counter 0))
 
-(defun efrit-agent--on-session-end (_session-id success-p)
-  "Advice function called when a session ends.
-Updates the agent buffer with SUCCESS-P status."
-  (efrit-agent-end-session success-p))
+(defun efrit-agent--on-session-end (event)
+  (efrit-agent-end-session (alist-get :success event) nil nil nil
+                           (efrit-agent-buffer-for (alist-get :session-id event))))
 
-(defun efrit-agent-setup-session-integration ()
-  "Set up advice to track session lifecycle from efrit-progress.
-This makes the agent buffer appear automatically when sessions start."
-  (when (fboundp 'efrit-progress-start-session)
-    (advice-add 'efrit-progress-start-session :after #'efrit-agent--on-session-start))
-  (when (fboundp 'efrit-progress-end-session)
-    (advice-add 'efrit-progress-end-session :after #'efrit-agent--on-session-end)))
+;;; Questions
 
-(defun efrit-agent-remove-session-integration ()
-  "Remove advice for session lifecycle tracking."
-  (advice-remove 'efrit-progress-start-session #'efrit-agent--on-session-start)
-  (advice-remove 'efrit-progress-end-session #'efrit-agent--on-session-end))
+(defun efrit-agent--on-question (event)
+  "Subscriber: the model asked the user something; show it and wait."
+  (efrit-agent--in-agent-buffer event
+    (let* ((question (alist-get :question event))
+           (options (alist-get :options event))
+           (opts (when options (if (listp options) options (append options nil)))))
+      (setq efrit-agent--pending-question
+            (list question opts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+      (setq efrit-agent--status 'waiting)
+      (efrit-agent--add-question question opts))))
 
-;;; User input integration
+(defun efrit-agent--on-question-answered (event)
+  (efrit-agent--in-agent-buffer event
+    (when-let* ((response (alist-get :response event)))
+      (efrit-agent--add-user-message (format "%s" response)))
+    (setq efrit-agent--pending-question nil
+          efrit-agent--pending-question-multi nil)
+    (efrit-agent--close-question-menu)
+    (setq efrit-agent--status 'working)
+    (efrit-agent--reset-input-prompt)))
 
-(defun efrit-agent--on-pending-question (_session question &optional options)
-  "Advice function called when a pending question is set.
-Updates the agent buffer with QUESTION and OPTIONS, sets status to waiting.
-Uses incremental conversation update instead of full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        ;; Normalize options to a list
-        (let ((opts (when options
-                      (if (listp options) options (append options nil)))))
-          ;; Store the pending question for keyboard shortcut handling
-          (setq efrit-agent--pending-question
-                (list question opts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
-          ;; Set status to waiting (updates header-line)
-          (setq efrit-agent--status 'waiting)
-          ;; Add question to conversation incrementally (no full re-render)
-          (efrit-agent--add-question question opts))))))
+;;; Subscriptions
 
-(defun efrit-agent--on-question-response (_session response)
-  "Advice function called when user responds to a question.
-Adds the user's RESPONSE to conversation and sets status back to working."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        ;; Add user's response to conversation
-        (when response
-          (efrit-agent--add-user-message (format "%s" response)))
-        ;; Clear the pending question state
-        (setq efrit-agent--pending-question nil)
-        (setq efrit-agent--status 'working)
-        ;; Reset input prompt
-        (efrit-agent--reset-input-prompt)))))
-
-(defun efrit-agent-setup-input-integration ()
-  "Set up advice to track user input requests from session.
-This makes the input section appear when Claude asks questions."
-  (when (fboundp 'efrit-session-set-pending-question)
-    (advice-add 'efrit-session-set-pending-question :after #'efrit-agent--on-pending-question))
-  (when (fboundp 'efrit-session-respond-to-question)
-    (advice-add 'efrit-session-respond-to-question :after #'efrit-agent--on-question-response)))
-
-(defun efrit-agent-remove-input-integration ()
-  "Remove advice for user input tracking."
-  (advice-remove 'efrit-session-set-pending-question #'efrit-agent--on-pending-question)
-  (advice-remove 'efrit-session-respond-to-question #'efrit-agent--on-question-response))
-
-;;; Combined setup/teardown
+(defconst efrit-agent--subscriptions
+  '((todos-changed . efrit-agent--on-todos-changed)
+    (tool-start . efrit-agent--on-tool-start)
+    (tool-result . efrit-agent--on-tool-result)
+    (text-delta . efrit-agent--on-text-delta)
+    (text-end . efrit-agent--on-text-end)
+    (thinking-start . efrit-agent--on-thinking-start)
+    (thinking-stop . efrit-agent--on-thinking-stop)
+    (message . efrit-agent--on-message)
+    (error . efrit-agent--on-error)
+    (status . efrit-agent--on-status)
+    (note . efrit-agent--on-note)
+    (steered . efrit-agent--on-steered)
+    (steer-queued . efrit-agent--on-steer-queued)
+    (session-start . efrit-agent--on-session-start)
+    (session-end . efrit-agent--on-session-end)
+    (question . efrit-agent--on-question)
+    (question-answered . efrit-agent--on-question-answered)
+    (review-start . efrit-agent--on-review-start)
+    (review-verdict . efrit-agent--on-review-verdict)
+    (review-skipped . efrit-agent--on-review-skipped))
+  "What the agent buffer listens to: (EVENT . HANDLER).")
 
 (defun efrit-agent-setup-integration ()
-  "Set up all integration hooks for the agent buffer.
-Call this after loading efrit-do and efrit-progress."
-  (efrit-agent-setup-todo-integration)
-  (efrit-agent-setup-progress-integration)
-  (efrit-agent-setup-session-integration)
-  (efrit-agent-setup-input-integration))
+  "Subscribe the agent buffer to the events it renders.  Idempotent."
+  (dolist (sub efrit-agent--subscriptions)
+    (efrit-subscribe (car sub) (cdr sub))))
 
 (defun efrit-agent-remove-integration ()
-  "Remove all integration hooks."
-  (efrit-agent-remove-todo-integration)
-  (efrit-agent-remove-progress-integration)
-  (efrit-agent-remove-session-integration)
-  (efrit-agent-remove-input-integration))
+  "Unsubscribe the agent buffer from every event."
+  (dolist (sub efrit-agent--subscriptions)
+    (efrit-unsubscribe (car sub) (cdr sub))))
 
 ;;; Public API wrappers (for use by other modules)
 
 (declare-function efrit-agent--add-todos-inline "efrit-agent-render")
 (declare-function efrit-agent-start-session "efrit-agent")
 (declare-function efrit-agent-end-session "efrit-agent")
+(declare-function efrit-agent-set-status "efrit-agent")
 
-(defun efrit-agent-update-todos (todos)
-  "Update the TODO list display with TODOS.
+(defun efrit-agent-update-todos (todos &optional buffer)
+  "Update the TODO list display with TODOS in BUFFER (default the default agent buffer).
 TODOS should be a list of plists with :status, :content, :activeForm.
 Uses incremental inline update instead of full re-render."
-  (let ((buffer (get-buffer efrit-agent-buffer-name)))
+  (let ((buffer (or buffer (get-buffer efrit-agent-buffer-name))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (setq efrit-agent--todos todos)
@@ -286,6 +318,64 @@ Uses incremental inline update instead of full re-render."
 ;; efrit-agent.el. Duplicate wrapper versions here were always shadowed
 ;; (efrit-agent.el requires this file before defining its own) and were
 ;; removed (ef-d89).
+
+;;; Review rows
+;;
+;; The second-model review (efrit-review) publishes review-start and
+;; review-verdict.  Show it as a tool-style row so the user sees that
+;; the turn was judged, by which model, and the outcome -- approvals
+;; included, not only rejections.  The row expands (TAB / d) to what
+;; the reviewer was shown and what it answered.
+
+(defvar-local efrit-agent--review-row nil
+  "Tool-row id of the review in flight, or nil.")
+
+(defun efrit-agent--on-review-start (event)
+  (let ((buffer (efrit-agent-buffer-for (alist-get :session-id event))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((input (make-hash-table :test 'equal)))
+          (puthash "calls" (alist-get :calls event) input)
+          (puthash "model" (alist-get :model event) input)
+          (puthash "shown to reviewer" (alist-get :prompt event) input)
+          (setq efrit-agent--review-row
+                (efrit-agent--add-tool-call "review" input)))))))
+
+(defun efrit-agent--on-review-verdict (event)
+  (let ((buffer (efrit-agent-buffer-for (alist-get :session-id event))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when efrit-agent--review-row
+          (let* ((verdict (alist-get :verdict event))
+                 (reason (alist-get :reason event))
+                 (text (pcase verdict
+                         ('approve "approved")
+                         ('reject (concat "rejected · " (or reason "no reason given")))
+                         (_ (format "%s" verdict)))))
+            (efrit-agent--update-tool-result efrit-agent--review-row text
+                                             (eq verdict 'approve) nil)
+            (setq efrit-agent--review-row nil)))))))
+
+(defcustom efrit-agent-show-review-skips t
+  "When non-nil, a turn that needs no review gets a one-line dim note.
+Reads and efrit's own control tools are not reviewed; the note says
+so, for example: not reviewed: read-only turn (fetch_url)."
+  :type 'boolean
+  :group 'efrit-agent)
+
+(defun efrit-agent--on-review-skipped (event)
+  (when efrit-agent-show-review-skips
+    (efrit-agent--in-agent-buffer event
+      (efrit-agent--append-to-conversation
+       (concat (propertize (format "  ⚖ not reviewed: %s" (alist-get :reason event))
+                           'face 'efrit-agent-timestamp)
+               "\n")
+       (list 'efrit-type 'review-note)))))
+
+;; Subscribed at load, not in eval-after-load: efrit-events is already
+;; required above, and an eval-after-load body would run again on
+;; every efrit-reload.  efrit-agent.el calls this too; both are safe.
+(efrit-agent-setup-integration)
 
 (provide 'efrit-agent-integration)
 

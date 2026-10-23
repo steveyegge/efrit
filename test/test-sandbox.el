@@ -1,0 +1,1727 @@
+;;; test-sandbox.el --- scope sandbox: core, store, eval enforcement -*- lexical-binding: t; -*-
+
+;;; Code:
+
+(require 'ert)
+(require 'efrit-sandbox)
+(require 'efrit-sandbox-store)
+(require 'efrit-grant-history)
+(require 'efrit-sandbox-eval)
+
+(defmacro test-sb--in-project (&rest body)
+  "Run BODY with a fresh temp project as the sandbox root and clean tables."
+  (declare (indent 0))
+  `(let* ((root (file-name-as-directory (make-temp-file "efrit-sb-" t)))
+          (efrit-project-root root)
+          (efrit-sandbox-enabled t)
+          (efrit-sandbox-default-project-grants '(read))
+          (efrit-sandbox-request-function nil)
+          (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+          (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+          (efrit-sandbox--turn-state (make-hash-table :test (quote equal)))
+          (efrit-sandbox-store--loaded (make-hash-table :test 'equal))
+          ;; the tests' "outside" paths live under the temporary
+          ;; directory, which the expected-request rules wave through;
+          ;; the tests of those rules bind the lists back themselves
+          (efrit-sandbox-expected-read-roots nil)
+          (efrit-sandbox-expected-write-roots nil)
+          (efrit-sandbox-expected-shell-commands nil)
+          ;; grant mechanics are tested with plain lines (git log | head,
+          ;; rm x); the Emacs-does-it refusal has its own test, which binds
+          ;; this back on
+          (efrit-sandbox-shell-refuse-emacs-equivalents nil))
+     (unwind-protect (progn ,@body)
+       (delete-directory root t))))
+
+(defvar efrit-project-root)
+
+;;; Core
+
+(ert-deftest test-sb-project-read-is-default-write-is-not ()
+  (test-sb--in-project
+    (should (efrit-sandbox-allowed-p 'read (expand-file-name "a.el" root)))
+    (should (efrit-sandbox-allowed-p 'read (expand-file-name "sub/b.el" root)))
+    (should-not (efrit-sandbox-allowed-p 'write (expand-file-name "a.el" root)))
+    (should-not (efrit-sandbox-allowed-p 'read "/etc/hostname"))
+    (should-not (efrit-sandbox-allowed-p 'elisp t))
+    (should-not (efrit-sandbox-allowed-p 'shell t))))
+
+(ert-deftest test-sb-check-denies-without-prompt-function ()
+  (test-sb--in-project
+    (should (efrit-sandbox-check 'read (expand-file-name "x" root)))
+    (condition-case err
+        (progn (efrit-sandbox-check 'write (expand-file-name "x" root) "edit_file") (should nil))
+      (efrit-sandbox-denied
+       (let ((req (cadr err)))
+         (should (eq (efrit-sandbox-request-cap req) 'write))
+         ;; suggested target for an in-project write is the root
+         (should (equal (efrit-sandbox-request-target req) root))
+         (should (equal (efrit-sandbox-request-tool req) "edit_file")))))))
+
+(ert-deftest test-sb-prompt-scopes ()
+  (test-sb--in-project
+    (defvar test-sb--answers nil)
+    (let ((efrit-sandbox-request-function (lambda (_req) (pop test-sb--answers))))
+      ;; once: allowed exactly once
+      (setq test-sb--answers '(once))
+      (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
+      (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
+      ;; session: sticks, not persisted
+      (setq test-sb--answers '(session))
+      (should (efrit-sandbox-check 'write (expand-file-name "a" root)))
+      (should (efrit-sandbox-allowed-p 'write (expand-file-name "other" root)))
+      (should-not (file-exists-p (efrit-sandbox-store-file root)))
+      ;; project: persisted
+      (setq test-sb--answers '(project))
+      (should (efrit-sandbox-check 'elisp t))
+      (should (file-exists-p (efrit-sandbox-store-file root)))
+      (should (= (logand (file-modes (efrit-sandbox-store-file root)) #o077) 0))
+      ;; deny
+      (setq test-sb--answers '(nil))
+      (should-error (efrit-sandbox-check 'shell t) :type 'efrit-sandbox-denied))))
+
+(ert-deftest test-sb-net-host-grants ()
+  "A net request for a host is granted per host: the grant covers that
+host and its subdomains, not other sites; a project grant round-trips
+through the store; a blanket t grant covers every host."
+  (test-sb--in-project
+    (let ((asked nil)
+          (answer 'session))
+      (let ((efrit-sandbox-request-function
+             (lambda (req) (push (efrit-sandbox-request-target req) asked) answer)))
+        (should (efrit-sandbox-check 'net '(host . "emacsredux.com") "fetch_url"))
+        (should (equal '((host . "emacsredux.com")) asked))
+        (should (efrit-sandbox-allowed-p 'net '(host . "emacsredux.com")))
+        (should (efrit-sandbox-allowed-p 'net '(host . "www.emacsredux.com")))
+        (should-not (efrit-sandbox-allowed-p 'net '(host . "notemacsredux.com")))
+        (should-not (efrit-sandbox-allowed-p 'net '(host . "example.org")))
+        (should-not (efrit-sandbox-allowed-p 'net t))
+        ;; the prompt text names the site
+        (should (string-match-p "emacsredux.com"
+                                (efrit-sandbox-ui--scope-word
+                                 (efrit-sandbox-request-create :cap 'net :target '(host . "emacsredux.com")))))
+        ;; project scope persists and reloads as a host target
+        (setq answer 'project)
+        (should (efrit-sandbox-check 'net '(host . "example.org")))
+        (clrhash efrit-sandbox--project-grants)
+        (clrhash efrit-sandbox-store--loaded)
+        (efrit-sandbox-store-ensure-loaded root)
+        (should (efrit-sandbox-allowed-p 'net '(host . "docs.example.org")))
+        ;; a blanket grant covers any host
+        (efrit-sandbox-grant 'net t 'session root)
+        (should (efrit-sandbox-allowed-p 'net '(host . "anything.net")))))))
+
+(ert-deftest test-sb-prompt-N-denies-rest-of-turn-and-q-aborts ()
+  "N: this and every further request this turn is denied without a prompt.
+q: the tool is interrupted (quit), which the loop turns into an ended turn.
+Both are forgotten when the next turn begins."
+  (test-sb--in-project
+    (let ((asked 0))
+      ;; N
+      (let ((efrit-sandbox-request-function
+             (lambda (_req) (cl-incf asked) (efrit-sandbox-deny-rest-of-turn) nil)))
+        (efrit-sandbox-begin-turn)
+        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'shell "ls") :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'elisp t) :type 'efrit-sandbox-denied)
+        (should (= asked 1))
+        ;; what is already allowed still is
+        (should (efrit-sandbox-check 'read (expand-file-name "a" root)))
+        ;; next turn asks again
+        (efrit-sandbox-begin-turn)
+        (should-error (efrit-sandbox-check 'write (expand-file-name "a" root)) :type 'efrit-sandbox-denied)
+        (should (= asked 2)))
+      ;; q
+      (let* ((aborts 1)
+             (efrit-sandbox-request-function
+              (lambda (_req) (when (> aborts 0) (cl-decf aborts) (efrit-sandbox-abort-turn)) nil)))
+        (efrit-sandbox-begin-turn)
+        ;; `quit' is not an `error': catch it as the loop does
+        (should (eq 'quit (condition-case nil
+                              (progn (efrit-sandbox-check 'write (expand-file-name "a" root)) 'ran)
+                            (quit 'quit))))
+        ;; the abort is consumed: the next check asks again (and is denied)
+        (should (eq 'denied (condition-case nil
+                                (progn (efrit-sandbox-check 'write (expand-file-name "b" root)) 'ran)
+                              (efrit-sandbox-denied 'denied)
+                              (quit 'quit))))
+        (efrit-sandbox-begin-turn)))))
+
+(ert-deftest test-sb-outside-target-suggestion-is-narrow ()
+  (test-sb--in-project
+    (defvar test-sb--seen nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--seen req) nil))
+          (outside (make-temp-file "efrit-sb-out-" t)))
+      (unwind-protect
+          (progn
+            (ignore-errors (efrit-sandbox-check 'read (expand-file-name "deep/f.txt" outside)))
+            ;; directory of the file, not / or ~
+            (should (string-prefix-p (file-name-as-directory (file-truename outside))
+                                     (efrit-sandbox-request-target test-sb--seen)))
+            (should (string-suffix-p "deep/" (efrit-sandbox-request-target test-sb--seen))))
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-read-outside-in-a-git-tree-suggests-the-whole-tree ()
+  "A read or write inside another git checkout asks for that checkout's
+root once, not one subdirectory per request; the grant is kept under
+the checkout."
+  (skip-unless (executable-find "git"))
+  (test-sb--in-project
+    (let* ((repo (file-name-as-directory (make-temp-file "efrit-sb-repo-" t)))
+           (deep (expand-file-name "lisp/core/" repo))
+           (seen nil)
+           (efrit-sandbox-request-function (lambda (req) (setq seen req) 'session)))
+      (unwind-protect
+          (progn
+            (make-directory deep t)
+            (let ((default-directory repo))
+              (should (eq 0 (call-process "git" nil nil nil "init" "-q"))))
+            (efrit-sandbox-forget-git-toplevels)
+            ;; a checkout anywhere (2026-10-01: no longer only under $HOME)
+            (let ((under-home t))
+              (should (efrit-sandbox-check 'read (expand-file-name "x.el" deep) "read_file"))
+              (should (equal (efrit-sandbox-request-target seen)
+                             (efrit-sandbox-canonical (if under-home repo deep))))
+              (when under-home
+                ;; one grant covers the whole tree now, kept under the repo
+                (should (efrit-sandbox-allowed-p 'read (expand-file-name "docs/a.md" repo)))
+                (should (= 1 (length (efrit-sandbox-grants (efrit-sandbox-canonical repo)))))))
+            ;; a write asks for the whole tree too (2026-10-01)
+            (efrit-sandbox-check 'write (expand-file-name "y.el" deep) "edit_file")
+            (should (equal (efrit-sandbox-request-target seen) (efrit-sandbox-canonical repo))))
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-wider-grant-absorbs-narrower-ones ()
+  "Granting the parent removes the child grants of the same capability."
+  (test-sb--in-project
+    (let ((a (file-name-as-directory (expand-file-name "a" root)))
+          (b (file-name-as-directory (expand-file-name "a/b" root))))
+      (make-directory b t)
+      (efrit-sandbox-grant 'read b 'session)
+      (efrit-sandbox-grant 'write b 'session)
+      (efrit-sandbox-grant 'read a 'session)
+      (let ((gs (efrit-sandbox-grants root)))
+        (should (= 2 (length gs)))
+        (should (cl-find-if (lambda (g) (and (eq (plist-get g :cap) 'read)
+                                             (equal (plist-get g :target) (efrit-sandbox-canonical a))))
+                            gs))
+        ;; the write on b is untouched
+        (should (cl-find-if (lambda (g) (eq (plist-get g :cap) 'write)) gs))))))
+
+(ert-deftest test-sb-always-deny-cannot-be-granted ()
+  (test-sb--in-project
+    (let ((efrit-sandbox-request-function (lambda (_) 'project)))
+      (should-error (efrit-sandbox-check 'read (expand-file-name ".efrit/x" root))
+                    :type 'efrit-sandbox-denied)
+      (should-error (efrit-sandbox-check 'write "~/.ssh/config") :type 'efrit-sandbox-denied)
+      (should-not (gethash root efrit-sandbox--project-grants)))))
+
+(ert-deftest test-sb-remote-root-is-a-different-scope ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'write root 'session)
+    (should (efrit-sandbox-allowed-p 'write (expand-file-name "f" root)))
+    ;; same localname on a remote host is NOT covered
+    (should-not (efrit-sandbox--under-p (concat "/ssh:h:" root "f") root))))
+
+(ert-deftest test-sb-disabled-is-noop ()
+  (test-sb--in-project
+    (let ((efrit-sandbox-enabled nil))
+      (should (efrit-sandbox-check 'shell t))
+      (should (efrit-sandbox-check 'write "/etc/x")))))
+
+;;; Shell: per-command grants and always-ask lines
+
+(ert-deftest test-sb-shell-commands-are-extracted ()
+  "Every command name in a line, across pipes, chains, substitution and wrappers."
+  (should (equal (efrit-sandbox-shell-commands "git status") '("git")))
+  (should (equal (efrit-sandbox-shell-commands "git log | sed s/x// | head -3") '("git" "sed" "head")))
+  (should (equal (efrit-sandbox-shell-commands "make && ./run.sh; echo done") '("make" "run.sh" "echo")))
+  (should (equal (efrit-sandbox-shell-commands "cd /tmp && FOO=1 env BAR=2 python3 x.py")
+                 '("cd" "env" "python3")))
+  (should (equal (sort (efrit-sandbox-shell-commands "echo $(whoami) `date`") #'string<) '("date" "echo" "whoami")))
+  ;; a substitution inside a path is not a command boundary for the rest of the word
+  (should (equal (efrit-sandbox-shell-commands "date +%F; ls ~/work/$(date +%F)/claude.org 2>&1; test -w ~/work && echo writable")
+                 '("date" "ls" "test" "echo")))
+  (should (equal (efrit-sandbox-shell-commands "cat $(git rev-parse --show-toplevel)/README.md") '("cat" "git")))
+  (should (equal (efrit-sandbox-shell-commands "find . -name '*.el' | xargs grep -l foo")
+                 '("find" "xargs" "grep")))
+  (should (equal (efrit-sandbox-shell-commands "nohup make test > out.log 2>&1 &") '("nohup" "make")))
+  (should (equal (efrit-sandbox-shell-commands "timeout 5 sleep 10") '("timeout" "sleep")))
+  (should (equal (efrit-sandbox-shell-commands "/usr/bin/ls -la") '("ls")))
+  ;; separators inside quotes are not commands
+  (should (equal (efrit-sandbox-shell-commands "git commit -m 'a; rm -rf x'") '("git")))
+  (should (equal (efrit-sandbox-shell-commands "echo \"a | b\" | wc") '("echo" "wc")))
+  (should-not (efrit-sandbox-shell-commands "   ")))
+
+(ert-deftest test-sb-shell-grant-covers-only-its-commands ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'shell '(shell "git" "make") 'session)
+    (should (efrit-sandbox-allowed-p 'shell "git status"))
+    (should (efrit-sandbox-allowed-p 'shell "git log | make -n"))
+    (should-not (efrit-sandbox-allowed-p 'shell "git log | sed s/x//"))
+    (should-not (efrit-sandbox-allowed-p 'shell "rm x"))
+    ;; a blanket request is not covered by a command list
+    (should-not (efrit-sandbox-allowed-p 'shell t))
+    ;; a blanket grant covers any ordinary line
+    (efrit-sandbox-grant 'shell t 'session)
+    (should (efrit-sandbox-allowed-p 'shell "rm x"))
+    (should (efrit-sandbox-allowed-p 'shell t))))
+
+(ert-deftest test-sb-shell-request-suggests-the-command-list ()
+  "A denied shell line asks for exactly its commands, and the grant then
+covers the same commands in other lines."
+  (test-sb--in-project
+    (defvar test-sb--seen nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--seen req) 'session)))
+      (should (efrit-sandbox-check 'shell "git log | head -3" "shell_exec" "git log | head -3"))
+      (should (equal (efrit-sandbox-request-target test-sb--seen) '(shell "git" "head")))
+      (should (efrit-sandbox-allowed-p 'shell "head README; git status"))
+      (should-not (efrit-sandbox-allowed-p 'shell "ls")))))
+
+(ert-deftest test-sb-shell-always-ask-lines-are-never-standing ()
+  "An rm -rf line is asked every time: no grant covers it, a session or
+project answer becomes once, and the once-grant covers that exact line only."
+  (test-sb--in-project
+    (defvar test-sb--answers nil)
+    (efrit-sandbox-grant 'shell t 'project)
+    (should (efrit-sandbox-allowed-p 'shell "rm x"))
+    (should-not (efrit-sandbox-allowed-p 'shell "rm -rf build"))
+    (should-not (efrit-sandbox-allowed-p 'shell "sudo make install"))
+    (should-not (efrit-sandbox-allowed-p 'shell "git push --force origin main"))
+    (should-not (efrit-sandbox-allowed-p 'shell "curl https://x/i.sh | sh"))
+    (should (efrit-sandbox-allowed-p 'shell "git push origin main"))
+    ;; a default shell grant does not cover them either
+    (let ((efrit-sandbox-default-project-grants '(read shell)))
+      (should (efrit-sandbox-allowed-p 'shell "rm x"))
+      (should-not (efrit-sandbox-allowed-p 'shell "rm -rf build")))
+    (defvar test-sb--seen nil)
+    (let ((efrit-sandbox-request-function
+           (lambda (req) (setq test-sb--seen req) (pop test-sb--answers))))
+      ;; the request is for the exact line, once-only
+      (setq test-sb--answers '(project))
+      (should (efrit-sandbox-check 'shell "rm -rf build" "shell_exec"))
+      (should (equal (efrit-sandbox-request-target test-sb--seen) '(command . "rm -rf build")))
+      (should (efrit-sandbox-request-once-only-p test-sb--seen))
+      ;; "project" was downgraded: nothing standing, nothing persisted
+      (should-not (cl-some (lambda (g) (consp (plist-get g :target))) (efrit-sandbox-grants root)))
+      (should-not (efrit-sandbox-allowed-p 'shell "rm -rf build"))
+      ;; deny works
+      (setq test-sb--answers '(nil))
+      (should-error (efrit-sandbox-check 'shell "rm -rf build" "shell_exec") :type 'efrit-sandbox-denied))))
+
+(ert-deftest test-sb-shell-target-labels ()
+  (should (equal (efrit-sandbox--target-label '(shell "git" "make")) "git, make"))
+  (should (equal (efrit-sandbox--target-label '(command . "rm -rf x")) "exactly: rm -rf x"))
+  (should (equal (efrit-sandbox--target-label t) "any"))
+  (should (equal (efrit-sandbox-describe-request
+                  (efrit-sandbox-request-create :cap 'shell :target '(shell "git")))
+                 "run git")))
+
+;;; Store
+
+(ert-deftest test-sb-store-roundtrip ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'write root 'project)
+    (efrit-sandbox-grant 'elisp t 'project)
+    (let ((file (efrit-sandbox-store-file root)))
+      (should (file-exists-p file))
+      (clrhash efrit-sandbox--project-grants)
+      (should (= 2 (length (efrit-sandbox-store-load root))))
+      (should (efrit-sandbox-allowed-p 'elisp t))
+      (should (efrit-sandbox-allowed-p 'write (expand-file-name "f" root)))
+      ;; plain JSON, nothing else
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((obj (json-parse-buffer :object-type 'hash-table :array-type 'list)))
+          (should (= 1 (gethash "version" obj)))
+          (should (= 2 (length (gethash "grants" obj)))))))))
+
+(ert-deftest test-sb-store-shell-command-lists-roundtrip ()
+  "A per-command shell grant persists as \"shell:git make\" and comes back as a list;
+an exact-line target is never persisted."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'shell '(shell "git" "make") 'project)
+    (clrhash efrit-sandbox--project-grants)
+    (let ((g (efrit-sandbox-store-load root)))
+      (should (equal (plist-get (car g) :target) '(shell "git" "make"))))
+    (should (efrit-sandbox-allowed-p 'shell "make && git status"))
+    (with-temp-buffer
+      (insert-file-contents (efrit-sandbox-store-file root))
+      (should (string-match-p "\"shell:git make\"" (buffer-string))))
+    ;; an empty list on disk is invalid and dropped
+    (with-temp-file (efrit-sandbox-store-file root)
+      (insert "{\"version\":1,\"grants\":[{\"cap\":\"shell\",\"target\":\"shell:\",\"scope\":\"project\"}]}"))
+    (clrhash efrit-sandbox--project-grants)
+    (should-not (efrit-sandbox-store-load root))))
+
+(ert-deftest test-sb-store-drops-invalid-entries ()
+  "Bad caps, relative targets, non-project scopes, and non-JSON are ignored."
+  (test-sb--in-project
+    (let ((file (efrit-sandbox-store-file root)))
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (insert "{\"version\":1,\"grants\":["
+                "{\"cap\":\"write\",\"target\":true,\"scope\":\"session\"},"     ; wrong scope
+                "{\"cap\":\"root\",\"target\":true,\"scope\":\"project\"},"      ; unknown cap
+                "{\"cap\":\"write\",\"target\":\"rel/path\",\"scope\":\"project\"},"  ; relative
+                "{\"cap\":\"read\",\"target\":\"/tmp/ok/\",\"scope\":\"project\"}]}"))  ; valid
+      (clrhash efrit-sandbox--project-grants)
+      (let ((g (efrit-sandbox-store-load root)))
+        (should (= 1 (length g)))
+        (should (eq (plist-get (car g) :cap) 'read)))
+      (should-not (efrit-sandbox-allowed-p 'write (expand-file-name "f" root)))
+      (with-temp-file file (insert "not json {{{"))
+      (clrhash efrit-sandbox--project-grants)
+      (should-not (efrit-sandbox-store-load root)))))
+
+;;; Eval enforcement: static
+
+(ert-deftest test-sb-eval-inspect-refuses-sandbox-tampering ()
+  (dolist (form '((efrit-sandbox-grant 'shell t 'project)
+                  (setq efrit-sandbox-enabled nil)
+                  (fset 'efrit-sandbox-check #'ignore)
+                  (funcall (intern "efrit-sandbox-reset-session"))
+                  (let ((file-name-handler-alist nil)) (delete-file "x"))
+                  (advice-add 'write-region :around #'ignore)
+                  (eval '(delete-file "x"))
+                  (apply 'efrit-permission-reset nil)
+                  ;; hidden behind a macro
+                  (when t (symbol-function 'efrit-sandbox-check))))
+    (should (efrit-sandbox-eval-inspect form))))
+
+(ert-deftest test-sb-eval-inspect-refuses-blocking-package-ops ()
+  "Package installs and synchronous url fetches freeze Emacs with no
+way to interrupt them from a timer (2026-10-21); the inspector refuses
+them and points at run_program.  Reading package state is fine."
+  (dolist (form '((package-refresh-contents)
+                  (progn (add-to-list 'package-pinned-packages '(embark . "gnu-devel"))
+                         (package-upgrade 'embark))
+                  (package-vc-install "https://example.invalid/x")
+                  (url-retrieve-synchronously "https://example.invalid/")))
+    (let ((why (efrit-sandbox-eval-inspect form)))
+      (should why)
+      (should (string-match-p "run_program" why))))
+  (dolist (form '((package-installed-p 'embark)
+                  (locate-library "embark")
+                  (assq 'embark package-alist)))
+    (should-not (efrit-sandbox-eval-inspect form))))
+
+(ert-deftest test-sb-eval-inspect-accepts-ordinary-code ()
+  (dolist (form '((+ 1 2)
+                  (with-current-buffer "*scratch*" (buffer-string))
+                  (find-file "/tmp/x")
+                  (let ((f "a")) (insert-file-contents f))
+                  (mapcar #'upcase '("a"))
+                  (message "efrit says hi")))          ; plain string, fine
+    (should-not (efrit-sandbox-eval-inspect form))))
+
+;;; Eval enforcement: dynamic
+
+(ert-deftest test-sb-eval-requires-elisp-capability ()
+  (test-sb--in-project
+    (should-error (efrit-sandbox-eval-form '(+ 1 2)) :type 'efrit-sandbox-denied)
+    (efrit-sandbox-grant 'elisp t 'session)
+    (should (= 3 (efrit-sandbox-eval-form '(+ 1 2))))))
+
+(ert-deftest test-sb-eval-file-primitives-are-checked ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let ((inside (expand-file-name "in.txt" root))
+          (outside (make-temp-file "efrit-sb-outside-")))
+      (unwind-protect
+          (progn
+            (with-temp-file inside (insert "in"))
+            (with-temp-file outside (insert "out"))
+            ;; read inside: default grant
+            (should (equal "in" (efrit-sandbox-eval-form
+                                 `(with-temp-buffer (insert-file-contents ,inside) (buffer-string)))))
+            ;; read outside: denied
+            (should-error (efrit-sandbox-eval-form
+                           `(with-temp-buffer (insert-file-contents ,outside) (buffer-string)))
+                          :type 'efrit-sandbox-denied)
+            (should (equal "out" (with-temp-buffer (insert-file-contents outside) (buffer-string))))
+            ;; write inside without write grant: denied, file untouched
+            (should-error (efrit-sandbox-eval-form `(with-temp-file ,inside (insert "changed")))
+                          :type 'efrit-sandbox-denied)
+            (should (equal "in" (with-temp-buffer (insert-file-contents inside) (buffer-string))))
+            ;; delete outside: denied
+            (should-error (efrit-sandbox-eval-form `(delete-file ,outside)) :type 'efrit-sandbox-denied)
+            (should (file-exists-p outside))
+            ;; with a write grant on the root, the write works
+            (efrit-sandbox-grant 'write root 'session)
+            (efrit-sandbox-eval-form `(with-temp-file ,inside (insert "changed")))
+            (should (equal "changed" (with-temp-buffer (insert-file-contents inside) (buffer-string))))
+            ;; find-file + save-buffer path
+            (efrit-sandbox-eval-form
+             `(with-current-buffer (find-file-noselect ,inside)
+                (goto-char (point-max)) (insert "!") (save-buffer) (kill-buffer)))
+            (should (string-prefix-p "changed!" (with-temp-buffer (insert-file-contents inside) (buffer-string)))))
+        (ignore-errors (delete-file outside))))))
+
+(ert-deftest test-sb-eval-load-and-load-path-are-not-gated ()
+  "`(require ...)' / `load' of a library inside a sandboxed eval never
+prompts: `load' is not a gated op, and reading under `load-path' or
+`data-directory' is exempt.  A relative name is not checked against
+`default-directory' (a remote root made that a spurious remote read)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (lib (locate-library "subr-x")))
+      ;; require (the inspector refuses a literal `load'): no prompt, it works
+      (should (eq 'subr-x (efrit-sandbox-eval-form '(progn (require 'subr-x) 'subr-x))))
+      (should (eq 'repeat (efrit-sandbox-eval-form '(progn (require 'repeat) 'repeat))))
+      ;; reading a load-path file explicitly: exempt
+      (should (stringp (efrit-sandbox-eval-form
+                        `(with-temp-buffer (insert-file-contents ,lib) (buffer-substring 1 10)))))
+      (should (efrit-sandbox-eval--exempt-p lib))
+      (should-not (efrit-sandbox-eval--exempt-p (expand-file-name "x.el" root)))
+      ;; a relative name with a remote default-directory: nothing checked
+      ;; on the remote (the check would have been recorded as a request)
+      (let ((default-directory "/ssh:nowhere.invalid:/tmp/"))
+        (should-not (efrit-sandbox-eval--op-paths 'copy-file '("a" "b")))
+        (should-not (efrit-sandbox-eval--op-paths 'insert-file-contents '("relative.txt")))
+        (should (equal '("/abs/x") (efrit-sandbox-eval--op-paths 'insert-file-contents '("/abs/x")))))
+      (should-not asked))))
+
+(ert-deftest test-sb-eval-require-after-load-forms-do-not-prompt ()
+  "A `require' inside eval whose after-load form (the user's config)
+switches into a buffer visiting a file outside the project asks for
+nothing; the same switch written by the model still does."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((outside (make-temp-file "efrit-sb-outside-" nil ".el" ";; user config\n"))
+           (buf (find-file-noselect outside))
+           (libdir (make-temp-file "efrit-sb-lib-" t))
+           (feature (intern (format "efrit-sb-fake-%d" (random 100000))))
+           (lib (expand-file-name (format "%s.el" feature) libdir))
+           (asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) nil)))
+      (unwind-protect
+          (progn
+            (with-temp-file lib (insert (format "(provide '%s)\n" feature)))
+            ;; the "user's config": on load of FEATURE, look at the outside buffer
+            (eval `(with-eval-after-load ',feature
+                     (with-current-buffer ,buf (buffer-size)))
+                  t)
+            (let ((load-path (cons libdir load-path)))
+              (should (eq feature (efrit-sandbox-eval-form `(progn (require ',feature) ',feature)))))
+            (should-not asked)
+            ;; the model doing the same switch itself is still checked
+            (should-error (efrit-sandbox-eval-form `(with-current-buffer ,buf (buffer-size)))
+                          :type 'efrit-sandbox-denied)
+            (should (equal (list (efrit-sandbox-canonical outside)) asked)))
+        (kill-buffer buf)
+        (ignore-errors (delete-file outside))
+        (ignore-errors (delete-directory libdir t))))))
+
+(ert-deftest test-sb-edit-before-allow-runs-the-edited-input-once ()
+  "A prompt function that edits the request makes the tool run the
+edited text, once, whatever scope it also chose; the edited text is
+consumed by the asking tool only."
+  (test-sb--in-project
+    (let* ((efrit-sandbox-request-function
+            (lambda (req)
+              (when (efrit-sandbox-request-editable-p req)
+                (setf (efrit-sandbox-request-edited req) "(+ 40 2)"))
+              'session)))
+      (efrit-sandbox-store-ensure-loaded root)
+      ;; eval: the edited form is what runs
+      (should (= 42 (efrit-sandbox-eval-form '(+ 1 1))))
+      ;; consumed: no leftover for another tool
+      (should-not (efrit-sandbox-take-edited-input "shell_exec"))
+      ;; and the grant was downgraded to once: the next eval asks again
+      (should-not (efrit-sandbox-allowed-p 'elisp t))
+      ;; editability: shell and elisp with a detail; not a read
+      (should (efrit-sandbox-request-editable-p
+               (efrit-sandbox-request-create :cap 'shell :target '(shell "ls") :tool "shell_exec" :detail "ls -l")))
+      (should-not (efrit-sandbox-request-editable-p
+                   (efrit-sandbox-request-create :cap 'read :target "/x" :tool "read_file" :detail "read /x"))))))
+
+(ert-deftest test-sb-prompt-runs-with-quits-inhibited ()
+  "A request raised while `inhibit-quit' is set (every tool call: the
+API callback is a process sentinel) still prompts, with quits enabled
+inside the prompt.  2026-09-28..30 it was denied silently instead."
+  (test-sb--in-project
+    (let* ((seen nil)
+           (efrit-sandbox-request-function
+            (lambda (_req) (push inhibit-quit seen) 'session)))
+      (let ((inhibit-quit t))
+        (should (efrit-sandbox-check 'write (expand-file-name "a" root))))
+      (should (equal '(nil) seen)))))
+
+(ert-deftest test-sb-remote-host-policy ()
+  "Remote files never get the local project's default grants; the
+per-host policy decides: allow needs no grant, deny refuses without a
+prompt, ask offers every scope, once forces a one-time grant.  The
+policy also governs buffers visiting remote files and shell commands
+in a remote root.  No TRAMP connection is made (paths are on a host
+that does not exist; nothing here touches the file)."
+  (test-sb--in-project
+    (let* ((asked nil) (answer 'session)
+           ;; when efrit-context-sources is loaded, the "target buffer"
+           ;; is the current one: that would allow any buffer here
+           (efrit-sandbox-target-buffer-function nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (cons (efrit-sandbox-request-cap req)
+                                      (efrit-sandbox-request-target req))
+                                asked)
+              answer))
+           (efrit-sandbox-remote-hosts
+            '(("open-box" . (:read allow :write ask))
+              ("locked-" . (:read deny :write deny))
+              ("careful\\.example\\.org" . (:read ask :write once))))
+           (efrit-sandbox-remote-default '(:read ask :write once))
+           (open "/ssh:me@open-box:/srv/app/x.txt")
+           (locked "/ssh:locked-1:/etc/hosts")
+           (careful "/ssh:careful.example.org:/home/me/notes.txt")
+           (unknown "/ssh:somewhere.invalid:/tmp/f"))
+      ;; The sandbox must decide lexically for remote paths: any
+      ;; attempt to open a connection is the bug this guards against
+      (require 'tramp)
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec))))
+        ;; policies resolve by identity, host, host suffix
+        (should (eq 'allow (efrit-sandbox-remote-policy open 'read)))
+        (should (eq 'ask (efrit-sandbox-remote-policy open 'write)))
+        (should (eq 'deny (efrit-sandbox-remote-policy locked 'read)))
+        (should (eq 'once (efrit-sandbox-remote-policy careful 'write)))
+        (should (eq 'ask (efrit-sandbox-remote-policy unknown 'read)))
+        (should (eq 'once (efrit-sandbox-remote-policy unknown 'write)))
+        (should-not (efrit-sandbox-remote-policy (expand-file-name "a" root) 'read))
+        ;; allow: no grant, no prompt
+        (should (efrit-sandbox-allowed-p 'read open))
+        (should (efrit-sandbox-check 'read open "read_file"))
+        (should-not asked)
+        ;; deny: refused, no prompt
+        (should-error (efrit-sandbox-check 'read locked "read_file") :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-check 'write locked "write_file") :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; ask: prompts; a session grant covers the directory, not the host
+        (should (efrit-sandbox-check 'read careful "read_file"))
+        (should (equal '(read . "/ssh:careful.example.org:/home/me/") (car asked)))
+        (should (efrit-sandbox-allowed-p 'read "/ssh:careful.example.org:/home/me/other"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:careful.example.org:/etc/passwd"))
+        ;; once: the answer "session" is downgraded to a one-time grant
+        (setq asked nil)
+        (should (efrit-sandbox-check 'write careful "write_file"))
+        (should (efrit-sandbox-request-once-only-p
+                 (efrit-sandbox-request-create :cap 'write :target careful)))
+        (should-not (efrit-sandbox-allowed-p 'write careful))
+        ;; a remote root does not make its own files free to read
+        (let ((efrit-project-root "/ssh:somewhere.invalid:/proj/"))
+          (cl-letf (((symbol-function 'efrit-tool--get-project-root)
+                     (lambda () efrit-project-root)))
+            ;; project grants live with the project, on the host; do
+            ;; not fetch them here
+            (puthash "/ssh:somewhere.invalid:/proj/" t efrit-sandbox-store--loaded)
+            (puthash "/ssh:locked-2:/proj/" t efrit-sandbox-store--loaded)
+            (setq asked nil)
+            (should-not (efrit-sandbox-allowed-p 'read "/ssh:somewhere.invalid:/proj/file.el"
+                                                 "/ssh:somewhere.invalid:/proj/"))
+            (should (efrit-sandbox-check 'read "/ssh:somewhere.invalid:/proj/file.el" "read_file"))
+            (should (equal '(read . "/ssh:somewhere.invalid:/proj/") (car asked)))
+            ;; shell in a once-write root: granted once only
+            (should (efrit-sandbox-request-once-only-p
+                     (efrit-sandbox-request-create :cap 'shell :target '(shell "ls"))))
+            ;; shell in a deny-write root: refused
+            (let ((efrit-project-root "/ssh:locked-2:/proj/"))
+              (should-error (efrit-sandbox-check 'shell "ls" "shell_exec") :type 'efrit-sandbox-denied))))
+        ;; a buffer visiting a remote file follows the read policy
+        (cl-letf (((symbol-function 'efrit-sandbox-buffer-target) (lambda (_b) open)))
+          (with-temp-buffer
+            (rename-buffer "x.txt")
+            (should (efrit-sandbox-buffer-allowed-p (current-buffer)))))
+        (cl-letf (((symbol-function 'efrit-sandbox-buffer-target)
+                   (lambda (_b) "/ssh:careful.example.org:/var/log/syslog")))
+          (with-temp-buffer
+            (rename-buffer "syslog")
+            (should-not (efrit-sandbox-buffer-allowed-p (current-buffer)))))
+        ;; the prompt names the host
+        (should (string-match-p "ON HOST careful.example.org"
+                                (efrit-sandbox-ui--scope-word
+                                 (efrit-sandbox-request-create :cap 'write :target careful))))))))
+
+(ert-deftest test-sb-remote-policy-reaches-the-tools-and-eval ()
+  "The host policy is what the file tools (through `efrit-resolve-path')
+and the eval file-name handler see, with the right capability, and a
+`once' grant is consumed by the one access it was given for.  The
+hosts do not exist: every step must decide without connecting."
+  (test-sb--in-project
+    (require 'tramp)
+    (let* ((asked nil) (answer 'session)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (cons (efrit-sandbox-request-cap req)
+                                      (efrit-sandbox-request-target req))
+                                asked)
+              answer))
+           (efrit-sandbox-remote-hosts
+            '(("free-box" . (:read allow :write ask))
+              ("locked-box" . (:read deny :write deny))
+              ("careful-box" . (:read ask :write once))))
+           (efrit-sandbox-remote-default '(:read ask :write once))
+           (free "/ssh:free-box:/srv/a.txt")
+           (locked "/ssh:locked-box:/etc/shadow")
+           (careful "/ssh:careful-box:/home/me/f.txt"))
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec)))
+                ;; resolve-path probes existence to follow symlinks; a
+                ;; remote probe would connect
+                ((symbol-function 'file-exists-p) (lambda (f) (not (file-remote-p f))))
+                ((symbol-function 'file-truename) #'identity))
+        ;; read_file on an allow host: no prompt, resolves
+        (should (equal free (plist-get (efrit-resolve-path free 'read "read_file") :path)))
+        (should-not asked)
+        ;; write on the same host: ask (policy per capability)
+        (should (efrit-resolve-path free 'write "edit_file"))
+        (should (equal '(write . "/ssh:free-box:/srv/") (car asked)))
+        ;; a deny host: the tool is refused before any access, both caps
+        (setq asked nil)
+        (should-error (efrit-resolve-path locked 'read "read_file") :type 'efrit-sandbox-denied)
+        (should-error (efrit-resolve-path locked 'write "edit_file") :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; the eval handler: the same policy, same denial, no prompt
+        (efrit-sandbox-grant 'elisp t 'session)
+        (should-error (efrit-sandbox-eval-form `(insert-file-contents ,locked))
+                      :type 'efrit-sandbox-denied)
+        (should-error (efrit-sandbox-eval-form `(write-region "x" nil ,locked))
+                      :type 'efrit-sandbox-denied)
+        (should-not asked)
+        ;; eval on an allow host reaches the primitive (which fails on
+        ;; the fake host, proving the sandbox let it through)
+        (should-error (efrit-sandbox-eval-form `(insert-file-contents ,free)) :type 'error)
+        (should-not asked)
+        ;; once: the first write asks and passes; the very next one asks again
+        (should (efrit-resolve-path careful 'write "edit_file"))
+        (should (= 1 (length asked)))
+        (should (efrit-resolve-path careful 'write "edit_file"))
+        (should (= 2 (length asked)))
+        ;; whereas ask + session: the second read of the directory is free
+        (setq asked nil)
+        (should (efrit-resolve-path careful 'read "read_file"))
+        (should (efrit-resolve-path "/ssh:careful-box:/home/me/g.txt" 'read "read_file"))
+        (should (= 1 (length asked)))))))
+
+(ert-deftest test-sb-remote-project-grant-persists-per-host ()
+  "An `ask' host answered with the project scope stores the remote
+target; after a reload it still covers that host's directory and
+nothing on another host."
+  (test-sb--in-project
+    (require 'tramp)
+    (let* ((efrit-sandbox-request-function (lambda (_req) 'project))
+           (efrit-sandbox-remote-hosts nil)
+           (efrit-sandbox-remote-default '(:read ask :write ask))
+           (there "/ssh:box-a:/data/set1/file.csv"))
+      (cl-letf (((symbol-function 'tramp-maybe-open-connection)
+                 (lambda (vec &rest _) (error "sandbox tried to connect to %S" vec))))
+        (should (efrit-sandbox-check 'read there "read_file"))
+        (should (file-exists-p (efrit-sandbox-store-file root)))
+        (clrhash efrit-sandbox--project-grants)
+        (clrhash efrit-sandbox-store--loaded)
+        (efrit-sandbox-store-ensure-loaded root)
+        (let ((g (efrit-sandbox-grants root)))
+          (should (= 1 (length g)))
+          (should (equal "/ssh:box-a:/data/set1/" (plist-get (car g) :target))))
+        (should (efrit-sandbox-allowed-p 'read "/ssh:box-a:/data/set1/other.csv"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:box-a:/data/set2/x"))
+        (should-not (efrit-sandbox-allowed-p 'read "/ssh:box-b:/data/set1/file.csv"))
+        (should-not (efrit-sandbox-allowed-p 'write there))))))
+
+(ert-deftest test-sb-eval-processes-need-shell ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (should-error (efrit-sandbox-eval-form '(shell-command-to-string "echo hi"))
+                  :type 'efrit-sandbox-denied)
+    (should-error (efrit-sandbox-eval-form '(call-process "true")) :type 'efrit-sandbox-denied)
+    (should-error (efrit-sandbox-eval-form '(make-process :name "x" :command '("true")))
+                  :type 'efrit-sandbox-denied)
+    (efrit-sandbox-grant 'shell t 'session)
+    (should (equal "hi\n" (efrit-sandbox-eval-form '(shell-command-to-string "echo hi"))))
+    ;; the advice is inert outside a sandboxed eval
+    (should (equal "ok\n" (shell-command-to-string "echo ok")))))
+
+(ert-deftest test-sb-denial-is-not-an-error-the-form-can-swallow ()
+  "A denial inside `ignore-errors' or an `error' handler still ends the
+eval: the user's no is final, and no second prompt follows (2026-10-19:
+`run git' refused inside a save hook, then the same eval asked for
+another buffer, then hung)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked 0)
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     '(progn (ignore-errors (call-process "true"))
+                             (condition-case nil (call-process "false") (error 'swallowed))
+                             'reached-the-end))
+                    :type 'efrit-sandbox-denied)
+      ;; one prompt, not two: the second request was refused on the spot
+      (should (= 1 asked))
+      ;; and efrit's own handlers still catch it by name
+      (should (eq 'denied (condition-case nil (efrit-sandbox-check 'shell "ls -R /" "t")
+                            (efrit-sandbox-denied 'denied)))))))
+
+(ert-deftest test-sb-eval-shell-line-emacs-does-is-refused-without-a-prompt ()
+  "An eval that shells out to git/cp/grep is refused the way shell_exec is,
+naming the facility; a real program still asks (2026-10-19: four
+shell-command-to-string \"git …\" in one eval reached the prompt)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((asked 0)
+           (efrit-sandbox-shell-refuse-emacs-equivalents t)
+           (efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+           (efrit-sandbox-request-function (lambda (_req) (cl-incf asked) nil)))
+      (efrit-sandbox-begin-turn "what changed in the config?")
+      (let ((err (should-error (efrit-sandbox-eval-form '(shell-command-to-string "git status --short x.el"))
+                               :type 'efrit-sandbox-denied)))
+        (should (= 0 asked))
+        (should (string-match-p "git -> vcs_status" (efrit-sandbox-denied-tool-result (cadr err)))))
+      (should-error (efrit-sandbox-eval-form '(call-process "tmux" nil nil nil "ls")) :type 'efrit-sandbox-denied)
+      (should (= 1 asked)))))
+
+(ert-deftest test-sb-eval-buffer-sweep-asks-once-for-the-walk ()
+  "A form walking `buffer-list' with `with-current-buffer' meets several
+out-of-project file buffers: one prompt names the count, and a yes covers
+the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (b (test-sb--file-buffer (expand-file-name "b.txt" outside) "B"))
+             (details nil)
+             (answer 'once)
+             (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-detail req) details) answer)))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (let ((seen (efrit-sandbox-eval-form
+                           '(let (n) (dolist (buf (buffer-list))
+                                       (with-current-buffer buf (when buffer-file-name (push (buffer-name) n))))
+                                 n))))
+                (should (member (buffer-name a) seen))
+                (should (member (buffer-name b) seen)))
+              (should (= 1 (length details)))
+              (should (string-match-p "and [0-9]+ more file buffer" (car details)))
+              ;; a refusal ends the walk
+              (setq details nil answer nil)
+              (should-error (efrit-sandbox-eval-form
+                             '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                            :type 'efrit-sandbox-denied)
+              (should (= 1 (length details))))
+          (kill-buffer a) (kill-buffer b)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-eval-mode-hooks-may-walk-buffers ()
+  "A buffer walk made by a hook that `run-mode-hooks' runs is Emacs's
+business, not the form's: turning on a mode in a temp buffer must not
+ask for the user's unrelated file buffers (2026-10-22: `(eshell-mode)'
+asked for ten).  The form's own walk still asks."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-hook-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (_req) (setq asked t) nil))
+             (test-sb-hook-mode-hook nil))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (define-derived-mode test-sb-hook-mode fundamental-mode "SbHook")
+              (add-hook 'test-sb-hook-mode-hook
+                        (lambda () (dolist (buf (buffer-list))
+                                     (with-current-buffer buf (ignore buffer-file-name)))))
+              (should (eq 'test-sb-hook-mode
+                          (efrit-sandbox-eval-form '(with-temp-buffer (test-sb-hook-mode) major-mode))))
+              (should-not asked)
+              ;; the same walk written in the form asks
+              (should-error (efrit-sandbox-eval-form
+                             '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                            :type 'efrit-sandbox-denied)
+              (should asked))
+          (kill-buffer a)
+          (fmakunbound 'test-sb-hook-mode)
+          (delete-directory outside t))))))
+
+(defvar org-persist-directory)
+
+(ert-deftest test-sb-eval-library-caches-are-exempt-reads ()
+  "Reads under a library's cache directory (org-persist, the XDG cache)
+are housekeeping: no prompt.  A read elsewhere under HOME still asks."
+  (test-sb--in-project
+    (let* ((cache (file-name-as-directory (make-temp-file "efrit-sb-cache-" t)))
+           (org-persist-directory cache)
+           (other (make-temp-file "efrit-sb-other-" t))
+           (asked nil)
+           (efrit-sandbox-request-function (lambda (_req) (setq asked t) nil)))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "index" cache) (insert "x"))
+            (with-temp-file (expand-file-name "f" other) (insert "y"))
+            (efrit-sandbox-grant 'elisp t 'session)
+            (should (efrit-sandbox-eval--exempt-p (expand-file-name "index" cache)))
+            (should-not (efrit-sandbox-eval--exempt-p (expand-file-name "f" other)))
+            (should (equal "x" (efrit-sandbox-eval-form
+                                `(with-temp-buffer (insert-file-contents ,(expand-file-name "index" cache)) (buffer-string)))))
+            (should-not asked))
+        (delete-directory cache t) (delete-directory other t)))))
+
+(ert-deftest test-sb-eval-buffer-sweep-over-remote-buffers-is-refused ()
+  "A buffer-list walk that would enter a remote (TRAMP) buffer is refused
+without a prompt; the denial names buffer_list and the one-at-a-time way
+\(tzz, 2026-10-20: local first, remote by name, ask before reading one)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-sweep-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (remote (generate-new-buffer "remote.py"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (req) (push req asked) 'once)))
+        (with-current-buffer remote
+          ;; a remote file name without a connection: `file-remote-p'
+          ;; reads the string only
+          (setq buffer-file-name "/ssh:host.invalid:/home/u/remote.py"))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (condition-case err
+                  (progn
+                    (efrit-sandbox-eval-form
+                     '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                    (should nil))
+                (efrit-sandbox-denied
+                 (let ((req (cadr err)))
+                   (should (string-match-p "remote (TRAMP) buffer" (efrit-sandbox-request-detail req)))
+                   (should (string-match-p "buffer_list" (efrit-sandbox-request-detail req))))))
+              ;; nobody was asked
+              (should-not asked))
+          (with-current-buffer remote (setq buffer-file-name nil) (set-buffer-modified-p nil))
+          (kill-buffer remote) (kill-buffer a)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-eval-jka-compr-helper-is-not-the-model ()
+  "Reading a .gz file in the project from an eval runs gzip through
+jka-compr; that process is Emacs's, not a shell request of the model's
+\(2026-10-16: \"why the heck is it trying to do a shell decompress\").
+A gzip the form runs itself still asks."
+  (skip-unless (executable-find "gzip"))
+  (test-sb--in-project
+    (require 'jka-compr)
+    (let* ((plain (expand-file-name "notes.txt" root))
+           (gz (concat plain ".gz"))
+           ;; jka-compr's temp files are scratch writes (the macro binds
+           ;; the expected roots away; the default lists the temp dir)
+           (efrit-sandbox-expected-write-roots (eval (car (get 'efrit-sandbox-expected-write-roots 'standard-value)) t))
+           (asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil)))
+      (with-temp-file plain (insert "compressed hello\n"))
+      (call-process "gzip" nil nil nil "-f" plain)
+      (should (file-exists-p gz))
+      (efrit-sandbox-grant 'elisp t 'session)
+      (auto-compression-mode 1)
+      (should (equal "compressed hello\n"
+                     (efrit-sandbox-eval-form
+                      `(with-temp-buffer (insert-file-contents ,gz) (buffer-string)))))
+      (should (null asked))
+      (should-error (efrit-sandbox-eval-form `(call-process "gzip" nil nil nil "-l" ,gz))
+                    :type 'efrit-sandbox-denied)
+      (should asked))))
+
+(ert-deftest test-sb-eval-native-compiler-is-not-the-model ()
+  "A batch Emacs started from under `comp-trampoline-compile' (Emacs compiling
+a trampoline for an advised primitive) runs without a shell grant; the same
+process started by the form itself still asks (2026-10-05: a buffer_create
+turn asked tzz whether eval_sexp may run Emacs)."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let ((emacs (expand-file-name invocation-name invocation-directory)))
+      ;; the model's own call: refused outright, with the reason, no prompt
+      (let* ((asked (list nil))
+             (efrit-sandbox-request-function (lambda (&rest _) (setcar asked t) nil)))
+        (let ((err (should-error (efrit-sandbox-eval-form
+                                  `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                                 :type 'efrit-sandbox-denied)))
+          (should (string-match-p "must not start another Emacs" (format "%s" (cdr err))))
+          (should-not (car asked))))
+      ;; the same through call-process, whose argv is positional
+      (should-error (efrit-sandbox-eval-form `(call-process ,emacs nil nil nil "--batch" "--eval" "(kill-emacs 0)"))
+                    :type 'efrit-sandbox-denied)
+      ;; the same call from a comp frame: housekeeping, allowed
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr)
+                   (let ((p (make-process :name "x" :command (list emacs "--batch" "--eval" "(kill-emacs 0)"))))
+                     (while (process-live-p p) (accept-process-output p 0.1))
+                     (process-exit-status p)))))
+        (should (= 0 (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string)))))
+      ;; a comp frame does not launder a different program
+      (cl-letf (((symbol-function 'comp-trampoline-compile)
+                 (lambda (_subr) (call-process "true"))))
+        (should-error (efrit-sandbox-eval-form '(comp-trampoline-compile 'read-string))
+                      :type 'efrit-sandbox-denied))
+      ;; the async worker's own command line, with no comp frame on the
+      ;; stack (it starts from a timer): recognised by its shape
+      ;; (2026-10-15: "why does efrit want to run emacs to pwd?")
+      (let ((tmp (make-temp-file "emacs-async-comp-x-" nil ".el")))
+        (unwind-protect
+            (let ((p (efrit-sandbox-eval-form
+                      `(make-process :name "x" :command (list ,emacs "-no-comp-spawn" "-Q" "--batch" "--eval" "(kill-emacs 0)" "-l" ,tmp)))))
+              (should (processp p))
+              (while (process-live-p p) (accept-process-output p 0.1)))
+          (delete-file tmp)))
+      ;; the synchronous compiler (comp--final) goes through call-process
+      ;; with an emacs-int-comp-* file: allowed too
+      (let ((tmp (make-temp-file "emacs-int-comp-y-" nil ".el")))
+        (unwind-protect
+            (should (= 0 (efrit-sandbox-eval-form
+                          `(call-process ,emacs nil nil nil "-no-comp-spawn" "-Q" "--batch" "--eval" "(kill-emacs 0)" "-l" ,tmp))))
+          (delete-file tmp)))
+      ;; the same shape pointing at another program still asks
+      (should-error (efrit-sandbox-eval-form
+                     '(make-process :name "x" :command (list "/usr/bin/true" "-no-comp-spawn" "--batch" "-l" "/tmp/emacs-async-comp-x.el")))
+                    :type 'efrit-sandbox-denied)
+      ))
+  ;; the escape hatch brings the prompt back (a fresh project: the
+  ;; denials above leave a standing no for the turn)
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (let* ((emacs (expand-file-name invocation-name invocation-directory))
+           (efrit-sandbox-eval-allow-emacs t)
+           (asked (list nil))
+           (efrit-sandbox-request-function (lambda (&rest _) (setcar asked t) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      (should (car asked))))
+  ;; so does the reviewer's testing vouch for the turn
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (efrit-sandbox--turn-set :emacs-vouched "ERT run in a clean emacs -Q")
+    (let* ((emacs (expand-file-name invocation-name invocation-directory))
+           (seen (list nil))
+           (efrit-sandbox-request-function
+            (lambda (req) (setcar seen (efrit-sandbox-request-detail req)) nil)))
+      (should-error (efrit-sandbox-eval-form
+                     `(make-process :name "x" :command (list ,emacs "--batch" "--eval" "(kill-emacs 0)")))
+                    :type 'efrit-sandbox-denied)
+      (should (string-match-p "reviewer: an external Emacs for testing: ERT run" (or (car seen) ""))))))
+
+(ert-deftest test-sb-new-path-under-symlinked-root-matches-the-grant ()
+  "A write to a not-yet-existing nested path reached through a symlinked
+checkout canonicalizes to the truename, so a project grant on the
+truename covers it (2026-10-15: mkdir old/files under ~/autodist ->
+~/ai_workspace/source/autodist was denied right after the user's p)."
+  (let* ((real (file-name-as-directory (file-truename (make-temp-file "efrit-sb-real-" t))))
+         (link (concat (directory-file-name (file-truename temporary-file-directory))
+                       "/efrit-sb-link-" (format "%06d" (random 1000000)))))
+    (make-symbolic-link (directory-file-name real) link)
+    (unwind-protect
+        (let* ((efrit-project-root (file-name-as-directory link))
+               (efrit-sandbox-enabled t)
+               (efrit-sandbox-default-project-grants '(read))
+               (answers (list 'project))
+               (efrit-sandbox-request-function (lambda (_req) (pop answers)))
+               (efrit-sandbox--session-grants (make-hash-table :test 'equal))
+               (efrit-sandbox--project-grants (make-hash-table :test 'equal))
+               (efrit-sandbox--turn-state (make-hash-table :test 'equal))
+               (efrit-sandbox-store--loaded (make-hash-table :test 'equal))
+               (efrit-sandbox-expected-write-roots nil))
+          (should (equal (concat real "old/files/") (efrit-sandbox-canonical (concat link "/old/files/"))))
+          ;; one prompt, answered project; the write is then allowed, and
+          ;; so is the next one under the same not-yet-made directory
+          (should (efrit-sandbox-check 'write (concat link "/old/files/")))
+          (should (null answers))
+          (should (efrit-sandbox-allowed-p 'write (concat link "/old/files/jump")))
+          (should (efrit-sandbox-allowed-p 'write (concat real "elsewhere/x.txt"))))
+      (delete-file link)
+      (delete-directory real t))))
+
+(ert-deftest test-sb-eval-network-needs-net ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (should-error (efrit-sandbox-eval-form '(make-network-process :name "x" :host "localhost" :service 1))
+                  :type 'efrit-sandbox-denied)))
+
+(ert-deftest test-sb-eval-nothing-leaks-after-return ()
+  "After the eval returns, file ops and processes are unrestricted again."
+  (test-sb--in-project
+    (efrit-sandbox-grant 'elisp t 'session)
+    (ignore-errors (efrit-sandbox-eval-form '(+ 1 1)))
+    (should-not efrit-sandbox-eval--active)
+    (should-not (rassq #'efrit-sandbox-eval--handler file-name-handler-alist))
+    (should (with-temp-buffer (insert-file-contents "/etc/hostname" nil 0 1) t))))
+
+(provide 'test-sandbox)
+;;; test-sandbox.el ends here
+
+;;; UI
+
+(require 'efrit-sandbox-ui)
+(defvar transient-post-exit-hook)
+
+(ert-deftest test-sb-ui-prompt-maps-keys-to-scopes ()
+  "The echo-area fallback (batch has no menu) maps keys to scopes."
+  (test-sb--in-project
+    (should-not (efrit-sandbox-ui-use-menu-p))   ; noninteractive
+    (cl-letf (((symbol-function 'efrit-sandbox-ui--note) #'ignore))
+      (dolist (case '((?o . once) (?s . session) (?p . project) (?n . nil)))
+        (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (car case))))
+          (should (eq (efrit-sandbox-ui-prompt
+                       (efrit-sandbox-request-create :cap 'write :target root :tool "edit_file"))
+                      (cdr case))))))))
+
+(ert-deftest test-sb-ui-prompt-end-to-end-grants-and-persists ()
+  "Through the real prompt: p grants for the project and writes the JSON."
+  (test-sb--in-project
+    (let ((efrit-sandbox-request-function #'efrit-sandbox-ui-prompt))
+      (cl-letf (((symbol-function 'efrit-sandbox-ui--note) #'ignore)
+                ((symbol-function 'read-char-choice) (lambda (&rest _) ?p)))
+        (should (efrit-sandbox-check 'write (expand-file-name "x" root) "edit_file"))
+        (should (file-exists-p (efrit-sandbox-store-file root)))
+        ;; and it is remembered: no prompt this time
+        (cl-letf (((symbol-function 'read-char-choice) (lambda (&rest _) (error "must not prompt"))))
+          (should (efrit-sandbox-check 'write (expand-file-name "y" root) "edit_file")))))))
+
+(ert-deftest test-sb-ui-menu-answer-plumbing ()
+  "The menu path returns whatever the suffix chose, nil when closed unanswered."
+  (test-sb--in-project
+    (let ((req (efrit-sandbox-request-create :cap 'shell :target t :tool "shell_exec")))
+      ;; simulate: menu opens, user picks a suffix, transient exits
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_t _r fn &rest _) (ignore fn) nil))
+                ((symbol-function 'recursive-edit)
+                 (lambda () (efrit-sandbox-ui--choose 'project))))
+        (should (eq (efrit-sandbox-ui--ask-with-menu req) 'project)))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) #'ignore))
+        (should-not (efrit-sandbox-ui--ask-with-menu req)))
+      ;; C-g inside the recursive edit is a denial, not an escape
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) (lambda () (signal 'quit nil))))
+        (should-not (efrit-sandbox-ui--ask-with-menu req)))
+      (should-not efrit-sandbox-ui--request)
+      (should-not (memq #'efrit-sandbox-ui--exit-recursive-edit transient-post-exit-hook)))))
+
+(ert-deftest test-sb-ui-menu-definition ()
+  "The transient prefix defines and its description names the request."
+  (skip-unless (require 'transient nil t))
+  (test-sb--in-project
+    (should (efrit-sandbox-ui--define-menu))
+    (should (fboundp 'efrit-sandbox-ask))
+    (let ((efrit-sandbox-ui--request
+           (efrit-sandbox-request-create :cap 'write :target root :tool "edit_file" :detail "x.el")))
+      (let ((d (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "edit_file wants to write files under" d))
+        (should (string-match-p "x\\.el" d))))))
+
+(ert-deftest test-sb-permission-prompt-defers-to-sandbox ()
+  "With the sandbox on, the per-call permission prompt asks nothing."
+  (require 'efrit-permissions)
+  (let ((efrit-sandbox-enabled t) (efrit-permission-policy '(write exec)))
+    (should-not (efrit-permission-needed-p "eval_sexp")))
+  (let ((efrit-sandbox-enabled nil) (efrit-permission-policy '(write exec)))
+    (should (efrit-permission-needed-p "eval_sexp"))))
+
+;;; Buffer capability
+
+(defmacro test-sb--with-buffers (&rest body)
+  "Run BODY with sandbox predicates neutralised: no target, no agent buffer.
+Each test opts into a target buffer by binding the functions itself."
+  (declare (indent 0))
+  `(let ((efrit-sandbox-target-buffer-function nil)
+         (efrit-sandbox-agent-buffer-p-function nil))
+     ,@body))
+
+(defun test-sb--file-buffer (path content)
+  "A live buffer visiting PATH with CONTENT written to disk first."
+  (with-temp-file path (insert content))
+  (find-file-noselect path))
+
+(ert-deftest test-sb-buffer-target-keys ()
+  (test-sb--in-project
+    (let* ((in (expand-file-name "in.txt" root))
+           (buf (test-sb--file-buffer in "x")))
+      (unwind-protect
+          (should (equal (efrit-sandbox-buffer-target buf)
+                         (efrit-sandbox-canonical in)))
+        (kill-buffer buf)))
+    (let ((buf (get-buffer-create "*scratchy*")))
+      (unwind-protect
+          (should (equal (efrit-sandbox-buffer-target buf) '(buffer . "*scratchy*")))
+        (kill-buffer buf)))))
+
+(ert-deftest test-sb-buffer-in-project-allowed ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((in (expand-file-name "in.txt" root))
+             (buf (test-sb--file-buffer in "x")))
+        (unwind-protect
+            (progn
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "read_buffer")))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-covered-by-a-read-or-write-grant-on-its-directory ()
+  "A file the model may already read or write needs no separate buffer
+grant: read+write grants for autodist/ stood and a with-current-buffer
+on a file under it still asked (2026-10-20)."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (file-name-as-directory (make-temp-file "efrit-sb-out-" t)))
+             (path (expand-file-name "lib/config.el" outside))
+             (buf (progn (make-directory (file-name-directory path) t)
+                         (test-sb--file-buffer path ";; x"))))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'read (efrit-sandbox-canonical outside) 'session root)
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "eval_sexp"))
+              ;; a write grant alone is enough too
+              (clrhash efrit-sandbox--session-grants)
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'write (efrit-sandbox-canonical outside) 'session root)
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+          (kill-buffer buf)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-buffer-outside-denied-then-grantable ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-out-" t))
+             (path (expand-file-name "secret.txt" outside))
+             (buf (test-sb--file-buffer path "s")))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              ;; no prompt function -> denial that names the buffer cap
+              (condition-case err
+                  (progn (efrit-sandbox-check-buffer buf "read_buffer") (should nil))
+                (efrit-sandbox-denied
+                 (let ((req (cadr err)))
+                   (should (eq (efrit-sandbox-request-cap req) 'buffer))
+                   (should (equal (efrit-sandbox-request-target req)
+                                  (efrit-sandbox-canonical path))))))
+              ;; grant it for the session, then it passes
+              (efrit-sandbox-grant 'buffer (efrit-sandbox-canonical path) 'session)
+              (should (efrit-sandbox-buffer-allowed-p buf))
+              (should (efrit-sandbox-check-buffer buf "read_buffer")))
+          (kill-buffer buf)
+          (delete-directory outside t))))))
+
+(ert-deftest test-sb-buffer-target-and-agent-exempt ()
+  (test-sb--in-project
+    (let* ((outside (make-temp-file "efrit-sb-out-" t))
+           (path (expand-file-name "f.txt" outside))
+           (buf (test-sb--file-buffer path "s")))
+      (unwind-protect
+          (progn
+            ;; as the user's target buffer: allowed though outside
+            (let ((efrit-sandbox-target-buffer-function (lambda () buf))
+                  (efrit-sandbox-agent-buffer-p-function nil))
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+            ;; as an efrit UI buffer: allowed
+            (let ((efrit-sandbox-target-buffer-function nil)
+                  (efrit-sandbox-agent-buffer-p-function (lambda (b) (eq b buf))))
+              (should (efrit-sandbox-buffer-allowed-p buf))))
+        (kill-buffer buf)
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-buffer-fileless-nontarget-needs-grant ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let ((buf (get-buffer-create "*Messages-like*")))
+        (unwind-protect
+            (progn
+              (should-not (efrit-sandbox-buffer-allowed-p buf))
+              (efrit-sandbox-grant 'buffer '(buffer . "*Messages-like*") 'session)
+              (should (efrit-sandbox-buffer-allowed-p buf)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-hidden-exempt ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let ((buf (get-buffer-create " *hidden*")))
+        (unwind-protect
+            (should (efrit-sandbox-buffer-allowed-p buf))
+          (kill-buffer buf))))))
+
+(ert-deftest test-sb-buffer-grant-persists-fileless ()
+  (test-sb--in-project
+    (efrit-sandbox-grant 'buffer '(buffer . "*keep*") 'project)
+    (should (file-exists-p (efrit-sandbox-store-file root)))
+    ;; reload from disk into a clean project table
+    (clrhash efrit-sandbox--project-grants)
+    (efrit-sandbox-store-forget root)
+    (efrit-sandbox-store-load root)
+    (let ((g (car (gethash root efrit-sandbox--project-grants))))
+      (should (eq (plist-get g :cap) 'buffer))
+      (should (equal (plist-get g :target) '(buffer . "*keep*"))))))
+
+(ert-deftest test-sb-eval-buffer-switch-outside-denied ()
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-out-" t))
+             (path (expand-file-name "secret.txt" outside))
+             (buf (test-sb--file-buffer path "TOPSECRET")))
+        (unwind-protect
+            (progn
+              ;; elisp granted; buffer read of an outside file is refused
+              (efrit-sandbox-grant 'elisp t 'session)
+              (should-error
+               (efrit-sandbox-eval-form
+                `(with-current-buffer ,(buffer-name buf) (buffer-string)))
+               :type 'efrit-sandbox-denied)
+              ;; a temp (fileless) buffer is fine
+              (should (equal "hi"
+                             (efrit-sandbox-eval-form
+                              '(with-temp-buffer (insert "hi") (buffer-string)))))
+              ;; efrit's own functions may switch through the buffer list
+              ;; to look (`efrit-agent-buffers' tests each major mode); the
+              ;; model did not name the buffer (2026-10-16: hrt.md)
+              (require 'efrit-agent-core)
+              (should (listp (efrit-sandbox-eval-form '(efrit-agent-buffers))))
+              ;; but naming it in the form still asks
+              (should-error
+               (efrit-sandbox-eval-form
+                `(progn (efrit-agent-buffers) (with-current-buffer ,(buffer-name buf) (point))))
+               :type 'efrit-sandbox-denied))
+          (kill-buffer buf)
+          (delete-directory outside t))))))
+
+;;; Prompt detail
+
+(ert-deftest test-sb-eval-detail-is-the-form ()
+  "The elisp request's detail is the pretty-printed form, not a fixed phrase."
+  (test-sb--in-project
+    (defvar test-sb--req nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil)))
+      (ignore-errors (efrit-sandbox-eval-form '(let ((x 1)) (message "hi %s" x))))
+      (should test-sb--req)
+      (should (eq (efrit-sandbox-request-cap test-sb--req) 'elisp))
+      (should (string-match-p "(message \"hi %s\" x)" (efrit-sandbox-request-detail test-sb--req))))
+    ;; a huge form is cut with a note
+    (let ((efrit-sandbox-eval-detail-max-chars 80)
+          (efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil)))
+      (ignore-errors (efrit-sandbox-eval-form `(list ,@(number-sequence 1 200))))
+      (should (string-match-p "more chars" (efrit-sandbox-request-detail test-sb--req)))
+      (should (< (length (efrit-sandbox-request-detail test-sb--req)) 140)))))
+
+(ert-deftest test-sb-ui-detail-block-keeps-lines-and-caps ()
+  (require 'efrit-sandbox-ui)
+  (let* ((efrit-sandbox-ui-detail-lines 3)
+         (block (efrit-sandbox-ui--detail-block "l1\nl2\nl3\nl4\nl5")))
+    (should (string-match-p "^  l1\n  l2\n  l3" (substring-no-properties block)))
+    (should-not (string-match-p "l4" block))
+    (should (string-match-p "2 more lines" block))))
+
+(ert-deftest test-sb-prompt-time-does-not-count-against-tool-timeout ()
+  "A tool's with-timeout is paused while the sandbox prompt is up.
+The prompt used to run inside the tool's clock, so a 30 s deliberation
+made the granted read time out the instant it was allowed."
+  (test-sb--in-project
+    (let* ((outside (make-temp-file "efrit-sb-out-" t))
+           (path (expand-file-name "f" outside))
+           ;; a prompt that takes longer than the timeout, then grants
+           (efrit-sandbox-request-function
+            (lambda (_req) (sleep-for 0.3) 'once)))
+      (unwind-protect
+          (let ((result (with-timeout (0.15 'timed-out)
+                          (efrit-sandbox-check 'read path "read_file")
+                          'ran)))
+            (should (eq result 'ran)))
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-resolve-path-detail-names-the-path ()
+  "The prompt for a file read carries the exact path as its detail."
+  (test-sb--in-project
+    (defvar test-sb--req nil)
+    (let ((efrit-sandbox-request-function (lambda (req) (setq test-sb--req req) nil))
+          (outside (make-temp-file "efrit-sb-out-" t)))
+      (unwind-protect
+          (progn
+            (ignore-errors (efrit-resolve-path (expand-file-name "deep/f.txt" outside) 'read "read_file"))
+            (should test-sb--req)
+            (should (string-match-p "read .*deep/f.txt" (efrit-sandbox-request-detail test-sb--req))))
+        (delete-directory outside t)))))
+
+(ert-deftest test-sb-ui-details-toggle-yank-and-buffer ()
+  "? toggles the full request inline (label show/hide), y yanks it, b opens a buffer."
+  (require 'efrit-sandbox-ui)
+  (test-sb--in-project
+    (let* ((long (mapconcat (lambda (i) (format "(line-%d)" i)) (number-sequence 1 20) "\n"))
+           (req (efrit-sandbox-request-create :cap 'elisp :target t :tool "eval_sexp" :detail long))
+           (efrit-sandbox-ui--request req)
+           (efrit-sandbox-ui--details-shown nil)
+           (efrit-sandbox-ui-detail-lines 5)
+           (kill-ring nil))
+      ;; short block: 5 lines and a note; the label offers to show
+      (let ((h (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "(line-5)" h))
+        (should-not (string-match-p "(line-6)" h))
+        (should (string-match-p "15 more lines" h)))
+      (should (equal (efrit-sandbox-ui--toggle-label) "show details"))
+      ;; toggle: everything, including the grants section; label flips
+      (efrit-sandbox-ui-toggle-details)
+      (let ((h (substring-no-properties (efrit-sandbox-ui--menu-description))))
+        (should (string-match-p "(line-20)" h))
+        (should (string-match-p "Grants in force" h)))
+      (should (equal (efrit-sandbox-ui--toggle-label) "hide details"))
+      ;; toggle back
+      (efrit-sandbox-ui-toggle-details)
+      (should-not (string-match-p "(line-20)" (efrit-sandbox-ui--menu-description)))
+      ;; yank
+      (efrit-sandbox-ui-yank-details)
+      (should (string-match-p "Form to evaluate:\n(line-1)" (car kill-ring)))
+      (should (string-match-p "Grants in force" (car kill-ring)))
+      ;; buffer
+      (cl-letf (((symbol-function 'display-buffer) (lambda (&rest _) nil)))
+        (efrit-sandbox-ui-open-details))
+      (with-current-buffer efrit-sandbox-ui--details-buffer
+        (should (string-match-p "(line-20)" (buffer-string)))
+        (should (eq (key-binding "q") 'quit-window))))))
+
+(ert-deftest test-sb-ui-details-toggle-resets-per-request ()
+  (require 'efrit-sandbox-ui)
+  (test-sb--in-project
+    (let ((req (efrit-sandbox-request-create :cap 'shell :target t :tool "shell_exec" :detail "ls"))
+          (efrit-sandbox-ui--details-shown t))
+      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) nil))
+                ((symbol-function 'recursive-edit) (lambda () (efrit-sandbox-ui--choose 'once))))
+        (efrit-sandbox-ui--ask-with-menu req))
+      (should-not efrit-sandbox-ui--details-shown))))
+
+
+;;; Repository-scoped grants and the expected/unusual split (2026-10-01)
+
+(defun test-sb--make-repo (name)
+  "A temp directory NAME-… with a .git marker; returns its canonical path."
+  (let ((dir (file-name-as-directory (make-temp-file name t))))
+    (make-directory (expand-file-name ".git" dir))
+    (efrit-sandbox-forget-git-toplevels)
+    (file-name-as-directory (efrit-sandbox-canonical dir))))
+
+(ert-deftest test-sb-grant-inside-a-repo-is-the-repos-from-any-root ()
+  "A session grant on a file inside a repository is keyed on that repo:
+the suggested target is the repo root, and a check from another
+project root (here $HOME-like `root') finds it.  The prompt's `p'
+would save it for the repo, not for ~/."
+  (test-sb--in-project
+    (let* ((repo (test-sb--make-repo "efrit-sb-repo-"))
+           (file (expand-file-name "lisp/a.el" repo))
+           (asked nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (efrit-sandbox-request-target req) asked) 'session)))
+      (unwind-protect
+          (progn
+            (make-directory (file-name-directory file) t)
+            ;; the sandbox's own repo-of must see it (vc may not: no git binary here)
+            (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel)
+                       (lambda (dir) (and (string-prefix-p repo dir) repo))))
+              (should (equal repo (efrit-sandbox-repo-of file)))
+              (should (equal repo (efrit-sandbox--suggest-target 'write file root)))
+              (should (efrit-sandbox-check 'write file "edit_file"))
+              (should (equal (list repo) asked))
+              ;; stored under the repo, not under ROOT
+              (should (gethash repo efrit-sandbox--session-grants))
+              (should-not (gethash root efrit-sandbox--session-grants))
+              ;; another file in the same repo, checked from another root: no prompt
+              (let ((efrit-project-root (file-name-as-directory (make-temp-file "efrit-sb-other-" t))))
+                (should (efrit-sandbox-check 'write (expand-file-name "src/b.el" repo) "edit_file"))
+                (should (efrit-sandbox-allowed-p 'write (expand-file-name "README" repo))))
+              (should (= 1 (length asked)))))
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-expected-requests-are-granted-with-a-note-not-a-menu ()
+  "The six requests of one real turn (2026-09-30 22:26): reads under the
+Emacs installation and writes under the temporary directory, read-only
+shell lines, and files in a repo granted this session are expected and
+pass with a note; a remote buffer, an arbitrary shell line and a write
+outside any repo still ask."
+  (test-sb--in-project
+    (let* ((efrit-sandbox-expected-read-roots (eval (car (get 'efrit-sandbox-expected-read-roots 'standard-value)) t))
+           (efrit-sandbox-expected-write-roots (eval (car (get 'efrit-sandbox-expected-write-roots 'standard-value)) t))
+           (efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+           (repo (test-sb--make-repo "efrit-sb-repo2-"))
+           (tmp (file-name-as-directory (efrit-sandbox-canonical temporary-file-directory)))
+           (asked nil) (notes nil)
+           (efrit-sandbox-request-function
+            (lambda (req) (push (list (efrit-sandbox-request-cap req) (efrit-sandbox-request-target req)) asked) nil))
+           (listener (lambda (e) (when (string-match-p "allowed without asking" (alist-get :text e))
+                                   (push (alist-get :text e) notes)))))
+      (efrit-subscribe 'note listener)
+      (unwind-protect
+          (cl-letf (((symbol-function 'efrit-sandbox--git-toplevel)
+                     (lambda (dir) (and (string-prefix-p repo dir) repo))))
+            ;; expected
+            (should (efrit-sandbox-check 'read (expand-file-name "lisp/subr.el" data-directory) "eval_sexp"))
+            (should (efrit-sandbox-check 'write (expand-file-name "libs-buf.el" tmp) "eval_sexp"))
+            (should (efrit-sandbox-check 'shell "cd ~/x && git status --short a.el && git diff --stat a.el | tail -1" "shell_exec"))
+            (should (efrit-sandbox-check 'shell "diff /tmp/a /tmp/b | head -80" "eval_sexp"))
+            (should (null asked))
+            (should (= 4 (length notes)))
+            ;; unusual: each asks (and our function says no)
+            (should-error (efrit-sandbox-check 'shell "rm -rf /tmp/x" "shell_exec") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'shell "cat a > b" "shell_exec") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'write (expand-file-name "~/notes.txt") "create_file") :type 'efrit-sandbox-denied)
+            (should-error (efrit-sandbox-check 'read "/ssh:host:/srv/defaults.yaml" "read_file") :type 'efrit-sandbox-denied)
+            (should (= 4 (length asked)))
+            ;; a repo file: asks the first time; once granted, siblings are expected
+            (setq asked nil)
+            (let ((efrit-sandbox-request-function (lambda (_req) 'session)))
+              (should (efrit-sandbox-check 'write (expand-file-name "a.el" repo) "edit_file")))
+            (should (efrit-sandbox-check 'write (expand-file-name "deep/b.el" repo) "edit_file"))
+            (should (null asked))
+            ;; nothing was saved: expected grants are session-only
+            (should (cl-every #'null (hash-table-values efrit-sandbox--project-grants))))
+        (efrit-unsubscribe 'note listener)
+        (delete-directory repo t)))))
+
+(ert-deftest test-sb-expected-shell-line-rules ()
+  (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t)))
+  (should (efrit-sandbox--expected-shell-line-p "ls -la"))
+  (should (efrit-sandbox--expected-shell-line-p "git log --oneline -5 | head -3"))
+  (should-not (efrit-sandbox--expected-shell-line-p "git push origin main"))
+  (should-not (efrit-sandbox--expected-shell-line-p "ls > out.txt"))
+  (should-not (efrit-sandbox--expected-shell-line-p "echo $(whoami)"))
+  (should-not (efrit-sandbox--expected-shell-line-p "python3 x.py"))
+  (should-not (efrit-sandbox--expected-shell-line-p ""))))
+
+(ert-deftest test-sb-shell-grant-ignores-read-only-extras ()
+  "A grant on the commands that need one covers the same line with read-only
+filters added: granted for cd, tmux, head, echo, the line with grep at the
+end does not ask again (2026-10-16).  Redirection, substitution and an
+always-ask line still need every command covered or an exact grant."
+  (let ((efrit-sandbox-expected-shell-commands (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+        (efrit-sandbox-shell-always-ask (eval (car (get 'efrit-sandbox-shell-always-ask 'standard-value)) t)))
+    (should (equal '("tmux") (efrit-sandbox-shell-grant-names "cd /tmp && tmux -L t new-session -d 2>&1 | head -40; echo ---; tmux -L t list-keys | grep -cE '^bind'")))
+    (should (equal '("tmux") (efrit-sandbox-shell-unusual-commands "tmux ls | grep x")))
+    (should (equal '("ls" "head") (efrit-sandbox-shell-grant-names "ls | head")))
+    (should (equal '("ls" "tmux") (efrit-sandbox-shell-grant-names "ls > out; tmux ls")))
+    (should (equal '(shell "tmux") (efrit-sandbox--suggest-target 'shell "tmux ls | grep x" "/")))
+    (should (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | grep x | sort"))
+    (should (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls 2>&1 | grep x"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | grep x > /tmp/out"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "tmux") "tmux ls | python3 x.py"))
+    (should-not (efrit-sandbox--shell-grant-covers-p '(shell "sudo" "ls") "sudo ls")))
+  (test-sb--in-project
+    (setq efrit-sandbox-expected-shell-commands
+          (eval (car (get 'efrit-sandbox-expected-shell-commands 'standard-value)) t))
+    (efrit-sandbox-begin-turn "review my tmux.conf and check the bindings")
+    (efrit-sandbox-grant 'shell '(shell "tmux") 'session)
+    (should (efrit-sandbox-allowed-p 'shell "tmux -L t list-keys | grep bind | head -3"))
+    (should-not (efrit-sandbox-allowed-p 'shell "tmux ls; python3 x.py"))
+    ;; what the reviewer is told: granted, named by the user, new
+    (should (equal '("tmux") (efrit-sandbox-shell-granted-commands "tmux ls | grep x" root)))
+    (should (equal '("tmux") (efrit-sandbox-shell-named-commands "tmux ls; python3 x.py")))
+    (should (equal '("tmux") (efrit-sandbox-shell-granted-commands "tmux ls; python3 x.py" root)))
+    ;; a word in the editor-context snapshot is not the user's request
+    (efrit-sandbox-begin-turn "<editor-context>\npython3 things\n</editor-context>\nhello")
+    (should-not (efrit-sandbox-shell-named-commands "python3 x.py"))))
+
+(ert-deftest test-sb-shell-split-skips-keywords-and-eval ()
+  "`for v in a b; do echo $v; done' and `eval tmux …' name echo and tmux,
+not for/do/done/eval (2026-10-16: a grant was asked for \"for, do, eval\")."
+  (should (equal '("echo") (efrit-sandbox-shell-commands "for v in a b c; do echo \"== $v\"; done")))
+  (should (equal '("tmux" "sleep") (efrit-sandbox-shell-commands "eval tmux -L t display-menu x; sleep 0.3")))
+  (should (equal '("ls") (efrit-sandbox-shell-commands "if [ -d x ]; then ls x; fi")))
+  (should (equal '("true" "make") (efrit-sandbox-shell-commands "while true; do make; done"))))
+
+(ert-deftest test-sb-shell-line-emacs-does-is-refused-with-the-lisp-named ()
+  "A shell_exec line made only of commands Emacs does (date; cp; grep -c) is
+refused before any prompt, the denial names the facilities, and the
+user is not asked.  A line with a real program (tmux) on it is asked
+about as before.  Asking for the shell by name in the request lifts the
+refusal.  The option turns it off."
+  (test-sb--in-project
+    (let* ((asked nil)
+           (efrit-sandbox-shell-refuse-emacs-equivalents t)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (line "date \"+%Y-%m-%d\"; cp /tmp/a.conf /tmp/a.conf.tested; grep -c . /tmp/a.conf"))
+      (efrit-sandbox-begin-turn "review my tmux.conf")
+      (should (efrit-sandbox-shell-emacs-does-it-p line))
+      (should-not (efrit-sandbox-shell-emacs-does-it-p "tmux ls | grep x"))
+      (let ((err (should-error (efrit-sandbox-check 'shell line "shell_exec" line) :type 'efrit-sandbox-denied)))
+        (should (null asked))
+        (let ((text (efrit-sandbox-denied-tool-result (cadr err))))
+          (should (string-match-p "cp -> copy-file" text))
+          (should (string-match-p "date -> format-time-string" text))
+          (should (string-match-p "grep -> search_content" text))))
+      ;; eval_sexp's own subprocesses are not refused this way: Lisp
+      ;; calling a program is the recommended path
+      (should-error (efrit-sandbox-check 'shell "date +%F" "eval_sexp" "subprocess") :type 'efrit-sandbox-denied)
+      (should (equal 1 (length asked)))
+      ;; a real program on the line: asked, not refused
+      (setq asked nil)
+      (should-error (efrit-sandbox-check 'shell "tmux ls | grep x" "shell_exec" "tmux ls | grep x") :type 'efrit-sandbox-denied)
+      (should (equal '((shell "tmux" "grep")) asked))
+      ;; the user asked for the shell by name
+      (setq asked nil)
+      (efrit-sandbox-begin-turn "run `date +%F` for me please")
+      (should-error (efrit-sandbox-check 'shell "date +%F" "shell_exec" "date +%F") :type 'efrit-sandbox-denied)
+      (should asked)
+      ;; off: asked like any other line
+      (setq asked nil)
+      (efrit-sandbox-begin-turn "something")
+      (let ((efrit-sandbox-shell-refuse-emacs-equivalents nil))
+        (should-error (efrit-sandbox-check 'shell line "shell_exec" line) :type 'efrit-sandbox-denied)
+        (should asked)))))
+
+(ert-deftest test-sb-efrit-prompts-may-read-input-inside-an-eval ()
+  "The eval's input stubs block the model's `read-string' but not efrit's
+own prompt under `efrit-with-user-waiting' (2026-10-16: `w' at a prompt
+raised by eval_sexp failed with the blocked-input error)."
+  (require 'efrit-tools)
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "the user's words")))
+    (efrit-tools--call-with-input-blocked
+     (lambda ()
+       (should-error (read-string "x: ") :type 'error)
+       (should (equal "the user's words"
+                      (efrit-with-user-waiting (read-string "x: "))))
+       ;; and blocked again after the prompt
+       (should-error (read-string "x: ") :type 'error)))))
+
+(ert-deftest test-sb-refusal-with-words-reaches-the-model ()
+  "The user's words at the prompt ride in the denial text as the instruction."
+  (let ((req (efrit-sandbox-request-create :cap 'shell :target '(shell "cp") :tool "shell_exec"
+                                           :detail "cp a b")))
+    (should (string-match-p "Do not retry this" (efrit-sandbox-denied-tool-result req)))
+    (setf (efrit-sandbox-request-feedback req) "use copy-file, not cp")
+    (let ((text (efrit-sandbox-denied-tool-result req)))
+      (should (string-match-p "said: \"use copy-file, not cp\"" text))
+      (should (string-match-p "Follow that" text))
+      (should-not (string-match-p "Do not retry this or work around it" text)))))
+
+(ert-deftest test-sb-dated-folders-grant-and-remember-the-parent ()
+  "A file under ~/work/2026-10-16/ asks for ~/work/; the grant covers
+tomorrow's folder; the history key is the parent too.  A date at the
+top of a path, or $HOME itself, is left alone."
+  (let* ((home (file-name-as-directory (expand-file-name "~")))
+         (work (expand-file-name "work/" home)))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026-10-16/" work))))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026/10/16/" work))))
+    (should (equal work (efrit-sandbox-dated-parent (expand-file-name "2026-W42/" work))))
+    (should (equal (expand-file-name "notes/" work) (efrit-sandbox-dated-parent (expand-file-name "notes/" work))))
+    (should (equal home (efrit-sandbox-dated-parent home)))
+    (should (equal "/2026/" (efrit-sandbox-dated-parent "/2026/"))))
+  (test-sb--in-project
+    (let* ((base (file-name-as-directory (make-temp-file "efrit-dated-" t)))
+           (today (expand-file-name "2026-10-16/" base))
+           (tomorrow (expand-file-name "2026-10-17/" base))
+           (seen nil)
+           (efrit-sandbox-request-function (lambda (req) (setq seen (efrit-sandbox-request-target req)) 'session)))
+      (make-directory today) (make-directory tomorrow)
+      (unwind-protect
+          (progn
+            (should (efrit-sandbox-check 'write (expand-file-name "claude.org" today) "edit_file"))
+            (should (equal (efrit-sandbox-canonical base) seen))
+            (should (efrit-sandbox-allowed-p 'write (expand-file-name "claude.org" tomorrow)))
+            (should (equal (efrit-grant-history-pattern 'write (expand-file-name "x" today))
+                           (efrit-grant-history-pattern 'write (expand-file-name "x" tomorrow)))))
+        (delete-directory base t)))))
+
+(ert-deftest test-sb-mentioned-targets-are-expected-this-turn ()
+  "Hosts and paths named in the user's own input are the work: fetching
+the article's URL, or its API on the same host, and reading the file
+the user pointed at, pass without a prompt for that turn; the next
+turn starts clean (2026-10-01: an article's own URL asked twice)."
+  (test-sb--in-project
+    (let* ((asked nil)
+           (efrit-sandbox-request-function (lambda (req) (push (efrit-sandbox-request-target req) asked) nil))
+           (notes (expand-file-name "notes.txt" (make-temp-file "efrit-sb-m-" t))))
+      (should (equal '(:hosts ("chaos.social" "emacsredux.com") :paths nil)
+                     (let ((m (efrit-sandbox-mentions "see https://chaos.social/@x/1 and (https://emacsredux.com:443/a/).")))
+                       (list :hosts (plist-get m :hosts) :paths (plist-get m :paths)))))
+      (efrit-sandbox-begin-turn (format "analyze https://chaos.social/@citizen428/117 and compare with %s please" notes))
+      (should (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url"))
+      (should (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url"))
+      (should (efrit-sandbox-check 'read notes "read_file"))
+      (should-error (efrit-sandbox-check 'net '(host . "example.org") "fetch_url") :type 'efrit-sandbox-denied)
+      (should (equal '((host . "example.org")) asked))
+      ;; a remote path in the text is never waved through
+      (efrit-sandbox-begin-turn "look at /ssh:host:/etc/passwd")
+      (should-not (plist-get (efrit-sandbox--turn-get :mentioned) :paths))
+      ;; a new turn without the mention asks again (the session grant from
+      ;; the expected pass is per session though, so clear it to see that)
+      (efrit-sandbox-reset-session root)
+      (efrit-sandbox-begin-turn "something else")
+      (setq asked nil)
+      (should-error (efrit-sandbox-check 'net '(host . "chaos.social") "fetch_url") :type 'efrit-sandbox-denied)
+      (should asked))))
+
+(ert-deftest test-sb-once-grant-on-a-host-or-read-lasts-the-turn ()
+  "`o' on a host or a read holds for the rest of the turn (the page, then
+its API); on a write or a shell line it is consumed by one operation."
+  (test-sb--in-project
+    (efrit-sandbox-begin-turn)
+    (efrit-sandbox-grant 'net '(host . "chaos.social") 'once)
+    (should (efrit-sandbox-allowed-p 'net '(host . "chaos.social")))
+    (should (efrit-sandbox-allowed-p 'net '(host . "api.chaos.social")))
+    (efrit-sandbox-grant 'shell '(shell "ls") 'once)
+    (should (efrit-sandbox-allowed-p 'shell "ls"))
+    (should-not (efrit-sandbox-allowed-p 'shell "ls"))))
+
+(ert-deftest test-sandbox-awk-and-stderr-to-devnull-are-read-only ()
+  "`awk' is a text filter and `2>/dev/null' is not a redirection that
+matters: the 2026-10-03 line that asked for seven commands is expected."
+  (should (efrit-sandbox--expected-shell-line-p
+           "cd ~/x && ls a*.el 2>/dev/null; echo ---; rg -n -o -e 'a|b' a*.el | sort -t: -k3 | awk -F: '{print $3}' | sort | uniq -c | sort -rn"))
+  (should-not (efrit-sandbox--expected-shell-line-p "ls > out.txt"))
+  (should-not (efrit-sandbox--expected-shell-line-p "cat $(ls)")))
+
+(ert-deftest test-sb-subdirectory-of-a-checkout-saves-and-reads-the-checkout-grants ()
+  "An agent buffer whose root is a subdirectory of a repo saves its project
+grants in the repo's .efrit/, and finds the repo's grants (2026-10-07:
+autodist/.efrit and autodist/files/.efrit side by side)."
+  (test-sb--in-project
+    (let* ((repo (let ((d (file-name-as-directory (make-temp-file "efrit-sb-repo-" t))))
+                   (make-directory (expand-file-name ".git" d))
+                   (make-directory (expand-file-name "files" d))
+                   (efrit-sandbox-forget-git-toplevels)
+                   (file-name-as-directory (efrit-sandbox-canonical d))))
+           (sub (file-name-as-directory (expand-file-name "files" repo))))
+      (unwind-protect
+          (progn
+            ;; a saved shell grant made from the subdirectory lands in the repo's file
+            (let ((efrit-project-root sub))
+              (efrit-sandbox-grant 'shell '(shell "rg" "sort") 'project sub)
+              (should (file-exists-p (expand-file-name ".efrit/sandbox.json" repo)))
+              (should-not (file-exists-p (expand-file-name ".efrit/sandbox.json" sub)))
+              ;; and is found from the subdirectory root
+              (should (efrit-sandbox-allowed-p 'shell "rg foo | sort" sub)))
+            ;; the repo's own read grant covers a file asked from the subdirectory
+            (efrit-sandbox-grant 'read repo 'project repo)
+            (should (efrit-sandbox-allowed-p 'read (expand-file-name "files/x.conf" repo) sub)))
+        (efrit-sandbox-reset-session repo)
+        (efrit-sandbox-reset-session sub)
+        (ignore-errors (delete-directory repo t))))))
+
+(ert-deftest test-sb-default-grants-equal-to-the-option-write-nothing ()
+  "Setting a project's default grants to the global value removes the
+section (and the file when nothing else is in it); a real deviation is
+written; unset removes it again."
+  (test-sb--in-project
+    (let* ((efrit-data-directory (expand-file-name "data" root))
+           (efrit-settings--cache (make-hash-table :test 'equal))
+           (efrit-sandbox-default-project-grants '(read))
+           (file (efrit-settings-file root)))
+      (efrit-sandbox-set-project-default-grants '(read) root)
+      (should-not (file-exists-p file))
+      (efrit-sandbox-set-project-default-grants '(read write) root)
+      (should (file-exists-p file))
+      (should (equal '(read write) (efrit-sandbox-effective-default-grants root)))
+      (efrit-sandbox-set-project-default-grants '(read) root)
+      (should-not (file-exists-p file))
+      (should (equal '(read) (efrit-sandbox-effective-default-grants root))))))
+
+(ert-deftest test-sb-store-does-not-create-a-grantless-file ()
+  "Saving a project with no project grants creates no sandbox.json; once a
+file exists it is rewritten, even to no grants, and never removed."
+  (test-sb--in-project
+    (let ((file (efrit-sandbox-store-file root)))
+      (efrit-sandbox-store-save root)
+      (should-not (file-exists-p file))
+      (efrit-sandbox-grant 'shell '(shell "ls") 'project root)
+      (should (file-exists-p file))
+      (efrit-sandbox-revoke 'shell '(shell "ls") root)
+      (should (file-exists-p file))
+      (should (string-match-p "\"grants\":\\[\\]" (with-temp-buffer (insert-file-contents file) (buffer-string)))))))

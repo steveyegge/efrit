@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -100,6 +100,12 @@
    (cons "project" (or (efrit-repl-session-project-root session) ""))
    (cons "title" (or (efrit-repl-session-title session) ""))
    (cons "status" (symbol-name (efrit-repl-session-status session)))
+   (cons "meta" (let ((meta (efrit-repl-session-meta session)) (out nil))
+                  (while meta
+                    (when (cadr meta)
+                      (push (cons (substring (symbol-name (car meta)) 1) (cadr meta)) out))
+                    (setq meta (cddr meta)))
+                  (or (nreverse out) (make-hash-table :test 'equal))))
    
    ;; Conversation history (human-readable)
    (cons "conversation"
@@ -113,13 +119,15 @@
                                                   (current-time))))))
                  (reverse (efrit-repl-session-conversation session))))
    
-   ;; API messages (for continuations)
+   ;; API messages (for continuations).  The session keeps them with
+   ;; symbol keys ((role . "user") (content . ...)); `assoc' on a
+   ;; string key found nothing and every message was saved as null.
    (cons "api_messages"
          (mapcar (lambda (msg)
                    (list
-                    (cons "role" (cdr (assoc "role" msg)))
-                    (cons "content" (cdr (assoc "content" msg)))))
-                 (reverse (efrit-repl-session-api-messages session))))
+                    (cons "role" (efrit-repl-session--block-get msg "role"))
+                    (cons "content" (efrit-repl-session--block-get msg "content"))))
+                 (efrit-repl-session-api-messages session)))
    
    ;; Metadata
    (cons "metadata"
@@ -142,6 +150,12 @@
          (project (cdr (assoc "project" data)))
          (title (cdr (assoc "title" data)))
          (status (intern (cdr (assoc "status" data))))
+         (meta (let ((obj (cdr (assoc "meta" data))) (out nil))
+                 (when (consp obj)
+                   (dolist (pair obj)
+                     (when (and (consp pair) (stringp (cdr pair)) (not (string-empty-p (cdr pair))))
+                       (setq out (append out (list (intern (concat ":" (format "%s" (car pair)))) (cdr pair)))))))
+                 out))
          (conversation-data (cdr (assoc "conversation" data)))
          (api-messages-data (cdr (assoc "api_messages" data)))
          
@@ -154,12 +168,16 @@
                      :timestamp (parse-time-string (cdr (assoc "timestamp" entry)))))
                   conversation-data))
          
-         ;; Build API messages
+         ;; Build API messages, in the shape the session keeps them:
+         ;; symbol keys, content blocks as vectors (json-read gave lists)
          (api-messages
           (mapcar (lambda (msg)
-                    (list
-                     (cons "role" (cdr (assoc "role" msg)))
-                     (cons "content" (cdr (assoc "content" msg)))))
+                    (let ((content (cdr (assoc "content" msg))))
+                      (list
+                       (cons 'role (cdr (assoc "role" msg)))
+                       (cons 'content (if (and (listp content) content (listp (car content)))
+                                          (vconcat content)
+                                        content)))))
                   api-messages-data))
          
          ;; Create session
@@ -171,7 +189,8 @@
                    :title title
                    :status status
                    :conversation conversation
-                   :api-messages api-messages)))
+                   :api-messages api-messages
+                   :meta meta)))
     
     session))
 
@@ -186,8 +205,10 @@
     
     (condition-case err
         (progn
-          (with-temp-file file-path
-            (insert json-str))
+          ;; Sessions hold buffer text and tool output: owner-only
+          (with-file-modes #o600
+            (with-temp-file file-path
+              (insert json-str)))
           (efrit-log 'debug "Saved session %s to %s" session-id file-path)
           t)
       (error

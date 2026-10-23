@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -15,7 +15,7 @@
 ;; - Supports severity levels: info, warning, danger
 ;; - Danger mode requires typing 'yes' (not just y/n)
 ;; - Logs all confirmations to audit trail
-;; - Supports timeout handling
+;; - Waits for the user; no timeout
 ;;
 ;; Difference from request_user_input:
 ;; - Structured for confirmation workflow (not open questions)
@@ -28,13 +28,17 @@
 (require 'efrit-tool-utils)
 (require 'cl-lib)
 (require 'json)
+(require 'efrit-events)
 
 ;;; Customization
 
-(defcustom efrit-confirm-default-timeout 300
-  "Default timeout in seconds for confirmation prompts (5 minutes)."
-  :type 'integer
-  :group 'efrit-tool-utils)
+;; There is no timeout on a confirmation.  A prompt is not a hung
+;; request: answering after five minutes must not be a rejection
+;; (2026-09-27), and the model's own timeout_seconds (it kept passing
+;; 300) turned a six-minute absence into a "timeout" it read as the
+;; install having failed (2026-10-20).  `efrit-with-user-waiting'
+;; already suspends every enclosing `with-timeout' for the prompt's
+;; duration; nothing here starts another.
 
 (defcustom efrit-confirm-log-file
   (expand-file-name "logs/confirmations.log" efrit-data-directory)
@@ -71,7 +75,7 @@ Plist with :action, :details, :severity, :options, :timeout, :start-time, :reque
                         (plist-get entry :choice)
                         (or (plist-get entry :response_time_seconds) 0)
                         (plist-get entry :action)))
-        (append-to-file (point-min) (point-max) file)))))
+        (write-region (point-min) (point-max) file t 'quiet)))))
 
 (defun efrit-confirm--log (action severity confirmed choice response-time &optional reason)
   "Log a confirmation event to audit trail.
@@ -110,82 +114,36 @@ REASON is optional reason for rejection (e.g., 'timeout, 'user_rejected)."
                  items
                  "\n"))))
 
-(defun efrit-confirm--build-prompt (action details severity options)
-  "Build the confirmation prompt string.
-ACTION is the description of what will happen.
-DETAILS is optional list of items affected.
-SEVERITY is 'info, 'warning, or 'danger.
-OPTIONS is list of choices (default [\"Yes\", \"No\"])."
-  (let ((severity-prefix
-         (pcase severity
-           ('danger "⚠️  DANGER: ")
-           ('warning "⚠️  ")
-           (_ "")))
-        (details-text (efrit-confirm--format-details details))
-        (options-list (or options '("Yes" "No"))))
-    (concat
-     severity-prefix
-     action
-     (when details-text
-       (concat "\n\n" details-text))
-     "\n\n"
-     (if (eq severity 'danger)
-         "Type 'yes' to confirm: "
-       (format "(%s) " (mapconcat #'identity options-list "/"))))))
+(declare-function efrit-choice-read "efrit-choice")
 
-;;; Confirmation Functions
-
-(defun efrit-confirm--get-response-info (action severity)
-  "Prompt user for confirmation for INFO severity.
-ACTION is the description. Uses simple y-or-n-p."
-  (let ((start-time (current-time))
-        (confirmed (y-or-n-p (format "%s " action))))
-    (list :confirmed confirmed
-          :choice (if confirmed "Yes" "No")
-          :response_time_seconds (float-time (time-subtract (current-time) start-time)))))
-
-(defun efrit-confirm--get-response-warning (action details options)
-  "Prompt user for confirmation for WARNING severity.
-ACTION is the description, DETAILS is list of items, OPTIONS is choices."
+(defun efrit-confirm--prompt-user (action details severity options)
+  "Ask the user with efrit's chooser; wait as long as they take.
+Returns response plist with :confirmed, :choice, :response_time_seconds, :reason.
+One menu for every severity (2026-10-21: the info prompt was a bare
+`y-or-n-p' in the echo area).  info/warning: y and n, or the caller's
+OPTIONS as keys; danger: the yes is spelled out and the key is Y, so
+a reflex y does not confirm it."
+  (require 'efrit-choice)
   (let* ((start-time (current-time))
-         (prompt (efrit-confirm--build-prompt action details 'warning options))
          (options-list (or options '("Yes" "No")))
-         (choice (completing-read prompt options-list nil t)))
-    (list :confirmed (string= (downcase choice) "yes")
+         (items (cond
+                 ((eq severity 'danger)
+                  '(("Y" "YES, do it (destructive)" "Yes") ("n" "no" "No")))
+                 ((equal options-list '("Yes" "No"))
+                  '(("y" "yes" "Yes") ("n" "no" "No")))
+                 (t (mapcar (lambda (o) (list nil o o)) options-list))))
+         (detail (concat (pcase severity ('danger "DANGER: destructive, not undoable\n") ('warning "warning\n") (_ ""))
+                         (or (efrit-confirm--format-details details) "")))
+         (got (efrit-choice-read action items :detail (string-trim detail) :allow-typed nil
+                                 :label "a confirmation"))
+         (choice (pcase got
+                   ('cancelled nil)
+                   (`(:typed . ,s) s)
+                   (s s))))
+    (list :confirmed (and (stringp choice) (string= (downcase choice) "yes"))
           :choice choice
+          :reason (and (null choice) "user_cancelled")
           :response_time_seconds (float-time (time-subtract (current-time) start-time)))))
-
-(defun efrit-confirm--get-response-danger (action details)
-  "Prompt user for confirmation for DANGER severity.
-ACTION is the description, DETAILS is list of items.
-Requires typing 'yes' explicitly."
-  (let* ((start-time (current-time))
-         (prompt (efrit-confirm--build-prompt action details 'danger nil))
-         (response (read-string prompt)))
-    (list :confirmed (string= (downcase response) "yes")
-          :choice response
-          :response_time_seconds (float-time (time-subtract (current-time) start-time)))))
-
-(defun efrit-confirm--prompt-user (action details severity options timeout)
-  "Prompt user for confirmation with timeout handling.
-Returns response plist with :confirmed, :choice, :response_time_seconds, :reason."
-  (let ((timeout-seconds (or timeout efrit-confirm-default-timeout)))
-    (condition-case nil
-        (with-timeout (timeout-seconds
-                       (list :confirmed nil
-                             :choice nil
-                             :reason "timeout"
-                             :response_time_seconds timeout-seconds))
-          (pcase severity
-            ('danger (efrit-confirm--get-response-danger action details))
-            ('warning (efrit-confirm--get-response-warning action details options))
-            (_ (efrit-confirm--get-response-info action severity))))
-      (quit
-       ;; User pressed C-g
-       (list :confirmed nil
-             :choice nil
-             :reason "user_cancelled"
-             :response_time_seconds 0)))))
 
 ;;; Main Tool Implementation
 
@@ -197,7 +155,7 @@ ARGS is an alist with:
   details - list of specific items affected (optional)
   severity - 'info' | 'warning' | 'danger' (default: 'warning')
   options - custom choices (default: ['Yes', 'No'])
-  timeout_seconds - how long to wait (default: 300)
+  timeout_seconds - accepted and ignored: the prompt waits for the user
 
 Returns a standard tool response with confirmation result."
   (efrit-tool-execute confirm_action args
@@ -205,8 +163,7 @@ Returns a standard tool response with confirmation result."
            (details (alist-get 'details args))
            (severity-str (or (alist-get 'severity args) "warning"))
            (severity (intern severity-str))
-           (options (alist-get 'options args))
-           (timeout (alist-get 'timeout_seconds args)))
+           (options (alist-get 'options args)))
 
       ;; Validate required fields
       (unless action
@@ -227,7 +184,7 @@ Returns a standard tool response with confirmation result."
         (setq options (append options nil)))
 
       ;; Prompt the user
-      (let ((response (efrit-confirm--prompt-user action details severity options timeout)))
+      (let ((response (efrit-confirm--prompt-user action details severity options)))
         ;; Log the confirmation
         (efrit-confirm--log action severity
                            (plist-get response :confirmed)
@@ -245,10 +202,13 @@ Returns a standard tool response with confirmation result."
              `((confirmed . t)
                (choice . ,(plist-get response :choice))
                (response_time_seconds . ,(plist-get response :response_time_seconds)))
-           ;; Rejected or timeout
+           ;; Rejected or cancelled; say so in words
            `((confirmed . :json-false)
              (choice . ,(or (plist-get response :choice) :null))
-             (reason . ,(or (plist-get response :reason) "user_rejected")))))))))
+             (reason . ,(or (plist-get response :reason) "user_rejected"))
+             (note . ,(if (equal (plist-get response :reason) "user_cancelled")
+                          "The user cancelled the prompt (C-g); nothing was run."
+                        "The user declined; nothing was run.")))))))))
 
 ;;; Interactive Testing
 

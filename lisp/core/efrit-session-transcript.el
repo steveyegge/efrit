@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -108,11 +108,12 @@ Creates a JSON file with full conversation history for resume."
                             transcript-dir))
            (transcript-data (efrit-transcript--session-to-transcript session)))
       (condition-case err
-          (with-temp-file transcript-file
+          (with-file-modes #o600
+           (with-temp-file transcript-file
             (insert (json-encode transcript-data))
             (efrit-log 'debug "Saved transcript: %s (%d messages)"
                       session-id
-                      (length (efrit-session-api-messages session))))
+                      (length (efrit-session-api-messages session)))))
         (error
          (efrit-log 'error "Failed to save transcript %s: %s"
                    session-id (error-message-string err)))))))

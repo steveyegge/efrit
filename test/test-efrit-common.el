@@ -115,25 +115,26 @@
 
 (ert-deftest test-common-truncate-short-string ()
   "Test that short strings are not truncated."
-  (should (equal (efrit-common-truncate-string "hello" 10) "hello")))
+  (should (equal (efrit-truncate-string "hello" 10) "hello")))
 
 (ert-deftest test-common-truncate-long-string ()
   "Test truncation of long strings."
-  (let ((result (efrit-common-truncate-string "hello world" 8)))
+  (let ((result (efrit-truncate-string "hello world" 8)))
     (should (string-suffix-p "..." result))
-    ;; Default behavior: 8 chars + "..."
-    (should (= (length result) 11))))
+    ;; MAX-LENGTH bounds the result, ellipsis included
+    (should (= (length result) 8))
+    (should (string= result "hello..."))))
 
 (ert-deftest test-common-truncate-ellipsis-in-max ()
   "Test truncation with ellipsis included in max length."
-  (let ((result (efrit-common-truncate-string "hello world" 8 t)))
+  (let ((result (efrit-truncate-string "hello world" 8 t)))
     (should (string-suffix-p "..." result))
     ;; With ellipsis-in-max: total length should be 8
     (should (= (length result) 8))))
 
 (ert-deftest test-common-truncate-exact-length ()
   "Test string at exact max length."
-  (should (equal (efrit-common-truncate-string "hello" 5) "hello")))
+  (should (equal (efrit-truncate-string "hello" 5) "hello")))
 
 ;;; Unicode Escaping Tests
 
@@ -150,6 +151,46 @@
   "Test escaping of emoji."
   (let ((result (efrit-common-escape-json-unicode "test \u2714 pass")))
     (should (string-match-p "\\\\u2714" result))))
+
+(ert-deftest test-common-escape-unicode-astral-is-a-surrogate-pair ()
+  "A character above U+FFFF is two escapes, and the result parses as JSON.
+One six-digit escape used to make the request invalid JSON (uniline's
+diff, full of box-drawing and emoji, failed with api_error)."
+  (should (equal (efrit-common-escape-json-unicode "\U0001F600") "\\uD83D\\uDE00"))
+  (should (equal (efrit-common-escape-json-unicode "\U0001D518") "\\uD835\\uDD18"))
+  (should (equal (efrit-common-escape-json-unicode "\U0010FFFF") "\\uDBFF\\uDFFF"))
+  (let* ((text (concat "box \u2500\u253C emoji \U0001F600 math \U0001D518"))
+         (json (efrit-common-escape-json-unicode (json-encode `(("t" . ,text))))))
+    (should (string-match-p "\\`[\x00-\x7F]*\\'" json))
+    (should (equal (gethash "t" (json-parse-string json)) text))))
+
+(ert-deftest test-common-escape-unicode-unencodable-becomes-replacement ()
+  "Raw bytes, lone surrogates, and out-of-range code points become U+FFFD.
+Raw bytes appear when a diff is read from a file that is not valid
+UTF-8; the API rejects the escape Emacs would print for them."
+  (let ((raw (string-to-multibyte "\377")))
+    (should (equal (efrit-common-escape-json-unicode raw) "\\uFFFD")))
+  (should (equal (efrit-common-escape-json-unicode (string #xD800)) "\\uFFFD"))
+  (should (equal (efrit-common-escape-json-unicode (string #x110000)) "\\uFFFD"))
+  ;; `json-encode' itself writes a raw byte as the text \\377 (a
+  ;; backslash and three digits), so a request is valid JSON either way
+  (let ((json (efrit-common-escape-json-unicode
+               (json-encode `(("t" . ,(concat "a" (string-to-multibyte "\377") "b")))))))
+    (should (string-match-p "\\`[\x00-\x7F]*\\'" json))
+    (should (json-parse-string json))))
+
+(ert-deftest test-common-escape-unicode-keeps-the-u-lower-case ()
+  "An upper-case match must not upcase the escape: \\u00D8, never \\U00D8.
+`replace-regexp-in-string' with FIXEDCASE nil case-converts the
+replacement to match the text it replaces; an O with a stroke in a
+docstring made every request carrying it invalid JSON."
+  (should (equal (efrit-common-escape-json-unicode "\u00D8") "\\u00D8"))
+  (should (equal (efrit-common-escape-json-unicode "\u00F8") "\\u00F8"))
+  (should (equal (efrit-common-escape-json-unicode "\u0391\U0001D400") "\\u0391\\uD835\\uDC00"))
+  (let ((json (efrit-common-escape-json-unicode (json-encode "\u00D8 \u00C9 \u0416")))
+        (case-fold-search nil))
+    (should-not (string-match-p "\\\\U" json))
+    (should (equal (json-parse-string json) "\u00D8 \u00C9 \u0416"))))
 
 ;;; URL and Header Building Tests
 

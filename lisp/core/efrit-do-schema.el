@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -31,6 +31,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-tool-registry)
 
 ;; Note: Tool dispatch table is in efrit-do.el (maps tool names to handlers)
 ;; This file only contains the JSON schemas sent to Claude.
@@ -123,14 +124,32 @@ NEVER call synchronous user-input functions (read-string, y-or-n-p, yes-or-no-p,
   ("properties" . (("expr" . (("type" . "string")
   ("description" . "The Elisp expression to evaluate")))))
   ("required" . ["expr"]))))
-   (("name" . "shell_exec")
-   ("description" . "Execute a shell command and return the result. ONLY use when user explicitly requests shell/terminal operations or external tools.
+   (("name" . "run_program")
+    ("description" . "Run ONE external program with an argument array, no shell. Prefer this over shell_exec for any single command: the user is asked about the program name alone, so a grant on it covers every later call, and there is no quoting, redirection or substitution to get wrong. Output (stdout and stderr) and the exit code come back; do the filtering, counting and looping yourself or in eval_sexp. Use stdin to feed input instead of `echo X | prog'. Give a longer timeout for slow programs.
 
 EXAMPLES:
-- File system info: \"ls -la ~/Documents\"
-- Process management: \"ps aux | grep emacs\"
-- System commands: \"git status\" or \"make build\"
-- External tools: \"curl -s https://api.example.com\"
+- {\"program\": \"tmux\", \"args\": [\"-L\", \"t\", \"list-keys\", \"-T\", \"prefix\"]}
+- {\"program\": \"git\", \"args\": [\"status\", \"--short\"]}
+- {\"program\": \"python3\", \"args\": [\"-\"], \"stdin\": \"print(2+2)\"}
+
+NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt). NOT for Emacs operations: use eval_sexp.")
+    ("input_schema" . (("type" . "object")
+                       ("properties" . (("program" . (("type" . "string")
+                                                      ("description" . "Executable name (looked up in PATH) or path")))
+                                       ("args" . (("type" . "array")
+                                                  ("items" . (("type" . "string")))
+                                                  ("description" . "Arguments, one array element each, unquoted")))
+                                       ("stdin" . (("type" . "string")
+                                                   ("description" . "Text written to the program's standard input")))
+                                       ("timeout" . (("type" . "integer")
+                                                     ("description" . "Seconds before the program is killed (default 10, max 120)")))))
+                       ("required" . ["program"]))))
+   (("name" . "shell_exec")
+   ("description" . "Execute a shell command line and return the result. ONLY when the user asked for the shell, or the line needs the shell itself (a pipeline between two programs the model cannot replace, a glob the program must receive expanded). For one program, use run_program: it asks the user less. NOT for searching, listing or reading files: use search_content, project_files, file_info, read_file (no permission prompt; a shell line asks the user). Avoid redirection, substitution, loops and `eval': each makes the line one the user must read and approve by hand.
+
+EXAMPLES:
+- Pipelines between programs: \"ps aux | grep emacs\"
+- Build systems that want a shell: \"make build\"
 
 DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
      ("input_schema" . (("type" . "object")
@@ -138,7 +157,7 @@ DO NOT USE for Emacs operations like opening files - use eval_sexp instead.")
                                                       ("description" . "The shell command to execute")))))
                        ("required" . ["command"]))))
     (("name" . "buffer_create")
-     ("description" . "Create a new buffer with content and optional mode. Use this for reports, lists, and formatted output.")
+     ("description" . "Create a read-only report buffer for output too long for the conversation. Not shown automatically: the user opens it from the tool row. Short results belong in your reply instead.")
      ("input_schema" . (("type" . "object")
                        ("properties" . (("name" . (("type" . "string")
                                                    ("description" . "Buffer name (e.g. '*efrit-report: Files*')")))
@@ -246,13 +265,17 @@ EXAMPLES:
 - Confirmation: \"This will delete 15 files. Proceed?\" with options [\"Yes\", \"No\"]
 - Choice: \"How should I format the output?\" with options [\"Table\", \"List\", \"JSON\"]
 
-IMPORTANT: After calling this tool, the session pauses. You will receive the user's response in the next API call continuation.")
+IMPORTANT: After calling this tool, the session pauses. You will receive the user's response in the next API call continuation.
+
+RULES: (1) If the user answers with a question of their own, answer it in text BEFORE asking again; a repeated ask without an answer is refused. (2) Never put choices in a final message as prose (\"1. ... 2. ... Which one?\"): the user gets no menu. Choices always go through this tool, with the options list. (3) Options are things only the user can decide; do not offer a plan you have already chosen as three variants of itself. (4) For a set the user picks several from (which items to adopt, which files to include), pass multi=true: the user gets toggles and RET, and the answer lists the chosen options separated by \"; \". Never ask the user to type numbers.")
      ("input_schema" . (("type" . "object")
                        ("properties" . (("question" . (("type" . "string")
                                                        ("description" . "The question to ask the user")))
                                        ("options" . (("type" . "array")
                                                     ("items" . (("type" . "string")))
-                                                    ("description" . "Optional list of choices. If provided, user picks one. If omitted, user provides free-form input.")))))
+                                                    ("description" . "Optional list of choices. If provided, user picks one (or several with multi). If omitted, user provides free-form input.")))
+                                       ("multi" . (("type" . "boolean")
+                                                  ("description" . "The user may choose several options (toggles + RET); the answer lists them separated by \"; \"")))))
                        ("required" . ["question"]))))
    (("name" . "confirm_action")
     ("description" . "Request explicit user confirmation before a destructive or important operation. Use this INSTEAD of request_user_input when confirming a specific action.
@@ -267,7 +290,7 @@ EXAMPLES:
 - Modify config: action=\"Update production config\" severity=\"warning\"
 - Create directory: action=\"Create src/utils/ directory\" severity=\"info\"
 
-The session PAUSES until user responds. On timeout, treated as rejection.")
+The session PAUSES until the user responds, however long that takes; there is no timeout. If the result is an error, the prompt itself failed; the action was never started.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("action" . (("type" . "string")
                                                     ("description" . "Short description of what will happen")))
@@ -279,9 +302,7 @@ The session PAUSES until user responds. On timeout, treated as rejection.")
                                                     ("description" . "Severity level: info (y/n), warning (highlighting), danger (type 'yes')")))
                                       ("options" . (("type" . "array")
                                                    ("items" . (("type" . "string")))
-                                                   ("description" . "Custom choices (default: ['Yes', 'No'])")))
-                                      ("timeout_seconds" . (("type" . "number")
-                                                           ("description" . "How long to wait before auto-rejecting (default: 300)")))))
+                                                   ("description" . "Custom choices (default: ['Yes', 'No'])")))))
                       ("required" . ["action"]))))
    ;; Checkpoint tools - Phase 3: Workflow Enhancement
    (("name" . "checkpoint")
@@ -333,6 +354,7 @@ The user sees a unified diff view and can:
 - Approve all changes
 - Reject all changes
 - In selective mode: Choose which changes to apply
+- Edit a change in ediff before approving. Then the result's user_edits lists {index, file, new_content}: apply THAT new_content for those changes, not your proposal.
 
 IMPORTANT: Session PAUSES until user responds.")
     ("input_schema" . (("type" . "object")
@@ -348,6 +370,63 @@ IMPORTANT: Session PAUSES until user responds.")
                                                       ("enum" . ["all_or_nothing" "selective"])
                                                       ("description" . "all_or_nothing (default): approve/reject all. selective: user picks which changes")))))
                       ("required" . ["changes"]))))
+   ;; Semantic navigation through Emacs's own machinery (efrit-tool-navigate)
+   (("name" . "xref_references")
+    ("description" . "Where a symbol is used, through the xref backend of the file's buffer (eglot, lsp-mode, etags, the elisp backend: whatever the user runs). Results are file:line: summary. Give file and line so the backend resolves the symbol in scope. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The identifier")))
+                                      ("file" . (("type" . "string") ("description" . "File whose backend answers (default: the user's buffer)")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based line to place point at first")))
+                                      ("column" . (("type" . "integer") ("description" . "0-based column")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "xref_apropos")
+    ("description" . "Definitions whose names match a pattern, through the xref backend (words for elisp and LSP, a regexp for etags). Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string")))
+                                      ("file" . (("type" . "string") ("description" . "File whose backend answers (default: the user's buffer)")))))
+                      ("required" . ["pattern"]))))
+   (("name" . "imenu_symbols")
+    ("description" . "The definitions of a file as its major mode's imenu sees them: name, kind, 1-based line. Cheap structure for any language. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string") ("description" . "Default: the user's buffer")))))
+                      ("required" . []))))
+   (("name" . "treesit_info")
+    ("description" . "The tree-sitter syntax node at a position (type, field, line range, text), its ancestors and named children; or the whole tree to depth 20 with whole_tree. Needs a *-ts-mode buffer. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based (default: point)")))
+                                      ("column" . (("type" . "integer") ("description" . "0-based")))
+                                      ("ancestors" . (("type" . "integer") ("description" . "How many parents to list (default 3)")))
+                                      ("children" . (("type" . "boolean") ("description" . "List the named children (default true)")))
+                                      ("whole_tree" . (("type" . "boolean") ("description" . "The whole tree instead")))))
+                      ("required" . []))))
+   (("name" . "surrounding_context")
+    ("description" . "The definition(s) enclosing a line of a file, whole, from tree-sitter: the function at depth 1, its class or module too at depth 2. Cheaper than read_file for what is around a place. Needs a grammar for the file's language. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based")))
+                                      ("depth" . (("type" . "integer") ("description" . "How many enclosing definitions (default 1, at most 3)")))))
+                      ("required" . ["file" "line"]))))
+   (("name" . "show_location")
+    ("description" . "Show the user a place in a file: open it in a window (focus stays here) and highlight the range for a moment. Prefer start_text/end_text anchors (they survive line drift); line/end_line as a fallback. Use it to point at what you are talking about.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("file" . (("type" . "string")))
+                                      ("start_text" . (("type" . "string") ("description" . "Exact text where the range starts")))
+                                      ("end_text" . (("type" . "string") ("description" . "Exact text where it ends (searched after start_text)")))
+                                      ("line" . (("type" . "integer") ("description" . "1-based, when no start_text")))
+                                      ("end_line" . (("type" . "integer")))))
+                      ("required" . ["file"]))))
+   (("name" . "show_ui_element")
+    ("description" . "Point at a piece of the user's screen: flash the mode line, header line or tab line of a window (by buffer name) for two seconds and return where it is in frame pixels. Use it instead of describing a location in words (\"the arc on row 2 next to the status word\"), and when a user's screenshot shows a window line, to confirm which one you mean before acting. A screenshot the user attaches with /shot comes with a LAYOUT block: window rectangles and the constructs of each line; read it before asking which element they meant.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("buffer" . (("type" . "string") ("description" . "Name of the buffer whose window line to flash")))
+                                      ("element" . (("type" . "string") ("enum" . ["mode-line" "header-line" "tab-line"]) ("description" . "Default mode-line")))))
+                      ("required" . ["buffer"]))))
+   (("name" . "get_last_error")
+    ("description" . "The user's recent command errors in this Emacs (message, condition, command, buffer, backtrace frame summary), newest first. Use this when the user asks why something just failed, before reproducing anything. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("count" . (("type" . "integer") ("description" . "How many (default 1)")))))
+                      ("required" . []))))
    ;; Web search tool - Phase 4: External Knowledge
    (("name" . "web_search")
     ("description" . "Search the web for documentation, solutions, and examples. Use this when you need to look up information, find how to do something in Emacs, or research a problem.
@@ -447,18 +526,101 @@ Returns: Matches with file path, line number, column, content, and context lines
                                       ("offset" . (("type" . "number")
                                                    ("description" . "Pagination offset (default: 0)")))))
                       ("required" . ["pattern"]))))
-   (("name" . "read_file")
-    ("description" . "Read a file and return its contents with metadata. Supports line ranges for large files.
+   (("name" . "load_project_file")
+    ("description" . "Load one Emacs Lisp source file of THIS project into the running Emacs (the source, never a stale .elc). Use it after editing a .el file so the new definitions are live, and before run_ert for a test file. This is the in-process route: eval_sexp refuses `load', and a separate `emacs --batch' is refused too. Returns the features provided.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "A .el file under the project root")))))
+                      ("required" . ["path"]))))
+   (("name" . "run_ert")
+    ("description" . "Run ERT tests in the running Emacs and return counts plus the failing tests' messages. selector is a regexp on test names (default: every loaded test) or a list of names. Load the test file first with load_project_file. Prefer this over any emacs --batch: it runs here, now, with the user's libraries.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("selector" . (("type" . "string") ("description" . "Regexp on test names, or \"t\" for all")))))
+                      ("required" . []))))
+   (("name" . "reproduce_command")
+    ("description" . "Reproduce an error the user reports from a key or command: runs the command (call-interactively, in the user's buffer) or a form, with the backtrace captured at the point of the signal, as toggle-debug-on-error would show it. Returns error, condition, data and the real frames. Use it FIRST when the user says 'X gives an error' and names or implies the command (look the key up with eval_sexp (key-binding (kbd \"<f3>\")) if needed); get_last_error is the recorded summary, this is the live reproduction. Exec class: reviewed like eval_sexp. Commands that prompt in the minibuffer cannot be driven; pass form with the arguments spelled out instead.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("command" . (("type" . "string") ("description" . "Interactive command name, e.g. tzz/transient/context")))
+                                      ("form" . (("type" . "string") ("description" . "A Lisp form to evaluate instead of a command")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer to run in (default: the user's buffer)")))))
+                      ("required" . []))))
+   (("name" . "project_outline")
+    ("description" . "Every top-level definition in the project's source files, by file, with line numbers (imenu). A few thousand tokens for a typical project; cached, so repeating it is free. Call it FIRST when a task spans files you have not read: it answers 'where is X' in one call, then read the two or three files whole. Read-only.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("path" . (("type" . "string") ("description" . "Directory (default: the project root)")))
+                                      ("pattern" . (("type" . "string") ("description" . "Glob to keep only some files, e.g. *.el or lisp/interfaces/*")))
+                                      ("max_files" . (("type" . "integer") ("description" . "Default 400")))))
+                      ("required" . []))))
+   (("name" . "symbol_info")
+    ("description" . "Everything about one Emacs Lisp symbol in ONE call: kinds (function/command/macro/variable/user-option/face), signature, docstring, defining file and line, the definition's source text, the current value (in a buffer you name), default and standard values, advice, whether it is compiled, and (optionally) its callers. Read-only, not reviewed. Use this instead of search_content + read_file + eval_sexp probes of symbol-file/fboundp/describe-*.
 
 EXAMPLES:
-- Full file: read_file path=\"lisp/efrit.el\"
-- Line range: read_file path=\"init.el\" start_line=100 end_line=150
-- With encoding: read_file path=\"data.txt\" encoding=\"latin-1\"
+- symbol_info symbol=\"efrit-agent-spinner-mode-line-string\"
+- symbol_info symbol=\"global-mode-string\" buffer=\"*scratch*\"
+- symbol_info symbol=\"efrit-agent-buffers\" include_callers=true")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("symbol" . (("type" . "string") ("description" . "The symbol's name")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose binding of a variable is read (default: the user's buffer)")))
+                                      ("include_source" . (("type" . "boolean") ("description" . "Include the definition's text (default true)")))
+                                      ("include_callers" . (("type" . "boolean") ("description" . "Walk xref for callers (default false; slower)")))))
+                      ("required" . ["symbol"]))))
+   (("name" . "live_state")
+    ("description" . "Current values of named variables and the bound/fbound state of names, in one buffer. Names only: nothing is evaluated or called, so it is read-only and not reviewed. Use it for every 'what is X right now' instead of an eval_sexp of (list x y z).
 
-Returns: File content, encoding, size, line counts. Binary files return metadata only.")
+EXAMPLE: live_state names=[\"global-mode-string\", \"header-line-format\", \"efrit-agent--thinking-label\"] buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("names" . (("type" . "array") ("items" . (("type" . "string"))) ("description" . "Symbol names")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer whose bindings are read (default: the user's buffer)")))))
+                      ("required" . ["names"]))))
+   (("name" . "mode_line_report")
+    ("description" . "Every window's mode line, header line and tab line as rendered text, taken apart into the constructs they are made of, each named by the variable or (:eval FUNCTION) it came from; plus global-mode-string and mode-line-misc-info. Answers 'what is that thing in the mode line / header' by name in one call. Read-only.
+
+EXAMPLE: mode_line_report buffer=\"*efrit-agent*\"")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("frame" . (("type" . "string") ("enum" . ["selected" "all"]) ("description" . "Windows of the selected frame (default) or all frames")))
+                                      ("buffer" . (("type" . "string") ("description" . "Only windows showing this buffer")))))
+                      ("required" . []))))
+   (("name" . "buffer_list")
+    ("description" . "The user's live buffers: name, file, remote (TRAMP host or false), size, major mode, modified, shown. Nothing is entered or read. Local buffers come first. RULE for remote buffers (the user's): consider local buffers first; then the NAMES of remote ones; only when a remote buffer is very likely the one that matters, ask the user (request_user_input) before reading it. Never sweep remote buffers with a search: each costs a round trip to the host and a grant prompt.
+
+EXAMPLES:
+- buffer_list pattern=\"report\\|adopt\"
+- buffer_list  (everything; then buffer_scan or read_buffer on the ones that matter)")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string") ("description" . "Regexp on buffer and file names")))
+                                      ("include_hidden" . (("type" . "boolean") ("description" . "Also names starting with a space (default false)")))
+                                      ("max" . (("type" . "integer") ("description" . "Default 200")))))
+                      ("required" . []))))
+   (("name" . "buffer_scan")
+    ("description" . "Regexp matches with surrounding lines in one buffer, or in every live buffer whose name matches buffer_regexp. Read-only; each buffer passes the sandbox's buffer check. Use it instead of re-search-forward loops in eval_sexp: logs (*efrit-log*, *Messages*), the agent transcript, any buffer.
+
+EXAMPLES:
+- buffer_scan buffer=\"*efrit-log*\" pattern=\"sandbox: denied\" from_end=true max=5
+- buffer_scan buffer_regexp=\"^\\\\*efrit\" pattern=\"kill.ring\" context=3")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("pattern" . (("type" . "string") ("description" . "Emacs regexp")))
+                                      ("buffer" . (("type" . "string") ("description" . "Buffer name (default: the user's buffer)")))
+                                      ("buffer_regexp" . (("type" . "string") ("description" . "Scan every live buffer whose name matches, instead of buffer")))
+                                      ("context" . (("type" . "integer") ("description" . "Lines of context each side (default 2)")))
+                                      ("max" . (("type" . "integer") ("description" . "Most matches returned (default 200)")))
+                                      ("from_end" . (("type" . "boolean") ("description" . "Newest first: search from the end")))
+                                      ("include_remote" . (("type" . "boolean") ("description" . "Under buffer_regexp, also scan buffers of remote files (default false: they are listed as skipped)")))))
+                      ("required" . ["pattern"]))))
+   (("name" . "read_file")
+    ("description" . "Read files and return their contents with metadata. READ WHOLE FILES, SEVERAL AT ONCE: pass paths=[...] for every file the task touches in ONE call; the result holds them all under a token budget (default 40k), and a file that does not fit comes back as its outline (definitions with line numbers) so you read a range of it next. Do not read a file in 60-line windows: nine range reads of one file cost nine round trips where one whole read costs one.
+
+EXAMPLES:
+- The files of a feature, whole: read_file paths=[\"lisp/a.el\", \"lisp/b.el\", \"test/test-a.el\"]
+- One file, whole: read_file path=\"lisp/efrit.el\"
+- A range of a big file (after its outline): read_file path=\"init.el\" start_line=100 end_line=150
+
+Returns: per file, content, size, line count; or the outline when over budget. Binary files return metadata only.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "File path to read (required)")))
+                                                  ("description" . "One file to read (or use paths)")))
+                                      ("paths" . (("type" . "array") ("items" . (("type" . "string")))
+                                                  ("description" . "Several files, whole, in one result")))
+                                      ("budget" . (("type" . "integer")
+                                                   ("description" . "Token budget for a paths read (default 40000)")))
                                       ("start_line" . (("type" . "number")
                                                        ("description" . "Start line (1-indexed, optional)")))
                                       ("end_line" . (("type" . "number")
@@ -467,7 +629,7 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
                                                      ("description" . "Encoding override (optional)")))
                                       ("max_size" . (("type" . "number")
                                                      ("description" . "Max bytes to read (default: 100000)")))))
-                      ("required" . ["path"]))))
+                      ("required" . []))))
    (("name" . "undo_edit")
      ("description" . "Undo the most recent edit to a specific file. Complementary to checkpoint/restore (which work at session level).
 
@@ -534,15 +696,23 @@ Returns: File content, encoding, size, line counts. Binary files return metadata
    - By default, will NOT overwrite existing files (use overwrite=true)
    - Returns a git-style diff showing the new content
 
-   USE THIS TOOL INSTEAD OF eval_sexp for file creation - it's atomic and shows diffs.")
+   USE THIS TOOL INSTEAD OF eval_sexp for file creation - it's atomic and shows diffs.
+   - show=true opens the new file in a window for the user (focus stays in the conversation). Use it for anything written FOR the user to read: a review, a report, notes. Never tell the user to open a file you could have shown.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
                                                   ("description" . "Absolute path to the file to create (required)")))
                                       ("content" . (("type" . "string")
                                                     ("description" . "Content to write to the file (required)")))
                                       ("overwrite" . (("type" . "boolean")
-                                                      ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))))
+                                                      ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))
+                                      ("show" . (("type" . "boolean") ("description" . "Open the file in a window for the user after writing it (focus stays here)")))))
                       ("required" . ["path" "content"]))))
+   (("name" . "editor_state")
+    ("description" . "Snapshot of where the user is in Emacs: current buffer, file, mode, point (line/column), active region, diagnostics on the current line, project root, other visible buffers. The same block is prepended automatically to each user message; call this to refresh it after your own edits moved point or changed buffers, or to inspect a specific buffer.")
+    ("input_schema" . (("type" . "object")
+                      ("properties" . (("buffer" . (("type" . "string")
+                                                    ("description" . "Buffer name to inspect. Default: the buffer the user is working in (not the efrit buffer).")))))
+                      ("required" . []))))
    (("name" . "file_info")
     ("description" . "Get metadata about files without reading contents. Useful for checking existence, size, type before reading.
 
@@ -643,21 +813,33 @@ Returns: Symbol type, docstring, signature (for functions), source location, rel
                                       ("related" . (("type" . "boolean")
                                                     ("description" . "Include related symbols (default: false)")))))
                       ("required" . ["symbol"]))))
-   (("name" . "set_project_root")
-    ("description" . "Set the project root directory explicitly. CALL THIS FIRST if you need to work with files but the project context is unclear or default-directory is wrong (e.g., in daemon mode).
+   (("name" . "emacs_apropos")
+    ("description" . "Find the Emacs command, function or variable for a job when you do not know its name. Searches THIS Emacs (built-ins plus whatever the user has installed: magit, consult, org, tramp...), ranked like M-x apropos, and returns the first docstring line, the source feature, and current values of matching variables. Read-only; needs no grant.
+
+Use it BEFORE reaching for shell_exec or writing Lisp from memory. Then call the command with eval_sexp.
 
 EXAMPLES:
-- Set project: set_project_root path=\"~/src/myproject\"
-- Clear and auto-detect: set_project_root path=\"\"
-
-This affects all file operations (project_files, search_content, read_file, etc.) which resolve relative paths against the project root.
-
-Returns: The normalized project root path, or error if path doesn't exist.")
+- emacs_apropos query=\"recent files\"            -> recentf-open-files, recentf-list (with its value)
+- emacs_apropos query=\"revert buffer\"           -> revert-buffer-quick, revert-buffer
+- emacs_apropos query=\"vc diff\"                 -> vc-diff, vc-diff-mergebase, vc-ediff
+- emacs_apropos query=\"dired mark\" kind=\"all\"
+- emacs_apropos query=\"^tramp-.*method\" kind=\"variable\"   (regexp)")
     ("input_schema" . (("type" . "object")
-                      ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "Absolute path to project root, or empty string to clear and auto-detect")))))
-                      ("required" . ["path"]))))
-   (("name" . "get_diagnostics")
+                      ("properties" . (("query" . (("type" . "string")
+                                                   ("description" . "Words describing the job (two or more words match symbols containing at least two), or a regexp")))
+                                      ("kind" . (("type" . "string")
+                                                 ("enum" . ["command" "function" "variable" "all"])
+                                                 ("description" . "What to search (default: command, i.e. things a user can M-x)")))
+                                      ("include_values" . (("type" . "boolean")
+                                                           ("description" . "Report current values of matching variables (default: true)")))
+                                      ("include_internal" . (("type" . "boolean")
+                                                             ("description" . "Include private symbols with -- in the name (default: false)")))
+                                      ("max" . (("type" . "integer")
+                                                ("description" . "Most results to return (default: 25)")))))
+                      ("required" . ["query"]))))
+   ;; set_project_root removed from the model-facing schema: it let the
+    ;; model move its own sandbox.  M-x efrit-set-project-root remains.
+    (("name" . "get_diagnostics")
     ("description" . "Get compiler/linter errors from IDE diagnostic systems. CRITICAL for the edit-compile-fix loop.
 
 Collects diagnostics from:
@@ -669,6 +851,7 @@ Collects diagnostics from:
 EXAMPLES:
 - Current buffer: get_diagnostics
 - Specific file: get_diagnostics path=\"src/main.el\"
+- Every open file of the project: get_diagnostics path=\"project\"
 - Only errors: get_diagnostics severity=\"error\"
 - From compilation: get_diagnostics sources=[\"compilation\"]
 
@@ -676,7 +859,7 @@ Returns: Array of diagnostics with source, severity, message, line, column.
 Use after making edits to check what errors remain.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
-                                                  ("description" . "File path to get diagnostics for (default: current buffer)")))
+                                                  ("description" . "File path to get diagnostics for (default: current buffer); \"project\" for every open file under the project root")))
                                       ("sources" . (("type" . "array")
                                                    ("items" . (("type" . "string")
                                                               ("enum" . ["flymake" "flycheck" "lsp" "compilation" "all"])))
@@ -831,10 +1014,14 @@ Returns a diff showing formatting changes, or a message if file was already form
 (defun efrit-do--get-current-tools-schema (&optional budget)
   "Return full tool schema, optionally with budget hints.
 If BUDGET is provided (an efrit-budget struct), inject budget hints
-into tool descriptions."
-  (if budget
-      (efrit-do--inject-budget-hints efrit-do--tools-schema budget)
-    efrit-do--tools-schema))
+into tool descriptions.  Tools other packages registered through
+`efrit-register-tool' (efrit-tool-registry.el) follow efrit's own."
+  (let ((schema (if budget
+                    (efrit-do--inject-budget-hints efrit-do--tools-schema budget)
+                  efrit-do--tools-schema)))
+    (if (bound-and-true-p efrit-tool-registry)
+        (vconcat schema (efrit-tool-registry-schema))
+      schema)))
 
 (provide 'efrit-do-schema)
 ;;; efrit-do-schema.el ends here

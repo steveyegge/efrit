@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'efrit-events)
 
 ;; Logging support
 (declare-function efrit-log "efrit-log")
@@ -57,11 +58,21 @@
 
 ;;; TODO State
 
+;; The old names, used by efrit-do-handlers, live here with the
+;; variables (declared before their referents, as the compiler asks).
+(defvaralias 'efrit-do--current-todos 'efrit-todo--current-todos)
+(defvaralias 'efrit-do--todo-counter 'efrit-todo--counter)
+
 (defvar efrit-todo--current-todos nil
   "Current TODO list for the active command session.")
 
 (defvar efrit-todo--counter 0
   "Counter for generating unique TODO IDs.")
+
+;; each session has its own list; the todos-changed event is stamped
+;; with the session through `efrit-publish'
+(efrit-session-local 'efrit-todo--current-todos 'efrit-todo--counter)
+
 
 ;;; TODO ID Generation
 
@@ -102,6 +113,7 @@
     (when (eq new-status 'completed)
       (setf (efrit-todo-item-completed-at todo) (current-time)))
     (efrit-log 'debug "Updated TODO %s to status: %s" id new-status)
+    (efrit-publish 'todos-changed `((:todos . ,efrit-todo--current-todos)))
     todo))
 
 (defun efrit-todo-find (id)

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -21,8 +21,11 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-file-io)
+(require 'efrit-common)
 (require 'cl-lib)
 (require 'efrit-tool-undo-edit)
+(require 'efrit-log)
 
 ;;; Customization
 
@@ -46,6 +49,7 @@ Returns a standard tool response with creation details."
     (let* ((path-input (or (alist-get 'path args) ""))
            (content (alist-get 'content args))
            (overwrite (efrit-json-bool (alist-get 'overwrite args)))
+           (show (efrit-json-bool (alist-get 'show args)))
            (warnings '()))
 
       ;; Validate required inputs
@@ -61,7 +65,7 @@ Returns a standard tool response with creation details."
                               (length content) efrit-tool-create-file-max-size))))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'write "create_file"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative))
              (parent-dir (file-name-directory path)))
@@ -87,12 +91,22 @@ Returns a standard tool response with creation details."
           (push (format "Created directory: %s" (file-relative-name parent-dir (plist-get path-info :project-root)))
                 warnings))
 
-        ;; Write the file
-        (with-temp-file path
-          (insert content))
+        ;; Write the file, through the visiting buffer if one exists
+        ;; (overwrite case), so the user's buffer and disk agree
+        (let ((w (efrit-file-write-string path content)))
+          (when (eq (plist-get w :via) 'buffer)
+            (push (format "Replaced contents of the live buffer visiting %s%s"
+                          path-relative
+                          (if (plist-get w :saved) " and saved" " (not saved)"))
+                  warnings)))
 
         ;; Register with undo system (empty string for new files)
         (efrit-undo-edit--register-edit path "")
+        ;; Balance check for Lisp targets: tell the model now, not at load
+        (when (string-match-p "\\.el\\'" path)
+          (when-let* ((problem (efrit-lisp-syntax-problem content)))
+            (push (format "Lisp syntax problem in the written file: %s. Fix it before evaluating." problem)
+                  warnings)))
 
         ;; Generate a diff-like output for new files
         (let* ((line-count (with-temp-buffer
@@ -109,15 +123,30 @@ Returns a standard tool response with creation details."
                                         (forward-line 1))
                                       (buffer-string)))))
 
-          ;; Return success
-          (efrit-tool-success
-           `((path . ,path)
-             (path_relative . ,path-relative)
-             (size . ,(length content))
-             (lines . ,line-count)
-             (diff . ,diff-output)
-             (created . t))
-           warnings))))))
+          ;; A document written for the user is put in front of them:
+          ;; a window on it, focus stays in the agent buffer (2026-10-22:
+          ;; "why didn't efrit just open the review it wrote")
+          (let ((shown (and show (efrit-tool-create-file--show path))))
+            (efrit-tool-success
+             `((path . ,path)
+               (path_relative . ,path-relative)
+               (size . ,(length content))
+               (lines . ,line-count)
+               (diff . ,diff-output)
+               (created . t)
+               ,@(when show (list (cons 'shown (if shown t :json-false)))))
+             warnings)))))))
+
+(defun efrit-tool-create-file--show (path)
+  "Display PATH in another window without selecting it; non-nil when shown."
+  (condition-case err
+      (let* ((buf (find-file-noselect path))
+             (win (display-buffer buf '((display-buffer-reuse-window display-buffer-pop-up-window)
+                                        (inhibit-same-window . t)))))
+        (when (window-live-p win)
+          (set-window-point win (with-current-buffer buf (point-min)))
+          t))
+    (error (efrit-log 'warn "create_file: could not show %s: %s" path (error-message-string err)) nil)))
 
 (provide 'efrit-tool-create-file)
 

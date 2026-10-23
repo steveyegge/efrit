@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, images
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -96,9 +96,9 @@ and users commonly need to view images from anywhere (Desktop, Downloads, etc.).
       (when (string-empty-p path-input)
         (signal 'user-error (list "Path is required")))
 
-      ;; Resolve path WITHOUT sandbox check - image reading is read-only and
-      ;; users commonly need to view images from Desktop, Downloads, etc.
-      (let* ((path (expand-file-name path-input))
+      ;; Images are often outside the project (Desktop, Downloads): the
+      ;; scope sandbox asks for `read' there rather than refusing.
+      (let* ((path (efrit-resolve-path-simple path-input 'read "read_image"))
              (path-relative (file-name-nondirectory path)))
 
         ;; Check file exists
@@ -133,7 +133,7 @@ and users commonly need to view images from anywhere (Desktop, Downloads, etc.).
 
               ;; Return special image response format
               ;; This will be detected and converted to an image content block
-              ;; by efrit-chat.el
+              ;; by the API layer (efrit-api-build-tool-result)
               `((success . t)
                 (image . ((type . "image")
                           (source . ((type . "base64")

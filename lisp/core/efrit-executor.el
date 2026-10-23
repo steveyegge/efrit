@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -30,6 +30,7 @@
 (require 'efrit-api)
 (require 'efrit-session)
 (require 'efrit-progress)
+(require 'efrit-result-struct)
 (require 'efrit-chat-response)
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (declare-function efrit-do--execute-tool "efrit-do-dispatch")
@@ -152,7 +153,14 @@ Optionally calls CALLBACK with error message."
     (efrit-executor--clear-mode-line)
 
     (when callback
-      (funcall callback (format "Error: %s" message)))
+      ;; Create a proper error response hash-table so callbacks can detect
+      ;; the error using efrit-response-error instead of receiving a raw string
+      (let ((error-response (make-hash-table :test 'equal))
+            (error-obj (make-hash-table :test 'equal)))
+        (puthash "type" "executor_error" error-obj)
+        (puthash "message" message error-obj)
+        (puthash "error" error-obj error-response)
+        (funcall callback error-response)))
 
     ;; Process next queued command if any
     (efrit-executor--process-queue)))
@@ -395,7 +403,7 @@ Returns the tool result string."
     (require 'efrit-do)
     (let ((result
            (condition-case err
-               (efrit-do--execute-tool tool-item)
+               (efrit-tool-result-text (efrit-do--execute-tool tool-item))
              (error
               (let ((error-msg (error-message-string err)))
                 (efrit-progress-show-tool-result tool-name error-msg nil)
@@ -517,7 +525,7 @@ Claude remembers previous tool calls and their results."
                (api-messages (efrit-session-get-api-messages-for-continuation session))
                (request-data
                 `(("model" . ,efrit-default-model)
-                  ("max_tokens" . 8192)
+                  ("max_tokens" . ,efrit-default-max-tokens)
                   ("messages" . ,(efrit-api-cacheable-messages api-messages))
                   ("system" . ,(efrit-api-cacheable-system system-prompt))
                   ("tools" . ,(efrit-api-cacheable-tools
@@ -637,7 +645,7 @@ Returns the final result string."
                    efrit-executor-session-timeout))
       (let* ((request-data
               `(("model" . ,efrit-default-model)
-                ("max_tokens" . 8192)
+                ("max_tokens" . ,efrit-default-max-tokens)
                 ("messages" . ,(efrit-api-cacheable-messages messages))
                 ("system" . ,(efrit-api-cacheable-system system-prompt))
                 ("tools" . ,(efrit-api-cacheable-tools
@@ -758,7 +766,7 @@ Calls optional CALLBACK with the result when complete."
            (system-prompt (efrit-executor--build-system-prompt session-id "[]"))
            (request-data
             `(("model" . ,efrit-default-model)
-              ("max_tokens" . 8192)
+              ("max_tokens" . ,efrit-default-max-tokens)
               ("messages" . ,(efrit-api-cacheable-messages
                               (vector `(("role" . "user")
                                         ("content" . ,command)))))
@@ -851,7 +859,7 @@ Continues the API call chain with the user's response in context."
                              base-system-prompt))
              (request-data
               `(("model" . ,efrit-default-model)
-                ("max_tokens" . 8192)
+                ("max_tokens" . ,efrit-default-max-tokens)
                 ("messages" . ,(efrit-api-cacheable-messages messages))
                 ("system" . ,(efrit-api-cacheable-system system-prompt))
                 ("tools" . ,(efrit-api-cacheable-tools

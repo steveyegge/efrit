@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -29,10 +29,18 @@
 ;;; Code:
 
 (require 'project)
+(declare-function vc-responsible-backend "vc")
+(declare-function vc-call-backend "vc")
 (require 'json)
 (require 'cl-lib)
 (require 'url-parse)
 (require 'efrit-config)
+(require 'dom)
+(declare-function efrit-sandbox-check "efrit-sandbox")
+(declare-function efrit-vcs-diff-strings "efrit-vcs" (old new &optional old-label new-label))
+(declare-function efrit-sandbox-abbreviate "efrit-sandbox")
+(declare-function efrit-sandbox--git-toplevel "efrit-sandbox")
+(defvar efrit-sandbox-enabled)
 
 ;;; Customization
 
@@ -86,13 +94,46 @@ Matched files will trigger warnings or require confirmation."
 
 ;;; Path Handling
 
+;;; HTML text
+(defun efrit-tool--dom-text (node &optional separator)
+  "The text under DOM NODE, joined by SEPARATOR.
+`dom-inner-text' arrived in Emacs 31.1; `dom-texts' works everywhere
+this package supports and is kept behind this name."
+  (with-suppressed-warnings ((obsolete dom-texts))
+    (dom-texts node separator)))
+
+(defcustom efrit-default-project-root 'user-emacs-directory
+  "Where efrit's project is when the current directory is in no repository.
+Used when `efrit-project-root' is unset and neither project.el nor VC
+finds a root for `default-directory': the agent opened from ~ or a
+scratch buffer.  Before 2026-10-21 that fell back to `default-directory'
+itself, so grants were keyed on ~/ and \"the project\" was the home
+directory.  The usual home of an Emacs user's own configuration is the
+default; set a directory for a checkout that holds it (tzz: ~/autodist)."
+  :type '(choice (const :tag "user-emacs-directory (~/.emacs.d or ~/.config/emacs)" user-emacs-directory)
+                 (const :tag "~/.config/emacs" config-emacs)
+                 (const :tag "the current directory (old behaviour)" default-directory)
+                 (directory :tag "a directory"))
+  :group 'efrit-tool-utils)
+
+(defun efrit-default-project-root ()
+  "The directory `efrit-default-project-root' names, expanded; nil for the old behaviour."
+  (pcase efrit-default-project-root
+    ('user-emacs-directory (expand-file-name user-emacs-directory))
+    ('config-emacs (expand-file-name "~/.config/emacs/"))
+    ('default-directory nil)
+    ((and (pred stringp) dir) (file-name-as-directory (expand-file-name dir)))
+    (_ nil)))
+
 (defun efrit-tool--get-project-root ()
   "Get the project root directory.
 
 Priority order:
 1. `efrit-project-root' if explicitly set
 2. `project-current' via project.el
-3. `default-directory' as fallback
+3. the VC checkout containing `default-directory'
+4. `efrit-default-project-root' (the user's configuration directory)
+5. `default-directory' as a last resort
 
 Returns the expanded absolute path."
   (expand-file-name
@@ -104,12 +145,35 @@ Returns the expanded absolute path."
     ;; Try project.el detection
     ((when-let* ((proj (project-current)))
        (project-root proj)))
-    ;; Fallback to default-directory
+    ;; A directory inside a checkout that project.el does not claim
+    ;; (its own markers missing, a subdirectory opened without the
+    ;; repo): the checkout is still the project.  Without this an
+    ;; agent buffer in ~/autodist/files/ saved its grants to
+    ;; files/.efrit/ while the same checkout's other grants lived in
+    ;; autodist/.efrit/ (2026-10-07).
+    ;; Cached per directory (the sandbox's table): this runs from
+    ;; header and context code, and a VC probe per call was part of
+    ;; the per-keystroke cost (2026-10-16)
+    ((let ((top (and (not (file-remote-p default-directory))
+                     (if (fboundp 'efrit-sandbox--git-toplevel)
+                         (efrit-sandbox--git-toplevel (file-name-as-directory (expand-file-name default-directory)))
+                       (ignore-errors (vc-call-backend (vc-responsible-backend default-directory) 'root default-directory))))))
+       (and top (not (string= (expand-file-name top) (expand-file-name "~/")))
+            (not (string= (expand-file-name top) "/"))
+            top)))
+    ;; Not in any repository: the user's configuration directory, or
+    ;; the directory itself when they chose the old behaviour
+    ((let ((dir (and (not (file-remote-p default-directory)) (efrit-default-project-root))))
+       (and dir (file-directory-p dir) dir)))
     (t default-directory))))
 
+;;;###autoload
 (defun efrit-set-project-root (path)
-  "Set `efrit-project-root' to PATH.
+  "Set `efrit-project-root' to PATH (interactively: read a directory).
+The sandbox is keyed on this root: reads inside it are allowed by
+default, and per-project grants live in its .efrit/sandbox.json.
 Returns the normalized path, or nil if PATH is invalid."
+  (interactive "DProject root for efrit: ")
   (let ((expanded (expand-file-name path)))
     (if (file-directory-p expanded)
         (progn
@@ -131,13 +195,21 @@ Handles the case where PATH equals DIRECTORY (same directory).
 Symlinks on both sides are resolved via `file-truename' before
 comparison: callers pass truename-resolved paths, so a root that
 is itself reached through a symlink (e.g. /tmp -> /private/tmp on
-macOS) must be resolved too or it never prefix-matches (ef-0cm)."
-  (let ((true-path (file-truename (expand-file-name path)))
-        (true-dir (file-name-as-directory
-                   (file-truename (expand-file-name directory)))))
-    ;; Either path is a prefix match, or they're the same directory
-    (or (string-prefix-p true-dir true-path)
-        (file-equal-p true-path (directory-file-name true-dir)))))
+macOS) must be resolved too or it never prefix-matches (ef-0cm).
+
+Remote (Tramp) paths are contained only within a root on the same
+host: the remote identities (`file-remote-p') must match exactly, so
+a local path can never satisfy a remote root or vice versa, and
+/ssh:a:/x is never inside /ssh:b:/."
+  (let ((remote-path (file-remote-p path))
+        (remote-dir (file-remote-p directory)))
+    (and (equal remote-path remote-dir)
+         (let ((true-path (file-truename (expand-file-name path)))
+               (true-dir (file-name-as-directory
+                          (file-truename (expand-file-name directory)))))
+           ;; Either path is a prefix match, or they're the same directory
+           (or (string-prefix-p true-dir true-path)
+               (file-equal-p true-path (directory-file-name true-dir)))))))
 
 (defun efrit-tool--is-sensitive-file (path)
   "Check if PATH matches any sensitive file pattern."
@@ -146,41 +218,70 @@ macOS) must be resolved too or it never prefix-matches (ef-0cm)."
                (string-match-p pattern path-str))
              efrit-sensitive-file-patterns)))
 
-(defun efrit-resolve-path (path &optional allow-outside)
+(defun efrit-resolve-path (path &optional access tool)
   "Resolve PATH relative to project root with sandbox enforcement.
 
 If PATH is absolute, use as-is (with sandbox check).
 If PATH is relative, resolve against project root.
 If PATH is nil or empty, return project root.
 
-When `efrit-project-sandbox' is non-nil and ALLOW-OUTSIDE is nil,
-signals an error if the resolved path is outside project root.
+ACCESS is `read' (default) or `write': the capability the caller
+needs on the resolved path.  TOOL names the caller for the prompt.
+The scope sandbox (`efrit-sandbox-check') decides: inside the project
+root, reads are allowed by default and writes ask; outside it, both
+ask.  A refusal signals `efrit-sandbox-denied'.  For compatibility,
+ACCESS may also be the legacy ALLOW-OUTSIDE flag t, meaning `read'
+with the old prefix check skipped.
+
+When `efrit-sandbox-enabled' is nil the legacy behaviour applies:
+`efrit-project-sandbox' non-nil signals `efrit-sandbox-violation'
+for paths outside the root.
 
 Symlinks are resolved via `file-truename' for sandbox enforcement,
 preventing escape via symlinks pointing outside the project.
+
+Tramp: when the project root is remote (e.g. /ssh:host:/src/proj),
+a plain absolute PATH such as /etc/hosts is interpreted on that
+remote host, since the model sees only host-local paths in listings
+and the system prompt.  A PATH that already carries a Tramp prefix
+is used as given.
 
 Returns a plist with:
   :path - the absolute resolved path (symlinks resolved)
   :path-relative - path relative to project root (or nil if outside)
   :project-root - the project root directory
   :is-sensitive - t if path matches sensitive file patterns
-  :outside-project - t if path is outside project root"
+  :outside-project - t if path is outside project root
+  :remote - the Tramp remote identity of :path (e.g. \"/ssh:host:\"), or nil"
   (let* ((project-root (efrit-tool--get-project-root))
+         (root-remote (file-remote-p project-root))
          (expanded (cond
                     ;; Empty or nil path -> project root
                     ((or (null path) (string-empty-p path))
                      project-root)
+                    ;; Already a remote path -> use as-is
+                    ((file-remote-p path)
+                     (expand-file-name path))
+                    ;; Absolute host-local path under a remote root ->
+                    ;; same host as the root
+                    ((and (file-name-absolute-p path) root-remote)
+                     (expand-file-name (concat root-remote path)))
                     ;; Absolute path -> use as-is
                     ((file-name-absolute-p path)
                      (expand-file-name path))
                     ;; Relative path -> resolve against project root
                     (t
                      (expand-file-name path project-root))))
+         ;; A path on a different host than the root can never be
+         ;; inside it.  Decide that before any file operation, so we
+         ;; don't open a Tramp connection to a host just to reject it.
+         (same-host (equal (file-remote-p expanded) root-remote))
          ;; Resolve symlinks for sandbox enforcement
-         (resolved (if (file-exists-p expanded)
+         (resolved (if (and same-host (file-exists-p expanded))
                        (file-truename expanded)
                      expanded))
-         (in-project (efrit-tool--path-in-directory-p resolved project-root))
+         (in-project (and same-host
+                          (efrit-tool--path-in-directory-p resolved project-root)))
          ;; Relative to the resolved root: RESOLVED has symlinks
          ;; expanded, so a raw root (e.g. /tmp/...) would yield a
          ;; ../../private/tmp/... path (ef-0cm)
@@ -188,27 +289,38 @@ Returns a plist with:
                           (file-relative-name resolved
                                               (file-truename project-root)))))
 
-    ;; Sandbox enforcement
-    (when (and efrit-project-sandbox
-               (not allow-outside)
-               (not in-project))
-      (signal 'efrit-sandbox-violation
-              (list (format "Path '%s' is outside project root '%s'"
-                           path project-root))))
+    ;; Sandbox enforcement.  The scope sandbox subsumes the old
+    ;; prefix check when enabled; otherwise the prefix check stands.
+    (let ((cap (if (eq access 'write) 'write 'read))
+          (legacy-allow-outside (eq access t)))
+      (if (bound-and-true-p efrit-sandbox-enabled)
+          ;; The detail is the exact path the tool asked for; the
+          ;; request's target may be wider (its directory), and the
+          ;; prompt should show both
+          (efrit-sandbox-check cap resolved tool
+                               (format "%s %s" (if (eq cap 'write) "write" "read")
+                                       (efrit-sandbox-abbreviate resolved)))
+        (when (and efrit-project-sandbox
+                   (not legacy-allow-outside)
+                   (not in-project))
+          (signal 'efrit-sandbox-violation
+                  (list (format "Path '%s' is outside project root '%s'"
+                               path project-root))))))
 
     (list :path resolved
           :path-relative relative-path
           :project-root project-root
           :is-sensitive (efrit-tool--is-sensitive-file resolved)
-          :outside-project (not in-project))))
+          :outside-project (not in-project)
+          :remote (file-remote-p resolved))))
 
 ;; Define the error type
 (define-error 'efrit-sandbox-violation "Sandbox violation")
 
-(defun efrit-resolve-path-simple (path &optional allow-outside)
+(defun efrit-resolve-path-simple (path &optional access tool)
   "Simplified path resolution - returns just the absolute path string.
-See `efrit-resolve-path' for full details."
-  (plist-get (efrit-resolve-path path allow-outside) :path))
+See `efrit-resolve-path' for ACCESS and TOOL."
+  (plist-get (efrit-resolve-path path access tool) :path))
 
 ;;; Response Building
 
@@ -340,52 +452,65 @@ Returns a symbol: \\='git, \\='npm, \\='cargo, \\='python, \\='make, or \\='unkn
      ((file-exists-p (expand-file-name "Makefile" root)) 'make)
      (t 'unknown))))
 
-;;; Git Utilities (for vcs tools)
+;;; Remote-aware process helpers (Tramp)
+;;
+;; Tools must reach for these instead of `call-process' /
+;; `executable-find' / `make-temp-file' so that they do the right
+;; thing when `default-directory' (normally the project root) is a
+;; Tramp path: the program then runs on the remote host, is looked
+;; up on the remote PATH, and temp files live in the remote /tmp.
 
-(defun efrit-tool-git-available-p ()
-  "Check if git is available and we're in a git repository."
-  (and (executable-find "git")
-       (eq (efrit-tool-detect-project-type) 'git)))
+(defun efrit-tool-executable-find (program &optional directory)
+  "Find PROGRAM on the host that owns DIRECTORY (default `default-directory').
+Uses the remote PATH when DIRECTORY is a Tramp path."
+  (let ((default-directory (or directory default-directory)))
+    (if (file-remote-p default-directory)
+        (executable-find program t)
+      (executable-find program))))
 
-(defun efrit-tool-run-git (args &optional timeout)
-  "Run git command with ARGS and return output.
-ARGS should be a list of command-line arguments.
-TIMEOUT defaults to 30 seconds.
+(defun efrit-tool-call-process (program &optional infile destination display &rest args)
+  "Like `call-process', but run PROGRAM on the host of `default-directory'.
+Signature and return value are identical to `call-process'; when
+`default-directory' is remote this delegates to `process-file'.
+DESTINATION may not be a remote file name; a stderr file, if given,
+must be local (as `process-file' requires)."
+  (if (file-remote-p default-directory)
+      (apply #'process-file program infile destination display args)
+    (apply #'call-process program infile destination display args)))
 
-Returns a plist with:
-  :success - t if command succeeded (exit code 0)
-  :output - stdout as string
-  :error - stderr as string (if failed)
-  :exit-code - the exit code"
-  (let* ((timeout (or timeout 30))
-         (default-directory (efrit-tool--get-project-root))
-         (output-buffer (generate-new-buffer " *efrit-git-output*"))
-         (stderr-file (make-temp-file "efrit-git-stderr"))
-         exit-code stdout stderr result)
-    (unwind-protect
-        (progn
-          (with-timeout (timeout
-                         (setq result (list :success nil
-                                            :output nil
-                                            :error "Git command timed out"
-                                            :exit-code -1)))
-            (setq exit-code
-                  (apply #'call-process "git" nil
-                         (list output-buffer stderr-file) nil args))
-            (setq stdout (with-current-buffer output-buffer
-                          (buffer-string)))
-            (setq stderr (when (file-exists-p stderr-file)
-                          (with-temp-buffer
-                            (insert-file-contents stderr-file)
-                            (buffer-string))))
-            (setq result (list :success (= exit-code 0)
-                               :output stdout
-                               :error (unless (= exit-code 0) stderr)
-                               :exit-code exit-code)))
-          result)
-      (kill-buffer output-buffer)
-      (when (file-exists-p stderr-file)
-        (delete-file stderr-file)))))
+(defun efrit-tool-make-temp-file (prefix &optional dir-flag suffix text)
+  "Like `make-temp-file', but in the temp dir of the host of `default-directory'.
+Returns a Tramp file name when `default-directory' is remote, so the
+file is visible to a remote `efrit-tool-call-process'."
+  (let ((temporary-file-directory
+         (if (file-remote-p default-directory)
+             (concat (file-remote-p default-directory)
+                     (file-name-as-directory
+                      (or (file-remote-p default-directory 'localname)
+                          "/tmp")))
+           temporary-file-directory)))
+    (if (file-remote-p default-directory)
+        ;; make-nearby-temp-file (Emacs 26+) picks the remote /tmp
+        (make-nearby-temp-file prefix dir-flag suffix)
+      (make-temp-file prefix dir-flag suffix text))))
+
+(defun efrit-tool-local-name (path)
+  "Return PATH without its Tramp prefix, e.g. \"/ssh:h:/a/b\" -> \"/a/b\".
+Use this when passing a path as an argument to a remote process."
+  (or (file-remote-p path 'localname) path))
+
+;;; Unified diff between two strings
+
+(defun efrit-tool-unified-diff (old-content new-content file-path)
+  "Return a unified diff of OLD-CONTENT -> NEW-CONTENT labelled with FILE-PATH.
+Through the `diff' library (`efrit-vcs-diff-strings'), so the user's
+`diff-command' and switches apply and it works wherever Emacs does."
+  (require 'efrit-vcs)
+  (let ((label (file-name-nondirectory (efrit-tool-local-name file-path))))
+    (condition-case nil
+        (efrit-vcs-diff-strings old-content new-content
+                                (concat "a/" label) (concat "b/" label))
+      (error ""))))
 
 ;;; Binary File Detection
 
@@ -563,7 +688,7 @@ Removes or truncates sensitive data."
                       (plist-get entry :result)
                       (plist-get entry :inputs)
                       (or (plist-get entry :duration) "N/A")))
-      (append-to-file (point-min) (point-max) file))))
+      (write-region (point-min) (point-max) file t 'quiet))))
 
 (defun efrit-tool-get-audit-log (&optional limit)
   "Get recent audit log entries.
@@ -602,6 +727,11 @@ Returns the result of BODY, which should be a tool response."
         (efrit-tool-error 'sandbox_violation
                           (cadr err)
                           `((tool . ,(symbol-name ',tool-name)))))
+       (efrit-sandbox-denied
+        (efrit-tool-audit ',tool-name ,inputs :blocked)
+        ;; Re-signal: the dispatcher turns this into the turn-ending
+        ;; tool result so the model stops instead of retrying
+        (signal (car err) (cdr err)))
        (error
         (efrit-tool-audit ',tool-name ,inputs :error
                           (float-time (time-subtract (current-time) start-time)))
@@ -620,71 +750,6 @@ ARGS are passed to `format'."
     (efrit-log level (format "[%s] %s" tool-name (apply #'format message args)))))
 
 
-
-;;; Project Agent Instructions (AGENTS.md/CLAUDE.md)
-
-(defcustom efrit-agent-instructions-files
-  '(".efrit/AGENTS.md" "AGENTS.md" "AGENT.md" "CLAUDE.md" ".efrit/CLAUDE.md")
-  "List of filenames to search for project-specific agent instructions.
-Files are checked in order; the first one found is used."
-  :type '(repeat string)
-  :group 'efrit-tool-utils)
-
-(defcustom efrit-agent-instructions-max-size 50000
-  "Maximum size in bytes for agent instructions file.
-Larger files are truncated with a warning."
-  :type 'integer
-  :group 'efrit-tool-utils)
-
-(defun efrit-tool--find-agent-instructions-file ()
-  "Find the first agent instructions file in project root.
-Searches for files listed in `efrit-agent-instructions-files'.
-Returns the absolute path if found, nil otherwise."
-  (let ((project-root (efrit-tool--get-project-root)))
-    (cl-some (lambda (filename)
-               (let ((path (expand-file-name filename project-root)))
-                 (when (file-readable-p path)
-                   path)))
-             efrit-agent-instructions-files)))
-
-(defun efrit-tool--read-agent-instructions ()
-  "Read and return project-specific agent instructions.
-Returns a plist with:
-  :content - the file contents (possibly truncated)
-  :file - the file path that was read
-  :truncated - t if content was truncated
-Returns nil if no instructions file found."
-  (when-let* ((file (efrit-tool--find-agent-instructions-file)))
-    (condition-case err
-        (let* ((attrs (file-attributes file))
-               (size (file-attribute-size attrs))
-               (truncated (> size efrit-agent-instructions-max-size))
-               (content (with-temp-buffer
-                          (insert-file-contents file nil 0
-                                                (min size efrit-agent-instructions-max-size))
-                          (buffer-string))))
-          (list :content content
-                :file file
-                :truncated truncated))
-      (error
-       (efrit-tool-log 'warn "agent-instructions"
-                       "Failed to read %s: %s" file (error-message-string err))
-       nil))))
-
-(defun efrit-tool--format-agent-instructions-for-prompt ()
-  "Format agent instructions for inclusion in system prompt.
-Returns a formatted string, or empty string if no instructions found."
-  (if-let* ((instructions (efrit-tool--read-agent-instructions)))
-      (let ((content (plist-get instructions :content))
-            (file (plist-get instructions :file))
-            (truncated (plist-get instructions :truncated)))
-        (concat "\n\nPROJECT-SPECIFIC INSTRUCTIONS:\n"
-                (format "(from %s%s)\n\n"
-                        (file-name-nondirectory file)
-                        (if truncated " [truncated]" ""))
-                content
-                "\n\n"))
-    ""))
 
 ;;; Deprecated - moved to efrit-common.el
 

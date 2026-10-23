@@ -22,6 +22,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'bytecomp)
 
 (defvar lint-toplevel--def-symbols
@@ -83,7 +84,11 @@ the offending enclosing form."
                (ppss (save-excursion (syntax-ppss pos))))
           (unless (or (nth 3 ppss) (nth 4 ppss) ; skip strings/comments
                       ;; skip quoted templates like `(defun ,name ...) in macros
-                      (memq (char-before pos) '(?\` ?\' ?, ?@)))
+                      (memq (char-before pos) '(?\` ?\' ?, ?@))
+                      ;; skip data: a symbol list inside a quoted value,
+                      ;; e.g. '(("Rename" (defun buffer) ...)) in a defconst
+                      (cl-some (lambda (open) (memq (char-before open) '(?\` ?\')))
+                               (nth 9 ppss)))
             (when (> (nth 0 ppss) 0)
               (when-let* ((why (lint-toplevel--check-wrappers (nth 9 ppss))))
                 (push (format "%s:%d: (%s ...) not at top level: %s"

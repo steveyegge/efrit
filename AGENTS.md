@@ -89,7 +89,7 @@ For changes to live behavior (UI, sessions, async loops, buffers, timers):
   *target* variable in efrit-config; the next session then fails inside
   efrit's own tool dispatch with void-variable errors that get blamed
   on Claude's elisp (observed live: ef-hn6).
-- ✅ Actual API calls for efrit-chat/efrit-do changes
+- ✅ Actual API calls for efrit/efrit-do changes
 
 Why batch mode is not enough: both June 2026 root-cause bugs (098182c —
 parens nested a defun inside its caller; 7916d58 — url-retrieve cleanup
@@ -117,7 +117,6 @@ efrit/
 ├── lisp/
 │   ├── efrit.el              # Main entry point
 │   ├── core/                 # Core functionality
-│   │   ├── efrit-chat.el     # Chat interface
 │   │   ├── efrit-tools.el    # Tool implementations
 │   │   ├── efrit-session.el  # Session management
 │   │   └── efrit-do-schema.el # Tool schemas

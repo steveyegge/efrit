@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -21,7 +21,9 @@
 
 ;;; Code:
 
+(require 'parse-time)
 (require 'cl-lib)
+(require 'iso8601)
 (require 'json)
 (require 'efrit-log)
 (require 'efrit-common)

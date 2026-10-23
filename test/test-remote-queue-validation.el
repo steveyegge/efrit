@@ -108,7 +108,7 @@
 
 (ert-deftest test-request-validation-all-valid-types ()
   "Test that all valid request types are accepted."
-  (dolist (type '("command" "chat" "eval"))
+  (dolist (type '("command" "eval"))
     (let ((request (make-hash-table :test 'equal)))
       (puthash "id" "test-123" request)
       (puthash "version" "1.0.0" request)

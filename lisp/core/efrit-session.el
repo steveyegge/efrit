@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -35,7 +35,6 @@
 (require 'efrit-session-context)
 (require 'efrit-session-transcript)
 (require 'efrit-repl-session)
-(require 'efrit-repl-loop)
 
 ;; Initialize the context system on load
 (efrit-context-init)

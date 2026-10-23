@@ -48,6 +48,77 @@ Levels in order: debug, info, warn, error, none"
   (>= (alist-get level efrit-log--level-values 4)
       (alist-get efrit-log-echo-level efrit-log--level-values 4)))
 
+(defface efrit-log-debug '((t :inherit shadow)) "Face of DEBUG log lines." :group 'efrit)
+(defface efrit-log-info '((t :inherit default)) "Face of INFO log lines." :group 'efrit)
+(defface efrit-log-warn '((t :inherit warning)) "Face of WARN log lines." :group 'efrit)
+(defface efrit-log-error '((t :inherit error)) "Face of ERROR log lines." :group 'efrit)
+(defface efrit-log-timestamp '((t :inherit shadow)) "Face of the timestamp." :group 'efrit)
+
+(defconst efrit-log-mode-font-lock-keywords
+  '(("^\\(\\[[0-9:]+\\]\\) \\(DEBUG\\): \\(.*\\)$"
+     (1 'efrit-log-timestamp) (2 'efrit-log-debug) (3 'efrit-log-debug))
+    ("^\\(\\[[0-9:]+\\]\\) \\(INFO\\): " (1 'efrit-log-timestamp) (2 'efrit-log-info))
+    ("^\\(\\[[0-9:]+\\]\\) \\(WARN\\): \\(.*\\)$"
+     (1 'efrit-log-timestamp) (2 'efrit-log-warn) (3 'efrit-log-warn))
+    ("^\\(\\[[0-9:]+\\]\\) \\(ERROR\\): \\(.*\\)$"
+     (1 'efrit-log-timestamp) (2 'efrit-log-error) (3 'efrit-log-error))))
+
+(defvar efrit-log-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "d") #'efrit-log-toggle-debug)
+    (define-key map (kbd "c") #'efrit-log-clear)
+    (define-key map (kbd "e") #'efrit-show-errors)
+    (define-key map (kbd "g") #'efrit-log-goto-end)
+    (define-key map (kbd "?") #'efrit-log-help)
+    (define-key map (kbd "q") #'efrit-log-quit)
+    map))
+
+(defun efrit-log-quit ()
+  "Bury the log buffer: the window closes, the buffer and its text stay."
+  (interactive)
+  (quit-window nil))
+
+(defun efrit-log-help ()
+  "Show the keys of the log buffer."
+  (interactive)
+  (message "%s"
+           (substitute-command-keys
+            "\\[efrit-log-toggle-debug] toggle debug logging  \\[efrit-log-clear] clear  \\[efrit-show-errors] errors only  \\[efrit-log-goto-end] newest line  \\[efrit-log-quit] close  \\[efrit-log-help] this help")))
+
+(define-derived-mode efrit-log-mode special-mode "Efrit-Log"
+  "The efrit log.  d toggles debug logging, c clears, e shows errors only, q closes."
+  (setq-local font-lock-defaults '(efrit-log-mode-font-lock-keywords t))
+  (setq-local truncate-lines t)
+  (efrit-log--update-header))
+
+(defun efrit-log--update-header ()
+  (setq header-line-format
+        (format " efrit log · level %s · ? keys" efrit-log-level)))
+
+;;;###autoload
+(defun efrit-log-toggle-debug ()
+  "Switch `efrit-log-level' between debug and info.
+Debug records every bus event, each API request and response, every
+sandbox decision: the trace to read when something looks wrong."
+  (interactive)
+  (setq efrit-log-level (if (eq efrit-log-level 'debug) 'info 'debug))
+  (efrit-log 'info "log level now %s" efrit-log-level)
+  (with-current-buffer (get-buffer-create efrit-log-buffer)
+    (when (derived-mode-p 'efrit-log-mode) (efrit-log--update-header)))
+  (message "efrit log level: %s" efrit-log-level))
+
+(defun efrit-log-goto-end ()
+  "Go to the newest line."
+  (interactive)
+  (goto-char (point-max)))
+
+(defun efrit-log--buffer ()
+  "The log buffer, in `efrit-log-mode'."
+  (let ((buf (get-buffer-create efrit-log-buffer)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'efrit-log-mode) (efrit-log-mode)))
+    buf))
+
 (defun efrit-log (level format-string &rest args)
   "Log message with LEVEL, FORMAT-STRING and ARGS."
   (when (efrit-log--level-enabled-p level)
@@ -58,16 +129,21 @@ Levels in order: debug, info, warn, error, none"
            (level-str (upcase (symbol-name level)))
            (prefix (format "[%s] %s: " timestamp level-str)))
       
-      ;; Write to log buffer
-      (with-current-buffer (get-buffer-create efrit-log-buffer)
-        (goto-char (point-max))
-        (insert prefix message "\n")
-        
-        ;; Buffer size management
-        (when (> (count-lines (point-min) (point-max)) efrit-log-max-lines)
-          (goto-char (point-min))
-          (forward-line (/ efrit-log-max-lines 5)) ; Remove 20%
-          (delete-region (point-min) (point))))
+      ;; Write to log buffer; keep windows showing the end at the end
+      (with-current-buffer (efrit-log--buffer)
+        (let ((inhibit-read-only t)
+              (at-end (mapcar (lambda (w) (cons w (>= (window-point w) (1- (point-max)))))
+                              (get-buffer-window-list (current-buffer) nil t))))
+          (save-excursion
+            (goto-char (point-max))
+            (insert prefix message "\n"))
+          (dolist (w at-end) (when (cdr w) (set-window-point (car w) (point-max))))
+          ;; Buffer size management
+          (when (> (count-lines (point-min) (point-max)) efrit-log-max-lines)
+            (save-excursion
+              (goto-char (point-min))
+              (forward-line (/ efrit-log-max-lines 5)) ; Remove 20%
+              (delete-region (point-min) (point))))))
       
       ;; Echo to message area if needed
       (when (efrit-log--level-echo-p level)
@@ -115,16 +191,21 @@ FORMAT-STRING and ARGS are as in efrit-log."
 
 ;;; Buffer management
 
+;;;###autoload
 (defun efrit-log-show ()
-  "Show the log buffer."
+  "Show the log buffer, newest line at the bottom."
   (interactive)
-  (pop-to-buffer (get-buffer-create efrit-log-buffer)))
+  (let ((buf (efrit-log--buffer)))
+    (pop-to-buffer buf '((display-buffer-reuse-window display-buffer-at-bottom)
+                         (window-height . 0.4)
+                         (dedicated . t)))
+    (goto-char (point-max))))
 
 (defun efrit-log-clear ()
   "Clear the log buffer."
   (interactive)
-  (with-current-buffer (get-buffer-create efrit-log-buffer)
-    (erase-buffer)
+  (with-current-buffer (efrit-log--buffer)
+    (let ((inhibit-read-only t)) (erase-buffer))
     (efrit-log-info "Log buffer cleared")))
 
 ;;;###autoload

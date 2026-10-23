@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai, config
 ;; URL: https://github.com/stevey/efrit
@@ -18,7 +18,7 @@
 
 ;;; Version Management
 
-(defconst efrit-version "0.4.1"
+(defconst efrit-version "0.14.0"
   "Version number of Efrit.
 This is the canonical version used throughout the project.
 Update this when releasing new versions.")
@@ -157,9 +157,13 @@ Most tasks complete within 20 turns; complex exploration may need more."
   :type 'integer
   :group 'efrit)
 
-(defcustom efrit-session-timeout 300
-  "Maximum seconds for a session before timeout.
-Default is 5 minutes (300 seconds)."
+(defcustom efrit-session-timeout 1800
+  "Working seconds a turn may take before efrit asks whether to go on.
+Time spent waiting on the user does not count.  At the limit the
+limits menu offers once / session / project raises, like the
+iteration cap; an answer of stop ends the turn.  Was 300 and a hard
+stop until 2026-10-01 (tzz: \"I can't be staring at efrit every 5
+minutes\").  0 disables."
   :type 'integer
   :group 'efrit)
 
@@ -179,9 +183,11 @@ Set to 0 to disable this specific limit."
 ;; Backwards compatibility alias - declare it before the variable
 (defvaralias 'efrit-max-tokens 'efrit-default-max-tokens)
 
-(defcustom efrit-default-max-tokens 8192
-  "Default maximum tokens for responses.
-Claude 3.5 Sonnet supports up to 8192 tokens with beta headers."
+(defcustom efrit-default-max-tokens 32768
+  "Most output tokens the model may produce in one response.
+Every request efrit sends uses this.  A long briefing over a hundred
+articles ran past 8192 and was cut; current Claude models allow far
+more.  Lower it if your endpoint or model rejects the value."
   :type 'integer
   :group 'efrit)
 

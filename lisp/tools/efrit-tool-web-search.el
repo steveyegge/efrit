@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, web
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -21,8 +21,10 @@
 ;;; Code:
 
 (require 'efrit-tool-utils)
+(require 'efrit-sandbox)
 (require 'url)
 (require 'url-http)
+(declare-function libxml-parse-html-region "xml.c")
 (require 'dom)
 (require 'cl-lib)
 
@@ -123,8 +125,8 @@ Options:
         (let* ((link-node (car (dom-by-class result-node "result__a")))
                (snippet-node (car (dom-by-class result-node "result__snippet")))
                (url (when link-node (dom-attr link-node 'href)))
-               (title (when link-node (dom-texts link-node)))
-               (snippet (when snippet-node (dom-texts snippet-node))))
+               (title (when link-node (efrit-tool--dom-text link-node)))
+               (snippet (when snippet-node (efrit-tool--dom-text snippet-node))))
           ;; DuckDuckGo uses redirect URLs, extract actual URL
           (when (and url (string-match "uddg=\\([^&]+\\)" url))
             (setq url (url-unhex-string (match-string 1 url))))
@@ -240,6 +242,10 @@ Returns standard tool response with search results.
 Note: Search queries are sent to external services.
 Do not include sensitive user data in queries."
   (efrit-tool-execute web_search args
+    (efrit-sandbox-check 'net t "web_search"
+                         (format "search %S%s" (or (alist-get 'query args) "")
+                                 (if-let* ((site (alist-get 'site args)))
+                                     (format " (site: %s)" site) "")))
     (let* ((query (alist-get 'query args))
            (site (alist-get 'site args))
            (max-results (or (alist-get 'max_results args) 5)))

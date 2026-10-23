@@ -6,7 +6,7 @@ This guide helps users familiar with Claude Code (Anthropic's VS Code extension)
 
 | Claude Code | Efrit Equivalent | Notes |
 |------------|------------------|-------|
-| Chat sidebar | `M-x efrit-chat` | Multi-turn conversations |
+| Chat sidebar | `M-x efrit` | Multi-turn conversations in the REPL buffer |
 | Agentic mode | `M-x efrit-do` | Full tool suite (35+ tools) |
 | Diff preview | `show_diff_preview` tool | Claude calls this automatically |
 | Agent view | `M-x efrit-agent` | Structured session buffer |
@@ -21,7 +21,7 @@ This guide helps users familiar with Claude Code (Anthropic's VS Code extension)
 **Claude Code**: Chat sidebar with conversation history, context from open files.
 
 **Efrit**: 
-- `M-x efrit-chat` - Multi-turn conversation in a dedicated buffer
+- `M-x efrit` - Multi-turn conversation in the REPL buffer
 - Context comes from current buffer automatically
 - Chat has limited tools (read-only, buffer-centric)
 
@@ -125,14 +125,13 @@ Enable Efrit's keybindings:
 
 | Key | Command | Like Claude Code... |
 |-----|---------|---------------------|
-| `C-c C-e c` | `efrit-chat` | Opening chat |
 | `C-c C-e d` | `efrit-do` | Running agentic command |
 | `C-c C-e a` | `efrit-agent` | Agent view |
 | `C-g` | Interrupt | Stop button |
 
 ## Tips for Claude Code Users
 
-1. **Use `efrit-do` more than `efrit-chat`**: Unlike Claude Code where chat has full tools, Efrit chat is intentionally limited. Use `efrit-do` for anything beyond questions.
+1. **`M-x efrit` is the primary surface**: the REPL buffer has the full tool set; `efrit-do` is the one-shot form of the same thing.
 
 2. **The agent buffer is your friend**: `efrit-agent` provides visibility similar to Claude Code's agent view.
 

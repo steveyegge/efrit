@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'efrit-test-sandbox-helpers)
 (require 'json)
 
 ;; Add load paths for test

@@ -3,8 +3,9 @@
 # Configuration
 EMACS = emacs
 EMACS_BATCH = $(EMACS) --batch --no-init-file
+LOAD_PATH = -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L lisp/dev
 PACKAGE_NAME = efrit
-VERSION = 0.3.0
+VERSION = 0.4.1
 
 # Source files
 EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el lisp/tools/*.el)
@@ -20,10 +21,10 @@ DOC_FILES = README.md CONTRIBUTING.md AUTHORS AGENTS.md LICENSE
 # Distribution files
 DIST_FILES = lisp/ test/ bin/ plans/ $(DOC_FILES) Makefile .gitignore
 
-.PHONY: all compile test clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
+.PHONY: all compile test test-unit autoloads clean distclean install uninstall check help dist mcp-install mcp-build mcp-test mcp-start mcp-clean coverage coverage-simple coverage-report coverage-check lint lint-defun lint-toplevel clean-orphan-elc checkdoc
 
 # Default target
-all: compile
+all: compile autoloads
 
 # Help target
 help:
@@ -87,7 +88,6 @@ lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
 lisp/core/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Core module dependencies
-lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-tools.elc lisp/interfaces/efrit-agent.elc
 lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 lisp/core/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
 # Support module dependencies
@@ -107,7 +107,7 @@ lisp/%.elc: lisp/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -119,7 +119,7 @@ lisp/core/%.elc: lisp/core/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -131,7 +131,7 @@ lisp/support/%.elc: lisp/support/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -143,7 +143,7 @@ lisp/interfaces/%.elc: lisp/interfaces/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -155,7 +155,7 @@ lisp/tools/%.elc: lisp/tools/%.el
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
@@ -201,7 +201,7 @@ lint: checkdoc lint-defun lint-toplevel
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp/tools\")" \
-		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not docstrings docstrings-wide)))" \
 		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $(EL_FILES)
 	@echo "✅ Code style and warnings checks passed"
@@ -259,10 +259,29 @@ lint-defun:
 	      (message \"✅ No unexpected nested defun forms found\")))"
 
 # Testing
-test: compile
-	@echo "Running test suite..."
-	@cd test && ./efrit-test-simple.sh
-	@./bin/launch-autonomous-efrit.sh test || echo "⚠️  Autonomous tests skipped (optional)"
+#
+# test-unit runs every ERT suite under test/, one batch Emacs per
+# file (lisp/dev/efrit-run-tests.el picks the files that contain an
+# ert-deftest; live-API scripts have none).  One Emacs for all of them
+# let state leak between files (2026-09-30).  TEST_FILES limits the
+# run: make test-unit TEST_FILES="test/test-api.el test/test-vcs.el".
+# EFRIT_TEST_JOBS (default 4) suites run at once.
+TEST_FILES ?=
+
+# Autoloads.  package.el only scans lisp/ itself, so the commands that
+# live in lisp/{core,interfaces,support,tools} (efrit-doctor,
+# efrit-select-model, efrit-menu, ...) would not be reachable before
+# something loads efrit.el.  This generates one file covering every
+# subdirectory; users on :load-path do (load "efrit-autoloads").
+autoloads: lisp/efrit-autoloads.el
+lisp/efrit-autoloads.el: $(EL_FILES) lisp/dev/efrit-gen-autoloads.el
+	@$(EMACS_BATCH) -l lisp/dev/efrit-gen-autoloads.el
+
+test-unit:
+	@EFRIT_TEST_EMACS="$(EMACS)" $(EMACS_BATCH) -l lisp/dev/efrit-run-tests.el $(TEST_FILES)
+
+# Everything: byte-compile, ERT, smoke script, MCP tests.
+test: compile test-unit test-simple mcp-test
 
 test-simple:
 	@echo "Running basic tests..."
@@ -331,7 +350,6 @@ coverage-simple: compile
 	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L lisp/tools -L test \
 		--eval "(require 'efrit)" \
 		--eval "(require 'efrit-do)" \
-		--eval "(require 'efrit-chat)" \
 		--eval "(require 'efrit-coverage)" \
 		--eval "(efrit-coverage-simple-start)" \
 		--eval "(efrit-config-data-file \"test\")" \
@@ -372,8 +390,7 @@ mcp-clean:
 	@rm -rf mcp/node_modules mcp/dist mcp/coverage
 
 # Update existing targets to include MCP
-build: compile mcp-build
-test: test-simple mcp-test
+build: compile autoloads mcp-build
 
 # Cleaning
 clean: mcp-clean

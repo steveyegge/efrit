@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025 Steve Yegge
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 
@@ -19,41 +19,112 @@
 
 (require 'cl-lib)
 (require 'efrit-agent-core)
+(require 'efrit-markdown)
+(require 'efrit-usage)
+(declare-function efrit-agent-svg-header "efrit-agent-svg-header")
+(declare-function efrit-agent-svg--resize "efrit-agent-svg-header")
+
+(defvar efrit-agent--repl-session)
+(declare-function efrit-repl-session-id "efrit-repl-session")
 
 ;;; Message Rendering
 ;;
 ;; Functions to add messages to the conversation region without full re-render.
 ;; These use efrit-agent--append-to-conversation for incremental updates.
 
-(defun efrit-agent--add-user-message (text)
+(defface efrit-agent-user-block
+  '((((background dark)) :background "#2b2f3a" :extend t)
+    (t :background "#eef1f6" :extend t))
+  "Background for the user's turn, so questions stand apart from answers."
+  :group 'efrit-agent)
+
+(defconst efrit-agent--user-prefixes
+  '((nil "❯ " efrit-agent-user-prefix)
+    (steer "↳ " efrit-agent-steer-prefix)
+    (queued "⋯ " efrit-agent-queued-prefix)
+    (dropped "✗ " efrit-agent-queued-prefix))
+  "Prefix and face of a user line by KIND: a turn, a steer, a queued input.")
+
+(defun efrit-agent--user-line (line)
+  "LINE of a user message with its face; a `> ' quote line gets a bar.
+The `> ' stays in the text (the model and the kill ring see Markdown)."
+  (if (string-match "\\`> ?" line)
+      (concat (propertize (match-string 0 line)
+                          'display (propertize "▌ " 'face 'efrit-markdown-quote-bar)
+                          'face 'efrit-agent-user-message)
+              (propertize (substring line (match-end 0))
+                          'face '(efrit-markdown-quote efrit-agent-user-message)))
+    (propertize line 'face 'efrit-agent-user-message)))
+
+(defun efrit-agent--add-user-message (text &optional kind)
   "Add a user message with TEXT to the conversation region.
-User messages are prefixed with `> ' and have proper faces applied.
-Multi-line messages have continuation lines indented."
-  ;; End any streaming Claude message first
+The turn is rendered as a shaded block with a `❯' prefix on the
+first line and continuation lines indented, followed by one blank
+line.  Text properties mark it `user-message' with an id.  KIND
+`steer' marks text handed to a running turn, `queued' text that waits
+for the turn to end (see `efrit-agent--unmark-queued-message')."
+  ;; Any user line closes the message being streamed: drawn inside an
+  ;; open one, the next chunk landed after the line and the message
+  ;; read "I will now↳ steer text compute." (2026-09-25).  A steer or a
+  ;; queued line leaves the thinking indicator alone: the turn goes on.
   (efrit-agent--stream-end-message)
-  ;; Hide thinking indicator when user sends message
-  (efrit-agent--hide-thinking)
+  (unless kind
+    (efrit-agent--hide-thinking))
   (let* ((msg-id (format "user-msg-%d" (cl-incf efrit-agent--message-counter)))
-         (lines (split-string text "\n"))
-         (first-line (car lines))
-         (rest-lines (cdr lines))
+         (prefix (or (assq kind efrit-agent--user-prefixes) (assq nil efrit-agent--user-prefixes)))
+         (lines (split-string (string-trim-right text) "\n"))
+         (body (mapconcat
+                (lambda (pair)
+                  (let ((first (car pair)) (line (cdr pair)))
+                    (concat (propertize (if first (nth 1 prefix) "  ")
+                                        'face (nth 2 prefix) 'efrit-user-prefix t)
+                            (efrit-agent--user-line line))))
+                (cl-loop for l in lines for i from 0 collect (cons (zerop i) l))
+                "\n"))
          (formatted-text
-          (concat
-           ;; First line with > prefix
-           (propertize "> " 'face 'efrit-agent-user-prefix)
-           (propertize first-line 'face 'efrit-agent-user-message)
-           ;; Continuation lines with indentation
-           (when rest-lines
-             (mapconcat
-              (lambda (line)
-                (concat "\n  " (propertize line 'face 'efrit-agent-user-message)))
-              rest-lines
-              ""))
-           "\n\n")))
+          ;; The block background is *added* under the prefix/message
+          ;; faces; `propertize' would replace them and the line lost
+          ;; its gold prompt and text colour.
+          (let ((block (concat body "\n")))
+            (add-face-text-property 0 (length block) 'efrit-agent-user-block t block)
+            (concat block "\n"))))
     (efrit-agent--append-to-conversation
      formatted-text
      (list 'efrit-type 'user-message
-           'efrit-id msg-id))))
+           'efrit-id msg-id
+           'efrit-user-kind kind
+           'efrit-user-text text))))
+
+(defun efrit-agent--find-user-message (text kind)
+  "Start and end of the first user message of KIND with TEXT, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (catch 'found
+      (let ((pos (point-min)))
+        (while (setq pos (text-property-not-all pos (point-max) 'efrit-user-text nil))
+          (when (and (eq (get-text-property pos 'efrit-user-kind) kind)
+                     (equal (get-text-property pos 'efrit-user-text) text))
+            (throw 'found (cons pos (or (next-single-property-change pos 'efrit-id) (point-max)))))
+          (setq pos (or (next-single-property-change pos 'efrit-user-text) (point-max))))
+        nil))))
+
+(defun efrit-agent--unmark-queued-message (text &optional new-kind)
+  "Turn the queued line showing TEXT into a sent turn, or into NEW-KIND.
+The waiting mark becomes the turn prefix (or the dropped one), so the
+conversation reads in the order things happened."
+  (when-let* ((region (efrit-agent--find-user-message text 'queued)))
+    (let* ((prefix (or (assq new-kind efrit-agent--user-prefixes)
+                       (assq nil efrit-agent--user-prefixes)))
+           (start (car region)) (end (cdr region)))
+      (efrit-agent--with-render
+        (put-text-property start end 'efrit-user-kind new-kind)
+        (when-let* ((p (text-property-any start end 'efrit-user-prefix t)))
+          (goto-char p)
+          (let ((props (text-properties-at p)))
+            (delete-region p (+ p 2))
+            (insert (apply #'propertize (nth 1 prefix) props))
+            (put-text-property p (+ p 2) 'face (nth 2 prefix))
+            (add-face-text-property p (+ p 2) 'efrit-agent-user-block t)))))))
 
 (defun efrit-agent--add-claude-message (text)
   "Add a Claude message with TEXT to the conversation region.
@@ -77,16 +148,15 @@ Error messages are displayed in red to make them visible."
   (efrit-agent--stream-end-message)
   (efrit-agent--hide-thinking)
   (let* ((msg-id (format "error-msg-%d" (cl-incf efrit-agent--message-counter)))
-         (inhibit-read-only t)
          (formatted-text (concat "\n⚠ Error: " text "\n\n")))
-    (save-excursion
+    (efrit-agent--with-render
       (goto-char (marker-position efrit-agent--conversation-end))
       (let ((start (point)))
         (insert (propertize formatted-text 'face 'efrit-agent-error))
         (add-text-properties start (point)
                              (list 'efrit-type 'error-message
-                                   'efrit-id msg-id
-                                   'read-only t))
+                                   'efrit-id msg-id))
+        (efrit-agent--seal-rendered start (point))
         (set-marker efrit-agent--conversation-end (point))))))
 
 (defun efrit-agent--stream-start-message (text)
@@ -100,11 +170,15 @@ Creates markers for tracking the message region for future appends."
   ;; Hide thinking indicator when Claude starts responding
   (efrit-agent--hide-thinking)
   (let* ((msg-id (format "claude-msg-%d" (cl-incf efrit-agent--message-counter)))
-         (inhibit-read-only t)
          start-marker end-marker)
     ;; Move to end of conversation region
-    (save-excursion
+    (efrit-agent--with-render
       (goto-char (marker-position efrit-agent--conversation-end))
+      ;; Prose after tool rows gets a blank line, so the answer does
+      ;; not read as the last row's continuation
+      (when (and (> (point) (point-min))
+                 (eq (get-text-property (1- (point)) 'efrit-type) 'tool-call))
+        (insert (propertize "\n" 'read-only t)))
       (setq start-marker (point-marker))
       ;; Insert the text
       (insert (propertize text 'face 'efrit-agent-claude-message))
@@ -114,8 +188,8 @@ Creates markers for tracking the message region for future appends."
       ;; Apply properties
       (add-text-properties start-marker end-marker
                            (list 'efrit-type 'claude-message
-                                 'efrit-id msg-id
-                                 'read-only t))
+                                 'efrit-id msg-id))
+      (efrit-agent--seal-rendered start-marker end-marker)
       ;; Update conversation end marker
       (set-marker efrit-agent--conversation-end (point)))
     ;; Track the streaming message
@@ -132,22 +206,21 @@ Updates the message region markers."
              (markerp (nth 2 efrit-agent--streaming-message))
              (marker-position (nth 2 efrit-agent--streaming-message)))
     (let* ((msg-id (nth 0 efrit-agent--streaming-message))
-           (end-marker (nth 2 efrit-agent--streaming-message))
-           (inhibit-read-only t))
-      (save-excursion
-        ;; Insert at end marker (before it, due to insertion type)
+           (end-marker (nth 2 efrit-agent--streaming-message)))
+      (efrit-agent--with-render
+        ;; end-marker has insertion-type t, so inserting AT it keeps
+        ;; it after the new text.  (An earlier version inserted at
+        ;; (1- marker), i.e. before the previous chunk's last char:
+        ;; "Hello, " + "world." came out as "Hello,world. ".)
         (goto-char (marker-position end-marker))
-        ;; Move back before the marker to insert
-        (let ((insert-pos (1- (point))))
-          (when (> insert-pos (point-min))
-            (goto-char insert-pos)))
-        ;; Insert the new text
         (insert (propertize text 'face 'efrit-agent-claude-message))
-        ;; Update properties on the new text
-        (add-text-properties (- (point) (length text)) (point)
-                             (list 'efrit-type 'claude-message
-                                   'efrit-id msg-id
-                                   'read-only t))
+        (let ((start (- (point) (length text))))
+          (add-text-properties start (point)
+                               (list 'efrit-type 'claude-message
+                                     'efrit-id msg-id))
+          (efrit-agent--seal-rendered start (point)))
+        ;; Markdown, incrementally: from the watermark to here
+        (efrit-agent--render-markdown (nth 1 efrit-agent--streaming-message) end-marker nil)
         ;; Update conversation end if needed
         (when (and efrit-agent--conversation-end
                    (markerp efrit-agent--conversation-end)
@@ -157,12 +230,33 @@ Updates the message region markers."
       ;; Scroll to show new content
       (efrit-agent--scroll-to-bottom))))
 
+(defun efrit-agent--render-markdown (start end complete)
+  "Render START..END of a streamed message as Markdown, when enabled.
+The passes delete markup, so the message's end marker moves; the
+conversation-end marker is corrected afterwards by the caller."
+  (when (and (bound-and-true-p efrit-markdown-enabled)
+             (fboundp 'efrit-markdown-render)
+             start end (marker-position start) (marker-position end)
+             (< start end))
+    (condition-case err
+        (efrit-markdown-render start end complete)
+      (error
+       (efrit-log 'warn "markdown render failed: %s" (error-message-string err))))))
+
 (defun efrit-agent--stream-end-message ()
   "End the current streaming message, adding final newlines.
 Call this when Claude's message is complete."
   (when efrit-agent--streaming-message
-    (let ((inhibit-read-only t)
+    (let ((inhibit-read-only t) (buffer-undo-list t)
           (end-marker (nth 2 efrit-agent--streaming-message)))
+      ;; The final pass: what was held back (the last line, an open
+      ;; fence) is rendered now
+      (efrit-agent--render-markdown (nth 1 efrit-agent--streaming-message) end-marker t)
+      ;; a closing "Next steps" list becomes buttons (efrit-next-steps)
+      (when (fboundp 'efrit-next-steps-mark)
+        (ignore-errors
+          (efrit-next-steps-mark (marker-position (nth 1 efrit-agent--streaming-message))
+                                 (marker-position end-marker))))
       (save-excursion
         (goto-char (marker-position end-marker))
         ;; Add trailing newlines for spacing
@@ -172,17 +266,91 @@ Call this when Claude's message is complete."
       ;; Clear streaming state
       (setq efrit-agent--streaming-message nil))))
 
+(defcustom efrit-agent-follow-threshold 2
+  "Windows whose point is within this many lines of the end keep following output.
+A window scrolled further up is left alone so the user can read while
+the model streams (copilot-chat's following-windows rule)."
+  :type 'integer
+  :group 'efrit-agent)
+
+(defvar-local efrit-agent--follow-windows nil
+  "Windows that were following the output before the latest insert.")
+
+(defun efrit-agent--following-windows ()
+  "Return windows on this buffer, in any frame, whose point is near the end."
+  (let ((end (or (and efrit-agent--conversation-end
+                      (marker-position efrit-agent--conversation-end))
+                 (point-max))))
+    (cl-remove-if-not
+     (lambda (w)
+       ;; count at most threshold+1 lines back from the end, not the
+       ;; whole distance (a 100k transcript made this a visible pause)
+       (let ((from (min (window-point w) end)))
+         (and (>= from (save-excursion
+                         (goto-char end)
+                         (forward-line (- (1+ efrit-agent-follow-threshold)))
+                         (point)))
+              (<= (count-lines from end) efrit-agent-follow-threshold))))
+     (get-buffer-window-list (current-buffer) nil t))))
+
+(defun efrit-agent--note-followers (&optional beg _end)
+  "Record which windows are following, before text is inserted.
+Called from `before-change-functions' for this buffer.  Only a change
+in the conversation counts: a keystroke in the input region is a
+change too, and counting lines over the whole transcript on every
+typed character made typing stutter (tzz, 2026-10-16)."
+  (when (and efrit-agent--conversation-end
+             (marker-position efrit-agent--conversation-end)
+             (or (null beg) (<= beg (marker-position efrit-agent--conversation-end))))
+    (setq efrit-agent--follow-windows (efrit-agent--following-windows))))
+
 (defun efrit-agent--scroll-to-bottom ()
-  "Scroll the agent buffer window to show the latest content."
-  (when-let* ((window (get-buffer-window (current-buffer))))
-    (with-selected-window window
-      (goto-char (point-max))
-      (recenter -3))))
+  "Scroll only the windows that were already following the output.
+Never moves buffer point, and never touches a window the user has
+scrolled up to read.  Windows that were at the end before the last
+insert (see `efrit-agent--note-followers') are moved to the end;
+when that list is empty (first output) every window is."
+  (let* ((followers (or efrit-agent--follow-windows
+                        (get-buffer-window-list (current-buffer) nil t)))
+         (target (point-max)))
+    (dolist (w followers)
+      (when (and (window-live-p w) (eq (window-buffer w) (current-buffer)))
+        (set-window-point w target)
+        ;; Show the tail without recentering the user's own point
+        (with-selected-window w
+          (save-excursion
+            (goto-char target)
+            (recenter -3)))))
+    (setq efrit-agent--follow-windows nil)))
 
 ;;; Thinking Indicator
 ;;
 ;; Shows when Claude is processing but no tool is running.
 ;; Disappears when content starts arriving.
+
+(defun efrit-agent--thinking-line (text)
+  "The in-buffer activity line: spinner, then TEXT (or a default)."
+  (propertize (concat "  " (efrit-agent--spinner-frame) " "
+                      (propertize (or text "thinking…") 'face 'efrit-agent-thinking)
+                      "\n")
+              'efrit-type 'thinking-indicator))
+
+(defun efrit-agent--refresh-thinking-line ()
+  "Redraw the thinking line's spinner glyph in place, if it is showing."
+  (when-let* ((ind efrit-agent--thinking-indicator)
+              (start (marker-position (car ind)))
+              (end (marker-position (cdr ind))))
+    (let ((inhibit-read-only t) (buffer-undo-list t)
+          (label (save-excursion
+                   (goto-char start)
+                   (let ((s (buffer-substring-no-properties start (line-end-position))))
+                     ;; "  <spinner> label"
+                     (string-trim (if (> (length s) 4) (substring s 4) ""))))))
+      (save-excursion
+        (goto-char start)
+        (delete-region start end)
+        (insert (propertize (efrit-agent--thinking-line label) 'read-only t))
+        (set-marker (cdr ind) (point))))))
 
 (defun efrit-agent--show-thinking (&optional text)
   "Show the thinking indicator with optional TEXT description.
@@ -191,18 +359,13 @@ The indicator is removed when content arrives or explicitly hidden."
   (when (and (not efrit-agent--thinking-indicator)
              efrit-agent--conversation-end
              (marker-position efrit-agent--conversation-end))
-    (let ((inhibit-read-only t)
+    (let ((inhibit-read-only t) (buffer-undo-list t)
           start-marker end-marker)
       (save-excursion
         (goto-char (marker-position efrit-agent--conversation-end))
         (setq start-marker (point-marker))
         ;; Insert the thinking indicator
-        (insert (propertize (format "[%s%s] %s\n"
-                                    (efrit-agent--char 'status-waiting)
-                                    "thinking..."
-                                    (or text ""))
-                            'face 'efrit-agent-thinking
-                            'efrit-type 'thinking-indicator))
+        (insert (efrit-agent--thinking-line text))
         (setq end-marker (point-marker))
         ;; Set marker insertion types
         (set-marker-insertion-type start-marker nil)
@@ -221,7 +384,7 @@ The indicator is removed when content arrives or explicitly hidden."
 Also stops the header-line spinner."
   (efrit-agent--spinner-stop)
   (when efrit-agent--thinking-indicator
-    (let ((inhibit-read-only t)
+    (let ((inhibit-read-only t) (buffer-undo-list t)
           (start-marker (car efrit-agent--thinking-indicator))
           (end-marker (cdr efrit-agent--thinking-indicator)))
       (when (and (marker-position start-marker)
@@ -240,7 +403,7 @@ Also stops the header-line spinner."
   "Update the thinking indicator TEXT without removing and re-adding.
 This provides smooth updates for changing thinking status."
   (if efrit-agent--thinking-indicator
-      (let ((inhibit-read-only t)
+      (let ((inhibit-read-only t) (buffer-undo-list t)
             (start-marker (car efrit-agent--thinking-indicator))
             (end-marker (cdr efrit-agent--thinking-indicator)))
         (when (and (marker-position start-marker)
@@ -248,18 +411,14 @@ This provides smooth updates for changing thinking status."
           (save-excursion
             (goto-char start-marker)
             (delete-region start-marker end-marker)
-            (insert (propertize (format "[%s%s] %s\n"
-                                        (efrit-agent--char 'status-waiting)
-                                        "thinking..."
-                                        (or text ""))
-                                'face 'efrit-agent-thinking
-                                'efrit-type 'thinking-indicator
-                                'read-only t))
+            (insert (propertize (efrit-agent--thinking-line text) 'read-only t))
             (set-marker end-marker (point)))))
     ;; No indicator yet, show one
     (efrit-agent--show-thinking text)))
 
 ;;; Header Line (status bar at top of window)
+
+(declare-function efrit-context-describe "efrit-context-sources")
 
 (defun efrit-agent--format-header-line ()
   "Format the header-line for display.
@@ -292,22 +451,80 @@ Shows: status │ elapsed │ mode │ verbosity │ tool count │ hints"
      (when (> tool-count 0)
        (concat sep (propertize (format "%d tools" tool-count)
                                'face 'efrit-agent-session-id)))
+     ;; Live context-window usage from the API's own numbers
+     (when-let* ((usage (efrit-agent--usage-segment)))
+       (concat sep usage))
+     ;; What the next turn will carry as editor context (the target
+     ;; buffer, its point or region), and whether it was dismissed
+     (when-let* ((ctx (and (fboundp 'efrit-context-describe)
+                           (ignore-errors (efrit-context-describe)))))
+       (concat sep (propertize ctx 'face 'efrit-agent-session-id
+                               'help-echo "Editor context sent with the next turn; C-c C-; dismisses it")))
      ;; Show action hints based on status
      (pcase efrit-agent--status
-       ('idle
-        (concat sep (propertize "Type command at > prompt, RET to start"
-                                'face 'efrit-agent-timestamp)))
-       ('waiting
-        (concat sep (propertize "Type response, C-c C-s to send"
-                                'face 'efrit-agent-timestamp)))
+       ((or 'idle 'waiting)
+        (concat sep (propertize (efrit-agent-input-hint) 'face 'efrit-agent-timestamp)))
        ('working
-        (concat sep (propertize "k:cancel M:mode ?:help"
+        (concat sep (propertize "k:cancel  C-c ?:menu"
                                 'face 'efrit-agent-timestamp)))
        (_ "")))))
 
+(defvar efrit-agent--input-hint-cache nil
+  "(MAP . HINT): the hint last computed and the keymap it was computed from.
+The header line asks for the hint on every redisplay and the five
+`where-is-internal' lookups cost about 0.6 ms each time (profiled
+2026-10-20, 8% of a typing session).  The keymap object changes only
+on reload, when `efrit-agent-input-mode-map' is rebound.")
+
+(defun efrit-agent-input-hint ()
+  "The one-line key hint for the input: how to send and how to break a line.
+Chat clients (Slack, the Claude app) use RET to send and S-RET for a
+newline; efrit does the same, and says so, because an Emacs user
+expects RET to insert a newline.  Bindings are looked up, so a user
+who rebinds them sees their own keys; the result is cached per keymap."
+  (let ((map (and (boundp 'efrit-agent-input-mode-map) efrit-agent-input-mode-map)))
+    (if (and efrit-agent--input-hint-cache (eq (car efrit-agent--input-hint-cache) map))
+        (cdr efrit-agent--input-hint-cache)
+      (cdr (setq efrit-agent--input-hint-cache
+                 (cons map (efrit-agent--compute-input-hint map)))))))
+
+(defun efrit-agent--compute-input-hint (map)
+  "The input hint text from the bindings in keymap MAP (see `efrit-agent-input-hint')."
+  (let* ((key (lambda (cmd fallback)
+                ;; prefer the shifted/chorded key when several are bound:
+                ;; "S-RET" is what a chat user looks for, "C-j" is not
+                (let* ((keys (and map (where-is-internal cmd map)))
+                       (descs (mapcar #'key-description keys))
+                       ;; "S-RET" over "S-<return>", "RET" over "<return>":
+                       ;; the plain names read better; the shifted one first
+                       (k (or (cl-find-if (lambda (d) (and (string-prefix-p "S-" d) (not (string-match-p "<" d)))) descs)
+                              (cl-find-if (lambda (d) (string-prefix-p "S-" d)) descs)
+                              (cl-find-if (lambda (d) (not (string-match-p "<" d))) descs)
+                              (car descs))))
+                  (or k fallback)))))
+    (format "%s sends/steers · %s newline · %s queues · %s/%s history · C-c ? buffer menu · C-c C-m efrit menu"
+            (funcall key 'efrit-agent-input-send "RET")
+            (funcall key 'efrit-agent-input-newline "S-RET")
+            (funcall key 'efrit-agent-input-send-override "M-RET")
+            (funcall key 'efrit-agent-input-history-prev "M-p")
+            (funcall key 'efrit-agent-input-history-next "M-n"))))
+
+(defun efrit-agent--usage-segment ()
+  "Token usage indicator for this buffer's session, or nil."
+  (when-let* ((id (cond ((and (boundp 'efrit-agent--repl-session)
+                              efrit-agent--repl-session
+                              (fboundp 'efrit-repl-session-id))
+                         (efrit-repl-session-id efrit-agent--repl-session))
+                        (efrit-agent--session-id))))
+    (efrit-usage-indicator id)))
+
 (defun efrit-agent--setup-header-line ()
-  "Set up the header-line for the agent buffer."
-  (setq header-line-format '(:eval (efrit-agent--format-header-line))))
+  "Set up the header-line for the agent buffer.
+`efrit-agent-svg-header' picks the graphical or text rendering per
+`efrit-agent-header-style'."
+  (require 'efrit-agent-svg-header)
+  (setq header-line-format '(:eval (efrit-agent-svg-header)))
+  (add-hook 'window-configuration-change-hook #'efrit-agent-svg--resize nil t))
 
 ;;; UI Helpers
 
@@ -398,7 +615,7 @@ If no block exists, inserts one."
     (efrit-agent--setup-regions))
   ;; End any streaming message first (so Claude's text is finalized before TODOs)
   (efrit-agent--stream-end-message)
-  (let ((inhibit-read-only t)
+  (let ((inhibit-read-only t) (buffer-undo-list t)
         (formatted (efrit-agent--format-todos-block todos)))
     (if efrit-agent--todos-region
         ;; Update existing block in-place
@@ -437,7 +654,7 @@ If no block exists, inserts one."
 (defun efrit-agent--clear-todos-inline ()
   "Remove the inline TODO block if present."
   (when efrit-agent--todos-region
-    (let ((inhibit-read-only t)
+    (let ((inhibit-read-only t) (buffer-undo-list t)
           (start-marker (car efrit-agent--todos-region))
           (end-marker (cdr efrit-agent--todos-region)))
       (when (and (marker-position start-marker)

@@ -4,7 +4,7 @@
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
 ;; Keywords: ai, tools, undo
-;; Version: 0.4.1
+;; Version: 0.12.12
 
 ;;; Commentary:
 ;;
@@ -136,7 +136,7 @@ Returns a standard tool response with undo info."
         (signal 'user-error (list "Path is required")))
 
       ;; Resolve path with sandbox check
-      (let* ((path-info (efrit-resolve-path path-input))
+      (let* ((path-info (efrit-resolve-path path-input 'write "undo_edit"))
              (path (plist-get path-info :path))
              (path-relative (plist-get path-info :path-relative)))
 
@@ -179,7 +179,7 @@ Returns a standard tool response with undo info."
                     (delete-file meta-file)))))
 
             ;; Return success with diff info
-            (let ((diff-output (efrit-tool-edit-file--generate-diff
+            (let ((diff-output (efrit-tool-unified-diff
                                original-content current-content path)))
               (efrit-tool-success
                `((path . ,path)

@@ -3,20 +3,30 @@
 ;; Copyright (C) 2025 Free Software Foundation, Inc.
 
 ;; Author: Steve Yegge <steve.yegge@gmail.com>
-;; Version: 0.4.1
+;; Version: 0.12.12
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, convenience, ai
 ;; URL: https://github.com/stevey/efrit
 
 ;;; Commentary:
 ;; This file contains the tool dispatch table and execution runtime for efrit-do.
-;; Extracted from efrit-do.el to allow other modules (efrit-chat-api.el,
+;; Extracted from efrit-do.el to allow other modules (the loop engine,
 ;; efrit-executor.el) to access tool execution without depending on efrit-do.el.
 
 ;;; Code:
 
 (require 'efrit-log)
 (require 'efrit-do-circuit-breaker)
+(require 'efrit-permissions)
+(require 'efrit-diagnostics-baseline)
+(require 'efrit-sandbox)
+(require 'efrit-result-struct)
+(require 'efrit-tool-registry)
+
+(defvar efrit-repl-loop--tool-session)
+(declare-function efrit-repl-session-id "efrit-repl-session")
+(declare-function efrit-session-active "efrit-session")
+(declare-function efrit-session-id "efrit-session")
 
 ;; Forward declarations for handler functions (defined in efrit-do-handlers.el)
 (declare-function efrit-do--handle-eval-sexp "efrit-do-handlers")
@@ -49,6 +59,7 @@
 (declare-function efrit-do--handle-vcs-log "efrit-do-handlers")
 (declare-function efrit-do--handle-vcs-blame "efrit-do-handlers")
 (declare-function efrit-do--handle-elisp-docs "efrit-do-handlers")
+(declare-function efrit-do--handle-emacs-apropos "efrit-do-handlers")
 (declare-function efrit-do--handle-set-project-root "efrit-do-handlers")
 (declare-function efrit-do--handle-get-diagnostics "efrit-do-handlers")
 (declare-function efrit-do--handle-read-image "efrit-do-handlers")
@@ -85,6 +96,7 @@
   '(;; Core execution tools
     ("eval_sexp"          . (efrit-do--handle-eval-sexp . :input-str))
     ("shell_exec"         . (efrit-do--handle-shell-exec . :input-str))
+    ("run_program"        . (efrit-do--handle-run-program . :tool-input))
     ;; TODO management tool
     ("todo_write" . (efrit-do--handle-todo-write . :tool-input))
     ;; Buffer and display tools
@@ -113,14 +125,33 @@
     ("undo_edit"          . (efrit-do--handle-undo-edit . :tool-input))
     ("edit_file"          . (efrit-do--handle-edit-file . :tool-input))
     ("create_file"        . (efrit-do--handle-create-file . :tool-input))
+    ("editor_state"       . (efrit-do--handle-editor-state . :tool-input))
     ("file_info"          . (efrit-do--handle-file-info . :tool-input))
     ("vcs_status"         . (efrit-do--handle-vcs-status . :tool-input))
     ("vcs_diff"           . (efrit-do--handle-vcs-diff . :tool-input))
     ("vcs_log"            . (efrit-do--handle-vcs-log . :tool-input))
     ("vcs_blame"          . (efrit-do--handle-vcs-blame . :tool-input))
     ("elisp_docs"         . (efrit-do--handle-elisp-docs . :tool-input))
+    ("emacs_apropos"      . (efrit-do--handle-emacs-apropos . :tool-input))
     ("set_project_root"   . (efrit-do--handle-set-project-root . :tool-input))
     ("get_diagnostics"    . (efrit-do--handle-get-diagnostics . :tool-input))
+    ("xref_references"    . (efrit-do--handle-xref-references . :tool-input))
+    ("xref_apropos"       . (efrit-do--handle-xref-apropos . :tool-input))
+    ("imenu_symbols"      . (efrit-do--handle-imenu-symbols . :tool-input))
+    ("project_outline"    . (efrit-do--handle-project-outline . :tool-input))
+    ("symbol_info"        . (efrit-do--handle-symbol-info . :tool-input))
+    ("live_state"         . (efrit-do--handle-live-state . :tool-input))
+    ("mode_line_report"   . (efrit-do--handle-mode-line-report . :tool-input))
+    ("buffer_scan"        . (efrit-do--handle-buffer-scan . :tool-input))
+    ("buffer_list"        . (efrit-do--handle-buffer-list . :tool-input))
+    ("load_project_file"  . (efrit-do--handle-load-project-file . :tool-input))
+    ("run_ert"            . (efrit-do--handle-run-ert . :tool-input))
+    ("reproduce_command"  . (efrit-do--handle-reproduce-command . :tool-input))
+    ("treesit_info"       . (efrit-do--handle-treesit-info . :tool-input))
+    ("surrounding_context" . (efrit-do--handle-surrounding-context . :tool-input))
+    ("show_location"      . (efrit-do--handle-show-location . :tool-input))
+    ("show_ui_element"    . (efrit-do--handle-show-ui-element . :tool-input))
+    ("get_last_error"     . (efrit-do--handle-get-last-error . :tool-input))
     ("read_image"         . (efrit-do--handle-read-image . :tool-input))
     ("format_file"        . (efrit-do--handle-format-file . :tool-input))
     ;; Issue tracking tools (beads)
@@ -177,16 +208,78 @@ Uses `efrit-do--tool-dispatch-table' for lookup."
         (_
          (efrit-log 'error "Invalid arg-type %s for tool %s" arg-type tool-name)
          (format "\n[Internal error: invalid dispatch for %s]" tool-name)))
-    ;; Unknown tool
-    (progn
-      (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
-      (format "\n[Unknown tool: %s]" tool-name))))
+    ;; Not one of ours: a tool another package registered, else unknown.
+    (or (efrit-tool-registry-dispatch tool-name tool-input)
+        (progn
+          (efrit-log 'warn "Unknown tool: %s with input: %S" tool-name tool-input)
+          (format "\n[Unknown tool: %s]" tool-name)))))
+
+(defconst efrit-do--session-complete-marker "[SESSION-COMPLETE: "
+  "How `efrit-do--handle-session-complete' begins its string (after whitespace).")
+
+(defconst efrit-do--waiting-marker "[WAITING-FOR-USER]"
+  "How `efrit-do--waiting-for-user-marker' begins its string (after whitespace).")
+
+(defun efrit-do--marked-p (text marker)
+  "Non-nil if TEXT, after leading whitespace, starts with MARKER.
+Leading whitespace: the handlers start their strings with a newline,
+and the circuit breaker may prepend a warning line."
+  (and (stringp text)
+       (string-prefix-p marker (string-trim-left text))))
+
+(defun efrit-do-completion-message (text)
+  "The user-facing message in a session_complete TEXT, or nil.
+The text between the marker and the closing bracket the handler
+appended: the LAST bracket, so a bracket inside the message survives
+\(the old greedy regexp ate a trailing bracket of the message)."
+  (when (efrit-do--marked-p text efrit-do--session-complete-marker)
+    (let* ((body (string-trim (string-trim-left text)))
+           (start (length efrit-do--session-complete-marker))
+           (end (if (string-suffix-p "]" body) (1- (length body)) (length body))))
+      (string-trim (substring body start (max start end))))))
+
+(defun efrit-do--classify-result (tool-name text)
+  "Turn handler TEXT for TOOL-NAME into an `efrit-tool-result'.
+The one place the handler strings are interpreted.  Control signals
+are keyed on the tool, not on the text: only session_complete
+completes and only request_user_input waits, so a file whose content
+contains the marker cannot end the turn.  A denial is recognised by
+the prefixes the sandbox and the permission layer stamp."
+  (cond
+   ((string-prefix-p efrit-sandbox-denied-prefix text)
+    (efrit-tool-result-create :status 'denied :text text))
+   ((string-prefix-p efrit-permission-denied-result text)
+    (efrit-tool-result-create :status 'denied :text text))
+   ((and (equal tool-name "session_complete")
+         (efrit-do--marked-p text efrit-do--session-complete-marker))
+    ;; the message is everything between the prefix and the closing
+    ;; bracket the handler itself appended: the last one, not the
+    ;; first, so a bracket inside the message survives
+    (efrit-tool-result-create :status 'ok :signal 'complete :text text
+                              :message (efrit-do-completion-message text)))
+   ((and (equal tool-name "request_user_input")
+         (efrit-do--marked-p text efrit-do--waiting-marker))
+    (efrit-tool-result-create :status 'ok :signal 'waiting :text text
+                              :message (and (string-match "\nQuestion: \\(.*\\)" text)
+                                            (match-string 1 text))))
+   ;; the handlers' own failure spellings
+   ((or (string-match-p "\\`\\(?:\n\\)?\\[\\(?:Error\\|Syntax Error\\|Efrit internal error\\|Unknown tool\\|Internal error\\)" text)
+        (string-match-p "\\`Error[: ]" text)
+        (string-match-p "\\`API Error (" text))
+    (efrit-tool-result-create :status 'error :text text))
+   (t (efrit-tool-result-create :status 'ok :text text))))
 
 (defun efrit-do--execute-tool (tool-item)
   "Execute a tool specified by TOOL-ITEM hash table.
 TOOL-ITEM should contain \\='name\\=' and \\='input\\=' keys.
-Returns a formatted string with execution results or empty string on failure.
+Returns an `efrit-tool-result' (see efrit-result-struct.el).
 Applies circuit breaker limits to prevent infinite loops."
+  (efrit-do--classify-result
+   (and tool-item (gethash "name" tool-item))
+   (efrit-do--execute-tool-string tool-item)))
+
+(defun efrit-do--execute-tool-string (tool-item)
+  "The handler string for TOOL-ITEM; see `efrit-do--execute-tool'."
   (if (null tool-item)
       "\n[Error: Tool input cannot be nil]"
     (let* ((tool-name (gethash "name" tool-item))
@@ -210,20 +303,58 @@ Applies circuit breaker limits to prevent infinite loops."
 
       ;; CIRCUIT BREAKER: Check limits before executing
       (let ((breaker-check (efrit-do--circuit-breaker-check-limits tool-name tool-input)))
-        (if (not (car breaker-check))
-            ;; Circuit breaker blocked execution
-            (progn
-              (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
-              (when (fboundp 'efrit-session-track-error)
-                (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
-              (cdr breaker-check))
+        (cond
+         ((not (car breaker-check))
+          ;; Circuit breaker blocked execution
+          (efrit-log 'error "Circuit breaker blocked tool: %s" tool-name)
+          (when (fboundp 'efrit-session-track-error)
+            (efrit-session-track-error (format "Circuit breaker: %s" (cdr breaker-check))))
+          ;; a blocked call is a failed tool result, not output
+          (concat "Error " (cdr breaker-check)))
+
+         ;; PERMISSION: mutating tools need consent (efrit-permissions).
+         ;; A denial is returned as a distinguished tool result; the
+         ;; loop engine recognises it and ends the turn.
+         ((eq (efrit-permission-check tool-name tool-input
+                                      (efrit-do--dispatch-session-id))
+              'deny)
+          (efrit-log 'info "Permission denied for tool: %s" tool-name)
+          efrit-permission-denied-result)
+
+         (t
+          ;; The user may have edited the input at the prompt
+          (unless (eq efrit-permission-last-input tool-input)
+            (setq tool-input efrit-permission-last-input
+                  input-str (cond
+                             ((stringp tool-input) tool-input)
+                             ((hash-table-p tool-input)
+                              (seq-some (lambda (key) (gethash key tool-input))
+                                        '("expr" "expression" "code" "command")))
+                             (t input-str)))
+            (when input-str
+              (setq input-str (efrit-do--sanitize-elisp-string input-str)))
+            (efrit-log 'info "Tool %s input edited by user before running" tool-name))
 
           ;; Circuit breaker allows execution - record the call
           (efrit-do--circuit-breaker-record-call tool-name tool-input)
+          ;; A write: remember the file's diagnostics before it, so the
+          ;; result can say what the edit broke (efrit-diagnostics-baseline)
+          (efrit-diagnostics-baseline-before-tool tool-name tool-input)
 
           ;; If there's a warning message, prepend it to the result
           (let* ((warning (cdr breaker-check))
-                 (result (efrit-do--dispatch-tool tool-name tool-input input-str))
+                 (result (efrit-diagnostics-baseline-after-tool
+                          tool-name tool-input
+                          (condition-case err
+                             (efrit-do--dispatch-tool tool-name tool-input input-str)
+                           ;; The scope sandbox refused and the user
+                           ;; declined to widen it: a distinguished
+                           ;; result the loop engine recognises to end
+                           ;; the turn (like a permission denial)
+                           (efrit-sandbox-denied
+                            (efrit-log 'info "Sandbox denied %s" tool-name)
+                            (concat efrit-sandbox-denied-prefix
+                                    (efrit-sandbox-denied-tool-result (cadr err)))))))
                  ;; Check result for error loops and inject warnings if needed
                  (loop-check (efrit-do--error-loop-check-result result))
                  (final-result (cdr loop-check))
@@ -240,7 +371,19 @@ Applies circuit breaker limits to prevent infinite loops."
                                               (or input-str tool-input))
                                       nil  ; no todo-snapshot
                                       tool-name))
-            return-value))))))
+            return-value)))))))
+
+(defun efrit-do--dispatch-session-id ()
+  "Best-effort ID of the session whose tool is being dispatched, or nil.
+The REPL loop binds `efrit-repl-loop--tool-session' around dispatch;
+efrit-do sessions are found via `efrit-session-active'."
+  (cond
+   ((and (boundp 'efrit-repl-loop--tool-session)
+         efrit-repl-loop--tool-session
+         (fboundp 'efrit-repl-session-id))
+    (efrit-repl-session-id efrit-repl-loop--tool-session))
+   ((and (fboundp 'efrit-session-active) (fboundp 'efrit-session-id))
+    (when-let* ((s (efrit-session-active))) (efrit-session-id s)))))
 
 (provide 'efrit-do-dispatch)
 ;;; efrit-do-dispatch.el ends here
