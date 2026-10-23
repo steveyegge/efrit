@@ -159,9 +159,9 @@ Returns a standard tool response with file listing."
 
       ;; Get files using appropriate method
       (let ((project-type (efrit-tool-detect-project-type)))
-        (if-let* ((_ (eq project-type 'git))
-                  (project-files (efrit-tool-project-files--project-files
-                                  project-root pattern include-hidden)))
+        (if-let* ((project-files (and (eq project-type 'git)
+                                      (efrit-tool-project-files--project-files
+                                       project-root pattern include-hidden))))
             ;; project.el lists the VC project's files (tracked plus
             ;; untracked, ignores honoured) without running git here
             (setq files (mapcar (lambda (f) (expand-file-name f project-root))

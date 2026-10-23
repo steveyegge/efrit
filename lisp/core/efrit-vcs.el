@@ -93,6 +93,27 @@
 
 ;;;; Status
 
+(declare-function vc-dir-status-files "vc" (directory &optional files backend))
+
+(defun efrit-vcs--dir-status-files (directory backend)
+  "The (FILE STATE EXTRA) entries of BACKEND's `dir-status-files' for DIRECTORY.
+`vc-dir-status-files' does this from Emacs 31; before it the
+asynchronous backend call is driven here the same way: the update
+function collects entries until the backend says there are no more."
+  (if (fboundp 'vc-dir-status-files)
+      (vc-dir-status-files directory nil backend)
+    (let ((morep t) results)
+      (with-temp-buffer
+        (setq default-directory (expand-file-name directory))
+        (vc-call-backend backend 'dir-status-files default-directory nil
+                         (lambda (entries &optional more-to-come)
+                           (dolist (entry entries)
+                             (unless (memq (cadr entry) '(up-to-date ignored))
+                               (push entry results)))
+                           (setq morep more-to-come)))
+        (while morep (accept-process-output)))
+      (nreverse results))))
+
 (defun efrit-vcs-status-files (&optional dir)
   "Files with a state of interest under DIR: a list of (FILE STATE).
 STATE is a VC state symbol: edited, added, removed, unregistered,
@@ -102,13 +123,12 @@ conflict, missing, ...  FILE is relative to the root."
       (mapcar (lambda (entry)
                 (list (file-relative-name (expand-file-name (car entry) root) root)
                       (nth 1 entry)))
-              (vc-dir-status-files root nil backend)))))
+              (efrit-vcs--dir-status-files root backend)))))
 
 (defun efrit-vcs-upstream (&optional dir)
   "The upstream branch (\"origin/main\") of DIR's current branch, or nil.
 Git only, read from the repository configuration, no subprocess."
-  (when-let* ((_ (efrit-vcs-git-p dir))
-              (branch (efrit-vcs-branch dir)))
+  (when-let* ((branch (and (efrit-vcs-git-p dir) (efrit-vcs-branch dir))))
     (require 'vc-git)
     (let* ((default-directory (efrit-vcs-root dir))
            (config (vc-git--git-path "config")))

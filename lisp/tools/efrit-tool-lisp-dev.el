@@ -207,17 +207,24 @@ cannot be driven here; use `form' with the arguments spelled out."
       (efrit-sandbox-check-buffer buf "reproduce_command")
       (let ((frames nil) (outcome nil))
         (with-current-buffer buf
-          (condition-case err
-              (let ((debug-on-error nil) (inhibit-quit nil)
-                    (efrit-tools-input-allowed nil))
-                (setq outcome
-                      (list 'value
-                            (handler-bind ((error (lambda (_e)
-                                                    (unless frames
-                                                      (setq frames (efrit-tool-reproduce--backtrace 3))))))
-                              (funcall thunk)))))
-            (quit (setq outcome (list 'quit nil)))
-            (error (setq outcome (list 'error err)))))
+          ;; The backtrace is taken at the signal, through the debugger
+          ;; hook: that is what `toggle-debug-on-error' arms, and it
+          ;; exists on every Emacs (`handler-bind' is 30+).  The
+          ;; `debug' condition below asks Emacs to call the debugger
+          ;; before unwinding into this handler; the hook records the
+          ;; frames and returns, then the handler runs as usual.
+          (let ((debugger (lambda (&rest _)
+                            (unless frames
+                              (setq frames (efrit-tool-reproduce--backtrace 4)))
+                            nil))
+                (debug-on-error t)
+                (debug-ignored-errors nil)
+                (inhibit-quit nil)
+                (efrit-tools-input-allowed nil))
+            (condition-case err
+                (setq outcome (list 'value (funcall thunk)))
+              (quit (setq outcome (list 'quit nil)))
+              ((debug error) (setq outcome (list 'error err))))))
         (pcase (car outcome)
           ('error
            (let ((err (cadr outcome)))

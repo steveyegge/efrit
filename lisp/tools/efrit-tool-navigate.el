@@ -36,11 +36,15 @@
 (require 'apropos)   ; the elisp xref backend's apropos needs apropos-parse-pattern
 (require 'efrit-tool-utils)
 
+(defvar project-prompter)
+
 (defmacro efrit-tool-navigate--no-prompts (&rest body)
   "Run BODY with project.el's \"Select project\" prompt turned into an error.
 A backend that searches the project (the elisp one) asks for one when
 the file is outside any; from a tool that would hang the turn."
   (declare (indent 0))
+  ;; `project-prompter' is project.el's; declared so the binding is
+  ;; dynamic even when project is not loaded at compile time (29.1 lint)
   `(let ((project-prompter (lambda (&rest _)
                              (signal 'user-error (list "the file is not in a project; the backend needs one to search")))))
      ,@body))
