@@ -139,13 +139,21 @@ Re-entrant: nested with the same id it does nothing extra; nested
 with another id (one session's tools running inside another
 session's prompt) it swaps the values in and back out."
   (declare (indent 1))
-  (let ((id (make-symbol "id")) (saved (make-symbol "saved")))
+  (let ((id (make-symbol "id")) (saved (make-symbol "saved")) (swap (make-symbol "swap")))
     `(let* ((,id ,session-id)
+            ;; Same id as the enclosing form: the locals are already
+            ;; this session's, so nothing is swapped.  Swapping anyway
+            ;; restored the outer values on exit and threw away what
+            ;; BODY changed: every prompt (nested callback -> dispatch
+            ;; -> tool) lost its `efrit-user-waiting-seconds', so a
+            ;; 93-minute sandbox prompt counted as working time and
+            ;; the turn hit efrit-session-timeout (2026-10-22).
+            (,swap (and ,id (not (equal ,id efrit-current-session-id))))
             (efrit-current-session-id ,id)
-            (,saved (and ,id (efrit-session--locals-enter ,id))))
+            (,saved (and ,swap (efrit-session--locals-enter ,id))))
        (unwind-protect
            (progn ,@body)
-         (when ,id (efrit-session--locals-exit ,id ,saved))))))
+         (when ,swap (efrit-session--locals-exit ,id ,saved))))))
 
 (defun efrit-subscribe (type fn)
   "Call FN with an event alist whenever an event of TYPE is published.

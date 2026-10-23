@@ -341,12 +341,96 @@ IS-ERROR indicates if this is an error result."
                             (content . ,(vector tool-result))))))
       (setf (efrit-repl-session-last-activity session) (current-time)))))
 
+(defconst efrit-repl-session-orphan-tool-result
+  "Error: the tool did not finish (the turn was interrupted before its result was recorded). Treat it as not run."
+  "The tool_result written for a tool_use that never got one.")
+
+(defun efrit-repl-session--content-blocks (message)
+  "The content blocks of API MESSAGE as a list, or nil for a string."
+  (let ((c (alist-get 'content message)))
+    (cond ((vectorp c) (append c nil))
+          ((and (listp c) (not (stringp c))) c))))
+
+(defun efrit-repl-session-repair-tool-results (session)
+  "Give every tool_use in SESSION's API history a tool_result right after it.
+The API rejects the whole conversation when an assistant message's
+tool_use ids are not all answered by tool_result blocks in the very
+next message, and equally when a tool_result sits anywhere else.  A
+turn that died between the tool call and its result left the first
+shape, and the next user input then landed right after the tool_use,
+so every later request failed (2026-10-22).  The missing results go
+into the message that directly follows the tool_use when that message
+is tool results already; otherwise a new tool_result message is put
+between the two.  Stray tool_results whose tool_use is not in the
+message before them are dropped.  Returns the number of edits."
+  (when session
+    (let ((msgs (efrit-repl-session-api-messages session))
+          (out nil) (edits 0) (prev-uses nil))
+      (while msgs
+        (let* ((m (car msgs))
+               (role (alist-get 'role m))
+               (blocks (efrit-repl-session--content-blocks m))
+               (uses (and (equal role "assistant")
+                          (cl-loop for b in blocks
+                                   when (equal (efrit-repl-session--block-get b "type") "tool_use")
+                                   collect (efrit-repl-session--block-get b "id"))))
+               (results (and (equal role "user")
+                             (cl-loop for b in blocks
+                                      when (equal (efrit-repl-session--block-get b "type") "tool_result")
+                                      collect b))))
+          (cond
+           ;; a user message of tool results: must answer prev-uses, all of them, nothing else
+           (results
+            (let* ((keep (cl-remove-if-not
+                          (lambda (b) (member (efrit-repl-session--block-get b "tool_use_id") prev-uses))
+                          results))
+                   (have (mapcar (lambda (b) (efrit-repl-session--block-get b "tool_use_id")) keep))
+                   (missing (cl-remove-if (lambda (id) (member id have)) prev-uses))
+                   (others (cl-remove-if (lambda (b) (equal (efrit-repl-session--block-get b "type") "tool_result"))
+                                         blocks)))
+              (let ((content (append keep (mapcar #'efrit-repl-session--orphan-result missing) others)))
+                (when (or missing (< (length keep) (length results)))
+                  (cl-incf edits)
+                  (setq m (and content `((role . "user") (content . ,(vconcat content))))))
+                ;; a message of nothing but stray results vanishes
+                (when m (push m out)))
+              (setq prev-uses nil)))
+           ;; anything else right after a tool_use message: answer first
+           (prev-uses
+            (cl-incf edits)
+            (push `((role . "user")
+                    (content . ,(vconcat (mapcar #'efrit-repl-session--orphan-result prev-uses))))
+                  out)
+            (push m out)
+            (setq prev-uses uses))
+           (t
+            (push m out)
+            (setq prev-uses uses))))
+        (setq msgs (cdr msgs)))
+      ;; a tool_use at the very end
+      (when prev-uses
+        (cl-incf edits)
+        (push `((role . "user")
+                (content . ,(vconcat (mapcar #'efrit-repl-session--orphan-result prev-uses))))
+              out))
+      (when (> edits 0)
+        (efrit-log 'warn "REPL session %s: tool_use/tool_result pairing repaired (%d edit(s))"
+                   (efrit-repl-session-id session) edits)
+        (setf (efrit-repl-session-api-messages session) (nreverse out)))
+      edits)))
+
+(defun efrit-repl-session--orphan-result (id)
+  `((type . "tool_result") (tool_use_id . ,id)
+    (content . ,efrit-repl-session-orphan-tool-result) (is_error . t)))
+
 (defun efrit-repl-session-get-api-messages (session)
   "Get API messages from SESSION for sending to Claude.
 Returns the most recent messages, limited by `efrit-repl-max-history'
 turns and by `efrit-repl-context-budget' tokens (see
-`efrit-repl-session-fit-context')."
+`efrit-repl-session-fit-context').  Dangling tool_use blocks are
+answered first (`efrit-repl-session-repair-tool-results')."
   (when session
+    (efrit-repl-session-repair-tool-results session)
     (efrit-repl-session-fit-context session)
     (let ((all-messages (efrit-repl-session-api-messages session))
           (max-messages (* 2 efrit-repl-max-history)))

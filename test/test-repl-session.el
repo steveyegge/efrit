@@ -164,5 +164,64 @@ the new one; a current record is left alone."
       (should (equal (list (cons old new)) (progn (puthash "x" old efrit-repl-session--registry)
                                                   (efrit-repl-session-upgrade-all)))))))
 
+(ert-deftest test-repl-session-repairs-dangling-tool-use ()
+  "A tool_use with no tool_result after it gets an error result before the
+history goes to the API: inserted as a new user message when nothing
+follows, merged into the next user message when it answers only some of
+the ids.  A complete history is left alone."
+  (let ((s (efrit-repl-session-create)))
+    (cl-flet ((use (id) (let ((h (make-hash-table :test 'equal)))
+                          (puthash "type" "tool_use" h) (puthash "id" id h)
+                          (puthash "name" "eval_sexp" h) (puthash "input" (make-hash-table) h) h))
+              (res (id) `((type . "tool_result") (tool_use_id . ,id) (content . "ok")))
+              (ids (m) (cl-loop for b in (efrit-repl-session--content-blocks m)
+                                collect (efrit-repl-session--block-get b "tool_use_id"))))
+      ;; dangling at the end of the history
+      (setf (efrit-repl-session-api-messages s)
+            (list '((role . "user") (content . "go"))
+                  `((role . "assistant") (content . ,(vector (use "a"))))))
+      (should (= 1 (efrit-repl-session-repair-tool-results s)))
+      (let ((msgs (efrit-repl-session-api-messages s)))
+        (should (= 3 (length msgs)))
+        (should (equal "user" (alist-get 'role (nth 2 msgs))))
+        (should (equal '("a") (ids (nth 2 msgs)))))
+      (should (= 0 (efrit-repl-session-repair-tool-results s)))
+      ;; two uses, one answered: the result is merged into the same message
+      (setf (efrit-repl-session-api-messages s)
+            (list '((role . "user") (content . "go"))
+                  `((role . "assistant") (content . ,(vector (use "a") (use "b"))))
+                  `((role . "user") (content . ,(vector (res "a"))))
+                  '((role . "user") (content . "next"))))
+      (should (= 1 (efrit-repl-session-repair-tool-results s)))
+      (let ((msgs (efrit-repl-session-api-messages s)))
+        (should (= 4 (length msgs)))
+        (should (equal '("a" "b") (ids (nth 2 msgs))))
+        (should (equal "next" (alist-get 'content (nth 3 msgs)))))
+      ;; the user's next input landed right after the tool_use (the
+      ;; live case): the result goes between them, the input stays
+      (setf (efrit-repl-session-api-messages s)
+            (list '((role . "user") (content . "go"))
+                  `((role . "assistant") (content . ,(vector (use "a"))))
+                  '((role . "user") (content . "4.1: OK"))))
+      (should (= 1 (efrit-repl-session-repair-tool-results s)))
+      (let ((msgs (efrit-repl-session-api-messages s)))
+        (should (= 4 (length msgs)))
+        (should (equal '("a") (ids (nth 2 msgs))))
+        (should (equal "4.1: OK" (alist-get 'content (nth 3 msgs)))))
+      ;; a result appended at the wrong place (a hand repair) is dropped
+      (setf (efrit-repl-session-api-messages s)
+            (list `((role . "assistant") (content . ,(vector (use "a"))))
+                  '((role . "user") (content . "4.1: OK"))
+                  `((role . "user") (content . ,(vector (res "a"))))))
+      (efrit-repl-session-repair-tool-results s)
+      (let ((msgs (efrit-repl-session-api-messages s)))
+        (should (equal '("a") (ids (nth 1 msgs))))
+        (should (equal "4.1: OK" (alist-get 'content (nth 2 msgs))))
+        (should (= 3 (length msgs))))
+      ;; get-api-messages repairs on the way out
+      (setf (efrit-repl-session-api-messages s)
+            (list `((role . "assistant") (content . ,(vector (use "z"))))))
+      (should (= 2 (length (efrit-repl-session-get-api-messages s)))))))
+
 (provide 'test-repl-session)
 ;;; test-repl-session.el ends here

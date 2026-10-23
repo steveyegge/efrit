@@ -59,6 +59,7 @@
 (require 'pp)
 (require 'efrit-sandbox)
 (require 'efrit-log)
+(require 'xdg)
 
 ;;; 1. Static inspection
 
@@ -201,8 +202,24 @@ remote read), and a prompt raised from inside the loader wedged Emacs
 until answered, after which the .elc open failed with \"Opening stdio
 stream: Invalid argument\".")
 
+(defun efrit-sandbox-eval--cache-directories ()
+  "Directories Emacs libraries keep their own state in.
+Reading them is the library's housekeeping, not the model reading the
+user's data: `find-file-noselect' on an Org file loads the element
+cache from `org-persist-directory' (2026-10-22: a clock edit asked
+for `~/.cache/org-persist/')."
+  (delq nil (list (bound-and-true-p org-persist-directory)
+                  (ignore-errors (xdg-cache-home))
+                  (and (boundp 'user-emacs-directory)
+                       (expand-file-name "var" user-emacs-directory))
+                  (and (boundp 'user-emacs-directory)
+                       (expand-file-name "eln-cache" user-emacs-directory))
+                  (and (boundp 'native-comp-eln-load-path) (car native-comp-eln-load-path)))))
+
+
 (defun efrit-sandbox-eval--exempt-p (path)
-  "Non-nil if PATH is Emacs's own: under `load-path' or `data-directory'.
+  "Non-nil if PATH is Emacs's own: under `load-path', `data-directory'
+or a library cache directory (`efrit-sandbox-eval--cache-directories').
 Reading those is never the user's data; a `(require ...)' or
 `find-library' must not prompt."
   (let ((path (expand-file-name path)))
@@ -210,7 +227,7 @@ Reading those is never the user's data; a `(require ...)' or
         (cl-some (lambda (dir)
                    (and (stringp dir)
                         (string-prefix-p (file-name-as-directory (expand-file-name dir)) path)))
-                 load-path))))
+                 (append load-path (efrit-sandbox-eval--cache-directories))))))
 
 (defcustom efrit-sandbox-eval-allow-emacs nil
   "When non-nil, an eval may start another Emacs after the usual prompt.
@@ -577,18 +594,30 @@ handler still guards what they read.  Only efrit's frames count: a
     found))
 
 (defun efrit-sandbox-eval--emacs-file-hooks-p ()
-  "Non-nil when a buffer switch happens inside Emacs's own find/save machinery.
+  "Non-nil when a buffer switch happens inside Emacs's own hook machinery.
 `save-buffer' and `find-file-noselect' run the user's hooks
 \(`after-save-hook', `find-file-hook', mode hooks), which walk the
 buffer list or update other buffers; a form that saved one file was
-asked for the user's unrelated `tzz.md' that way (2026-10-19)."
+asked for the user's unrelated `tzz.md' that way (2026-10-19).  Any
+hook run is the same: `run-mode-hooks' from `(eshell-mode)' in a temp
+buffer ran a global minor mode's hook that touched ten file buffers
+\(2026-10-22).  `run-hooks' and kin are the chokepoint; the model's
+own code never calls them."
   (let ((found nil))
     (mapbacktrace (lambda (_evald func _args _flags)
                     (when (and (not found)
                                (memq func '(basic-save-buffer save-buffer save-some-buffers
                                             find-file-noselect find-file-noselect-1 after-find-file
                                             normal-mode set-auto-mode revert-buffer
-                                            run-hooks run-hook-with-args run-hook-with-args-until-success)))
+                                            run-mode-hooks run-hooks run-hook-with-args
+                                            run-hook-with-args-until-success run-hook-with-args-until-failure
+                                            run-hook-wrapped
+                                            ;; the bell and its flash walk the echo area and
+                                            ;; minibuffer buffers; (ding) in a form asked for
+                                            ;; the user's file buffers (2026-10-22)
+                                            ding pulse-faces pulse-momentary-highlight-region
+                                            flash-echo-area-bell-function flash-face-bell-function
+                                            redisplay force-mode-line-update)))
                       (setq found func))))
     found))
 

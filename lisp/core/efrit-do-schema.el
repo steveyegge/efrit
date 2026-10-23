@@ -696,14 +696,16 @@ Returns: per file, content, size, line count; or the outline when over budget. B
    - By default, will NOT overwrite existing files (use overwrite=true)
    - Returns a git-style diff showing the new content
 
-   USE THIS TOOL INSTEAD OF eval_sexp for file creation - it's atomic and shows diffs.")
+   USE THIS TOOL INSTEAD OF eval_sexp for file creation - it's atomic and shows diffs.
+   - show=true opens the new file in a window for the user (focus stays in the conversation). Use it for anything written FOR the user to read: a review, a report, notes. Never tell the user to open a file you could have shown.")
     ("input_schema" . (("type" . "object")
                       ("properties" . (("path" . (("type" . "string")
                                                   ("description" . "Absolute path to the file to create (required)")))
                                       ("content" . (("type" . "string")
                                                     ("description" . "Content to write to the file (required)")))
                                       ("overwrite" . (("type" . "boolean")
-                                                      ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))))
+                                                      ("description" . "If true, overwrite existing file. Otherwise fails if file exists (default: false)")))
+                                      ("show" . (("type" . "boolean") ("description" . "Open the file in a window for the user after writing it (focus stays here)")))))
                       ("required" . ["path" "content"]))))
    (("name" . "editor_state")
     ("description" . "Snapshot of where the user is in Emacs: current buffer, file, mode, point (line/column), active region, diagnostics on the current line, project root, other visible buffers. The same block is prepended automatically to each user message; call this to refresh it after your own edits moved point or changed buffers, or to inspect a specific buffer.")

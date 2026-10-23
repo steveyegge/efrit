@@ -202,6 +202,10 @@ Returns a string (possibly empty) ready to splice into the prompt."
 (defun efrit-do--command-formatting-tools ()
   "Return formatting tools documentation for command system prompt."
   (concat
+   "DOCUMENTS FOR THE USER: when the deliverable is a file the user will read (a review,\n"
+   "a report, notes), write it with create_file show=true so it opens beside the\n"
+   "conversation, or point into it with show_location.  Never end with \"read the file\n"
+   "and say go\": show it, then ask.\n"
    "FORMATTING AND DISPLAY TOOLS:\n"
    "- Short results (a list of up to ~20 items, a table, a paragraph) go in your reply, in the\n"
    "  conversation. Do NOT create a buffer for them.\n"

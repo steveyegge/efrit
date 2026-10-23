@@ -31,6 +31,12 @@
           (,a (test-ms--agent-buffer " *ms-a*" temporary-file-directory))
           (,b (test-ms--agent-buffer " *ms-b*" root-b)))
      (unwind-protect (progn ,@body)
+       ;; a test may leave a session `working'; the kill query would
+       ;; then ask yes-or-no-p, which batch cannot answer
+       (dolist (buf (list ,a ,b))
+         (with-current-buffer buf
+           (when efrit-agent--repl-session
+             (efrit-repl-session-set-status efrit-agent--repl-session 'idle))))
        (kill-buffer ,a) (kill-buffer ,b))))
 
 (defun test-ms--session-id (buf)
@@ -142,6 +148,29 @@ current when the sentinel fired."
       (should (efrit-sandbox--turn-get :once)))
     ;; outside any session: its own slot
     (should-not (efrit-sandbox-turn-answer))))
+
+(ert-deftest test-ms-nested-same-session-keeps-waiting-time ()
+  "A prompt inside a nested `efrit-with-session' of the SAME id keeps its
+`efrit-user-waiting-seconds' when the inner form exits: the turn clock
+subtracts it.  Before 2026-10-22 the inner exit restored the outer
+value and a 93-minute prompt counted as working time.  A different
+session nested inside still swaps and restores."
+  (let ((efrit-session--locals (make-hash-table :test 'equal))
+        (efrit-current-session-id nil)
+        (efrit-user-waiting-seconds 0))
+    (efrit-with-session "A"
+      (efrit-with-session "A"
+        (cl-incf efrit-user-waiting-seconds 5))
+      (should (= 5 efrit-user-waiting-seconds))
+      ;; B inside A: B's own counter, and A's value survives
+      (efrit-with-session "B"
+        (should (= 0 efrit-user-waiting-seconds))
+        (cl-incf efrit-user-waiting-seconds 2))
+      (should (= 5 efrit-user-waiting-seconds)))
+    ;; stored per session; the outside value untouched
+    (should (= 0 efrit-user-waiting-seconds))
+    (should (= 5 (efrit-with-session "A" efrit-user-waiting-seconds)))
+    (should (= 2 (efrit-with-session "B" efrit-user-waiting-seconds)))))
 
 (ert-deftest test-ms-second-sessions-prompt-waits-its-turn ()
   "While A's prompt is up, B's prompt waits (with a note) and opens once A's

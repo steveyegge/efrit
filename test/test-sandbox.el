@@ -812,6 +812,60 @@ the rest of the walk; a no ends the eval (2026-10-19: hrt.md then tzz.md)."
           (kill-buffer a) (kill-buffer b)
           (delete-directory outside t))))))
 
+(ert-deftest test-sb-eval-mode-hooks-may-walk-buffers ()
+  "A buffer walk made by a hook that `run-mode-hooks' runs is Emacs's
+business, not the form's: turning on a mode in a temp buffer must not
+ask for the user's unrelated file buffers (2026-10-22: `(eshell-mode)'
+asked for ten).  The form's own walk still asks."
+  (test-sb--in-project
+    (test-sb--with-buffers
+      (let* ((outside (make-temp-file "efrit-sb-hook-" t))
+             (a (test-sb--file-buffer (expand-file-name "a.txt" outside) "A"))
+             (asked nil)
+             (efrit-sandbox-request-function (lambda (_req) (setq asked t) nil))
+             (test-sb-hook-mode-hook nil))
+        (unwind-protect
+            (progn
+              (efrit-sandbox-grant 'elisp t 'session)
+              (define-derived-mode test-sb-hook-mode fundamental-mode "SbHook")
+              (add-hook 'test-sb-hook-mode-hook
+                        (lambda () (dolist (buf (buffer-list))
+                                     (with-current-buffer buf (ignore buffer-file-name)))))
+              (should (eq 'test-sb-hook-mode
+                          (efrit-sandbox-eval-form '(with-temp-buffer (test-sb-hook-mode) major-mode))))
+              (should-not asked)
+              ;; the same walk written in the form asks
+              (should-error (efrit-sandbox-eval-form
+                             '(dolist (buf (buffer-list)) (with-current-buffer buf (ignore buffer-file-name))))
+                            :type 'efrit-sandbox-denied)
+              (should asked))
+          (kill-buffer a)
+          (fmakunbound 'test-sb-hook-mode)
+          (delete-directory outside t))))))
+
+(defvar org-persist-directory)
+
+(ert-deftest test-sb-eval-library-caches-are-exempt-reads ()
+  "Reads under a library's cache directory (org-persist, the XDG cache)
+are housekeeping: no prompt.  A read elsewhere under HOME still asks."
+  (test-sb--in-project
+    (let* ((cache (file-name-as-directory (make-temp-file "efrit-sb-cache-" t)))
+           (org-persist-directory cache)
+           (other (make-temp-file "efrit-sb-other-" t))
+           (asked nil)
+           (efrit-sandbox-request-function (lambda (_req) (setq asked t) nil)))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "index" cache) (insert "x"))
+            (with-temp-file (expand-file-name "f" other) (insert "y"))
+            (efrit-sandbox-grant 'elisp t 'session)
+            (should (efrit-sandbox-eval--exempt-p (expand-file-name "index" cache)))
+            (should-not (efrit-sandbox-eval--exempt-p (expand-file-name "f" other)))
+            (should (equal "x" (efrit-sandbox-eval-form
+                                `(with-temp-buffer (insert-file-contents ,(expand-file-name "index" cache)) (buffer-string)))))
+            (should-not asked))
+        (delete-directory cache t) (delete-directory other t)))))
+
 (ert-deftest test-sb-eval-buffer-sweep-over-remote-buffers-is-refused ()
   "A buffer-list walk that would enter a remote (TRAMP) buffer is refused
 without a prompt; the denial names buffer_list and the one-at-a-time way

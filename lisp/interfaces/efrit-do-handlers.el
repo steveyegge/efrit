@@ -968,7 +968,7 @@ Returns JSON-encoded list of checkpoint metadata."
 (efrit-define-simple-tool-handler efrit-do--handle-create-file "create_file"
   :require efrit-tool-create-file
   :required ("path" "content")
-  :fields ("path" "content" "overwrite")
+  :fields ("path" "content" "overwrite" "show")
   :fn efrit-tool-create-file
   :label "Create File Result")
 
