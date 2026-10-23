@@ -59,6 +59,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'package)
+(require 'diff)                  ; diff-no-select
 (require 'efrit-log)
 (require 'efrit-api)
 (require 'efrit-chat-response)
@@ -150,7 +151,6 @@ be PKG-DIR yet; look in PKG-DIR first, with the usual names."
 Paths are shown relative to each tree, so the reviewer can name a file
 to open without the temp directory prefix.  Compiled and binary files
 are left out: noise in a review."
-  (require 'diff)
   (let* ((switches (list "-ruN" "--minimal"
                          "-x" "*.elc" "-x" "*.eln" "-x" "*.info"
                          "-x" "*.png" "-x" "*.jpg" "-x" "*.gif" "-x" "*.gz"))
