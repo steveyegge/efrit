@@ -48,6 +48,14 @@
 (require 'subr-x)
 (require 'efrit-log)
 (require 'efrit-events)
+(require 'eieio)
+
+;; transient is loaded on demand (`efrit-choice--menu-available-p');
+;; the compiler needs the names it would otherwise learn from it
+(defvar transient--prefix)
+(declare-function transient-quit-all "transient" ())
+(declare-function transient-define-prefix "transient")
+(eieio-declare-slots command)
 
 (defgroup efrit-choice nil
   "efrit's chooser for questions to the user."
@@ -159,6 +167,10 @@ a nil KEY is filled from 1-9 then a-z."
         (push (vconcat (seq-take specs 12)) cols)
         (setq specs (nthcdr 12 specs)))
       (nreverse cols))))
+
+;; The prefix is (re)defined at runtime by `efrit-choice--define-menu';
+;; the compiler cannot see it (snapshot Emacs: "not known to be defined")
+(declare-function efrit-choice-menu "efrit-choice" (&optional arg))
 
 (defun efrit-choice--define-menu ()
   "Define `efrit-choice-menu' for the open items.  Redefined per question:

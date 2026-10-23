@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `efrit-do-async`: Use `efrit-do` (now the primary interface)
 - `efrit-api-url`: Use `efrit-api-base-url` in efrit-common.el instead. The legacy variable still works as an override but is deprecated.
 
+## [0.14.0] - 2026-10-23
+
+### Changed
+
+- Emacs 29.1 is the minimum.  55 of the modules already used 29 APIs (tree-sitter, `string-pixel-width`, the 29 `subr-x`); 28.1 never built.  CI runs 29.1, 29.4, 30.1, 30.2, 31.1 and snapshot
+
+### Fixed
+
+- `efrit-choice` compiles under warnings-as-errors on a snapshot Emacs (the runtime-defined prefix and transient's slot are declared)
+
 ## [0.13.14] - 2026-10-21
 
 Agent buffer interaction.

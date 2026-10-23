@@ -251,7 +251,7 @@ the Cloud console, is in [docs/DOCUMENTS.md](docs/DOCUMENTS.md).
 ## Installation
 
 ### Prerequisites
-- Emacs 28.1+
+- Emacs 29.1+
 - Anthropic API key from [console.anthropic.com](https://console.anthropic.com/)
 
 ### Quick Start
